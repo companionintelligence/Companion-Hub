@@ -37,7 +37,7 @@ describe('AppCard', () => {
       </MemoryRouter>,
     );
 
-    const image = screen.getByRole('img', { name: 'Test App' });
+    const image = screen.getByAltText('');
 
     expect(getMarketplaceAppImageUrl).toHaveBeenCalledWith('test-app:community');
     expect(image).toHaveAttribute('src', 'http://localhost:5002/api/marketplace/apps/test-app%3Acommunity/image');
@@ -53,7 +53,7 @@ describe('AppCard', () => {
     );
 
     expect(getMarketplaceAppImageUrl).not.toHaveBeenCalled();
-    expect(screen.getByRole('img', { name: 'Ghost' })).toHaveAttribute('src', 'https://cdn.example.com/ghost.png');
+    expect(screen.getByAltText('')).toHaveAttribute('src', 'https://cdn.example.com/ghost.png');
   });
 
   it('falls back to the placeholder image and then the avatar tile when image loading fails twice', () => {
@@ -63,12 +63,12 @@ describe('AppCard', () => {
       </MemoryRouter>,
     );
 
-    fireEvent.error(screen.getByRole('img', { name: 'Test App' }));
-    expect(screen.getByRole('img', { name: 'Test App' })).toHaveAttribute('src', '/app-not-found.jpg');
+    fireEvent.error(screen.getByAltText(''));
+    expect(screen.getByAltText('')).toHaveAttribute('src', '/app-not-found.jpg');
 
-    fireEvent.error(screen.getByRole('img', { name: 'Test App' }));
+    fireEvent.error(screen.getByAltText(''));
     expect(screen.getByText('T')).toBeInTheDocument();
-    expect(screen.queryByRole('img', { name: 'Test App' })).not.toBeInTheDocument();
+    expect(screen.queryByAltText('')).not.toBeInTheDocument();
   });
 
   it('clamps a long description on the card instead of cutting it mid-sentence', () => {
@@ -98,13 +98,14 @@ describe('AppCard', () => {
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 
-  it('applies light-mode elevation styles to the card surface', () => {
+  it('uses a flat card surface with a hairline border', () => {
     const { container } = render(
       <MemoryRouter>
         <AppCard app={appFixture} />
       </MemoryRouter>,
     );
 
-    expect(container.querySelector('a > div')).toHaveClass('shadow-sm', 'hover:shadow-xl', 'shadow-slate-300/70');
+    expect(container.querySelector('a > div')).toHaveClass('bg-card', 'border-border', 'shadow-sm');
+    expect(container.querySelector('a > div')).not.toHaveClass('bg-white/10');
   });
 });

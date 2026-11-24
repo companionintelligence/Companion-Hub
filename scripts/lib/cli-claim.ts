@@ -3,8 +3,8 @@
  *
  * `cihub register` pairs the appliance and writes `ciHubApiKey` + `ciHubOrganizationId`. It does
  * NOT create the `user` row, and until now nothing headless could: the row is written by
- * `admitHubPerson` off the back of an interactive Portal login, and `POST /api/auth/register`
- * cannot finish unattended because Portal answers it with `requiresEmailVerification`. A Hub
+ * `admitHubPerson` off the back of an interactive Portal login. `POST /api/auth/register` refuses
+ * on a paired Hub, since the CI Account it would make is in no organization (#2061). A Hub
  * installed over SSH therefore came up paired, keyed, and unable to authenticate anybody — every
  * operator call answering 401 on a valid key.
  *

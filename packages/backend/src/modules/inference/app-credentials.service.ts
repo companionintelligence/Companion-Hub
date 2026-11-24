@@ -1,16 +1,17 @@
 import { BadRequestException, Injectable, NotFoundException, type OnApplicationShutdown, Optional } from '@nestjs/common';
 import { probeLocalSizing } from './context-cost.util';
-import { MemoryManagerService, modelMemoryCeilingMb } from './memory-manager.service';
+import { handoutCeilingMb, MemoryManagerService, modelMemoryCeilingMb } from './memory-manager.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { ModelRegistryService } from './model-registry.service';
 import { ModelPullerService } from './model-puller.service';
-import { CloudFallbackService } from './cloud-fallback.service';
+import { CloudFallbackService, isCloudFallbackAllowed } from './cloud-fallback.service';
 import { OllamaBackend } from './backends/ollama.backend';
+import { omlxAppApiKey } from './backends/omlx.backend';
 import { InferenceEndpointService } from './inference-endpoint.service';
 import type { CuratedModel, HardwareProfile, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
-import { isCatalogModelInstalled, isServedModelForCatalog } from './model-availability.util';
+import { handoutIdForCatalogModel, isCatalogModelInstalled, isServedModelForCatalog, trackedPullCounts } from './model-availability.util';
 import { appBearerFor } from './engine-credential-scope';
 import { cloudProviderManagedKeys } from './cloud-provider-env';
 import { appInferenceRequirements, checkModelRequirements, type AppInferenceRequirements } from './app-inference-requirements';
@@ -25,8 +26,9 @@ import {
   selectPoolChatModel,
   type PrePullDecision,
 } from './app-model-handout';
-import { handoutRecord, readHandoutRecords, writeHandoutRecords, type RecordedHandout } from './app-handout-record';
+import { handoutRecord, readHandoutRecords, removeHandoutRecords, writeHandoutRecords, type RecordedHandout } from './app-handout-record';
 import { catalogEmbedsOn, embedderEngineId, embeddingBackendFor, pickEmbeddingModel } from './embedder-handout';
+import { installedDefaultChatModel } from './default-chat-model-handout';
 
 // Only Hub-managed sibling apps use the bootstrap credentials endpoints.
 // Standalone services (for example companion-memory / CI-Server) receive
@@ -137,6 +139,8 @@ export class AppCredentialsService implements OnApplicationShutdown {
   private handouts = new Map<AppSlug, RecordedHandout>();
   private handoutsLoaded: Promise<void> | null = null;
   private handoutWrites: Promise<void> = Promise.resolve();
+  /** Bumped by {@link forgetHandouts}, so a fetch resolved before it is resolved again rather than cached. */
+  private generation = 0;
 
   constructor(
     private readonly logger: LoggerService,
@@ -191,7 +195,14 @@ export class AppCredentialsService implements OnApplicationShutdown {
       return cached.config;
     }
 
-    const config = await this.resolveCredentials(slug, apiVersion);
+    // Resolved again when a factory reset forgot the handouts meanwhile: this one may hold what the
+    // old Hub had, its cloud keys among it. Caching it handed them out for another 30 s.
+    let generation: number;
+    let config: AppCredentialsConfig;
+    do {
+      generation = this.generation;
+      config = await this.resolveCredentials(slug, apiVersion);
+    } while (generation !== this.generation);
     for (const decision of config.prePull) {
       this.logger.info(
         `[AppCredentials] pre-pull decision slug=${slug} ${decision.kind}=${decision.catalogId} pull=${decision.pull}: ${decision.reason}`,
@@ -232,6 +243,27 @@ export class AppCredentialsService implements OnApplicationShutdown {
     await this.handoutWrites;
   }
 
+  /**
+   * Forget what each app was handed (in memory and on disk) with the credentials cached for them: a
+   * factory reset removed the apps. The records described apps that were gone. The next app to fetch
+   * wrote them all back to the file beside its own.
+   */
+  async forgetHandouts(): Promise<void> {
+    this.generation++;
+    this.cache.clear();
+    // Cleared now rather than in the queued step, which would also take a record an app fetched after
+    // this call made. A read still under way adds nothing (see `loadPersistedHandouts`), and none is
+    // needed from now on: the file goes next.
+    this.handouts.clear();
+    this.handoutsLoaded = Promise.resolve();
+    this.handoutWrites = this.handoutWrites
+      .then(() => removeHandoutRecords())
+      .catch((err) => {
+        this.logger.warn(`[AppCredentials] could not remove the handout records: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    await this.handoutWrites;
+  }
+
   private recordHandout(slug: AppSlug, config: AppCredentialsConfig, now: number): void {
     this.handouts.set(slug, handoutRecord(config, new Date(now).toISOString()));
     // Chained so writes land in order, and loaded first so the first fetch after a restart does not
@@ -247,7 +279,10 @@ export class AppCredentialsService implements OnApplicationShutdown {
   }
 
   private loadPersistedHandouts(): Promise<void> {
+    const generation = this.generation;
     this.handoutsLoaded ??= readHandoutRecords().then((records) => {
+      // Read before {@link forgetHandouts}: these are the records it removed.
+      if (generation !== this.generation) return;
       for (const slug of SUPPORTED_APP_SLUGS) {
         const record = records[slug];
         // A record this process already made is newer than anything on disk.
@@ -291,8 +326,26 @@ export class AppCredentialsService implements OnApplicationShutdown {
           });
     const ollamaEndpointReady = !!(ollamaHealth.running && ollamaHealth.healthy);
 
-    const candidates = this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile).filter((m) => m.backend === backendType);
     const preferredModelId = preferences.preferredModel;
+    const recommended = this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile).filter((m) => m.backend === backendType);
+    // With no model chosen, the setup wizard's Default leads while the engine has it, as on the app.env
+    // path (`InferenceEnvResolver`). It is ranked by the lists the wizard shows on this Hub, read at the
+    // onboarding tier: `recommended` above is read at `profile.tier`, which for a card the container
+    // runtime cannot reach yet is another tier than the wizard's.
+    const wizardDefault = preferredModelId
+      ? undefined
+      : installedDefaultChatModel({
+          registry: this.modelRegistry,
+          profile,
+          computeTier: (gpu, ram) => this.hardwareInspector.computeTier(gpu, ram),
+          backend: backendType,
+          isInstalled: (model) => this.isCuratedModelAvailable(model, endpointHealth.modelsLoaded, backendType, endpointReady),
+          accept: (model) => checkModelRequirements(model, requirements).verdict !== 'fails',
+        });
+    if (wizardDefault) {
+      this.logger.info(`[AppCredentials] ${slug}: no chat model chosen yet; handing out the setup wizard's default ${wizardDefault.backendModelId}`);
+    }
+    const candidates = wizardDefault ? [wizardDefault, ...recommended.filter((m) => m.id !== wizardDefault.id)] : recommended;
     const recommendedLlm = this.resolveRecommendedLlm(candidates, preferredModelId, profile.tier, profile, slug, requirements);
     // The same engine the app.env resolver picks (`embeddingBackendFor`), so an app is never handed one
     // embedder here and another there: this path used to hand Ollama's `nomic-embed-text` to a
@@ -328,8 +381,10 @@ export class AppCredentialsService implements OnApplicationShutdown {
     const poolServesChat = Boolean(poolChoice?.engineId);
 
     // A pool that serves the app is local inference too — peers this operator paired, over the
-    // tailnet — so cloud only becomes primary when neither this node nor the pool can serve chat.
-    const cloudProviders = this.cloudFallback.getEnabledProviders();
+    // tailnet — so cloud only becomes primary when neither this node nor the pool can serve chat
+    // AND automatic cloud fallback is explicitly allowed.
+    const allowCloudFallback = isCloudFallbackAllowed();
+    const cloudProviders = allowCloudFallback ? this.cloudFallback.getEnabledProviders() : [];
     const cloudProvider = endpointReady || poolServesChat ? undefined : cloudProviders[0];
 
     const keys = APP_ENV_KEYS[slug];
@@ -339,7 +394,9 @@ export class AppCredentialsService implements OnApplicationShutdown {
     let endpointUrl = backendOpenAiUrl;
     // The engine's own credential. It is handed out only if the app ends up talking to the engine
     // directly, which is decided after the cloud and pool overrides below.
-    const engineKey = (backendType === 'vllm' && preferences.preferredVllmApiKey?.trim()) || backend.getApiKey?.()?.trim();
+    const engineKey =
+      (backendType === 'vllm' && preferences.preferredVllmApiKey?.trim()) ||
+      (backendType === 'omlx' ? omlxAppApiKey() : backend.getApiKey?.()?.trim());
     let cloudKey: string | undefined;
 
     let chatModel: CuratedModel | null;
@@ -367,13 +424,17 @@ export class AppCredentialsService implements OnApplicationShutdown {
         profile.tier,
         profile,
         endpointHealth.modelsLoaded,
+        endpointReady,
         backendType,
         slug,
         requirements,
       );
       chatModel = localChat.model;
       namedEngineId = localChat.engineId ?? null;
-      chatModelId = namedEngineId ?? localChat.model?.backendModelId ?? null;
+      // The engine's own spelling of a catalog row it lists under another name: oMLX does not list the
+      // catalog's `mlx-community/<name>`, and answers it with a 404 when it serves from the HF cache.
+      // Only oMLX is named this way: every other engine is handed the catalog's id, as before.
+      chatModelId = namedEngineId ?? (localChat.model ? handoutIdForCatalogModel(localChat.model, endpointHealth.modelsLoaded) : null);
       // vLLM and oMLX are both host-managed servers with no Hub pull registry — an
       // operator can serve a model outside the catalog, so fall back to whatever it reports rather
       // than leaving chatModelId empty. A served model the catalog knows fails the app is skipped.
@@ -384,7 +445,7 @@ export class AppCredentialsService implements OnApplicationShutdown {
       // A healthy endpoint with at least one served model is therefore ready even when there is no
       // curated `recommendedLlm` to match (the speculative inference model alias is configured at server startup).
       chatModelReady =
-        (recommendedLlm ? this.isModelPulled(recommendedLlm.id, endpointHealth.modelsLoaded, backendType) : false) ||
+        (recommendedLlm ? this.isModelPulled(recommendedLlm.id, endpointHealth.modelsLoaded, backendType, endpointReady) : false) ||
         (isHostServedBackend(backendType) && endpointReady && endpointHealth.modelsLoaded.length > 0);
       if (!chatModelId && localChat.rejected.length > 0) {
         chatModelError = describeNoSuitableChatModel({ appSlug: slug, requirements, rejected: localChat.rejected, scope: 'local' });
@@ -426,7 +487,7 @@ export class AppCredentialsService implements OnApplicationShutdown {
       [keys.baseUrl]: endpointUrl,
       [keys.apiKey]: apiKey,
       CI_INFERENCE_BACKEND: provider,
-      ...this.cloudFallback.toAppEnv(),
+      ...(allowCloudFallback ? this.cloudFallback.toAppEnv() : {}),
     };
     if (chatModelId) {
       env[keys.model] = chatModelId;
@@ -453,11 +514,15 @@ export class AppCredentialsService implements OnApplicationShutdown {
       if (servedContextLength && servedContextLength > 0) {
         env[keys.numCtx] = String(servedContextLength);
       }
-    } else if (provider !== 'cloud' && chatModel && chatModelId === chatModel.backendModelId) {
+    } else if (
+      provider !== 'cloud' &&
+      chatModel &&
+      (chatModelId === chatModel.backendModelId || chatModelId === handoutIdForCatalogModel(chatModel, endpointHealth.modelsLoaded))
+    ) {
       // Same measured-first sizing as InferenceEnvResolver; see `probeLocalSizing`. Only a
       // model this node serves can be measured, so a pool-served one keeps the heuristic.
       const askOllama = chatServedLocally && backendType === 'ollama';
-      const [sizing, residentContextLength, servedContextLength] = await Promise.all([
+      const [sizing, residentContextLength, servedContextLength, ceilingMb] = await Promise.all([
         chatServedLocally
           ? probeLocalSizing({
               backendType,
@@ -470,6 +535,9 @@ export class AppCredentialsService implements OnApplicationShutdown {
           : null,
         askOllama ? this.ollamaBackend.residentContextLength(chatModel.backendModelId) : null,
         chatServedLocally ? Promise.resolve(backend.servedContextLength?.(chatModel.backendModelId) ?? null).catch(() => null) : null,
+        // Not counting what the model itself holds now, or a resident model is sized against itself.
+        // Asked of the model's own engine: a pool model served here need not be on the active one.
+        chatServedLocally ? handoutCeilingMb(this.memoryManager, profile, chatModel) : modelMemoryCeilingMb(profile),
       ]);
       // Same cap as the resolver: through the pool, the largest cap among the nodes serving the
       // model (placement keeps the request off the smaller ones — see `poolContextCap`); this
@@ -479,15 +547,16 @@ export class AppCredentialsService implements OnApplicationShutdown {
       const sized = handoutContextLength({
         model: chatModel,
         servedLocally: chatServedLocally,
-        effectiveInferenceMemoryMb: modelMemoryCeilingMb(profile),
+        effectiveInferenceMemoryMb: ceilingMb,
         minContextLength: requirements.minContextLength,
         kvMbPerToken: sizing?.kvMbPerToken ?? null,
+        fixedKvMb: sizing?.fixedKvMb ?? null,
         weightMb: sizing?.weightMb ?? null,
         kvSlots: sizing?.kvSlots ?? null,
         sighting: sizing?.sighting ?? null,
         maxContextLength,
       });
-      // Never above the one window Lemonade serves this model at to every caller.
+      // Never above the one window Lemonade or vLLM serves this model at to every caller.
       const served = capHandoutAtServedWindow({
         appSlug: slug,
         engineId: chatModelId,
@@ -534,7 +603,9 @@ export class AppCredentialsService implements OnApplicationShutdown {
       ]),
     ];
 
-    const embeddingsReady = embeddings ? this.isModelPulled(embeddings.id, embeddingsServed, embeddingsBackend) : false;
+    const embeddingsReady = embeddings
+      ? this.isModelPulled(embeddings.id, embeddingsServed, embeddingsBackend, embedsOnActive ? endpointReady : ollamaEndpointReady)
+      : false;
     const prePull = [
       decideModelPrePull({
         kind: 'chat',
@@ -542,7 +613,7 @@ export class AppCredentialsService implements OnApplicationShutdown {
         backendType,
         endpointReady,
         cloudPrimary: provider === 'cloud',
-        installedLocally: recommendedLlm ? this.isModelPulled(recommendedLlm.id, endpointHealth.modelsLoaded, backendType) : false,
+        installedLocally: recommendedLlm ? this.isModelPulled(recommendedLlm.id, endpointHealth.modelsLoaded, backendType, endpointReady) : false,
         poolServedBy: poolRouting && recommendedLlm ? nodesServing(poolRouting.inventory, recommendedLlm.backendModelId, recommendedLlm.backend) : [],
         poolHandout: routedThroughPool ? (poolChoice?.engineId ?? null) : null,
         operatorPreferred: Boolean(recommendedLlm && preferredModelId && recommendedLlm.id === preferredModelId),
@@ -637,6 +708,7 @@ export class AppCredentialsService implements OnApplicationShutdown {
     tier: HardwareTier,
     profile: HardwareProfile,
     modelsLoaded: string[],
+    listed: boolean,
     backendType: InferenceBackendType,
     slug: AppSlug,
     requirements: AppInferenceRequirements,
@@ -644,7 +716,7 @@ export class AppCredentialsService implements OnApplicationShutdown {
     const rejected: LocalChatSelection['rejected'] = [];
     const pickIfAvailable = (model: CuratedModel | null | undefined): CuratedModel | null => {
       if (model?.modality !== 'llm') return null;
-      if (!this.isCuratedModelAvailable(model, modelsLoaded, backendType)) return null;
+      if (!this.isCuratedModelAvailable(model, modelsLoaded, backendType, listed)) return null;
       const check = checkModelRequirements(model, requirements);
       if (check.verdict === 'fails') {
         if (!rejected.some((r) => r.engineId === model.backendModelId)) {
@@ -703,8 +775,8 @@ export class AppCredentialsService implements OnApplicationShutdown {
     return checkModelRequirements(row ?? null, requirements).verdict;
   }
 
-  private isCuratedModelAvailable(model: CuratedModel, modelsLoaded: string[], backendType: InferenceBackendType): boolean {
-    if (this.isModelPulled(model.id, modelsLoaded, backendType)) return true;
+  private isCuratedModelAvailable(model: CuratedModel, modelsLoaded: string[], backendType: InferenceBackendType, listed: boolean): boolean {
+    if (this.isModelPulled(model.id, modelsLoaded, backendType, listed)) return true;
     // vLLM and oMLX have no Hub pull registry — "available" means the operator's
     // server is actually reporting this exact id, not that the Hub tracked a pull for it.
     if (isHostServedBackend(backendType)) {
@@ -713,14 +785,14 @@ export class AppCredentialsService implements OnApplicationShutdown {
     return isCatalogModelInstalled(model, modelsLoaded, false, this.modelRegistry.getCatalogBackendModelIds());
   }
 
-  private isModelPulled(catalogId: string, modelsLoaded: string[], backendType: InferenceBackendType): boolean {
+  /** `listed` says `modelsLoaded` is `backendType`'s own answer, which outranks a tracked pull; see {@link trackedPullCounts}. */
+  private isModelPulled(catalogId: string, modelsLoaded: string[], backendType: InferenceBackendType, listed: boolean): boolean {
     const curated = this.modelRegistry.getCuratedModel(catalogId);
     if (isHostServedBackend(backendType)) {
       return curated ? isServedModelForCatalog(curated, modelsLoaded) : modelsLoaded.includes(catalogId);
     }
 
-    const tracked = this.modelRegistry.getTrackedModel(catalogId);
-    if (tracked && (tracked.state === 'pulled' || tracked.state === 'loaded' || tracked.state === 'pinned')) {
+    if (trackedPullCounts(this.modelRegistry.getTrackedModel(catalogId), listed ? backendType : null)) {
       return true;
     }
     return isCatalogModelInstalled(curated, modelsLoaded, false, this.modelRegistry.getCatalogBackendModelIds());

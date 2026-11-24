@@ -70,6 +70,8 @@ export class HubPoolIdentityService {
   private loading: Promise<LoadedPoolIdentity | null> | null = null;
   private retryAfter = 0;
   private lastError: string | null = null;
+  /** Bumped by {@link forget}, so a load that began before it does not cache the identity it forgot. */
+  private generation = 0;
 
   /**
    * FQDNs observed on *verified* signed requests that disagree with the peer row's `node_fqdn`.
@@ -99,23 +101,46 @@ export class HubPoolIdentityService {
       return null;
     }
 
-    this.loading = this.load()
+    const generation = this.generation;
+    const loading: Promise<LoadedPoolIdentity | null> = this.load()
       .then((identity) => {
-        this.cached = identity;
+        if (generation === this.generation) {
+          this.cached = identity;
+        }
         return identity;
       })
       .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
-        this.lastError = message;
-        this.retryAfter = Date.now() + IDENTITY_RETRY_MS;
+        // A load from before a {@link forget} failing late must not hold off the next Hub's mint for a minute.
+        if (generation === this.generation) {
+          this.lastError = message;
+          this.retryAfter = Date.now() + IDENTITY_RETRY_MS;
+        }
         this.logger.warn(`[HubPool] pool identity unavailable; peers will keep using the bearer token: ${message}`);
         return null;
       })
       .finally(() => {
-        this.loading = null;
+        if (this.loading === loading) {
+          this.loading = null;
+        }
       });
+    this.loading = loading;
 
-    return this.loading;
+    return loading;
+  }
+
+  /**
+   * Drop the identity this process loaded, for a factory reset that emptied `hub_pool_identity`. The
+   * next {@link get} mints a new one. Until then the reset Hub went on signing with the key its old
+   * peers had pinned.
+   */
+  forget(): void {
+    this.generation++;
+    this.cached = null;
+    this.loading = null;
+    this.retryAfter = 0;
+    this.lastError = null;
+    this.observedFqdns.clear();
   }
 
   /** True when this node can actually produce a signature right now. */
@@ -142,6 +167,18 @@ export class HubPoolIdentityService {
   }
 
   /**
+   * This node's pool UUID if it already has one, or null. Unlike {@link summary} it never mints an
+   * identity or decrypts a key, so a reader that runs on every Hub (the quarter-hourly status file)
+   * keeps the rule above: a Hub that never used Hub Pool never gets an identity.
+   */
+  async existingNodeUuid(): Promise<string | null> {
+    if (this.cached) {
+      return this.cached.nodeUuid;
+    }
+    return (await this.repo.get())?.nodeUuid ?? null;
+  }
+
+  /**
    * Replace the keypair, keeping the UUID.
    *
    * Destructive by design, and the caller (`HubPoolPeerService.rotateIdentity`) is responsible for
@@ -149,17 +186,26 @@ export class HubPoolIdentityService {
    * message that would have told them.
    */
   async rotate(): Promise<LoadedPoolIdentity> {
+    const generation = this.generation;
     const existing = await this.repo.get();
     if (!existing) {
       throw new Error('This node has no pool identity to rotate');
     }
     const material = generatePoolKeyPair();
-    await this.repo.replaceKeys(material.publicKey, this.encryption.encrypt(material.privateKey, existing.nodeUuid));
-    this.cached = { nodeUuid: existing.nodeUuid, publicKey: material.publicKey, privateKey: privateKeyFromBase64(material.privateKey) };
-    this.lastError = null;
-    this.retryAfter = 0;
+    await this.repo.replaceKeys(material.publicKey, this.encryption.encrypt(material.privateKey, existing.nodeUuid), existing.nodeUuid);
+    const rotated: LoadedPoolIdentity = {
+      nodeUuid: existing.nodeUuid,
+      publicKey: material.publicKey,
+      privateKey: privateKeyFromBase64(material.privateKey),
+    };
+    // A rotation that a factory reset overtook would cache the node UUID the reset forgot.
+    if (generation === this.generation) {
+      this.cached = rotated;
+      this.lastError = null;
+      this.retryAfter = 0;
+    }
     this.logger.info(`[HubPool] pool identity key rotated; node UUID ${existing.nodeUuid} is unchanged`);
-    return this.cached;
+    return rotated;
   }
 
   /** Record a verified sender FQDN that disagrees with the stored row. Drained by the health tick. */

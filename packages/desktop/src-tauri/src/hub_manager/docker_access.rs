@@ -12,6 +12,14 @@ pub(crate) fn should_defer_docker_bind_mount_probe(state: &DockerAccessState) ->
 }
 
 pub fn check_docker_access() -> DockerAccessCheck {
+    cached_docker_access_check(check_docker_access_uncached)
+}
+
+/// [`check_docker_access`] with the uncached check passed in: the cached answer while it is fresh,
+/// else `check_uncached`'s, cached unless the cache was forgotten while it ran.
+pub(crate) fn cached_docker_access_check(
+    check_uncached: impl FnOnce() -> DockerAccessCheck,
+) -> DockerAccessCheck {
     {
         let cache = lock_recovering(&DOCKER_ACCESS_CACHE);
         if let Some((checked_at, check)) = cache.as_ref() {
@@ -21,9 +29,26 @@ pub fn check_docker_access() -> DockerAccessCheck {
         }
     }
 
-    let check = check_docker_access_uncached();
-    *lock_recovering(&DOCKER_ACCESS_CACHE) = Some((Instant::now(), check.clone()));
+    let generation = DOCKER_ACCESS_GENERATION.load(Ordering::SeqCst);
+    let check = check_uncached();
+    let mut cache = lock_recovering(&DOCKER_ACCESS_CACHE);
+    // A check that began before Docker started (a status poll during Start engine's wait) must
+    // not put "not running" back for the next five seconds.
+    if DOCKER_ACCESS_GENERATION.load(Ordering::SeqCst) == generation {
+        *cache = Some((Instant::now(), check.clone()));
+    }
     check
+}
+
+/// Bumped by [`forget_docker_access_check`], so a check already under way doesn't cache its answer.
+static DOCKER_ACCESS_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Drop the cached check, so the next one asks Docker: it has just started.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn forget_docker_access_check() {
+    let mut cache = lock_recovering(&DOCKER_ACCESS_CACHE);
+    DOCKER_ACCESS_GENERATION.fetch_add(1, Ordering::SeqCst);
+    *cache = None;
 }
 
 fn check_docker_access_uncached() -> DockerAccessCheck {

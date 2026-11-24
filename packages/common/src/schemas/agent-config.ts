@@ -8,9 +8,22 @@ export const agentOpenApiAuthSchema = z.object({
   api_key_in: z.enum(['header', 'query']).optional(),
 });
 
+/**
+ * A file inside the app's own folder, named relative to it. The Hub reads the file and hands it to any
+ * caller of `hub_get_app_openapi` with `view` on the app, the app itself included, so a path that left
+ * the folder (`../../../state/settings.json`) read out the Hub's host-local operator key. The backend
+ * also resolves the path, links included, and refuses one that ends outside (`AgentConfigService`).
+ */
+const appRelativeFilePath = z
+  .string()
+  .min(1)
+  .refine((value) => !/^([/\\]|[A-Za-z]:)/.test(value) && !value.split(/[/\\]/).includes('..'), {
+    message: "spec_path must name a file inside the app's folder, without '..'",
+  });
+
 export const agentOpenApiConfigSchema = z.object({
   enabled: z.boolean().default(true),
-  spec_path: z.string().default('agents/openapi.yaml'),
+  spec_path: appRelativeFilePath.default('agents/openapi.yaml'),
   base_url: z.string().optional(),
   auth: agentOpenApiAuthSchema.optional(),
   operations_filter: z.array(z.string()).optional(),
@@ -20,7 +33,11 @@ export const agentMcpConfigSchema = z.object({
   enabled: z.boolean().default(true),
   /** `streamable-http` is the canonical name; `sse` is a legacy alias for the same transport. */
   transport: z.enum(['stdio', 'streamable-http', 'sse']).default('streamable-http'),
-  /** Stdio only: spawn via container exec (default) or directly on the Hub host. */
+  /**
+   * Stdio only: spawn via container exec (default) or directly on the Hub host. Both are held to
+   * backend `mcp-stdio-launch-policy.ts` at spawn time: host_docker for official-store apps only,
+   * and `container` must belong to the app's own compose project.
+   */
   launch: z.enum(['container_exec', 'host_docker']).optional(),
   url: z.string().optional(),
   command: z.array(z.string()).optional(),

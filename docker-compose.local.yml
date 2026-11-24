@@ -19,9 +19,11 @@ services:
       interval: 5s
       timeout: 10s
       retries: 120
+    # On the infra network only, at the address the Hub pins its name to. See
+    # docker-compose.prod.yml.
     networks:
-      - ci_hub_network
-      - ci_os_hub_network
+      ci_hub_internal:
+        ipv4_address: ${HUB_INFRA_DB_IP:-10.128.0.11}
 
   ci-hub-queue:
     container_name: ci-hub-queue
@@ -40,10 +42,8 @@ services:
       RABBITMQ_DEFAULT_USER: companion
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-admin}
     networks:
-      ci_hub_network:
-        aliases:
-          - ci-os-hub-queue
-      ci_os_hub_network:
+      ci_hub_internal:
+        ipv4_address: ${HUB_INFRA_QUEUE_IP:-10.128.0.12}
         aliases:
           - ci-os-hub-queue
 
@@ -119,6 +119,8 @@ services:
       ci_os_hub_network:
         aliases:
           - ci-os-hub
+      ci_hub_internal:
+        ipv4_address: ${HUB_INFRA_HUB_IP:-10.128.0.10}
     environment:
       HUB_CONTAINER_NAME: ci-hub
       LOCAL: true
@@ -158,6 +160,11 @@ services:
       LEMONADE_URL: ${LEMONADE_URL:-http://host.docker.internal:13305}
     extra_hosts:
       - "host.docker.internal:host-gateway"
+      # See docker-compose.prod.yml: the Hub joins every app network, so its own
+      # services are pinned here rather than asked of Docker DNS.
+      - "ci-hub-db:${HUB_INFRA_DB_IP:-10.128.0.11}"
+      - "ci-hub-queue:${HUB_INFRA_QUEUE_IP:-10.128.0.12}"
+      - "ci-os-hub-queue:${HUB_INFRA_QUEUE_IP:-10.128.0.12}"
     # See docker-compose.prod.yml: retry Docker embedded-DNS lookups instead of failing
     # with EAI_AGAIN during network churn (#933).
     dns_opt:
@@ -173,7 +180,7 @@ services:
 
   # Cloudflare tunnel for dev — opt-in via: docker compose --profile cloudflare up cloudflared -d
   cloudflared:
-    image: cloudflare/cloudflared:2026.2.0
+    image: cloudflare/cloudflared:2026.10.5
     pull_policy: if_not_present
     container_name: cloudflared
     restart: unless-stopped
@@ -192,6 +199,15 @@ networks:
   ci_hub_network:
     driver: bridge
     name: ci-hub_network
+  # As in docker-compose.prod.yml: fixed, so the Hub can pin its database and
+  # broker by address.
+  ci_hub_internal:
+    driver: bridge
+    name: ci-hub_internal
+    ipam:
+      config:
+        - subnet: ${HUB_INFRA_SUBNET:-10.128.0.8/29}
+          ip_range: ${HUB_INFRA_IP_RANGE:-10.128.0.8/31}
   ci_os_hub_network:
     driver: bridge
     name: ci-os-hub_network

@@ -37,7 +37,8 @@ const COMPLETE_ONBOARDING_RETRY_DELAY_MS = 500;
 /** Fixed id so repeat failures replace the notice instead of stacking, and success can clear it. */
 const COMPLETE_ONBOARDING_TOAST_ID = 'onboarding-complete-failed';
 
-const CI_SERVER_E_BRAIN_LOGO = '/brands/ci-server-e-brain.png';
+/** The tile is 40 px, so the small mark (`public/logo.svg`, the header's), not the full one. */
+const HUB_MARK = '/logo.svg';
 
 /**
  * Only transient failures are worth a second identical PATCH. A 4xx will not become a 2xx —
@@ -89,22 +90,16 @@ function Shell({ children }: { children: React.ReactNode }) {
   const { t } = useTranslation();
 
   return (
-    <div className="flex flex-col items-center overflow-y-auto px-4 py-8" style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}>
+    <div className="flex flex-col items-center overflow-y-auto px-4 py-8" style={{ height: 'var(--app-height)' }}>
       <div className="w-full max-w-[82.94rem]">
         <div className="mb-8 mt-[10vh] flex flex-col items-center text-center sm:mb-10">
           <div
             className="mb-3 flex h-14 w-14 items-center justify-center overflow-hidden rounded-[30%] border border-primary/30 bg-primary/10 p-2 shadow-sm"
             data-testid="onboarding-brand-mark"
           >
-            <img
-              alt={t('ONBOARDING_CI_SERVER_E_BRAIN_LOGO_ALT')}
-              src={CI_SERVER_E_BRAIN_LOGO}
-              height={40}
-              width={40}
-              className="h-10 w-10 object-contain"
-            />
+            <img alt={t('ONBOARDING_HUB_LOGO_ALT')} src={HUB_MARK} height={40} width={40} className="h-10 w-10 object-contain" />
           </div>
-          <h1 className="text-2xl font-bold tracking-tight text-foreground sm:text-3xl">{t('ONBOARDING_SET_UP_COMPANION_HUB')}</h1>
+          <h1 className="text-2xl font-medium tracking-tight text-foreground sm:text-3xl">{t('ONBOARDING_SET_UP_COMPANION_HUB')}</h1>
         </div>
         {children}
       </div>
@@ -248,8 +243,9 @@ function OnboardingWizard() {
     // down would have had their model silently never load.
     inferenceBackend: aiSetupConfig?.backend,
     backendUrl: aiSetupConfig?.backend === 'omlx' ? aiSetupConfig?.omlxUrl : aiSetupConfig?.backend === 'vllm' ? aiSetupConfig?.vllmUrl : undefined,
-    // Only the rows the Hub can install — `selectedModels` also carries vLLM rows the operator
-    // fetched themselves.
+    // Ollama and Lemonade rows only. `selectedModels` also carries vLLM rows the operator fetched
+    // themselves, and oMLX rows wait for InstallStep (`downloadModelIds`): oMLX refuses a download
+    // without its API key, which the Hub holds only once InstallStep has saved it.
     pullableModelIds: aiSetupConfig?.ollamaSelectedModelIds,
   });
 
@@ -260,7 +256,7 @@ function OnboardingWizard() {
   // The default payload says "not onboarded"; do not paint step one on it.
   if (isAppLoading) {
     return (
-      <div className="flex items-center justify-center bg-background" style={{ minHeight: 'calc(100vh - var(--titlebar-height, 0px))' }}>
+      <div className="flex items-center justify-center bg-background" style={{ minHeight: 'var(--app-height)' }}>
         <div className="animate-spin w-8 h-8 border-4 border-primary border-t-transparent rounded-full" />
       </div>
     );
@@ -282,6 +278,7 @@ function OnboardingWizard() {
           defaultExposureMode={installExposureMode}
           operatorUsername={user.username}
           aiSetupConfig={resumed ? resumed.aiSetupConfig : aiSetupConfig}
+          pullErrorsById={modelPullState.errorsById}
           onComplete={async (summary) => {
             // InstallStep's Continue button is never disabled and drops the promise it gets back,
             // and this handler now stays alive across the retry pause — so without a latch a
@@ -443,7 +440,7 @@ export default function OnboardingPage() {
   return (
     <Suspense
       fallback={
-        <div className="flex items-center justify-center bg-background" style={{ minHeight: 'calc(100vh - var(--titlebar-height, 0px))' }}>
+        <div className="flex items-center justify-center bg-background" style={{ minHeight: 'var(--app-height)' }}>
           <div className="animate-spin w-8 h-8 border-4 border-primary border-t-transparent rounded-full" />
         </div>
       }

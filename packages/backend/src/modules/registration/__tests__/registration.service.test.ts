@@ -1,7 +1,13 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { PORTAL_REJECTION_CONFIRM_MS, PUBLIC_UNREACHABLE_CONFIRM_MS, RegistrationService } from '../registration.service';
+import {
+  PERIODIC_VALIDATION_INTERVAL_MS,
+  PORTAL_REJECTION_CONFIRM_MS,
+  PUBLIC_UNREACHABLE_CONFIRM_MS,
+  RegistrationService,
+} from '../registration.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { DatabaseService } from '@/core/database/database.service';
+import { entitlementCache, whoisCache } from '@/core/database/drizzle/schema';
 import { LoggerService } from '@/core/logger/logger.service';
 import { CloudflareClientService } from '../../cloudflare/cloudflare-client.service';
 import { TunnelHealthService } from '../../cloudflare/tunnel-health.service';
@@ -14,6 +20,7 @@ import { TailscaleService } from '../../tailscale/tailscale.service';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as si from 'systeminformation';
+import fs from 'node:fs';
 import path from 'node:path';
 import { vol } from 'memfs';
 import { TUNNEL_DIR } from '@/common/constants';
@@ -112,6 +119,8 @@ describe('RegistrationService', () => {
   });
 
   afterEach(() => {
+    // A pairing starts the check-in timer; stop it so it cannot fire into a later test.
+    service.onApplicationShutdown();
     vi.clearAllMocks();
   });
 
@@ -494,14 +503,18 @@ describe('RegistrationService', () => {
       const result = await (service as any).checkRegistrationWithCloud();
 
       expect(result).toBe(true);
-      expect(setupSpy).toHaveBeenCalledWith('org-123', {
-        organization_name: 'Test Org',
-        tunnel_id: 'tunnel-123',
-        tunnel_token: 'token-123',
-        subdomain: 'hub-test-org',
-        slug: 'test-org',
-        domain: 'example.com',
-      });
+      expect(setupSpy).toHaveBeenCalledWith(
+        'org-123',
+        {
+          organization_name: 'Test Org',
+          tunnel_id: 'tunnel-123',
+          tunnel_token: 'token-123',
+          subdomain: 'hub-test-org',
+          slug: 'test-org',
+          domain: 'example.com',
+        },
+        expect.any(AbortSignal),
+      );
     });
   });
 
@@ -610,6 +623,29 @@ describe('RegistrationService', () => {
       const status = service.getRegistrationStatus();
       expect(['locally_ready', 'publicly_ready']).toContain(status.phase);
       expect(status.registered).toBe(true);
+    });
+
+    it('starts the check-in timer once the pairing has set the Hub up', async () => {
+      // Pairing by code or by callback stops the registration loop, which is what started it before.
+      deviceRegistrationRepository.getDeviceRegistrationById.mockResolvedValue(null as any);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-new' } as any);
+      cloudflareClientService.initializeTunnel.mockResolvedValue({ tunnelId: 't1', token: 'tok1' } as any);
+      configService.setDomain.mockResolvedValue(undefined);
+      mockedProbe.mockResolvedValue({ reachable: true, via: 'system', status: 200 });
+      await service.setPhase('paired');
+      const startTimer = vi.spyOn(service as any, 'startPeriodicValidation');
+
+      await (service as any).setupOrganizationInfrastructure('org-new', {
+        organization_name: 'New Org',
+        tunnel_id: 't1',
+        tunnel_token: 'tok1',
+        subdomain: 'device1-neworg',
+        slug: 'neworg',
+        domain: 'example.com',
+      });
+
+      expect(startTimer).toHaveBeenCalled();
+      expect((service as any).periodicValidationInterval).not.toBeNull();
     });
 
     describe('the registration probe', () => {
@@ -848,7 +884,7 @@ describe('RegistrationService', () => {
           timeout: 60_000,
         }),
       );
-      expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubApiKey: 'key-pair' });
+      expect(configService.setFileOnlySettings).toHaveBeenCalledWith({ ciHubApiKey: 'key-pair' });
       expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubOrganizationId: 'org-pair' });
       expect(setupSpy).toHaveBeenCalledWith(
         'org-pair',
@@ -860,6 +896,7 @@ describe('RegistrationService', () => {
           slug: 'paired-org',
           domain: 'companionintelligence.com',
         }),
+        expect.any(AbortSignal),
       );
       setupSpy.mockRestore();
     });
@@ -941,8 +978,8 @@ describe('RegistrationService', () => {
         { pairing_code: 'ABC123', device_id: 'test-device', device_key: 'stored-device-key', move_key: 'stored-move-key' },
         expect.objectContaining({ headers: { 'Content-Type': 'application/json' } }),
       );
-      expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubApiKey: 'key-pair' });
-      expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubMoveKey: 'move-pair' });
+      // One write: a reset between two would keep the new device key beside a stale move key.
+      expect(configService.setFileOnlySettings).toHaveBeenCalledWith({ ciHubApiKey: 'key-pair', ciHubMoveKey: 'move-pair' });
 
       setupSpy.mockRestore();
     });
@@ -976,7 +1013,7 @@ describe('RegistrationService', () => {
       await service.pairDevice('ABC123');
 
       expect(mockedAxios.post.mock.calls[0]?.[1]).not.toHaveProperty('move_key');
-      expect(configService.setUserSettings).not.toHaveBeenCalledWith(expect.objectContaining({ ciHubMoveKey: expect.anything() }));
+      expect(configService.setFileOnlySettings).not.toHaveBeenCalledWith(expect.objectContaining({ ciHubMoveKey: expect.anything() }));
 
       setupSpy.mockRestore();
     });
@@ -1163,10 +1200,10 @@ describe('RegistrationService', () => {
       } as any);
       const setupSpy = vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
 
-      const result = await service.pairDevice('ABC123', { callerAuthenticated: true });
+      const result = await service.pairDevice('ABC123', { mayPairAgain: async () => true });
 
       expect(result.success).toBe(true);
-      expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubApiKey: 'fresh-key' });
+      expect(configService.setFileOnlySettings).toHaveBeenCalledWith({ ciHubApiKey: 'fresh-key' });
       expect(deviceRegistrationRepository.deleteAll).not.toHaveBeenCalled();
       setupSpy.mockRestore();
     });
@@ -1227,10 +1264,10 @@ describe('RegistrationService', () => {
       } as any);
       const setupSpy = vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
 
-      const result = await service.pairDevice('ABC123', { callerAuthenticated: true });
+      const result = await service.pairDevice('ABC123', { mayPairAgain: async () => true });
 
       expect(result.success).toBe(true);
-      expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubApiKey: 'fresh-key' });
+      expect(configService.setFileOnlySettings).toHaveBeenCalledWith({ ciHubApiKey: 'fresh-key' });
       setupSpy.mockRestore();
     });
 
@@ -1240,7 +1277,7 @@ describe('RegistrationService', () => {
       vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
       (service as any)._currentPhase = 'publicly_ready';
 
-      await expect(service.pairDevice('ABC123', { callerAuthenticated: true })).resolves.toMatchObject({
+      await expect(service.pairDevice('ABC123', { mayPairAgain: async () => true })).resolves.toMatchObject({
         success: false,
         message: 'Device is already registered.',
       });
@@ -1638,7 +1675,7 @@ describe('RegistrationService', () => {
       expect(result.success).toBe(true);
       expect(result.domain).toBe('companionintelligence.com');
       expect(configService.setDomain).toHaveBeenCalledWith('companionintelligence.com');
-      expect(setupSpy).toHaveBeenCalledWith('org-cb', expect.objectContaining({ domain: 'companionintelligence.com' }));
+      expect(setupSpy).toHaveBeenCalledWith('org-cb', expect.objectContaining({ domain: 'companionintelligence.com' }), expect.any(AbortSignal));
       setupSpy.mockRestore();
     });
 
@@ -1701,7 +1738,7 @@ describe('RegistrationService', () => {
       });
 
       expect(result.success).toBe(true);
-      expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubApiKey: 'key-cb' });
+      expect(configService.setFileOnlySettings).toHaveBeenCalledWith({ ciHubApiKey: 'key-cb' });
       setupSpy.mockRestore();
     });
 
@@ -1764,6 +1801,89 @@ describe('RegistrationService', () => {
       const status = service.getRegistrationStatus();
       expect(status.phase).toBe('publicly_ready');
       expect(status.degradedReasons).toEqual([]);
+    });
+  });
+
+  describe('periodic check-in (CI-Portal#953)', () => {
+    const MINUTE = 60 * 1000;
+    const checkIns = () => mockedAxios.post.mock.calls.filter(([url]) => String(url).includes('/api/devices/check-in')).length;
+
+    beforeEach(async () => {
+      vi.spyOn(service, 'getDeviceId').mockResolvedValue('test-device');
+      configService.getConfig.mockReturnValue({
+        ciCloudUrl: 'http://cloud.api',
+        ciHubApiKey: 'test-api-key',
+        userSettings: { domain: 'example.com' },
+      } as any);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as any);
+      deviceRegistrationRepository.updateProvisioningState.mockResolvedValue({} as any);
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      vi.spyOn(service as any, 'checkPublicReachability').mockResolvedValue(undefined);
+      mockedAxios.post.mockResolvedValue({ status: 200, data: {} } as any);
+      vi.useFakeTimers();
+      (service as any).startPeriodicValidation();
+    });
+
+    afterEach(() => {
+      service.onApplicationShutdown();
+      vi.useRealTimers();
+    });
+
+    it('checks in every 15 minutes when nothing else does', async () => {
+      expect(PERIODIC_VALIDATION_INTERVAL_MS).toBe(15 * MINUTE);
+
+      await vi.advanceTimersByTimeAsync(15 * MINUTE);
+      expect(checkIns()).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(15 * MINUTE);
+      expect(checkIns()).toBe(2);
+    });
+
+    it('joins a status read check-in still in flight instead of sending a second', async () => {
+      let answer!: (value: unknown) => void;
+      mockedAxios.post.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)) as any);
+
+      await vi.advanceTimersByTimeAsync(15 * MINUTE - 10_000);
+      await service.getLiveRegistrationStatus();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(checkIns()).toBe(1);
+
+      answer({ status: 200, data: {} });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(checkIns()).toBe(1);
+    });
+
+    it('leaves the status report as the only check-in when a tick lands a little before it', async () => {
+      // Reports at 0:50 and 15:50. The tick at 15:00 comes 14:10 after the first one: a check-in
+      // there would be under a minute before the second report, which the 30 s throttle lets through.
+      await vi.advanceTimersByTimeAsync(50_000);
+      await service.getLiveRegistrationStatus();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(checkIns()).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(15 * MINUTE);
+      await service.getLiveRegistrationStatus();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(checkIns()).toBe(2);
+    });
+
+    it('sends nothing on a tick when a status read checked in within the last 14 minutes', async () => {
+      // The 15-minute status report checks in through a status read, so on most Hubs the timer is the spare.
+      await vi.advanceTimersByTimeAsync(10 * MINUTE);
+      await service.getLiveRegistrationStatus();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(checkIns()).toBe(1);
+
+      // The tick at 15 minutes comes 5 minutes after that check-in.
+      await vi.advanceTimersByTimeAsync(5 * MINUTE);
+      expect(checkIns()).toBe(1);
+
+      // The tick at 30 minutes comes 20 minutes after it.
+      await vi.advanceTimersByTimeAsync(15 * MINUTE);
+      expect(checkIns()).toBe(2);
     });
   });
 
@@ -2988,8 +3108,198 @@ describe('RegistrationService', () => {
 
       await service.resetRegistration();
 
-      expect(deleteGrants).toHaveBeenCalled();
+      expect(deleteGrants).toHaveBeenCalledWith(whoisCache);
+      expect(deleteGrants).toHaveBeenCalledWith(entitlementCache);
       expect(loggerService.info).toHaveBeenCalledWith('Cleared cached app grants');
+    });
+  });
+
+  describe('the registration record (state/registered-device-id)', () => {
+    const RECORD_PATH = '/data/state/registered-device-id';
+    // Placeholders: the SMBIOS UUID a Windows Hub paired under, and the registry MachineGuid desktop
+    // 0.3.4 wrote over DEVICE_ID once Windows removed wmic.
+    const REGISTERED = '4c4c4544-0042-3510-8052-b4c04f4d3232';
+    const MACHINE_GUID = '9e1f0c2a-7d3b-4e6a-8f00-2b5c6d7e9d8e';
+    let savedDeviceId: string | undefined;
+
+    beforeEach(() => {
+      savedDeviceId = process.env.DEVICE_ID;
+      deviceRegistrationRepository.deleteAll.mockResolvedValue(undefined);
+      vi.spyOn(service as any, 'pollRegistration').mockResolvedValue(undefined);
+    });
+
+    afterEach(() => {
+      if (savedDeviceId === undefined) {
+        delete process.env.DEVICE_ID;
+      } else {
+        process.env.DEVICE_ID = savedDeviceId;
+      }
+    });
+
+    it('checks in under the ID the Hub registered as, not a different DEVICE_ID from the env file', async () => {
+      process.env.DEVICE_ID = MACHINE_GUID;
+      vol.writeFileSync(RECORD_PATH, `${REGISTERED}\n`);
+
+      await expect(service.getDeviceId()).resolves.toBe(REGISTERED);
+    });
+
+    /** A Hub that is not registered, as after a reset, so `pairDevice` and Start fresh go through. */
+    const asUnregistered = () => {
+      configService.getOutboundCiCloudUrl.mockReturnValue('http://cloud.api');
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(false);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+    };
+
+    it('keeps the record through Settings > Reset registration, so the Hub pairs again under the ID Portal knows', async () => {
+      // The factory reset makes the same call. The device key survives a reset so that the Hub reconnects
+      // to its Portal device, and that works only under the ID the key belongs to.
+      process.env.DEVICE_ID = MACHINE_GUID;
+      vol.writeFileSync(RECORD_PATH, `${REGISTERED}\n`);
+      asUnregistered();
+
+      await service.resetRegistration();
+
+      expect(vol.readFileSync(RECORD_PATH, 'utf-8')).toBe(`${REGISTERED}\n`);
+      mockedAxios.post.mockResolvedValue({ status: 400, data: { error: 'Invalid pairing code' } } as any);
+      await service.pairDevice('ABC123');
+      expect(mockedAxios.post).toHaveBeenCalledWith(
+        'http://cloud.api/api/devices/pair',
+        expect.objectContaining({ device_id: REGISTERED }),
+        expect.anything(),
+      );
+    });
+
+    it('keeps the record when Portal answers a check-in with DEVICE_NOT_ACTIVE', async () => {
+      process.env.DEVICE_ID = MACHINE_GUID;
+      vol.writeFileSync(RECORD_PATH, `${REGISTERED}\n`);
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      configService.getConfig.mockReturnValue({ ciCloudUrl: 'http://cloud.api', ciHubApiKey: 'test-api-key', domain: 'example.com' } as any);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as any);
+      deviceRegistrationRepository.updateProvisioningState.mockResolvedValue({} as any);
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+      mockedAxios.post.mockResolvedValue({ status: 400, data: { error: 'Device not active', code: 'DEVICE_NOT_ACTIVE' } } as any);
+
+      try {
+        await expect(service.checkForRemoval()).resolves.toBe('removed');
+      } finally {
+        service.onApplicationShutdown();
+      }
+
+      expect(mockedAxios.post).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ device_id: REGISTERED }), expect.anything());
+      expect(service.getRegistrationStatus().phase).toBe('unregistered');
+      expect(vol.readFileSync(RECORD_PATH, 'utf-8')).toBe(`${REGISTERED}\n`);
+      await expect(service.getDeviceId()).resolves.toBe(REGISTERED);
+    });
+
+    it('removes the record on Start fresh, so the Hub pairs as a new device under DEVICE_ID', async () => {
+      process.env.DEVICE_ID = MACHINE_GUID;
+      vol.writeFileSync(RECORD_PATH, `${REGISTERED}\n`);
+      asUnregistered();
+      await expect(service.getDeviceId()).resolves.toBe(REGISTERED);
+
+      await expect(service.prepareFreshSetup()).resolves.toMatchObject({ success: true });
+
+      expect(vol.existsSync(RECORD_PATH)).toBe(false);
+      await expect(service.getDeviceId()).resolves.toBe(MACHINE_GUID);
+    });
+
+    it('fails Start fresh when the record cannot be removed, rather than pair the old ID as a new device', async () => {
+      process.env.DEVICE_ID = MACHINE_GUID;
+      vol.writeFileSync(RECORD_PATH, `${REGISTERED}\n`);
+      asUnregistered();
+      const rmSync = fs.rmSync;
+      const denied = vi.spyOn(fs, 'rmSync').mockImplementation((target, options) => {
+        // By name: the resolver builds the path with `path.join`, which uses backslashes on Windows.
+        if (path.basename(String(target)) === path.basename(RECORD_PATH)) {
+          throw Object.assign(new Error(`EACCES: permission denied, unlink '${RECORD_PATH}'`), { code: 'EACCES' });
+        }
+        rmSync(target, options);
+      });
+
+      try {
+        await expect(service.prepareFreshSetup()).rejects.toThrow('EACCES');
+      } finally {
+        denied.mockRestore();
+      }
+
+      expect(vol.existsSync(RECORD_PATH)).toBe(true);
+    });
+
+    it('refuses to pair under a record copied from another machine until Start fresh removes it', async () => {
+      const hostMachineId = '5eed5eed5eed5eed5eed5eed5eed5eed';
+      const copied = 'c0ffee00c0ffee00c0ffee00c0ffee00';
+      // DEVICE_ID is this host's own; the record came with a data folder copied from another node.
+      process.env.DEVICE_ID = hostMachineId;
+      vol.mkdirSync('/etc', { recursive: true });
+      vol.writeFileSync('/etc/machine-id', `${hostMachineId}\n`);
+      vol.writeFileSync(RECORD_PATH, `${copied}\n`);
+      asUnregistered();
+
+      const refused = await service.pairDevice('ABC123');
+
+      expect(refused.success).toBe(false);
+      expect(refused.message).toContain('state/registered-device-id');
+      expect(refused.message).toContain('Start fresh');
+
+      // A reset keeps the record, so the Hub would still pair under the copied ID.
+      await service.resetRegistration();
+      await expect(service.pairDevice('ABC123')).resolves.toMatchObject({ success: false, message: refused.message });
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+
+      await service.prepareFreshSetup();
+      mockedAxios.post.mockResolvedValue({ status: 400, data: { error: 'Invalid pairing code' } } as any);
+
+      await service.pairDevice('ABC123');
+
+      expect(mockedAxios.post).toHaveBeenCalledWith(
+        'http://cloud.api/api/devices/pair',
+        expect.objectContaining({ device_id: hostMachineId }),
+        expect.anything(),
+      );
+    });
+
+    it('records the ID a registration through the form used, so check-ins send that ID and not an older record', async () => {
+      // The record outlives a reset, so one left from an earlier pairing would otherwise win over the ID
+      // the operator just registered this Hub under.
+      process.env.DEVICE_ID = MACHINE_GUID;
+      vol.writeFileSync(RECORD_PATH, `${REGISTERED}\n`);
+      await expect(service.getDeviceId()).resolves.toBe(REGISTERED);
+      configService.getOutboundCiCloudUrl.mockReturnValue('http://cloud.api');
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      mockedAxios.post.mockResolvedValue({ status: 200, data: { tunnel_id: 't', tunnel_token: 'tok', subdomain: 'hub-org' } } as any);
+      vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
+
+      await expect(service.initiateRegistration('org-1', 'My Org', MACHINE_GUID)).resolves.toMatchObject({ success: true });
+
+      expect(vol.readFileSync(RECORD_PATH, 'utf-8')).toBe(`${MACHINE_GUID}\n`);
+      await expect(service.getDeviceId()).resolves.toBe(MACHINE_GUID);
+    });
+
+    it('judges the record a pairing writes, where before there was only a host-derived ID to judge', async () => {
+      const hostMachineId = '5eed5eed5eed5eed5eed5eed5eed5eed';
+      delete process.env.DEVICE_ID;
+      vol.mkdirSync('/etc', { recursive: true });
+      vol.writeFileSync('/etc/machine-id', `${hostMachineId}\n`);
+      vi.spyOn(service, 'getDeviceId').mockResolvedValue(hostMachineId);
+      vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
+      deviceRegistrationRepository.updateProvisioningState.mockResolvedValue({} as any);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      expect(service.getDeviceIdHostBinding()).toEqual({ status: 'not_set' });
+
+      await service.completeRegistrationFromCallback({
+        deviceId: hostMachineId,
+        organizationId: 'org-cb',
+        organizationName: 'Callback Org',
+        slug: 'cb-org',
+        subdomain: 'hub-cb-org',
+        tunnelId: 'tunnel-cb',
+        tunnelToken: 'token-cb',
+      });
+
+      expect(vol.readFileSync(RECORD_PATH, 'utf-8')).toBe(`${hostMachineId}\n`);
+      expect(service.getDeviceIdHostBinding()).toEqual({ status: 'matches_host', deviceId: hostMachineId });
     });
   });
 

@@ -26,7 +26,7 @@ describe('api-key create', () => {
       const sql = String((args as string[]).at(-1));
       return {
         status: 0,
-        stdout: sql.startsWith('SELECT 1 FROM information_schema') ? '1' : '7\nINSERT 0 1',
+        stdout: sql.includes('information_schema') ? 't' : '7\nINSERT 0 1',
         stderr: '',
         output: ['', ''],
         pid: 0,
@@ -217,5 +217,124 @@ describe('api-key create', () => {
     // The space-separated form is caught by the flag reader, the inline one by the name rules.
     expect(() => runApiKeyCommand(['create', '--name', '--scopes', 'mcp'])).toThrow('exit');
     expect(() => runApiKeyCommand(['create', '--name=--scopes', '--scopes', 'mcp'])).toThrow('exit');
+  });
+});
+
+/** A finished `spawnSync`, typed for the mock. */
+function spawned(stdout: string, status = 0): ReturnType<typeof spawnSync> {
+  return { status, stdout, stderr: '', output: ['', ''], pid: 0, signal: null } as ReturnType<typeof spawnSync>;
+}
+
+/** Every SQL statement sent to psql, by either route: it is always the last argument. */
+const sentSql = () => (mockedSpawnSync.mock.calls as unknown[][]).map((call) => String((call[1] as string[]).at(-1)));
+
+/**
+ * The Windows Hub from the manual test, whose desktop app points the docker CLI at the Docker engine
+ * it runs in WSL2. There `docker exec` exits 0 and prints nothing, whatever psql did. Here `docker cp`
+ * finds nothing to copy either, so the CLI has no way to read an answer.
+ */
+describe('api-key when psql output never comes back', () => {
+  const ENV_KEYS = ['DOCKER_HOST', 'DOCKER_CONTEXT'] as const;
+  const saved = new Map<string, string | undefined>();
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  let clockSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    for (const key of ENV_KEYS) {
+      saved.set(key, process.env[key]);
+      delete process.env[key];
+    }
+    process.env.DOCKER_CONTEXT = 'wsl-engine';
+    // Each failed copy moves the clock a minute on, so the wait for psql's answer gives up at once
+    // instead of after its real 30 seconds.
+    let now = Date.now();
+    clockSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    mockedSpawnSync.mockReset();
+    mockedSpawnSync.mockImplementation((_command, args) => {
+      const [verb] = args as string[];
+      if (verb === 'context') return spawned('tcp://127.0.0.1:2375\n');
+      if (verb === 'cp') {
+        now += 60_000;
+        return spawned('', 1);
+      }
+      return spawned('');
+    });
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('exit');
+    });
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS) {
+      const value = saved.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    clockSpy.mockRestore();
+    exitSpy.mockRestore();
+    logSpy.mockRestore();
+  });
+
+  const printed = () => (logSpy.mock.calls as unknown[][]).map((call) => stripAnsi(String(call[0]))).join('\n');
+
+  it('creates no key for --capability read, where it used to create one the Hub reads as read and write', () => {
+    expect(() => runApiKeyCommand(['create', '--name', 'cli test', '--capability', 'read'])).toThrow('exit');
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(sentSql().some((sql) => sql.startsWith('INSERT INTO api_key'))).toBe(false);
+    // It tried to copy the answer out before giving up, and names the engine it could not read.
+    expect((mockedSpawnSync.mock.calls as unknown[][]).some((call) => (call[1] as string[])[0] === 'cp')).toBe(true);
+    expect(printed()).toContain('Docker context wsl-engine (tcp://127.0.0.1:2375)');
+  });
+
+  it('says it could not read the keys, instead of saying there are none', () => {
+    expect(() => runApiKeyCommand(['list'])).toThrow('exit');
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(printed()).not.toContain('(none');
+    expect(printed()).toContain('Docker context wsl-engine (tcp://127.0.0.1:2375)');
+  });
+});
+
+/** A Hub released before per-key capability, whose api_key table has no capability column. */
+describe('api-key create on a Hub that predates per-key capability', () => {
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+  let logSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    mockedSpawnSync.mockReset();
+    mockedSpawnSync.mockImplementation((_command, args) =>
+      spawned(String((args as string[]).at(-1)).includes('information_schema') ? 'f' : '7\nINSERT 0 1'),
+    );
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('exit');
+    });
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+    logSpy.mockRestore();
+  });
+
+  const printed = () => (logSpy.mock.calls as unknown[][]).map((call) => stripAnsi(String(call[0]))).join('\n');
+  const insertSql = () => sentSql().find((sql) => sql.startsWith('INSERT INTO api_key'));
+
+  it('refuses an explicit --capability, which this Hub cannot store, instead of creating a key that ignores it', () => {
+    expect(() => runApiKeyCommand(['create', '--name', 'cli test', '--capability', 'read'])).toThrow('exit');
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(insertSql()).toBeUndefined();
+    expect(printed()).toContain('--capability read');
+  });
+
+  it('still creates a key when no capability was asked for, and says it can do everything its scopes allow', () => {
+    runApiKeyCommand(['create', '--name', 'laptop']);
+
+    expect(insertSql()).toContain("VALUES ('laptop'");
+    expect(insertSql()).not.toContain('capability');
+    expect(printed()).toContain('everything its scopes allow');
   });
 });

@@ -10,6 +10,7 @@ import {
   isStackUpdateAvailable,
   isTrustedDownloadUrl,
   manualUpdateFileName,
+  openDesktopDownloadPage,
   performStackUpdate,
   performUpdate,
   requiresManualDesktopUpdate,
@@ -17,6 +18,7 @@ import {
   type UpdateInfo,
 } from '@/lib/update-service';
 import { sdkFail, sdkOk } from '@/tests/sdk-mock-helpers';
+import { TranslatableError } from '@/types/error.types';
 
 const { mockSdkPerformUpdate, mockGetDesktopRelease, mockProbeHealthyHubApiPort } = vi.hoisted(() => ({
   mockSdkPerformUpdate: vi.fn(),
@@ -176,6 +178,126 @@ describe('update-service', () => {
     });
     expect(mockInvoke).toHaveBeenCalledWith('check_desktop_update_command');
     expect(mockGetDesktopRelease).not.toHaveBeenCalled();
+  });
+
+  describe('when the desktop app names no installer because nothing is newer', () => {
+    const DEB_036 = 'https://dl.ci.computer/v0.3.6/linux/deb/x64/Companion%20Hub_0.3.6_amd64.deb';
+    // What the window sees when it reads a download server that sends no CORS headers.
+    const corsBlockedFetch = vi.fn(() => Promise.reject(new TypeError('Failed to fetch')));
+
+    beforeEach(() => {
+      Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+      mockPlatform.mockResolvedValue('linux');
+      mockArch.mockResolvedValue('x86_64');
+      mockInvoke.mockResolvedValue({ currentVersion: '0.3.6', latestVersion: '0.3.6', downloadUrl: '', updateAvailable: false });
+      vi.stubGlobal('fetch', corsBlockedFetch);
+    });
+
+    it('gets the installer of the version this computer runs from the Hub, for the signed-in Settings card', async () => {
+      mockGetDesktopRelease.mockResolvedValue(sdkOk({ latestVersion: 'v0.3.6', downloadUrl: DEB_036 }));
+
+      await expect(checkForUpdates('0.3.6', { askHubForInstaller: true })).resolves.toEqual({
+        currentVersion: '0.3.6',
+        latestVersion: '0.3.6',
+        downloadUrl: DEB_036,
+        updateAvailable: false,
+        platform: 'linux',
+        manualDownload: true,
+      });
+      expect(mockGetDesktopRelease).toHaveBeenCalledWith({ query: { environment: 'production', platform: 'linux', arch: 'x86_64' } });
+      expect(corsBlockedFetch).not.toHaveBeenCalled();
+    });
+
+    it("drops the Hub's installer when it is for another version than the one the card names", async () => {
+      mockGetDesktopRelease.mockResolvedValue(
+        sdkOk({ latestVersion: '0.3.7', downloadUrl: 'https://dl.ci.computer/v0.3.7/linux/deb/x64/Companion%20Hub_0.3.7_amd64.deb' }),
+      );
+
+      await expect(checkForUpdates('0.3.6', { askHubForInstaller: true })).resolves.toMatchObject({ latestVersion: '0.3.6', downloadUrl: '' });
+    });
+
+    it('drops an installer the window does not trust', async () => {
+      vi.stubEnv('CI_HUB_ENVIRONMENT', 'dev');
+      mockGetDesktopRelease.mockResolvedValue(sdkOk({ latestVersion: '0.3.6', downloadUrl: DEB_036 }));
+
+      await expect(checkForUpdates('0.3.6', { askHubForInstaller: true })).resolves.toMatchObject({ latestVersion: '0.3.6', downloadUrl: '' });
+    });
+
+    it('still reports the check when the Hub does not answer', async () => {
+      mockGetDesktopRelease.mockResolvedValue(sdkFail(500));
+
+      await expect(checkForUpdates('0.3.6', { askHubForInstaller: true })).resolves.toMatchObject({
+        latestVersion: '0.3.6',
+        downloadUrl: '',
+        updateAvailable: false,
+      });
+    });
+
+    it('offers no installer older than the app that is running', async () => {
+      // A dev build ahead of its download server: the desktop app runs 0.3.7, the server's newest is 0.3.6.
+      mockInvoke.mockResolvedValue({ currentVersion: '0.3.7', latestVersion: '0.3.6', downloadUrl: '', updateAvailable: false });
+      mockGetDesktopRelease.mockResolvedValue(sdkOk({ latestVersion: '0.3.6', downloadUrl: DEB_036 }));
+
+      await expect(checkForUpdates('0.3.7', { askHubForInstaller: true })).resolves.toMatchObject({
+        currentVersion: '0.3.7',
+        latestVersion: '0.3.6',
+        downloadUrl: '',
+        updateAvailable: false,
+      });
+      expect(mockGetDesktopRelease).not.toHaveBeenCalled();
+      expect(corsBlockedFetch).not.toHaveBeenCalled();
+    });
+
+    it('leaves a newer version the desktop app found no installer for to the desktop app', async () => {
+      // On Fedora the desktop app takes only an .rpm or an AppImage. The Hub would name the .deb.
+      mockInvoke.mockResolvedValue({ currentVersion: '0.3.6', latestVersion: '0.3.7', downloadUrl: '', updateAvailable: true });
+      mockGetDesktopRelease.mockResolvedValue(
+        sdkOk({ latestVersion: '0.3.7', downloadUrl: 'https://dl.ci.computer/v0.3.7/linux/deb/x64/Companion%20Hub_0.3.7_amd64.deb' }),
+      );
+
+      await expect(checkForUpdates('0.3.6', { askHubForInstaller: true })).resolves.toMatchObject({
+        latestVersion: '0.3.7',
+        downloadUrl: '',
+        updateAvailable: true,
+      });
+      expect(mockGetDesktopRelease).not.toHaveBeenCalled();
+      // The download server picks from every format too.
+      expect(corsBlockedFetch).not.toHaveBeenCalled();
+    });
+
+    it('does not read the download server after the Hub, which the window cannot read', async () => {
+      mockGetDesktopRelease.mockResolvedValue(sdkFail(500));
+
+      await checkForUpdates('0.3.6', { askHubForInstaller: true });
+
+      expect(mockGetDesktopRelease).toHaveBeenCalled();
+      expect(corsBlockedFetch).not.toHaveBeenCalled();
+    });
+
+    it('takes a desktop app at its word when it says which format this computer installs', async () => {
+      // A desktop app that sends its package format looked up its own installer: none means the
+      // release has none for this computer. The Hub would name another format (a .deb on Fedora).
+      mockInvoke.mockResolvedValue({
+        currentVersion: '0.3.6',
+        latestVersion: '0.3.6',
+        downloadUrl: '',
+        updateAvailable: false,
+        packageFormat: 'rpm',
+      });
+      mockGetDesktopRelease.mockResolvedValue(sdkOk({ latestVersion: '0.3.6', downloadUrl: DEB_036 }));
+
+      await expect(checkForUpdates('0.3.6', { askHubForInstaller: true })).resolves.toMatchObject({ latestVersion: '0.3.6', downloadUrl: '' });
+      expect(mockGetDesktopRelease).not.toHaveBeenCalled();
+      expect(corsBlockedFetch).not.toHaveBeenCalled();
+    });
+
+    it('leaves the Hub alone for the update notice, which also runs on the signed-out pages', async () => {
+      // A signed-out page gets a 401 from the Hub and a 401 signs the page out.
+      await expect(checkForUpdates()).resolves.toMatchObject({ latestVersion: '0.3.6', downloadUrl: '' });
+      expect(mockGetDesktopRelease).not.toHaveBeenCalled();
+      // The notice only shows a newer version, so the installer of this one isn't looked up at all.
+      expect(corsBlockedFetch).not.toHaveBeenCalled();
+    });
   });
 
   it('falls back to the fetch path when the native tauri update check fails', async () => {
@@ -446,6 +568,21 @@ describe('update-service', () => {
       expect(requiresManualDesktopUpdate('windows')).toBe(true);
       expect(requiresManualDesktopUpdate(null)).toBe(true);
     });
+  });
+
+  it('opens the release the card names, which lists every installer of that version', async () => {
+    // Not /releases/latest: it skips pre-releases, so it could show an older version.
+    await openDesktopDownloadPage('0.3.7');
+    expect(mockOpenExternal).toHaveBeenLastCalledWith('https://github.com/companionintelligence/Companion-Hub/releases/tag/v0.3.7');
+
+    await openDesktopDownloadPage('v0.3.7-rc.1');
+    expect(mockOpenExternal).toHaveBeenLastCalledWith('https://github.com/companionintelligence/Companion-Hub/releases/tag/v0.3.7-rc.1');
+
+    // A version the card can't name gets the list of every release.
+    await openDesktopDownloadPage('');
+    expect(mockOpenExternal).toHaveBeenLastCalledWith('https://github.com/companionintelligence/Companion-Hub/releases');
+    await openDesktopDownloadPage('0.3.7/../../x');
+    expect(mockOpenExternal).toHaveBeenLastCalledWith('https://github.com/companionintelligence/Companion-Hub/releases');
   });
 
   it('opens a trusted installer URL instead of invoking the native updater', async () => {
@@ -738,7 +875,8 @@ describe('update-service', () => {
   });
 
   describe('performStackUpdate', () => {
-    it('uses host-started copy when the desktop listener accepts the update', async () => {
+    it('lets the desktop app take the update from the Hub window and says it started there', async () => {
+      Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
       mockSdkPerformUpdate.mockResolvedValue(sdkOk({ success: true, stack: 'skipped', host: 'started' }));
 
       await expect(performStackUpdate('1.1.0')).resolves.toEqual({
@@ -746,6 +884,41 @@ describe('update-service', () => {
         messageKey: 'SETTINGS_ACTIONS_UPDATE_HOST_STARTED',
         stack: 'skipped',
         host: 'started',
+      });
+      expect(mockSdkPerformUpdate).toHaveBeenCalledWith({ body: { targetVersion: '1.1.0' } });
+    });
+
+    // A browser reaches the desktop app only where nothing else can update the Hub. Its install can ask
+    // for a password on the Hub machine, so the browser is told where to look.
+    it('tells a browser the Hub machine may ask for a password when the desktop app took the update', async () => {
+      mockSdkPerformUpdate.mockResolvedValue(sdkOk({ success: true, stack: 'skipped', host: 'started' }));
+
+      await expect(performStackUpdate('1.1.0')).resolves.toMatchObject({ ok: true, messageKey: 'SETTINGS_ACTIONS_UPDATE_HOST_STARTED_REMOTE' });
+      expect(mockSdkPerformUpdate).toHaveBeenCalledWith({ body: { targetVersion: '1.1.0', includeDesktopApp: false } });
+    });
+
+    // The desktop app's own install waits for a password typed on the Hub machine, which a browser on
+    // another computer can't see: the Hub sat on the old version for as long as nobody typed it.
+    it('updates only the Hub image from a browser and says the desktop app is updated on the Hub machine (#2316)', async () => {
+      mockSdkPerformUpdate.mockResolvedValue(sdkOk({ success: true, stack: 'updating', host: 'skipped' }));
+
+      await expect(performStackUpdate('1.1.0')).resolves.toEqual({
+        ok: true,
+        messageKey: 'SETTINGS_ACTIONS_UPDATE_STACK_HOST_UNAVAILABLE',
+        stack: 'updating',
+        host: 'skipped',
+      });
+      expect(mockSdkPerformUpdate).toHaveBeenCalledWith({ body: { targetVersion: '1.1.0', includeDesktopApp: false } });
+    });
+
+    it('says nothing about a desktop app on a Hub that has none', async () => {
+      mockSdkPerformUpdate.mockResolvedValue(sdkOk({ success: true, stack: 'updating', host: 'skipped' }));
+
+      await expect(performStackUpdate('1.1.0', { noDesktopApp: true })).resolves.toEqual({
+        ok: true,
+        messageKey: 'SETTINGS_ACTIONS_UPDATE_RESTARTING',
+        stack: 'updating',
+        host: 'skipped',
       });
     });
 
@@ -767,6 +940,28 @@ describe('update-service', () => {
       mockSdkPerformUpdate.mockResolvedValue(sdkOk({ success: true, stack: 'updating', host }));
 
       await expect(performStackUpdate('1.1.0')).resolves.toMatchObject({ ok: true, messageKey: 'SETTINGS_ACTIONS_UPDATE_STACK_DESKTOP_SEPARATE' });
+    });
+
+    // The app's response interceptor turns a 409 body into a TranslatableError whose message is the
+    // Hub's own sentence. The card used to throw that away and say "Update failed. Check logs".
+    it('says why when the Hub refuses the update', async () => {
+      const reason = 'This Hub was started on Windows (compose ran from C:\\Users\\ci), and the updater container cannot reach Windows paths.';
+      mockSdkPerformUpdate.mockResolvedValue({
+        response: new Response(null, { status: 409 }),
+        error: new TranslatableError(reason, {}, { status: 409, url: '/api/system/update' }),
+      });
+
+      await expect(performStackUpdate('1.1.0')).resolves.toEqual({
+        ok: false,
+        messageKey: 'SETTINGS_ACTIONS_UPDATE_REFUSED',
+        messageParams: { reason },
+      });
+    });
+
+    it('keeps the generic failure for anything that is not a refusal', async () => {
+      mockSdkPerformUpdate.mockResolvedValue(sdkFail(500, { message: 'boom' }));
+
+      await expect(performStackUpdate('1.1.0')).resolves.toEqual({ ok: false, messageKey: 'SETTINGS_ACTIONS_UPDATE_FAILED' });
     });
   });
 });

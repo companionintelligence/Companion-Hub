@@ -1,8 +1,10 @@
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { type FileOnlySettings, type PersistedSettings, type UserSettingsBody, parsePersistedSettings, settingsFileSchema } from '@/app.dto';
 import { clampContextCap } from '@/common/helpers/inference-context-cap';
 import { clampOllamaSlots } from '@/common/helpers/inference-ollama-slots';
+import { clampOllamaKeepAliveSeconds } from '@/common/helpers/inference-ollama-keep-alive';
 import { APP_DATA_DIR, APP_DIR, ARCHITECTURES, DATA_DIR, DEFAULT_LOCAL_DOMAIN } from '@/common/constants';
 import { ensureSettingsJsonReady, resolveAllowErrorMonitoring, resolveHubDomain, writeSettingsJsonFile } from '@/common/helpers/env-helpers';
 import {
@@ -64,7 +66,6 @@ const envSchema = z
       .default(true),
     GUEST_DASHBOARD: z.string().transform((val) => val.toLowerCase() === 'true'),
     ALLOW_ERROR_MONITORING: z.string().transform((val) => val.toLowerCase() === 'true'),
-    ALLOW_AUTO_THEMES: z.string().transform((val) => val.toLowerCase() === 'true'),
     PERSIST_TRAEFIK_CONFIG: z.string().transform((val) => val.toLowerCase() === 'true'),
     QUEUE_TIMEOUT_IN_MINUTES: z.coerce.number().default(5),
     LOG_LEVEL: z.enum(LOG_LEVEL_ENUM).default('info').catch('info'),
@@ -73,7 +74,6 @@ const envSchema = z
     NGINX_PORT: z.coerce.number().default(80),
     NGINX_PORT_SSL: z.coerce.number().default(443),
     ADVANCED_SETTINGS: z.string().transform((val) => val.toLowerCase() === 'true'),
-    THEME_BASE: z.string(),
     THEME_COLOR: z.string(),
     MAX_BACKUPS: z.coerce.number().default(0),
     // Experimental flags
@@ -100,6 +100,27 @@ function describeSettingsError(error: unknown): string {
   }
 
   return scrubString(String(error));
+}
+
+/** The end of the line of settings.json writes in this process. See {@link inSettingsFileTurn}. */
+let settingsFileWrites: Promise<unknown> = Promise.resolve();
+
+/**
+ * Runs `task` once every settings.json write queued before it has settled. Every write of the file in
+ * this process goes through here. Two read-modify-writes that overlap both read the file before either
+ * writes, so whichever lands last drops the other's keys, and a factory reset that lands between one's
+ * read and its write is undone by it. Module state rather than a field, because tests build the
+ * service with `Object.create` and every instance writes the same file.
+ */
+export function inSettingsFileTurn<T>(task: () => Promise<T>): Promise<T> {
+  const turn = settingsFileWrites.then(() => task());
+  settingsFileWrites = turn.catch(() => undefined);
+  return turn;
+}
+
+/** A new host-local key (`hubLocalKey`). Boot mints one when settings.json has none. A factory reset writes one. */
+export function newHubLocalKey(): string {
+  return randomBytes(32).toString('hex');
 }
 
 /** Called after a successful settings write with the settings.json keys it wrote. See `onUserSettingsChanged`. */
@@ -135,10 +156,13 @@ type PersistedSettingsValues = {
   inferenceVllmApiKey: string | undefined;
   inferenceVllmUrl: string | undefined;
   inferenceOmlxUrl: string | undefined;
+  inferenceOmlxApiKey: string | undefined;
   inferenceDecodeEndpoint: string | undefined;
   inferenceEncodeEndpoint: string | undefined;
   inferenceMaxNumCtx: number | undefined;
   inferenceOllamaSlots: number | undefined;
+  inferenceOllamaKvCacheType: 'f16' | 'q8_0' | 'q4_0' | undefined;
+  inferenceOllamaKeepAlive: number | undefined;
   inferenceCloudProviders: CloudProviderConfig[] | undefined;
   hubPoolEnabled: boolean | undefined;
   hubPoolOutboundEnabled: boolean | undefined;
@@ -180,10 +204,13 @@ const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
   inferenceVllmApiKey: undefined,
   inferenceVllmUrl: undefined,
   inferenceOmlxUrl: undefined,
+  inferenceOmlxApiKey: undefined,
   inferenceDecodeEndpoint: undefined,
   inferenceEncodeEndpoint: undefined,
   inferenceMaxNumCtx: undefined,
   inferenceOllamaSlots: undefined,
+  inferenceOllamaKvCacheType: undefined,
+  inferenceOllamaKeepAlive: undefined,
   inferenceCloudProviders: undefined,
   hubPoolEnabled: undefined,
   hubPoolOutboundEnabled: undefined,
@@ -204,6 +231,80 @@ const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
   hubPoolRouteAppsAlways: undefined,
   hubPoolMdnsEnabled: undefined,
 };
+
+/**
+ * The user settings boot takes from settings.json and nowhere else. A factory reset puts them back
+ * to what they are for an empty file (`forgetPersistedUserSettings`).
+ */
+function userSettingsFromFile(settingsValues: PersistedSettingsValues) {
+  return {
+    defaultAppCpuLimit: settingsValues.defaultAppCpuLimit,
+    defaultAppMemoryLimit: settingsValues.defaultAppMemoryLimit,
+    // Auto resource allocation is opt-out: undefined means enabled
+    autoAllocateAppResources: settingsValues.autoAllocateAppResources ?? true,
+    inferenceBackend: settingsValues.inferenceBackend,
+    inferenceModel: settingsValues.inferenceModel,
+    inferenceEmbeddingModel: settingsValues.inferenceEmbeddingModel,
+    inferenceVisionModel: settingsValues.inferenceVisionModel,
+    inferenceVllmApiKey: settingsValues.inferenceVllmApiKey,
+    inferenceVllmUrl: settingsValues.inferenceVllmUrl,
+    inferenceOmlxUrl: settingsValues.inferenceOmlxUrl,
+    inferenceOmlxApiKey: settingsValues.inferenceOmlxApiKey,
+    inferenceDecodeEndpoint: settingsValues.inferenceDecodeEndpoint,
+    inferenceEncodeEndpoint: settingsValues.inferenceEncodeEndpoint,
+    inferenceMaxNumCtx: settingsValues.inferenceMaxNumCtx,
+    inferenceOllamaSlots: settingsValues.inferenceOllamaSlots,
+    inferenceOllamaKvCacheType: settingsValues.inferenceOllamaKvCacheType,
+    inferenceOllamaKeepAlive: settingsValues.inferenceOllamaKeepAlive,
+    inferenceCloudProviders: settingsValues.inferenceCloudProviders,
+    // Left tri-state on purpose: `undefined` (never touched) and `false` (operator turned it
+    // off) mean the same thing to routing but different things to the UI, which distinguishes
+    // "on by default" from "you disabled this here".
+    hubPoolEnabled: settingsValues.hubPoolEnabled,
+    hubPoolOutboundEnabled: settingsValues.hubPoolOutboundEnabled,
+    hubPoolInboundEnabled: settingsValues.hubPoolInboundEnabled,
+    hubPoolLocalAffinity: settingsValues.hubPoolLocalAffinity,
+    hubPoolHealthPollSeconds: settingsValues.hubPoolHealthPollSeconds,
+    hubPoolRequireSignedPeers: settingsValues.hubPoolRequireSignedPeers,
+    hubPoolShareContainerStats: settingsValues.hubPoolShareContainerStats,
+    hubPoolPressureWeight: settingsValues.hubPoolPressureWeight,
+    hubPoolMaxPromptTokens: settingsValues.hubPoolMaxPromptTokens,
+    hubPoolProbeSnapshotTtlMs: settingsValues.hubPoolProbeSnapshotTtlMs,
+    hubPoolPrefixAffinityMaxInFlight: settingsValues.hubPoolPrefixAffinityMaxInFlight,
+    hubPoolPrefixAffinityMargin: settingsValues.hubPoolPrefixAffinityMargin,
+    hubPoolSlotAwareness: settingsValues.hubPoolSlotAwareness,
+    inferenceSupervisionMode: settingsValues.inferenceSupervisionMode,
+    inferenceSupervisionPollSeconds: settingsValues.inferenceSupervisionPollSeconds,
+    hubPoolPins: settingsValues.hubPoolPins,
+    hubPoolRouteAppsAlways: settingsValues.hubPoolRouteAppsAlways,
+    hubPoolMdnsEnabled: settingsValues.hubPoolMdnsEnabled,
+  };
+}
+
+/**
+ * Credentials the pairing callback saves through `setUserSettings`, which copies every key it saves
+ * into `userSettings`. Boot never puts them there.
+ */
+const PAIRING_KEYS_IN_USER_SETTINGS = ['ciHubApiKey', 'ciHubMoveKey', 'ciHubOrganizationId'];
+
+export interface SetInferencePreferencesOptions {
+  backend: InferenceBackendType;
+  model?: string | null;
+  embeddingModel?: string | null;
+  visionModel?: string | null;
+  vllmApiKey?: string | null;
+  vllmUrl?: string | null;
+  omlxUrl?: string | null;
+  /** oMLX's main API key, which the Hub sends to that server's `/v1` and admin API. `null` clears it. */
+  omlxApiKey?: string | null;
+  decodeEndpoint?: string | null;
+  encodeEndpoint?: string | null;
+  maxNumCtx?: number | null;
+  ollamaSlots?: number | null;
+  ollamaKeepAlive?: number | null;
+  /** The daemon's `OLLAMA_KV_CACHE_TYPE`; `null` clears it (sized as 16-bit). Options form only. */
+  ollamaKvCacheType?: 'f16' | 'q8_0' | 'q4_0' | null;
+}
 
 @Injectable()
 export class ConfigurationService {
@@ -289,10 +390,13 @@ export class ConfigurationService {
       inferenceVllmApiKey: settings.inferenceVllmApiKey,
       inferenceVllmUrl: settings.inferenceVllmUrl,
       inferenceOmlxUrl: settings.inferenceOmlxUrl,
+      inferenceOmlxApiKey: settings.inferenceOmlxApiKey,
       inferenceDecodeEndpoint: settings.inferenceDecodeEndpoint,
       inferenceEncodeEndpoint: settings.inferenceEncodeEndpoint,
       inferenceMaxNumCtx: settings.inferenceMaxNumCtx,
       inferenceOllamaSlots: settings.inferenceOllamaSlots,
+      inferenceOllamaKvCacheType: settings.inferenceOllamaKvCacheType,
+      inferenceOllamaKeepAlive: settings.inferenceOllamaKeepAlive,
       inferenceCloudProviders: settings.inferenceCloudProviders,
       hubPoolEnabled: settings.hubPoolEnabled,
       hubPoolOutboundEnabled: settings.hubPoolOutboundEnabled,
@@ -365,16 +469,12 @@ export class ConfigurationService {
       version: env.data.CI_HUB_VERSION,
       isProduction: NODE_ENV === 'production',
       userSettings: {
-        allowAutoThemes: env.data.ALLOW_AUTO_THEMES,
         // The user's error-reporting consent. This used to be hardcoded `true`, which
         // silently discarded the switch on every boot. The precedence now lives in one
         // shared resolver rather than being restated here — `generateSystemEnvFile` had
         // written the opposite order into the resolved env.
         allowErrorMonitoring: resolveAllowErrorMonitoring({ setting: settingsValues.allowErrorMonitoring, env: env.data.ALLOW_ERROR_MONITORING }),
-        defaultAppCpuLimit: settingsValues.defaultAppCpuLimit,
-        defaultAppMemoryLimit: settingsValues.defaultAppMemoryLimit,
-        // Auto resource allocation is opt-out: undefined means enabled
-        autoAllocateAppResources: settingsValues.autoAllocateAppResources ?? true,
+        ...userSettingsFromFile(settingsValues),
         demoMode: env.data.DEMO_MODE,
         disablePasswordReset: env.data.DISABLE_PASSWORD_RESET,
         guestDashboard: env.data.GUEST_DASHBOARD,
@@ -394,41 +494,7 @@ export class ConfigurationService {
         advancedSettings: env.data.ADVANCED_SETTINGS,
         logLevel: env.data.LOG_LEVEL,
         maxBackups: env.data.MAX_BACKUPS,
-        themeBase: env.data.THEME_BASE,
         themeColor: env.data.THEME_COLOR,
-        inferenceBackend: settingsValues.inferenceBackend,
-        inferenceModel: settingsValues.inferenceModel,
-        inferenceEmbeddingModel: settingsValues.inferenceEmbeddingModel,
-        inferenceVisionModel: settingsValues.inferenceVisionModel,
-        inferenceVllmApiKey: settingsValues.inferenceVllmApiKey,
-        inferenceVllmUrl: settingsValues.inferenceVllmUrl,
-        inferenceOmlxUrl: settingsValues.inferenceOmlxUrl,
-        inferenceDecodeEndpoint: settingsValues.inferenceDecodeEndpoint,
-        inferenceEncodeEndpoint: settingsValues.inferenceEncodeEndpoint,
-        inferenceMaxNumCtx: settingsValues.inferenceMaxNumCtx,
-        inferenceOllamaSlots: settingsValues.inferenceOllamaSlots,
-        inferenceCloudProviders: settingsValues.inferenceCloudProviders,
-        // Left tri-state on purpose: `undefined` (never touched) and `false` (operator turned it
-        // off) mean the same thing to routing but different things to the UI, which distinguishes
-        // "on by default" from "you disabled this here".
-        hubPoolEnabled: settingsValues.hubPoolEnabled,
-        hubPoolOutboundEnabled: settingsValues.hubPoolOutboundEnabled,
-        hubPoolInboundEnabled: settingsValues.hubPoolInboundEnabled,
-        hubPoolLocalAffinity: settingsValues.hubPoolLocalAffinity,
-        hubPoolHealthPollSeconds: settingsValues.hubPoolHealthPollSeconds,
-        hubPoolRequireSignedPeers: settingsValues.hubPoolRequireSignedPeers,
-        hubPoolShareContainerStats: settingsValues.hubPoolShareContainerStats,
-        hubPoolPressureWeight: settingsValues.hubPoolPressureWeight,
-        hubPoolMaxPromptTokens: settingsValues.hubPoolMaxPromptTokens,
-        hubPoolProbeSnapshotTtlMs: settingsValues.hubPoolProbeSnapshotTtlMs,
-        hubPoolPrefixAffinityMaxInFlight: settingsValues.hubPoolPrefixAffinityMaxInFlight,
-        hubPoolPrefixAffinityMargin: settingsValues.hubPoolPrefixAffinityMargin,
-        hubPoolSlotAwareness: settingsValues.hubPoolSlotAwareness,
-        inferenceSupervisionMode: settingsValues.inferenceSupervisionMode,
-        inferenceSupervisionPollSeconds: settingsValues.inferenceSupervisionPollSeconds,
-        hubPoolPins: settingsValues.hubPoolPins,
-        hubPoolRouteAppsAlways: settingsValues.hubPoolRouteAppsAlways,
-        hubPoolMdnsEnabled: settingsValues.hubPoolMdnsEnabled,
         experimental: {
           insecureCookie: env.data.EXPERIMENTAL_INSECURE_COOKIE,
         },
@@ -490,12 +556,6 @@ export class ConfigurationService {
       }
 
       // Update in-memory config for runtime changes.
-      if (settings.ciHubApiKey) {
-        (this.config as Record<string, unknown>).ciHubApiKey = settings.ciHubApiKey;
-      }
-      if (settings.ciHubMoveKey) {
-        (this.config as Record<string, unknown>).ciHubMoveKey = settings.ciHubMoveKey;
-      }
       if (settings.ciHubOrganizationId) {
         (this.config as Record<string, unknown>).ciHubOrganizationId = settings.ciHubOrganizationId;
       }
@@ -526,6 +586,42 @@ export class ConfigurationService {
     return () => {
       this.userSettingsListeners?.delete(listener);
     };
+  }
+
+  /**
+   * Forget the user settings this process has from settings.json, for a factory reset that has just
+   * emptied it (`replaceHubLocalKey` covers the one key it writes there). They go back to what boot
+   * makes of an empty file: no cloud provider keys and no inference, pool or resource settings. The
+   * ones the environment supplies stay. That includes the General settings: boot resolved them from
+   * settings.json into the environment (`generateSystemEnvFile`), so they keep their old values until
+   * a restart. So does the error-reporting switch, which is no secret and which the reporting
+   * gate holds too (`setUserConsent`).
+   *
+   * The pairing goes too: the Portal device key, the move key and the organization id, both the
+   * config's own and their copies in `userSettings`. Kept, they let the reset Hub go on asking Portal
+   * about its old device until a restart (the pairing page then offered **Move this device**). The
+   * next pairing sent them as proof that it was that device.
+   *
+   * Listeners hear about every key it reset, as after a save, so the mDNS socket closes when the old
+   * settings had it open.
+   */
+  public forgetPersistedUserSettings(): void {
+    const reset = userSettingsFromFile(EMPTY_PERSISTED_SETTINGS);
+    const kept = Object.entries(this.config.userSettings).filter(([key]) => !PAIRING_KEYS_IN_USER_SETTINGS.includes(key));
+
+    this.config.userSettings = { ...(Object.fromEntries(kept) as typeof this.config.userSettings), ...reset };
+    this.config.ciHubApiKey = null;
+    this.config.ciHubMoveKey = null;
+    this.config.ciHubOrganizationId = null;
+    this.notifyUserSettingsListeners([...Object.keys(reset), ...PAIRING_KEYS_IN_USER_SETTINGS]);
+  }
+
+  /**
+   * Accept `key` as the host-local key from now on, for a factory reset that has just written it to
+   * the new settings.json. Memory only: the caller writes the file, in the same settings turn.
+   */
+  public replaceHubLocalKey(key: string): void {
+    this.config.hubLocalKey = key;
   }
 
   private notifyUserSettingsListeners(changedKeys: string[]): void {
@@ -559,7 +655,14 @@ export class ConfigurationService {
       // Mirror the disk into the running config the way `setUserSettings` does, so the middleware
       // and the push-key service read the value just written. An empty string is how a caller
       // clears one of these (the schema trims and accepts it); it reads back as null.
-      for (const key of ['hubLocalKey', 'portalPushKeyPrefix', 'portalPushKeyPending', 'portalPushKeyDeliveredAt'] as const) {
+      for (const key of [
+        'hubLocalKey',
+        'portalPushKeyPrefix',
+        'portalPushKeyPending',
+        'portalPushKeyDeliveredAt',
+        'ciHubApiKey',
+        'ciHubMoveKey',
+      ] as const) {
         if (settings[key] !== undefined) {
           (this.config as Record<string, unknown>)[key] = settings[key] || null;
         }
@@ -578,7 +681,11 @@ export class ConfigurationService {
    *  corrected it — so the only way out was to edit the file by hand. Dropping is safe here because
    *  the boot path already ignores those fields (see {@link parsePersistedSettings}); this just
    *  stops carrying a value nothing can read forward. */
-  private async mergeSettingsToDisk(settings: PersistedSettings): Promise<void> {
+  private mergeSettingsToDisk(settings: PersistedSettings): Promise<void> {
+    return inSettingsFileTurn(() => this.readMergeAndWriteSettings(settings));
+  }
+
+  private async readMergeAndWriteSettings(settings: PersistedSettings): Promise<void> {
     const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
     await ensureSettingsJsonReady(settingsPath, this.logger);
     const fileContent = await fs.promises.readFile(settingsPath, 'utf8');
@@ -609,6 +716,7 @@ export class ConfigurationService {
       preferredVllmApiKey: this.config.userSettings.inferenceVllmApiKey ?? null,
       preferredVllmUrl: this.config.userSettings.inferenceVllmUrl ?? null,
       preferredOmlxUrl: this.config.userSettings.inferenceOmlxUrl ?? null,
+      preferredOmlxApiKey: this.config.userSettings.inferenceOmlxApiKey ?? null,
       preferredDecodeEndpoint: this.config.userSettings.inferenceDecodeEndpoint ?? null,
       preferredEncodeEndpoint: this.config.userSettings.inferenceEncodeEndpoint ?? null,
       // `null` is no cap: the handout is sized from the model window and this node's memory alone,
@@ -618,16 +726,24 @@ export class ConfigurationService {
       // `null` is not stated: the pool ranks this node by queue depth alone, as before slots existed.
       // Clamped on read for the reason the cap is. See `inference-ollama-slots.ts`.
       ollamaSlots: clampOllamaSlots(this.config.userSettings.inferenceOllamaSlots),
+      // `null` is not stated: an unpinned model is handed back with Ollama's 5-minute default.
+      // Clamped on read for the reason the cap is. See `inference-ollama-keep-alive.ts`.
+      ollamaKeepAlive: clampOllamaKeepAliveSeconds(this.config.userSettings.inferenceOllamaKeepAlive),
+      // `null` is not stated, which sizes as Ollama's default 16-bit cache. See `OllamaBackend.kvCacheScale`.
+      ollamaKvCacheType: this.config.userSettings.inferenceOllamaKvCacheType ?? null,
     };
   }
 
   /**
    * Persist inference preferences. `model` is the catalog id of the default model Companion agents
    * (Hermes, OpenClaw) and the Hub use by default. Pass `null` to clear it; omit it to leave it
-   * unchanged. `embeddingModel`, `visionModel`, `maxNumCtx` and `ollamaSlots` follow the same
-   * convention; a cleared `maxNumCtx` or `ollamaSlots` removes the key rather than storing a null,
+   * unchanged. `embeddingModel`, `visionModel`, `maxNumCtx`, `ollamaSlots` and `ollamaKeepAlive`
+   * follow the same convention; a cleared numeric one removes the key rather than storing a null,
    * like the pool prompt ceiling.
+   *
+   * Accepts either an options object or legacy positional arguments.
    */
+  public async setInferencePreferences(options: SetInferencePreferencesOptions): Promise<ReturnType<ConfigurationService['getInferencePreferences']>>;
   public async setInferencePreferences(
     backend: InferenceBackendType,
     model?: string | null,
@@ -640,7 +756,40 @@ export class ConfigurationService {
     encodeEndpoint?: string | null,
     maxNumCtx?: number | null,
     ollamaSlots?: number | null,
+    ollamaKeepAlive?: number | null,
+  ): Promise<ReturnType<ConfigurationService['getInferencePreferences']>>;
+  public async setInferencePreferences(
+    backendOrOptions: InferenceBackendType | SetInferencePreferencesOptions,
+    model?: string | null,
+    embeddingModel?: string | null,
+    visionModel?: string | null,
+    vllmApiKey?: string | null,
+    vllmUrl?: string | null,
+    omlxUrl?: string | null,
+    decodeEndpoint?: string | null,
+    encodeEndpoint?: string | null,
+    maxNumCtx?: number | null,
+    ollamaSlots?: number | null,
+    ollamaKeepAlive?: number | null,
   ) {
+    const opts: SetInferencePreferencesOptions =
+      typeof backendOrOptions === 'object' && backendOrOptions !== null
+        ? backendOrOptions
+        : {
+            backend: backendOrOptions,
+            model,
+            embeddingModel,
+            visionModel,
+            vllmApiKey,
+            vllmUrl,
+            omlxUrl,
+            decodeEndpoint,
+            encodeEndpoint,
+            maxNumCtx,
+            ollamaSlots,
+            ollamaKeepAlive,
+          };
+
     const settings: {
       inferenceBackend: InferenceBackendType;
       inferenceModel?: string;
@@ -649,40 +798,52 @@ export class ConfigurationService {
       inferenceVllmApiKey?: string;
       inferenceVllmUrl?: string;
       inferenceOmlxUrl?: string;
+      inferenceOmlxApiKey?: string;
       inferenceDecodeEndpoint?: string;
       inferenceEncodeEndpoint?: string;
       inferenceMaxNumCtx?: number;
       inferenceOllamaSlots?: number;
-    } = { inferenceBackend: backend };
-    if (model !== undefined) {
-      settings.inferenceModel = model ?? undefined;
+      inferenceOllamaKvCacheType?: 'f16' | 'q8_0' | 'q4_0';
+      inferenceOllamaKeepAlive?: number;
+    } = { inferenceBackend: opts.backend };
+    if (opts.model !== undefined) {
+      settings.inferenceModel = opts.model ?? undefined;
     }
-    if (embeddingModel !== undefined) {
-      settings.inferenceEmbeddingModel = embeddingModel ?? undefined;
+    if (opts.embeddingModel !== undefined) {
+      settings.inferenceEmbeddingModel = opts.embeddingModel ?? undefined;
     }
-    if (visionModel !== undefined) {
-      settings.inferenceVisionModel = visionModel ?? undefined;
+    if (opts.visionModel !== undefined) {
+      settings.inferenceVisionModel = opts.visionModel ?? undefined;
     }
-    if (vllmApiKey !== undefined) {
-      settings.inferenceVllmApiKey = vllmApiKey?.trim() ? vllmApiKey.trim() : undefined;
+    if (opts.vllmApiKey !== undefined) {
+      settings.inferenceVllmApiKey = opts.vllmApiKey?.trim() ? opts.vllmApiKey.trim() : undefined;
     }
-    if (vllmUrl !== undefined) {
-      settings.inferenceVllmUrl = vllmUrl?.trim() ? vllmUrl.trim() : undefined;
+    if (opts.vllmUrl !== undefined) {
+      settings.inferenceVllmUrl = opts.vllmUrl?.trim() ? opts.vllmUrl.trim() : undefined;
     }
-    if (omlxUrl !== undefined) {
-      settings.inferenceOmlxUrl = omlxUrl?.trim() ? omlxUrl.trim() : undefined;
+    if (opts.omlxUrl !== undefined) {
+      settings.inferenceOmlxUrl = opts.omlxUrl?.trim() ? opts.omlxUrl.trim() : undefined;
     }
-    if (decodeEndpoint !== undefined) {
-      settings.inferenceDecodeEndpoint = decodeEndpoint?.trim() ? decodeEndpoint.trim() : undefined;
+    if (opts.omlxApiKey !== undefined) {
+      settings.inferenceOmlxApiKey = opts.omlxApiKey?.trim() ? opts.omlxApiKey.trim() : undefined;
     }
-    if (encodeEndpoint !== undefined) {
-      settings.inferenceEncodeEndpoint = encodeEndpoint?.trim() ? encodeEndpoint.trim() : undefined;
+    if (opts.decodeEndpoint !== undefined) {
+      settings.inferenceDecodeEndpoint = opts.decodeEndpoint?.trim() ? opts.decodeEndpoint.trim() : undefined;
     }
-    if (maxNumCtx !== undefined) {
-      settings.inferenceMaxNumCtx = maxNumCtx ?? undefined;
+    if (opts.encodeEndpoint !== undefined) {
+      settings.inferenceEncodeEndpoint = opts.encodeEndpoint?.trim() ? opts.encodeEndpoint.trim() : undefined;
     }
-    if (ollamaSlots !== undefined) {
-      settings.inferenceOllamaSlots = ollamaSlots ?? undefined;
+    if (opts.maxNumCtx !== undefined) {
+      settings.inferenceMaxNumCtx = opts.maxNumCtx ?? undefined;
+    }
+    if (opts.ollamaSlots !== undefined) {
+      settings.inferenceOllamaSlots = opts.ollamaSlots ?? undefined;
+    }
+    if (opts.ollamaKeepAlive !== undefined) {
+      settings.inferenceOllamaKeepAlive = opts.ollamaKeepAlive ?? undefined;
+    }
+    if (opts.ollamaKvCacheType !== undefined) {
+      settings.inferenceOllamaKvCacheType = opts.ollamaKvCacheType ?? undefined;
     }
     await this.setUserSettings(settings);
     return this.getInferencePreferences();
@@ -804,8 +965,8 @@ export class ConfigurationService {
     if (preferences.poolMdnsEnabled !== undefined) {
       settings.hubPoolMdnsEnabled = preferences.poolMdnsEnabled;
     }
-    // A no-op PATCH must not rewrite settings.json: every write is a read-modify-write of the whole
-    // file with no locking, so an empty one can still clobber a concurrent inference-preferences save.
+    // A no-op PATCH does not rewrite settings.json: it has nothing to save, and every write rewrites
+    // the whole file and holds up the saves queued behind it.
     if (Object.keys(settings).length > 0) {
       await this.setUserSettings(settings);
     }

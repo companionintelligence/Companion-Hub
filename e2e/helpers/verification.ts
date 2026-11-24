@@ -68,14 +68,7 @@ export async function verifyDeviceRegistrationGate(page: Page) {
   await expect(page.getByRole('heading', { name: /Device Registration Required/i })).toBeVisible({ timeout: 15000 });
 }
 
-/** Verify the first-user registration screen is shown for a registered Hub with no users. */
-export async function verifyFirstUserRegistrationPage(page: Page) {
-  await page.goto('/');
-  await expect(page).toHaveURL(/register/, { timeout: 15000 });
-  await expect(page.getByRole('heading', { name: /Create local admin user for this device/i })).toBeVisible({ timeout: 15000 });
-}
-
-/** Verify the page shows the login screen for a registered Hub with no session. */
+/** Verify the page shows the login screen for a registered Hub with no session, or with no admin yet. */
 export async function verifyLoginScreen(page: Page) {
   await page.goto('/');
   await expect(page).toHaveURL(/login/, { timeout: 15000 });
@@ -96,7 +89,7 @@ export async function verifyDashboard(page: Page) {
 export async function verifyAppStorePage(page: Page) {
   await page.goto('/store');
   await expect(page.getByRole('heading', { name: 'App Store' })).toBeVisible({ timeout: 30000 });
-  await expect(page.getByPlaceholder('Search apps...').first()).toBeVisible({ timeout: 30000 });
+  await expect(page.getByPlaceholder('Search apps').first()).toBeVisible({ timeout: 30000 });
 }
 
 /** Verify the settings page shows app store sources. */

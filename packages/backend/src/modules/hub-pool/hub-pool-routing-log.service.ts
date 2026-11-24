@@ -263,7 +263,8 @@ export interface PoolRoutingRecord {
   /**
    * The header deadline this request was given, in ms, computed by the same function the forward's
    * timer uses — so a row that failed at exactly this number failed on the deadline, not the network.
-   * `null` as for `stream`.
+   * `null` as for `stream`. Once the walk reaches this node's own engine with no candidate after it,
+   * the longer budget that forward runs under (`lastLocalBudgetMs`, #2310).
    */
   budgetMs: number | null;
 }

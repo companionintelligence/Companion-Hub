@@ -3,11 +3,11 @@ PackageVersion: 0.2.4
 PackageLocale: en-US
 Publisher: Companion Intelligence
 PublisherUrl: https://github.com/companionintelligence
-PublisherSupportUrl: https://github.com/companionintelligence/CI-Hub/issues
+PublisherSupportUrl: https://github.com/companionintelligence/Companion-Hub/issues
 PackageName: Companion Hub
-PackageUrl: https://github.com/companionintelligence/CI-Hub
+PackageUrl: https://github.com/companionintelligence/Companion-Hub
 License: AGPL-3.0-only
-LicenseUrl: https://github.com/companionintelligence/CI-Hub/blob/main/license.md
+LicenseUrl: https://github.com/companionintelligence/Companion-Hub/blob/main/license.md
 ShortDescription: AI-powered companion intelligence hub
 Description: >-
   Companion Hub is a desktop application that serves as an AI-powered companion

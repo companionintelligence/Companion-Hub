@@ -90,6 +90,9 @@
       "desktop": {
         "schemes": ["cihub", "cihub-dev"]
       }
+    },
+    "ci-auth": {
+      "service": "computer.ci.app.hub"
     }
   }
 }

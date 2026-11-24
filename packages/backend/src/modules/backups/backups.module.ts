@@ -4,6 +4,7 @@ import { SSEModule } from '@/core/sse/sse.module';
 import { Module, forwardRef } from '@nestjs/common';
 import { AppLifecycleModule } from '../app-lifecycle/app-lifecycle.module';
 import { AppsModule } from '../apps/apps.module';
+import { DockerModule } from '../docker/docker.module';
 import { QueueModule } from '../queue/queue.module';
 import { BackupManager } from './backup.manager';
 import { BackupsController } from './backups.controller';
@@ -16,6 +17,7 @@ import { BackupsService } from './backups.service';
     forwardRef(() => PortalModule),
     QueueModule,
     ArchiveModule,
+    DockerModule,
     SSEModule,
   ],
   controllers: [BackupsController],

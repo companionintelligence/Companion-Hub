@@ -25,6 +25,7 @@ export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, o
   const { t } = useTranslation();
   const formId = useId();
   const [hasChanges, setHasChanges] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const isRunning = status != null && RUNNING_STATUSES.includes(status);
 
@@ -37,7 +38,7 @@ export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, o
   const updateConfig = useMutation({
     ...updateAppConfigMutation(),
     onError: (e: TranslatableError) => {
-      toast.error(t(e.message, e.intlParams));
+      toast.error(t(e.message, e.intlParams ?? {}));
     },
     onMutate: () => {
       onClose();
@@ -60,7 +61,7 @@ export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, o
     <Dialog open={isOpen} onOpenChange={onClose}>
       {/* Same width and height cap as the install dialog: both host the same InstallForm, and the
           default sm:max-w-lg squeezed its fields (the exposure mode tabs wrapped onto two lines). */}
-      <DialogContent className="sm:max-w-2xl max-h-[calc(100dvh-2rem)] flex flex-col">
+      <DialogContent className="sm:max-w-2xl max-h-[calc(var(--app-height)-2rem)] flex flex-col">
         <DialogHeader>
           <DialogTitle>{t('APP_UPDATE_SETTINGS_FORM_TITLE', { name: info.id })}</DialogTitle>
           {hasChanges && (
@@ -82,6 +83,7 @@ export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, o
             appStatus={status}
             editingAppUrn={info.urn}
             onDirtyChange={setHasChanges}
+            onSubmittingChange={setIsSubmitting}
             isEdit
           />
 
@@ -91,7 +93,8 @@ export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, o
           <HubAccess appUrn={info.urn} hasUnsavedChanges={hasChanges} />
         </div>
         <DialogFooter>
-          <InstallFormButtons loading={updateConfig.isPending} isEdit formId={formId} disabled={!hasChanges} />
+          {/* From the click: on Public Web the form runs a last DNS check before the save goes out. */}
+          <InstallFormButtons loading={isSubmitting || updateConfig.isPending} isEdit formId={formId} disabled={!hasChanges} />
         </DialogFooter>
       </DialogContent>
     </Dialog>

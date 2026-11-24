@@ -44,6 +44,11 @@
 
         document.documentElement.classList.add(theme);
         if (mobile) document.documentElement.classList.add('ci-mobile');
+        if (/android/i.test(ua)) document.documentElement.classList.add('ci-android');
+        // Android app: colour the strips behind the system bars to match (SystemBars.kt).
+        try {
+          if (window.CiHubSystemBars) window.CiHubSystemBars.setBackgroundColor(theme === 'dark' ? '#041620' : '#f3faf7');
+        } catch {}
         document.documentElement.dataset.ciBoot = location.href;
       })();
     </script>
@@ -55,7 +60,7 @@
 
       html.light,
       html.light body {
-        background-color: #f3f3f3;
+        background-color: #f3faf7;
       }
 
       html.dark,

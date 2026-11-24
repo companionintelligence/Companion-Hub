@@ -1,16 +1,19 @@
 import { resolveAppDataHostRoot } from '@/common/helpers/app-data-path.helper';
 import { resolveHubLocalDomainRoot, resolveHubPublicDomainRoot } from '@/common/helpers/hub-origin';
 import { isTailscaleServeEnabled } from '@/common/helpers/private-vpn';
-import { SESSION_COOKIE_NAME } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { UserRepository } from '@/modules/user/user.repository';
 import { Body, Controller, Get, Patch, Query, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
-import { AcknowledgeWelcomeBody, AppContextDto, UserSettingsBody, UserContextDto } from './app.dto';
+import { AcknowledgeWelcomeBody, AppContextDto, HubAccessDto, UserSettingsBody, UserContextDto, appContextSettings } from './app.dto';
 import { AppService } from './app.service';
 import { AppsReadService } from './modules/apps/apps-read.service';
 import { AuthGuard } from './modules/auth/auth.guard';
+import { DID_AUTH_FLAG } from './modules/auth/did-auth.service';
+import { KERI_OOBI_FLAG } from './modules/auth/keri-oobi.guard';
+import { HubManagerGuard } from './modules/auth/hub-manager.guard';
 import { SESSION_REFRESH_AFTER_SECONDS, SESSION_TTL_SECONDS, SessionManager } from './modules/auth/session.manager';
+import { isCloudFallbackAllowed } from './modules/inference/cloud-fallback.service';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import type { UserDto } from './modules/user/dto/user.dto';
 import { ApiOperation, ApiResponse } from '@nestjs/swagger';
@@ -21,6 +24,7 @@ import { TailscaleService } from './modules/tailscale/tailscale.service';
 import { AppStoreService } from './modules/app-stores/app-store.service';
 import { buildTailscaleNodeFqdn } from '@ci-hub/common/types';
 import { AiAppInferenceRefreshService, changedInferenceEnvSettings } from './modules/app-lifecycle/ai-app-inference-refresh.service';
+import { MarketplaceWhoIsService } from './core/portal/marketplace-whois.service';
 
 @Controller()
 export class AppController {
@@ -36,6 +40,7 @@ export class AppController {
     private readonly appStoreService: AppStoreService,
     private readonly sessionManager: SessionManager,
     private readonly inferenceRefresh: AiAppInferenceRefreshService,
+    private readonly whois: MarketplaceWhoIsService,
   ) {}
 
   private getSessionMetadata(req: Request): { sessionExpiresAt?: number; sessionRefreshRecommendedAt?: number } {
@@ -43,7 +48,7 @@ export class AppController {
       return {};
     }
 
-    const sessionId = req.hubSessionId ?? req.cookies[SESSION_COOKIE_NAME] ?? req.get('x-ci-hub-session');
+    const sessionId = req.hubSessionId;
     if (!sessionId) {
       return {};
     }
@@ -59,6 +64,23 @@ export class AppController {
     };
   }
 
+  private getProtocolPolicyFlags(req: Request): {
+    didAuthEnabled: boolean;
+    keriOobiEnabled?: boolean;
+    allowCloudFallback?: boolean;
+  } {
+    const didAuthEnabled = process.env[DID_AUTH_FLAG] === 'true';
+    if (!req.user) {
+      return { didAuthEnabled };
+    }
+
+    return {
+      didAuthEnabled,
+      keriOobiEnabled: process.env[KERI_OOBI_FLAG] === 'true',
+      allowCloudFallback: isCloudFallbackAllowed(),
+    };
+  }
+
   @Get('/user-context')
   @ApiResponse({ type: UserContextDto })
   async userContext(@Req() req: Request) {
@@ -71,10 +93,8 @@ export class AppController {
       isConfigured: false,
       isGuestDashboardEnabled: false,
       isPasswordResetDisabled: true,
-      allowAutoThemes: true,
-      allowErrorMonitoring: true,
+      allowErrorMonitoring: false,
       themeColor: 'blue',
-      themeBase: 'gray',
       localDomain: configuredLocalDomain,
       domain: configuredDomain,
       sslPort: 443,
@@ -97,7 +117,7 @@ export class AppController {
         userSettings = {};
       }
 
-      const { guestDashboard, disablePasswordReset, allowAutoThemes, themeColor, themeBase, allowErrorMonitoring } = userSettings || {};
+      const { guestDashboard, disablePasswordReset, themeColor, allowErrorMonitoring } = userSettings || {};
 
       // Ensure required fields have defaults (prefer resolved config over hardcoded fallbacks)
       const localDomain = resolveHubLocalDomainRoot({ localDomain: configuredLocalDomain, userSettings });
@@ -122,15 +142,14 @@ export class AppController {
         isConfigured: Boolean(operator),
         isGuestDashboardEnabled: guestDashboard ?? defaults.isGuestDashboardEnabled,
         isPasswordResetDisabled: disablePasswordReset ?? defaults.isPasswordResetDisabled,
-        allowAutoThemes: allowAutoThemes ?? defaults.allowAutoThemes,
         allowErrorMonitoring: allowErrorMonitoring ?? defaults.allowErrorMonitoring,
         themeColor: themeColor || defaults.themeColor,
-        themeBase: themeBase || defaults.themeBase,
         version,
         localDomain,
         domain,
         sslPort,
         ...this.getSessionMetadata(req),
+        ...this.getProtocolPolicyFlags(req),
       };
 
       // Try to parse with validation, but don't fail if it doesn't match
@@ -168,10 +187,8 @@ export class AppController {
         isConfigured: false,
         isGuestDashboardEnabled: defaultSettings?.guestDashboard ?? defaults.isGuestDashboardEnabled,
         isPasswordResetDisabled: defaultSettings?.disablePasswordReset ?? defaults.isPasswordResetDisabled,
-        allowAutoThemes: defaultSettings?.allowAutoThemes ?? defaults.allowAutoThemes,
         allowErrorMonitoring: defaultSettings?.allowErrorMonitoring ?? defaults.allowErrorMonitoring,
         themeColor: defaultSettings?.themeColor || defaults.themeColor,
-        themeBase: defaultSettings?.themeBase || defaults.themeBase,
         version: {
           current: currentVersion,
           latest: currentVersion,
@@ -182,6 +199,7 @@ export class AppController {
         domain: resolveHubPublicDomainRoot({ domain: configuredDomain, userSettings: defaultSettings }),
         sslPort: defaultSettings?.sslPort ?? defaults.sslPort,
         ...this.getSessionMetadata(req),
+        ...this.getProtocolPolicyFlags(req),
       };
 
       // Try to parse, but return raw data if parsing fails
@@ -287,11 +305,16 @@ export class AppController {
       ? tailscaleStatus.nodeFqdn || buildTailscaleNodeFqdn(tailscaleStatus.hostname, tailscaleStatus.tailnet)
       : null;
 
+    // Every step of the device wizard changes the whole Hub, which the Hub refuses a member. A member who
+    // signs in before the owner finishes it goes to the Hub instead, like a later operator whose wizard ran.
+    const user = req.user as UserDto;
+    const skipsWizard = Boolean(user) && !user.hasCompletedOnboarding && !(await this.whois.hubManageHint(req));
+
     return AppContextDto.parse(
       {
         version,
         userSettings: {
-          ...userSettings,
+          ...appContextSettings(userSettings),
           ciHubOrganizationSlug: orgSlug,
           ciHubOrganizationLabel: orgLabel,
           ciHubDeviceSlug: deviceSlug,
@@ -299,7 +322,7 @@ export class AppController {
         },
         appDataRootHostPath,
         architecture,
-        user: req.user as UserDto,
+        user: skipsWizard ? { ...user, hasCompletedOnboarding: true } : user,
         apps: [],
         updatesAvailable: updatesAvailableCount,
         isProduction,
@@ -313,8 +336,20 @@ export class AppController {
     );
   }
 
-  @Patch('/user-settings')
+  /**
+   * Whether the signed-in person may change what applies to the whole Hub, so the UI offers those
+   * controls and the Logs tab only to someone who may use them. It answers from the role stored at
+   * sign-in (`hubManageHint`); every Hub-wide route asks the Portal fresh and decides.
+   */
+  @Get('/hub-access')
   @UseGuards(AuthGuard)
+  @ApiResponse({ type: HubAccessDto })
+  async hubAccess(@Req() req: Request) {
+    return HubAccessDto.parse({ manageHub: await this.whois.hubManageHint(req) }, { reportOnly: true });
+  }
+
+  @Patch('/user-settings')
+  @UseGuards(AuthGuard, HubManagerGuard)
   async updateUserSettings(@Body() body: UserSettingsBody) {
     // Read before the write: `setUserSettings` replaces the object, so this keeps the old values.
     const before = this.configuration.get('userSettings');
@@ -338,7 +373,7 @@ export class AppController {
   }
 
   @Patch('/acknowledge-welcome')
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   async acknowledgeWelcome(@Req() req: Request, @Body() body: AcknowledgeWelcomeBody) {
     if (!req.user) {
       return;

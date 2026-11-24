@@ -1,0 +1,35 @@
+# Workflow Feedback
+
+Rolling notes on the CI-Hub agent workflow. See [session worksheets](sessions/README.md) for context.
+
+> 2026-11-16 — private-vpn-app-probe: A fix for a false negative should only be able to turn a failure into a success, so the Hub asks the app behind a Private VPN Serve entry only after a refusal and changes the verdict only on an answer; the live path was proved read-only by bundling the branch's helpers with esbuild and piping them to `node -` inside `ci-hub`, and a cold review found two problems the tests could not.
+
+> 2026-11-15 — curated-models-gap-pass: Take `reason`/`vision`/`tools` from what the build offers through Ollama and not from library badges, test a chat-template claim on a running Ollama before listing the model, pick a GGUF by its exact quant name and compare its size with the registry's model layer, and replay the old and new selection over every registry entry before replacing it.
+
+> 2026-11-15 — catalog-row-checker: Probe the live registries with plain GETs before writing a registry reader, run the finished reader over the whole catalog before writing its tests, and keep recorded answers behind a replay `fetch` that refuses unknown URLs.
+
+> 2026-11-15 — omlx-model-id-matching: oMLX lists a model by its directory name or `<org>--<name>` from the Hugging Face cache, not the catalog's `<org>/<name>`; the backend now matches by name and organization and hands out the listed name, found by running a throwaway oMLX over one cached model in each layout, then hardened by an independent review and one-at-a-time mutations.
+
+> 2026-11-15 — curated-models-refresh: Read registry manifests and GGUF headers instead of page summaries, ask Hugging Face's registry the way Ollama does before listing an `hf.co/` row, sweep recommendations with and without new rows, and plant defects in the new tests one at a time.
+
+> 2026-11-11 — mobile-widgets-implementation: Added and emulator-checked fixed Hub quick actions; recorded Tauri build and generated Xcode path pitfalls.
+
+> 2026-11-01 — qa-procfs-fast-readiness: Require IPv4 published reachability and an IPv4 wildcard/container listener on known protocol ports, preserve HTTP probes elsewhere, and keep unverified IPv6-only binds unknown.
+
+> 2026-11-01 — qa-procfs-probe: Read Linux container sockets through trusted host procfs, constrain SQL Server image evidence, and test unsupported-platform uncertainty.
+
+> 2026-11-01 — qa-password-policy: Generate policy-compliant password values for app QA and add coverage for bounds, character classes, and freshness.
+
+> 2026-10-30 — agent-store-portability: Compared the agent packaging of store A and store B, documented Hub trust boundaries, and recorded the OpenClaw wrapper quarantine and cross-repo bootstrap sync.
+> 2026-10-30 — hub-workflow-hygiene: Run workflow rules from the test suite because every workflow is dispatch-only, and plant each defect in a guard one at a time to find the assertions that cannot fail.
+> 2026-10-30 — hub-keri-freeze: Compare lint and test results against the base as sets when the gate is red there, and run the real collaborator behind a controller test when a mock would only echo the expected value.
+
+> 2026-10-28 — headless-http-app-qa: Added HTTP/TCP checks for supported no-GUI apps and synced Hub API artifacts; the active fleet campaign uses the earlier runner, so harness-versioned targeted retesting remains necessary.
+
+> 2026-10-28 — imageboot-registry-fallback: Retry Docker Hub and fall back to public ECR for image-boot dependencies, with registry errors visible.
+
+> 2026-10-28 — hub-release-gate-fixes: Build common packages before tests, preserve separate custom-domain transfer/conflict coverage, and generate OOBI schemas with the API client.
+
+> 2026-10-28 — fleetqa-browser-capture-reliability: Isolated worktrees kept the long fleet app campaign running while focused Playwright checks exercised async rendering and open SSE; pnpm's dependency guard refused to replace the shared `node_modules` symlink, so add a documented no-install validation path for temporary worktrees.
+
+> 2026-10-27 — qa-start-timeout-cleanup: Bound process deadlines independently of inherited pipes, verify all run-scoped Docker resources before retry, and test the child-process lifecycle with a real subprocess.

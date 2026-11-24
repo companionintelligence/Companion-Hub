@@ -2,11 +2,15 @@ import { client } from '@/api-client/client.gen';
 import { formatHubDateTime } from '@/components/ui/dense/dense';
 import { ScopeBadge } from '@/components/scope-badge/scope-badge';
 import { Button } from '@/components/ui/Button';
+import { formatApiError, isConflictError } from '@/lib/format-api-error';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { KeyRound, ShieldCheck, ShieldOff } from 'lucide-react';
 import { useState } from 'react';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
+import { asLegacyTranslate } from '@/lib/i18n/legacy-translate';
+import type { McpAccessChoice } from '@ci-hub/common/types';
+import { McpAccessSection } from './mcp-access-section';
 
 /** Mirrors the backend hub-access view (GET /api/app-lifecycle/:urn/hub-access). Never carries raw values. */
 export interface HubAccessStatus {
@@ -15,6 +19,8 @@ export interface HubAccessStatus {
   identityVerification: boolean;
   /** Whether this app would be (re-)provisioned trust material on its next env generation. */
   provisioned: boolean;
+  /** The app's request for the Hub's MCP tools and the answer to it; `null` when its manifest does not ask. Older Hubs omit it. */
+  mcp?: { access: McpAccessChoice | null; keyCapability: string | null } | null;
 }
 
 export const hubAccessQueryKey = (appUrn: string) => ['app-hub-access', appUrn];
@@ -65,13 +71,17 @@ export const HubAccess = ({ appUrn, hasUnsavedChanges = false }: HubAccessProps)
       toast.success(t('APP_SETTINGS_HUB_ACCESS_ROTATED'));
       await queryClient.invalidateQueries({ queryKey: hubAccessQueryKey(appUrn) });
     },
-    onError: () => toast.error(t('APP_SETTINGS_HUB_ACCESS_ROTATE_ERROR')),
+    // A 409 names the operation holding the app ("still starting, try again"); nothing was rotated.
+    onError: (error) =>
+      toast.error(isConflictError(error) ? formatApiError(error, asLegacyTranslate(t), 409) : t('APP_SETTINGS_HUB_ACCESS_ROTATE_ERROR')),
   });
 
   const status = query.data ?? null;
 
-  // Hidden while loading, on error, and for apps that neither hold nor would receive trust material.
-  if (query.isLoading || query.isError || !status || (!status.provisioned && !status.appKey)) {
+  // Hidden while loading, on error, and for apps that neither hold nor would receive trust material and do
+  // not ask for the Hub's MCP tools. One that asks shows here before anyone has answered, which is when it
+  // holds nothing.
+  if (query.isLoading || query.isError || !status || (!status.provisioned && !status.appKey && !status.mcp)) {
     return null;
   }
 
@@ -110,7 +120,8 @@ export const HubAccess = ({ appUrn, hasUnsavedChanges = false }: HubAccessProps)
 
         {/* type="button" throughout: this sits inside the settings dialog, and the default submit
             type would save the form on every click of a control that is not a form field. */}
-        {!confirming && (
+        {/* Nothing to rotate for an app that holds and would receive nothing yet (one asking for MCP access nobody granted). */}
+        {!confirming && (status.provisioned || status.appKey) && (
           <Button
             type="button"
             variant="outline"
@@ -129,6 +140,8 @@ export const HubAccess = ({ appUrn, hasUnsavedChanges = false }: HubAccessProps)
           {t('APP_SETTINGS_HUB_ACCESS_UNSAVED')}
         </p>
       )}
+
+      {status.mcp && <McpAccessSection appUrn={appUrn} mcp={status.mcp} queryKey={hubAccessQueryKey(appUrn)} hasUnsavedChanges={hasUnsavedChanges} />}
 
       {/* Confirmation gate: rotating restarts the app, so it must not fire on a single click. */}
       {confirming && (

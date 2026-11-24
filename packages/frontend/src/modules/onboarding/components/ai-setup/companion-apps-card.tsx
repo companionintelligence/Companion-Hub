@@ -136,7 +136,7 @@ export function CompanionAppsCard({ publicExposureMode, onChange, stepNumber = 5
         {showLoadingState ? (
           <div className="space-y-2">
             {COMPANION_ONBOARDING_SLUGS.map((slug) => (
-              <div key={slug} className="h-16 animate-pulse rounded-md bg-muted/50" data-testid="companion-app-skeleton" />
+              <div key={slug} className="h-16 motion-safe:animate-pulse rounded-md bg-muted/50" data-testid="companion-app-skeleton" />
             ))}
             <p className="text-xs text-muted-foreground">{t('ONBOARDING_CATALOG_LOADING')}</p>
           </div>
@@ -166,8 +166,8 @@ export function CompanionAppsCard({ publicExposureMode, onChange, stepNumber = 5
             <CompanionMemoryMark size={120} />
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-base font-semibold text-foreground">{memoryApp.name}</span>
-                <span className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary">
+                <span className="text-base font-medium text-foreground">{memoryApp.name}</span>
+                <span className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] font-medium   text-primary">
                   {t('ONBOARDING_BADGE_RECOMMENDED')}
                 </span>
               </div>

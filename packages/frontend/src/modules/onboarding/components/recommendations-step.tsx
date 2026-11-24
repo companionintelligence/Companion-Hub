@@ -454,7 +454,7 @@ export const RecommendationsStep = ({
           <div className="grid grid-cols-1 gap-3 py-1 sm:grid-cols-2">
             {Array.from({ length: Math.min(RECOMMENDATIONS_COUNT, 6) }).map((_, i) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: static skeleton placeholders
-              <div key={i} className="h-20 animate-pulse rounded-md bg-muted/50" />
+              <div key={i} className="h-20  rounded-md bg-muted/50" />
             ))}
           </div>
         )}
@@ -476,7 +476,7 @@ export const RecommendationsStep = ({
                       <Icon className="h-3.5 w-3.5" aria-hidden />
                     </span>
                     <div className="min-w-0">
-                      <h3 className="text-sm font-semibold text-foreground">{getCategoryLabel(t, category)}</h3>
+                      <h3 className="text-sm font-medium text-foreground">{getCategoryLabel(t, category)}</h3>
                     </div>
                   </div>
                   <div className="divide-y divide-border/60">
@@ -506,7 +506,7 @@ export const RecommendationsStep = ({
                                     app={{ appSlug: `private-${privateAppTestId(name)}`, name, icon, urn: undefined }}
                                     size={14}
                                     className="rounded-[3px]"
-                                    fallback={<span className="text-[8px] font-bold leading-none">{name.charAt(0).toUpperCase()}</span>}
+                                    fallback={<span className="text-[8px] font-medium leading-none">{name.charAt(0).toUpperCase()}</span>}
                                   />
                                   <span className="truncate">{name}</span>
                                 </span>

@@ -54,10 +54,12 @@ export type SystemLifecycleReason =
   | 'resume-after-backup' // a backup starts the app it stopped
   | 'resume-after-restore' // a restore starts the app it stopped
   | 'hub-access-rotate' // a credential rotation restarts the app to re-provision it
+  | 'hub-access-mcp' // a person granted or took away an app's MCP access, which its next env applies
   | 'sweep' // one app of an *-all sweep, which already asked `actorMay` of its own actor for that app
   | 'restore-after-pairing' // pairing back onto a device, with a code from its organization, restores the apps Portal lists for it
   // The Hub's own upkeep:
   | 'bootstrap-restart' // a Hub starting on a new version restarts the apps that were running
+  | 'bootstrap-recreate' // a Hub starting on the same version starts a running app whose containers are all gone
   | 'inference-env-refresh' // inference settings or the Hub version changed; AI apps pick up the new env
   | 'custom-domain-revert' // an app still forwarding a removed custom domain is restarted off it
   | 'custom-domain-apply' // the operator asked for a bound custom domain to start serving, so the app is recreated onto it
@@ -65,6 +67,8 @@ export type SystemLifecycleReason =
   | 'memory-connect' // a Companion Memory connection change reaches the app holding it
   | 'device-key-refresh' // pairing issued a new Portal device key; the app that calls Portal as this device picks it up
   | 'trusted-proxy-refresh' // Traefik moved on the Hub network; an app still trusting its old address as a proxy is recreated
+  | 'app-network-isolation' // an app composed when apps shared a network is recreated onto its own (labels, Memory URL, trusted hop)
+  | 'origin-host-refresh' // pairing renamed the device or organization; a running app still routed under the old name is recreated onto the new one
   // The debug routes:
   | 'debug-seed'
   | 'debug-start-all'

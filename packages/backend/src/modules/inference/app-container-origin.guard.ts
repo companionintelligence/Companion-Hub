@@ -3,7 +3,7 @@ import { normalizeIpLiteral } from '@/common/helpers/ip-address';
 import { internalOriginRefusal, type OriginCheckedRequest } from '@/common/helpers/request-origin';
 import { LoggerService } from '@/core/logger/logger.service';
 import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
-import { bootstrapAppNamesForSlug } from './bootstrap-app-names';
+import { bootstrapAppUrnsForSlug } from './bootstrap-app-names';
 
 /** How long one slug's container addresses are reused before Docker is asked again. */
 const ADDRESS_CACHE_TTL_MS = 15_000;
@@ -90,7 +90,7 @@ export class AppContainerOriginGuard implements CanActivate {
     if (cached && cached.expiresAt > Date.now() && cached.addresses.has(ip)) {
       return true;
     }
-    const addresses = await this.dockerRead.runningContainerAddressesForApps(bootstrapAppNamesForSlug(slug));
+    const addresses = await this.dockerRead.runningContainerAddressesForApps(bootstrapAppUrnsForSlug(slug));
     if (addresses.size > 0) {
       this.cache.set(slug, { addresses, expiresAt: Date.now() + ADDRESS_CACHE_TTL_MS });
     } else {

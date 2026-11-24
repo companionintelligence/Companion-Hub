@@ -1,5 +1,7 @@
-import type { BackendHealthStatus, BackendModelInfo, BackendResidency, InferenceBackendType, PullProgress } from '@ci-hub/common/types';
+import type { QuantizedKvCacheType } from './lemonade-kv-cache.util';
+import type { BackendHealthStatus, BackendModelInfo, BackendResidency, CuratedModel, InferenceBackendType, PullProgress } from '@ci-hub/common/types';
 import type { ContextCost } from '../model-geometry.util';
+import type { KvCacheChoice } from './lemonade-kv-cache.util';
 
 export interface LoadModelOptions {
   embedding?: boolean;
@@ -18,6 +20,13 @@ export interface LoadModelOptions {
    * model. Absent leaves the engine's own choice.
    */
   device?: 'cpu';
+  /**
+   * The KV cache the window was sized for (`InferenceRouterService.planLoad`), for a text model:
+   * `q8_0` when 16-bit cannot reach an installed app's floor on this card, `f16` otherwise. An engine
+   * that sets the cache per model applies it, and `f16` takes away a quantized type an earlier load
+   * left. Absent: the engine keeps whatever the model has. Ignored by engines that cannot set it.
+   */
+  kvCacheType?: KvCacheChoice;
 }
 
 /**
@@ -62,8 +71,34 @@ export interface InferenceBackend {
    * models (they reject the text-generation endpoint). */
   unloadModel(modelId: string, options?: { embedding?: boolean }): Promise<void>;
 
+  /**
+   * How long the engine keeps a model it already holds, on an engine where that is set per request
+   * (Ollama's `keep_alive`): `pinned` until told otherwise, `default` its usual expiry. A pin sets
+   * `pinned` on a model already in memory, an unpin `default`. `defaultSeconds` is that usual expiry
+   * when the operator stated it (`inferenceOllamaKeepAlive`, -1 for forever); null leaves the
+   * engine's built-in default. A model the engine does not hold is left alone, never loaded.
+   * `unreachable` when the engine could not say what it holds. Engines without such a setting
+   * (Lemonade, vLLM, oMLX) leave this out.
+   */
+  setResidentKeepAlive?(
+    modelId: string,
+    keep: 'pinned' | 'default',
+    options?: { embedding?: boolean; defaultSeconds?: number | null },
+  ): Promise<'set' | 'not-resident' | 'unreachable'>;
+
   /** Check if a specific model is loaded */
   isModelLoaded(modelId: string): Promise<boolean>;
+
+  /**
+   * For a factory reset: the engine's names for what it holds in memory, asked at the address the Hub
+   * is configured with and nowhere else, or null when it does not answer there. A fallback address can
+   * be another engine, a shared one on the host, whose models are not the Hub's to unload. Absent on an
+   * engine that cannot unload one model on request (vLLM, oMLX).
+   */
+  residentAtConfiguredEndpoint?(): Promise<string[] | null>;
+
+  /** Unload `modelId`, as the engine names it, at the configured address only. See {@link residentAtConfiguredEndpoint}. */
+  unloadAtConfiguredEndpoint?(modelId: string, options?: { embedding?: boolean }): Promise<void>;
 
   /**
    * What is IN MEMORY right now, and how the backend knows.
@@ -94,6 +129,28 @@ export interface InferenceBackend {
   weightsOnDiskMb?(modelId: string): Promise<number | null>;
 
   /**
+   * The share of the catalog's 16-bit `kvMbPerToken` this engine allocates per token of `model`'s
+   * context AS THE MODEL IS SET NOW: below 1 when its next load runs a quantized cache (Lemonade: the
+   * model's saved flags, whoever saved them), 1 otherwise. Optional; absent means 1. App handouts size
+   * with it, so they agree with the cache the engine really has.
+   */
+  kvCacheScale?(model: CuratedModel): number;
+
+  /**
+   * The quantized KV cache types this engine may run `model` with, for `planLoad` to choose from when
+   * 16-bit cannot reach an installed app's floor. Optional; absent or empty means 16-bit only. An
+   * engine leaves out a type it cannot set (its version) or one the model failed to load with before
+   * ({@link markKvCacheUnsupported}).
+   */
+  kvCacheTypesFor?(model: CuratedModel): readonly QuantizedKvCacheType[];
+
+  /**
+   * Records that `model` failed to load with a quantized cache while it loaded at 16-bit straight
+   * after, so {@link kvCacheTypesFor} stops offering it. Optional.
+   */
+  markKvCacheUnsupported?(model: CuratedModel): void;
+
+  /**
    * Whether the engine's server can supply a catalog `backendModelId` — has it, or can download it —
    * from the registry listing its last health probe read. Optional: only an engine whose server lists
    * its whole registry implements it (Lemonade's `GET /v1/models?show_all=true`). `null` when it
@@ -119,9 +176,10 @@ export interface InferenceBackend {
 
   /**
    * The window this engine serves `modelId` at whatever a request asks, for an engine that takes no
-   * window per request: Lemonade's saved `ctx_size`. A handout for such a model is never above it,
-   * since the engine would not serve more. Optional: Ollama loads at the window each request names,
-   * and an engine that cannot say leaves the handout as sized. Null when nothing is saved.
+   * window per request: Lemonade's saved `ctx_size`, vLLM's `max_model_len`. A handout for such a
+   * model is never above it, since the engine would not serve more. Optional: Ollama loads at the
+   * window each request names, and an engine that cannot say leaves the handout as sized. Null when
+   * nothing is saved or stated.
    */
   servedContextLength?(modelId: string): Promise<number | null>;
 

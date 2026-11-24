@@ -109,6 +109,7 @@ export interface BuilderService {
   dns?: string | string[];
   env_file?: string[];
   platform?: string;
+  runtime?: string;
 }
 
 export type BuiltService = ReturnType<typeof ServiceBuilder.prototype.build>;
@@ -562,6 +563,15 @@ export class ServiceBuilder {
   }
 
   /**
+   * Sets the container runtime for the service (e.g. 'kata', 'kata-qemu', 'kata-cc', 'runc').
+   * @param runtime The runtime name to use.
+   */
+  setRuntime(runtime?: string) {
+    this.service.runtime = runtime;
+    return this;
+  }
+
+  /**
    * Sets the env_file for the service.
    * @param {string[]} envFiles The env files to use for the service.
    */
@@ -679,6 +689,7 @@ export class ServiceBuilder {
       dns: this.service.dns,
       env_file: this.service.env_file,
       platform: this.service.platform,
+      runtime: this.service.runtime,
     };
 
     // Delete any undefined properties

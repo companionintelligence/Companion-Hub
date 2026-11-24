@@ -3,6 +3,7 @@
 
 mod app_binary;
 mod commands;
+mod desktop_sign_in_wait;
 mod digest_hex;
 mod discovery;
 pub mod docker_engine;
@@ -19,10 +20,15 @@ pub mod hub_env;
 pub mod hub_manager;
 mod hub_names;
 mod inference_runners;
+mod installer_signature;
+mod login_autostart;
+mod login_start_unit;
 pub mod port_manager;
+mod portal_token;
 mod portal_url;
 mod sentry_scrubber;
 mod tray;
+mod update_signature;
 mod updater;
 mod webview_navigation;
 
@@ -162,6 +168,8 @@ async fn restart_hub_command(
     let env = state.env_path.clone();
     let data = state.data_dir.clone();
     tokio::task::spawn_blocking(move || {
+        // Across both halves, so nothing reads the gap between the stop and the start as settled.
+        let _stack_change = hub_manager::StackChange::begin();
         let _ = hub_manager::stop_hub_for_update(&compose, &env);
         hub_manager::start_hub(&compose, &env, &data)
     })
@@ -208,6 +216,23 @@ async fn install_ollama_command() -> Result<hub_manager::OllamaInstallResult, St
         .map_err(|e| format!("Ollama install task failed: {e}"))?
 }
 
+/// Install the NVIDIA container runtime through pkexec (native Linux only).
+#[tauri::command]
+async fn install_nvidia_runtime_command() -> Result<String, String> {
+    tokio::task::spawn_blocking(hub_manager::install_nvidia_runtime)
+        .await
+        .map_err(|e| format!("NVIDIA runtime install task failed: {e}"))?
+}
+
+/// What a Companion OS live session can't run, so setup can say so instead of offering it.
+#[tauri::command]
+async fn live_session_state_command() -> Result<hub_manager::LiveSessionState, String> {
+    // Looks on the boot medium, which can be a slow USB stick, so it stays off the main thread.
+    tokio::task::spawn_blocking(hub_manager::live_session_state)
+        .await
+        .map_err(|e| format!("Live session check failed: {e}"))
+}
+
 /// Install and start the host/container inference runners selected by onboarding.
 #[tauri::command]
 async fn install_and_start_inference_runners_command(
@@ -222,6 +247,27 @@ async fn install_and_start_inference_runners_command(
     })
     .await
     .map_err(|error| format!("Inference runner setup task failed: {error}"))?
+}
+
+/// Give a running oMLX with no main key one, so the Hub can download models through its admin
+/// API. Returns the key once; oMLX refuses when it already has a key or does not listen on
+/// loopback alone, and the error says so.
+#[tauri::command]
+async fn omlx_setup_admin_key_command(
+    state: tauri::State<'_, hub_manager::HubPaths>,
+) -> Result<inference_runners::OmlxAdminKeySetup, String> {
+    let data_dir = state.data_dir.clone();
+    tokio::task::spawn_blocking(move || inference_runners::setup_omlx_admin_key(&data_dir))
+        .await
+        .map_err(|error| format!("oMLX key setup task failed: {error}"))?
+}
+
+/// Whether oMLX's own settings already hold a main key. Only the answer leaves the app, not the key.
+#[tauri::command]
+async fn omlx_admin_key_status_command() -> Result<inference_runners::OmlxAdminKeyStatus, String> {
+    tokio::task::spawn_blocking(inference_runners::omlx_admin_key_status)
+        .await
+        .map_err(|error| format!("oMLX key check failed: {error}"))
 }
 
 /// Install ROCm on Ubuntu via pkexec-elevated AMDGPU installer.
@@ -258,11 +304,119 @@ async fn install_docker_engine_alternative_command(
         })?
 }
 
+/// Start the Docker engine inside WSL and wait until it answers (Start engine on the startup
+/// screens of a Hub that runs on it).
+#[tauri::command]
+async fn start_wsl_engine_command(
+    state: tauri::State<'_, hub_manager::HubPaths>,
+) -> Result<String, String> {
+    let data = state.data_dir.clone();
+    tokio::task::spawn_blocking(move || hub_manager::start_wsl_engine(&data))
+        .await
+        .map_err(|e| format!("WSL engine start task failed: {e}"))?
+}
+
 /// Local Hub UI/API origin for the desktop bootstrap (respects API_PORT in .env).
 #[tauri::command]
 fn get_hub_api_url_command(state: tauri::State<'_, hub_manager::HubPaths>) -> String {
     let port = port_manager::read_api_port(&state.env_path);
     format!("http://127.0.0.1:{port}")
+}
+
+/// Tell the local Hub this window is signed out and waiting for a sign-in (see
+/// desktop_sign_in_wait.rs). `useDesktopPortalAuth` calls it every 60 s while signed out.
+#[tauri::command]
+async fn announce_desktop_sign_in_wait_command(
+    webview: tauri::Webview,
+    state: tauri::State<'_, hub_manager::HubPaths>,
+) -> Result<bool, String> {
+    let api_port = port_manager::read_api_port(&state.env_path);
+    let on_this_machines_hub = webview
+        .url()
+        .is_ok_and(|page| desktop_sign_in_wait::shows_this_machines_hub(&page, api_port));
+    let outcome = if on_this_machines_hub {
+        let settings_path =
+            desktop_sign_in_wait::hub_settings_path(&state.data_dir, &state.env_path);
+        desktop_sign_in_wait::announce(&format!("http://127.0.0.1:{api_port}"), &settings_path)
+            .await
+    } else {
+        desktop_sign_in_wait::Outcome::NotThisMachinesHub
+    };
+    if let Some(line) = desktop_sign_in_wait::log_line_on_change(&outcome) {
+        let _ = hub_manager::append_desktop_log("sign-in-wait", &line);
+    }
+    outcome.into_command_result()
+}
+
+/// Whether this machine's AI servers (Ollama, vLLM) can be reached from the network: listening on
+/// every interface with no guard. See `hub_manager::installers::inference_guard`.
+#[tauri::command]
+async fn local_ai_network_exposure_command() -> hub_manager::LocalAiNetworkExposure {
+    tokio::task::spawn_blocking(hub_manager::local_ai_network_exposure)
+        .await
+        .unwrap_or_default()
+}
+
+/// The guard toggles act only for this machine's own Hub page: the IPC grant also covers remote
+/// origins (`*.ci.lan`, `*.ci.computer`), and none of them may turn the guard off.
+fn require_this_machines_hub_for_guard(
+    webview: &tauri::Webview,
+    state: &hub_manager::HubPaths,
+) -> Result<(), String> {
+    let api_port = port_manager::read_api_port(&state.env_path);
+    if webview
+        .url()
+        .is_ok_and(|page| hub_manager::may_change_local_ai_guard(&page, api_port))
+    {
+        Ok(())
+    } else {
+        Err(hub_manager::LOCAL_AI_GUARD_ELSEWHERE.to_string())
+    }
+}
+
+/// Install the guard that keeps this machine's AI servers off the network (asks for the password).
+#[tauri::command]
+async fn protect_local_ai_command(
+    webview: tauri::Webview,
+    state: tauri::State<'_, hub_manager::HubPaths>,
+) -> Result<(), String> {
+    require_this_machines_hub_for_guard(&webview, &state)?;
+    tokio::task::spawn_blocking(hub_manager::protect_local_ai)
+        .await
+        .map_err(|error| format!("The protection task failed: {error}"))?
+}
+
+/// Turn the guard off, so other devices on the network can use this machine's AI servers. The
+/// choice is remembered (asks for the password on Linux).
+#[tauri::command]
+async fn allow_local_ai_on_network_command(
+    webview: tauri::Webview,
+    state: tauri::State<'_, hub_manager::HubPaths>,
+) -> Result<(), String> {
+    require_this_machines_hub_for_guard(&webview, &state)?;
+    tokio::task::spawn_blocking(hub_manager::allow_local_ai_on_network)
+        .await
+        .map_err(|error| format!("The guard task failed: {error}"))?
+}
+
+/// The setup code an unpaired Hub asks for before it pairs, read from its data directory so a
+/// person pairing in this window is never asked for it. Only for this machine's Hub as the shell
+/// opens it: every Hub page the window may show holds the same IPC grant, and another Hub's page,
+/// or a page on the LAN, must not learn this one's code.
+#[tauri::command]
+fn hub_setup_code(
+    webview: tauri::Webview,
+    state: tauri::State<'_, hub_manager::HubPaths>,
+) -> Option<String> {
+    let api_port = port_manager::read_api_port(&state.env_path);
+    let page = webview.url().ok()?;
+    if !desktop_sign_in_wait::shows_this_machines_hub(&page, api_port) {
+        return None;
+    }
+    desktop_sign_in_wait::read_hub_setup_code(&desktop_sign_in_wait::hub_settings_path(
+        &state.data_dir,
+        &state.env_path,
+    ))
 }
 
 /// Get the current Hub status (Docker availability, container state, health).
@@ -271,6 +425,13 @@ async fn get_hub_status_command() -> hub_manager::HubStatus {
     tokio::task::spawn_blocking(hub_manager::get_hub_status)
         .await
         .unwrap_or_else(|err| panic!("hub status task failed: {err}"))
+}
+
+/// Whether the launch check, a stop, a restart or a start may still remove the containers that
+/// answer now. The startup page waits for all of them to finish before it opens the Hub.
+#[tauri::command]
+fn get_stack_change_state_command() -> hub_manager::StackChangeState {
+    hub_manager::stack_change_state()
 }
 
 /// Get per-service startup progress for the frontend loading screen.
@@ -452,7 +613,7 @@ async fn check_desktop_update_command() -> Result<updater::DesktopUpdateInfo, St
         .unwrap_or(env!("CARGO_PKG_VERSION"))
         .trim_start_matches('v')
         .to_string();
-    tokio::task::spawn_blocking(move || updater::check_desktop_update(&current))
+    tokio::task::spawn_blocking(move || updater::check_desktop_update_naming_installer(&current))
         .await
         .map_err(|e| format!("Update check task failed: {}", e))?
 }
@@ -582,6 +743,11 @@ pub fn run() {
             {
                 return;
             }
+            // A second login start (the session restored twice, say) finds the app already in
+            // the tray. Leave it there rather than opening the window nobody asked for.
+            if login_autostart::is_login_start(&args) {
+                return;
+            }
             focus_main_window(app);
             for arg in &args {
                 handle_deep_link_url(app, arg);
@@ -595,6 +761,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
+            portal_token::portal_token_request_command,
             check_hub_status,
             discover_hubs,
             start_hub_command,
@@ -603,7 +770,9 @@ pub fn run() {
             check_docker_available,
             check_docker_access_command,
             get_hub_api_url_command,
+            announce_desktop_sign_in_wait_command,
             get_hub_status_command,
+            get_stack_change_state_command,
             get_startup_progress_command,
             read_desktop_logs_command,
             open_logs_dir_command,
@@ -612,11 +781,20 @@ pub fn run() {
             is_user_stopped_command,
             install_docker_command,
             install_ollama_command,
+            install_nvidia_runtime_command,
+            live_session_state_command,
             install_and_start_inference_runners_command,
+            local_ai_network_exposure_command,
+            protect_local_ai_command,
+            allow_local_ai_on_network_command,
+            omlx_setup_admin_key_command,
+            omlx_admin_key_status_command,
             install_rocm_command,
             verify_rocm_command,
             install_docker_engine_alternative_command,
+            start_wsl_engine_command,
             consume_pending_pairing_code,
+            hub_setup_code,
             consume_pending_portal_auth,
             consume_pending_install_intent,
             check_desktop_update_command,
@@ -708,9 +886,14 @@ pub fn run() {
 
             // Linux (and every other target that reads tauri.linux.conf.json) creates the
             // window hidden, so GTK first lays it out undecorated and at the restored size.
+            // Started by the login autostart entry, it stays in the tray: the launch check
+            // below brings the Hub back, and the tray (or opening the app) shows the window.
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             {
-                let _ = window.show();
+                let args: Vec<String> = std::env::args().skip(1).collect();
+                if !login_autostart::is_login_start(&args) {
+                    let _ = window.show();
+                }
             }
 
             // Build system tray (also registers close-to-hide handler)
@@ -761,6 +944,10 @@ pub fn run() {
                 env_path: env_path.clone(),
             });
 
+            // Inside Docker Desktop the Hub can't see the computer's memory and disk, only the
+            // figures the start probe wrote. Keep those current while the app runs.
+            hub_manager::spawn_host_load_refresher(data_dir.clone());
+
             if stack_dev_mode_enabled() {
                 // Stack was started externally (e.g. `cihub up dev`); still refresh host
                 // metrics so the dashboard shows physical disk/RAM, not the Docker VM.
@@ -768,6 +955,7 @@ pub fn run() {
                 if let Some(stack_data_dir) = hub_manager::host_data_dir_from_env_path(&env_path) {
                     if stack_data_dir != data_dir {
                         hub_manager::refresh_host_hardware_probe_cache(&stack_data_dir);
+                        hub_manager::spawn_host_load_refresher(stack_data_dir.clone());
                         let _ = hub_manager::append_desktop_log_for(
                             &data_dir,
                             "hw.probe",
@@ -808,15 +996,34 @@ pub fn run() {
                 let compose = compose_path.clone();
                 let env = env_path.clone();
                 let data = data_dir.clone();
+                // Taken here, before the startup page can ask: Tauri runs setup inside the event
+                // loop's Ready handler, so the window's IPC waits until it returns. The task holds
+                // it to the end, through every early return below.
+                let launch_check = hub_manager::StackChange::begin();
                 tauri::async_runtime::spawn(async move {
+                    let _launch_check = launch_check;
                     let compose_for_decision = compose.clone();
                     let env_for_decision = env.clone();
                     let data_for_decision = data.clone();
 
                     let decision = tokio::task::spawn_blocking(move || {
-                        if !hub_manager::is_docker_available() {
+                        // Not about Docker answering now: put back the logon script that starts
+                        // the WSL engine, which an uninstall can remove and a reinstall over an
+                        // engine that is already set up doesn't write again.
+                        hub_manager::ensure_wsl_engine_logon_script(&data_for_decision);
+                        // Linux's counterpart: start the app at login, so a Hub on a home that is
+                        // only unlocked at login comes back after a reboot (see login_autostart).
+                        login_autostart::ensure(&data_for_decision);
+                        // A reboot brings the containers back by their restart policy, so the start
+                        // below doesn't run and nothing else writes nvidia.json for this boot. Rescan
+                        // would keep saying a driver installed before the reboot isn't answering.
+                        #[cfg(target_os = "linux")]
+                        hub_manager::refresh_nvidia_host_probe_cache(&data_for_decision);
+                        if !hub_manager::docker_available_for_launch(&data_for_decision) {
                             return Ok::<_, String>(None);
                         }
+                        // Also when the Hub is already up and isn't started below.
+                        hub_manager::record_update_listener_host(&data_for_decision);
 
                         let config_hash =
                             hub_manager::compute_config_hash(&compose_for_decision, &env_for_decision);
@@ -830,13 +1037,33 @@ pub fn run() {
                         // explicitly click "Start Hub" again.
                         let user_stopped = hub_manager::is_user_stopped(&data_for_decision);
                         let start_failed = hub_manager::is_start_failed(&data_for_decision);
+                        // A sticky failure holds auto-start only until its automatic retry is due.
+                        let retry_due = start_failed
+                            && hub_manager::automatic_retry_due(
+                                &data_for_decision,
+                                hub_manager::now_ms(),
+                            );
                         let needs_runtime_recovery = hub_manager::hub_needs_runtime_recovery();
+                        // Another `docker inspect`, so only when nothing above decided already.
+                        let stopped_core_services = if user_stopped
+                            || start_failed
+                            || !containers_exist
+                            || needs_runtime_recovery
+                        {
+                            Vec::new()
+                        } else {
+                            hub_manager::stopped_core_services()
+                        };
 
-                        let should_start = if user_stopped || start_failed {
+                        let should_start = if user_stopped {
                             false
+                        } else if start_failed {
+                            retry_due
                         } else if !containers_exist {
                             true
                         } else if needs_runtime_recovery {
+                            true
+                        } else if !stopped_core_services.is_empty() {
                             true
                         } else if traefik_recreate_required {
                             true
@@ -849,14 +1076,21 @@ pub fn run() {
                         let reason = if user_stopped {
                             "user intentionally stopped the Hub — respecting decision across relaunch"
                                 .to_string()
+                        } else if retry_due {
+                            "an earlier start failed and its automatic retry is due".to_string()
                         } else if start_failed {
-                            "previous start failed — waiting for explicit user retry"
+                            "an earlier start failed; waiting for its automatic retry or a user retry"
                                 .to_string()
                         } else if !containers_exist {
                             "containers are missing".to_string()
                         } else if needs_runtime_recovery {
                             "containers exist but hub API is not healthy — attempting recovery"
                                 .to_string()
+                        } else if !stopped_core_services.is_empty() {
+                            format!(
+                                "the Hub is up, but not every service it needs is running ({})",
+                                stopped_core_services.join(", ")
+                            )
                         } else if traefik_recreate_required {
                             "Traefik runtime preflight changed mounted state and requires container recreation"
                                 .to_string()
@@ -902,7 +1136,7 @@ pub fn run() {
                                 let env_for_start = env.clone();
                                 let data_for_start = data.clone();
                                 let result = tokio::task::spawn_blocking(move || {
-                                    hub_manager::start_hub(
+                                    hub_manager::start_hub_automatic(
                                         &compose_for_start,
                                         &env_for_start,
                                         &data_for_start,
@@ -998,6 +1232,11 @@ pub fn run() {
             Ok(())
         });
 
+    // Desktop sign-in runs the loopback flow in tauri-plugin-ci-auth, so the plugin is
+    // registered on desktop only.
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_ci_auth::init());
+
     builder
         .run(tauri::generate_context!())
         .expect("error while running Companion Hub Desktop");
@@ -1066,6 +1305,10 @@ fn run_detached_mode() -> Result<String, String> {
             &format!("Pre-start cleanup failed (non-fatal): {}", error),
         );
     }
+
+    // Headless mode has no tray to come back at login (login_autostart needs a graphical session),
+    // so a Hub in a home folder unlocked at login gets the systemd user service instead.
+    login_start_unit::ensure(&data_dir);
 
     let message = hub_manager::start_hub(&compose_path, &env_path, &data_dir).map_err(|error| {
         error_reporting::capture_setup_failure(&error);
@@ -1185,10 +1428,15 @@ fn handle_deep_link_url(app: &tauri::AppHandle, url: &str) {
         return;
     }
 
-    if let Some(payload) = extract_portal_auth(url) {
-        focus_main_window(app);
-        queue_portal_auth(app, payload);
-        return;
+    // Desktop sign-in no longer takes a token from a deep link. It runs a PKCE sign-in over a
+    // loopback redirect (RFC 8252) in the app (tauri-plugin-ci-auth), so a `cihub://auth?token=`
+    // link must not carry a token into the desktop window. Mobile keeps this handling.
+    if cfg!(mobile) {
+        if let Some(payload) = extract_portal_auth(url) {
+            focus_main_window(app);
+            queue_portal_auth(app, payload);
+            return;
+        }
     }
 
     if let Some(payload) = extract_install_intent(url) {
@@ -1603,6 +1851,7 @@ Companion Hub {version} — desktop app + headless launcher for the Companion In
 USAGE:
   companion-hub                   Launch the desktop app (requires a graphical session)
   companion-hub --detached        Start the Hub stack headless (no display needed) and exit
+  companion-hub --login-start     Start in the tray without opening the window (used at login)
   companion-hub update [--check]  Install (or just check for) desktop + stack updates
   companion-hub --help | -h       Show this help
   companion-hub --version | -V    Show the version

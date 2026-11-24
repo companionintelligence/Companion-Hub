@@ -91,7 +91,15 @@ describe('parseFleetArgs', () => {
       hubOllamaSlots: 4,
     });
     expect(parseFleetArgs(['backends', '--ollama-parallel', 'unset'])).toMatchObject({ hubOllamaSlots: null, hubContextCap: undefined });
-    expect(parseFleetArgs(['backends', '--ollama-keep-alive', '24h'])).toMatchObject({ hubContextCap: undefined, hubOllamaSlots: undefined });
+    // --ollama-keep-alive carries one too, in seconds: an unpinned model goes back to the daemon's keep-alive.
+    expect(parseFleetArgs(['backends', '--ollama-keep-alive', '24h'])).toMatchObject({
+      hubContextCap: undefined,
+      hubOllamaSlots: undefined,
+      hubOllamaKeepAlive: 86_400,
+    });
+    expect(parseFleetArgs(['backends', '--ollama-keep-alive=-1'])).toMatchObject({ hubOllamaKeepAlive: -1 });
+    expect(parseFleetArgs(['backends', '--ollama-keep-alive', 'unset'])).toMatchObject({ hubOllamaKeepAlive: null });
+    expect(parseFleetArgs(['backends', '--ollama-parallel', '4'])).toMatchObject({ hubOllamaKeepAlive: undefined });
     expect(parseFleetArgs(['backends', '--ollama-igpu', 'off']).ollamaRuntime).toEqual({ igpu: false });
     // The cap alone turns the step on too, in either flag spelling; a run without it has no `maxLoaded`.
     expect(parseFleetArgs(['backends', '--ollama-max-loaded=2']).ollamaRuntime).toEqual({ maxLoaded: 2 });

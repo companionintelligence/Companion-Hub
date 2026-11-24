@@ -79,4 +79,39 @@ describe('ExposureSyncService Cloudflare retry', () => {
     await vi.advanceTimersByTimeAsync(5_000);
     expect(trigger).not.toHaveBeenCalled();
   });
+
+  describe('public DNS failure reporting', () => {
+    const message = '[Cloudflare] State sync did not complete — public DNS was not updated for 1 exposed app(s).';
+    const surface = (transient: boolean) => (service as any).surfacePublicDnsFailure(message, ['ci-openclaw'], [], { transient });
+
+    beforeEach(() => {
+      Object.assign(service, {
+        errorReportingService: { captureMessage: vi.fn(), captureWarning: vi.fn() },
+        lastPublicDnsFailureReportAt: 0,
+      });
+    });
+
+    it('reports a transient Portal outage as a warning, debounced to one per hour', () => {
+      surface(true);
+      surface(true);
+
+      const reporting = (service as any).errorReportingService;
+      expect(reporting.captureMessage).not.toHaveBeenCalled();
+      expect(reporting.captureWarning).toHaveBeenCalledWith(
+        message,
+        { failedApps: ['ci-openclaw'] },
+        { debounceKey: 'cloudflare:public-dns:transient', debounceMs: 60 * 60_000 },
+      );
+      expect((service as any).logger.warn).toHaveBeenCalledWith(message);
+    });
+
+    it('keeps a failure that is not transient an error', () => {
+      surface(false);
+
+      const reporting = (service as any).errorReportingService;
+      expect(reporting.captureWarning).not.toHaveBeenCalled();
+      expect(reporting.captureMessage).toHaveBeenCalledWith(message, 'error', { failedApps: ['ci-openclaw'] });
+      expect((service as any).logger.error).toHaveBeenCalledWith(message);
+    });
+  });
 });

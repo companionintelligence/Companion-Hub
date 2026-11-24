@@ -29,8 +29,28 @@ export type InferenceAuthErrorCode = 'missing_api_key' | 'invalid_api_key';
 
 const MISSING_KEY_MESSAGE =
   'This route needs an API key when reached from outside the appliance network. Mint one on the Hub with `cihub api-key create --scope inference` and send it as `Authorization: Bearer <key>`.';
+const TAILNET_KEY_MESSAGE =
+  'This Hub requires an API key from callers on the tailnet (HUB_INFERENCE_TAILNET_AUTH=require-key). Mint one on the Hub with `cihub api-key create --scope inference` and send it as `Authorization: Bearer <key>`.';
 const INVALID_KEY_MESSAGE = "Invalid API key: it is not in this Hub's key store, has expired, or does not carry the inference scope.";
 const STORE_UNAVAILABLE_MESSAGE = 'Authentication temporarily unavailable — API key store unreachable';
+
+/**
+ * Whether a caller on the tailnet needs an `inference` key, from `HUB_INFERENCE_TAILNET_AUTH`.
+ *
+ * - `trust` (default, and any other value): the tailnet is inside the appliance, as it has been since the pool
+ *   shipped. A request whose source, or whose forwarded chain, is a tailnet address (100.64.0.0/10,
+ *   `fd7a:115c:a1e0::/48`) is admitted by origin with no key, like a container on the Docker bridge.
+ * - `require-key`: a tailnet caller is outside. It must carry an `inference` key, exactly as a caller through the
+ *   Cloudflare tunnel does; containers on this host, loopback and the Docker/app subnets are still inside, and
+ *   Hub-to-Hub forwarding is untouched (peers use the signed `/api/inference/pool/local/*` routes, not these).
+ *
+ * Read per request, not cached, so a test (or an operator who restarts the Hub with the variable changed) sees it
+ * at once. Only this guard asks: `InternalOriginGuard`, `AppContainerOriginGuard` and Portal SSO keep the tailnet inside.
+ */
+export type InferenceTailnetAuth = 'trust' | 'require-key';
+export function inferenceTailnetAuth(env: Record<string, string | undefined> = process.env): InferenceTailnetAuth {
+  return (env.HUB_INFERENCE_TAILNET_AUTH ?? '').trim().toLowerCase() === 'require-key' ? 'require-key' : 'trust';
+}
 
 /**
  * Admit the inference surface — the OpenAI-compatible `/api/inference/v1/*` routes and the
@@ -86,7 +106,7 @@ export class InferenceAccessGuard implements CanActivate {
     const http = context.switchToHttp();
     const request = http.getRequest<InferenceAuthenticatedRequest>();
 
-    const origin = internalOriginRefusal(request);
+    const origin = internalOriginRefusal(request, { tailnetIsOutside: inferenceTailnetAuth() === 'require-key' });
     if (origin === null) {
       return true;
     }
@@ -145,7 +165,7 @@ export class InferenceAccessGuard implements CanActivate {
     code: InferenceAuthErrorCode,
     reason: string,
   ): never {
-    const message = code === 'missing_api_key' ? MISSING_KEY_MESSAGE : INVALID_KEY_MESSAGE;
+    const message = code === 'missing_api_key' ? (origin === 'tailnet-address' ? TAILNET_KEY_MESSAGE : MISSING_KEY_MESSAGE) : INVALID_KEY_MESSAGE;
     this.logger.warn(`Inference auth failure: ${reason}`, pathOf(request), `origin=${origin}`);
     response.setHeader('WWW-Authenticate', 'Bearer realm="ci-hub-inference"');
     response.status(401).json({ error: { message, type: 'authentication_error', code } });

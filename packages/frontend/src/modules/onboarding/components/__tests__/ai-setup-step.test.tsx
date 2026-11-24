@@ -1,24 +1,36 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { resetMobileClientCacheForTests } from '@/lib/mobile-connection';
 import { AiSetupStep } from '../ai-setup-step';
 import type { HardwareProfileResponse } from '../../helpers/ai-setup-types';
 
-const { fetchInferenceOnboardingProfile, fetchOllamaInstallStatus, fetchVllmInstallStatus, fetchLemonadeInstallStatus, rescanInferenceHardware } =
-  vi.hoisted(() => ({
-    fetchInferenceOnboardingProfile: vi.fn(),
-    fetchOllamaInstallStatus: vi.fn(),
-    fetchVllmInstallStatus: vi.fn(),
-    fetchLemonadeInstallStatus: vi.fn(),
-    rescanInferenceHardware: vi.fn(),
-  }));
+const {
+  fetchInferenceOnboardingProfile,
+  fetchOllamaInstallStatus,
+  fetchVllmInstallStatus,
+  fetchLemonadeInstallStatus,
+  fetchOmlxInstallStatus,
+  rescanInferenceHardware,
+  saveOmlxApiKey,
+} = vi.hoisted(() => ({
+  fetchInferenceOnboardingProfile: vi.fn(),
+  fetchOllamaInstallStatus: vi.fn(),
+  fetchVllmInstallStatus: vi.fn(),
+  fetchLemonadeInstallStatus: vi.fn(),
+  fetchOmlxInstallStatus: vi.fn(),
+  rescanInferenceHardware: vi.fn(),
+  saveOmlxApiKey: vi.fn(),
+}));
 
 vi.mock('@/lib/inference/inference-api', () => ({
   fetchInferenceOnboardingProfile,
   fetchOllamaInstallStatus,
   fetchVllmInstallStatus,
   fetchLemonadeInstallStatus,
+  fetchOmlxInstallStatus,
   rescanInferenceHardware,
+  saveOmlxApiKey,
 }));
 
 vi.mock('@/components/ui/Skeleton/Skeleton', () => ({
@@ -187,15 +199,96 @@ const vllmModel = {
   tiers: { high: 'recommended', medium: 'available', low: 'not-recommended', cpuOnly: 'not-recommended' },
 };
 
-/** A vLLM-recommended profile whose catalog is the host-served model above. */
+/** A vLLM-recommended profile, with vLLM answering, whose catalog is the host-served model above. */
 const vllmProfile = (installedCatalogIds: string[] = []): HardwareProfileResponse =>
   ({
     ...highTierProfile,
-    backends: { ...highTierProfile.backends, recommended: 'vllm' },
+    backends: {
+      recommended: 'vllm',
+      available: [
+        { type: 'ollama', running: true, healthy: true },
+        { type: 'vllm', running: true, healthy: true },
+      ],
+    },
     recommendedModels: [vllmModel],
     availableModels: [vllmModel],
     installedCatalogIds,
   }) as any;
+
+/** A catalog row on Ollama, shaped like the onboarding profile lists it. */
+const ollamaModel = (
+  id: string,
+  displayName: string,
+  options: { modality?: 'llm' | 'embedding'; vision?: boolean; memoryFootprintMb?: number; parameterScale?: number } = {},
+) => ({
+  id,
+  displayName,
+  description: '',
+  modality: options.modality ?? 'llm',
+  purpose: 'general',
+  backend: 'ollama',
+  parameterScale: options.parameterScale ?? 4,
+  metadata: { capabilities: { tools: options.modality !== 'embedding', vision: options.vision === true } },
+  runtime: { backendModelId: id, input: ['text'], pinnedByDefault: false, memoryFootprintMb: options.memoryFootprintMb ?? 4096 },
+  requirements: { minTier: 'low', diskMb: options.memoryFootprintMb ?? 4096 },
+  tiers: { high: 'available', medium: 'available', low: 'available', cpuOnly: 'available' },
+});
+
+const gemmaE2b = ollamaModel('gemma4-e2b', 'Gemma 4 E2B', { vision: true, memoryFootprintMb: 3300, parameterScale: 2 });
+const gemmaE4b = ollamaModel('gemma4-e4b', 'Gemma 4 E4B', { vision: true, memoryFootprintMb: 4362 });
+const gemma12b = ollamaModel('gemma4-12b', 'Gemma 4 12B', { vision: true, memoryFootprintMb: 8560, parameterScale: 12 });
+const gemma26b = ollamaModel('gemma4-26b', 'Gemma 4 26B', { vision: true, memoryFootprintMb: 18780, parameterScale: 26 });
+const qwen35b = ollamaModel('qwen3-6-35b', 'Qwen 3.6 35B', { vision: true, memoryFootprintMb: 25456, parameterScale: 35 });
+const qwen08b = ollamaModel('qwen3-5-0-8b', 'Qwen 3.5 0.8B', { vision: true, memoryFootprintMb: 1100, parameterScale: 0.8 });
+const qwen4b = ollamaModel('qwen3-5-4b', 'Qwen 3.5 4B', { vision: true, memoryFootprintMb: 3830 });
+const nemotron4b = ollamaModel('nemotron-3-nano-4b', 'Nemotron 3 Nano 4B', { memoryFootprintMb: 3154 });
+const deepseek8b = ollamaModel('deepseek-r1-8b', 'DeepSeek R1 8B', { memoryFootprintMb: 5858, parameterScale: 8 });
+const qwen8b = ollamaModel('qwen3-8b', 'Qwen 3 8B', { memoryFootprintMb: 5858, parameterScale: 8 });
+const gemma270m = ollamaModel('gemma3-270m', 'Gemma 3 270M', { memoryFootprintMb: 550, parameterScale: 0.27 });
+const minimax = ollamaModel('minimax-m2-community-230b', 'MiniMax M2 230B', { memoryFootprintMb: 63078, parameterScale: 230 });
+const nomicEmbed = ollamaModel('nomic-embed-text', 'Nomic Embed Text', { modality: 'embedding', memoryFootprintMb: 500 });
+const embeddingGemma = ollamaModel('embeddinggemma', 'EmbeddingGemma', { modality: 'embedding', memoryFootprintMb: 700 });
+
+/**
+ * The issue's laptop: an 8 GB card whose model budget is 7.5 GB, with the lists the onboarding profile
+ * gave it. `availableModels` is in catalog order, which lists each family smallest first, and
+ * `recommendedModels` is best first.
+ */
+const laptopProfile = (installedCatalogIds: string[]): HardwareProfileResponse =>
+  ({
+    ...highTierProfile,
+    hardware: {
+      ...highTierProfile.hardware,
+      gpu: { ...highTierProfile.hardware.gpu, model: 'RTX 3080 Mobile', vramMb: 8192 },
+      effectiveInferenceMemoryMb: 7680,
+      tier: 'medium',
+    },
+    tier: 'medium',
+    recommendedModels: [qwen4b, gemmaE4b, deepseek8b, nemotron4b, qwen8b, nomicEmbed],
+    availableModels: [gemmaE4b, qwen08b, qwen4b, nemotron4b, deepseek8b, qwen8b, gemma270m, nomicEmbed, embeddingGemma],
+    memoryBudget: { ...highTierProfile.memoryBudget, totalVramMb: 8192, modelBudgetVramMb: 7680 },
+    resourceEstimate: { totalDiskMb: 0, totalMemoryMb: 0, availableMemoryMb: 7680, availableDiskMb: 25600, diskTotalMb: 327680 },
+    installedCatalogIds,
+  }) as any;
+
+/** A 128 GB unified-memory machine, whose recommended list starts with MiniMax M2 230B (61.6 GB). */
+const unified128Profile = (installedCatalogIds: string[]): HardwareProfileResponse =>
+  ({
+    ...highTierProfile,
+    hardware: {
+      ...highTierProfile.hardware,
+      gpu: { ...highTierProfile.hardware.gpu, vendor: 'amd', model: 'Radeon 8060S', vramMb: 131072, unifiedMemory: true },
+      ram: { totalMb: 131072, availableMb: 110000 },
+      effectiveInferenceMemoryMb: 91750,
+    },
+    recommendedModels: [minimax, qwen35b, gemma26b, gemma12b, nomicEmbed],
+    availableModels: [gemmaE2b, gemmaE4b, gemma12b, gemma26b, qwen35b, minimax, nomicEmbed],
+    installedCatalogIds,
+  }) as any;
+
+const isTicked = (id: string) => (screen.getByTestId(`model-checkbox-${id}`) as HTMLInputElement).checked;
+/** Whether a model's grid card or table row carries the Default badge. */
+const isMarkedDefault = (id: string) => within(screen.getByTestId(`model-row-${id}`)).queryByText(/default/i) !== null;
 
 // Mutable API state read by the default mock; tests tweak it before rendering.
 let api: {
@@ -251,6 +344,9 @@ describe('AiSetupStep', () => {
     fetchOllamaInstallStatus.mockImplementation(() => Promise.resolve(api.ollama));
     fetchVllmInstallStatus.mockImplementation(() => Promise.resolve(api.vllm));
     fetchLemonadeInstallStatus.mockImplementation(() => Promise.resolve({ ready: false, running: false, endpointUrl: 'http://127.0.0.1:13305' }));
+    fetchOmlxInstallStatus.mockImplementation(() =>
+      Promise.resolve({ ready: false, running: false, endpointUrl: 'http://host.docker.internal:8000' }),
+    );
     rescanInferenceHardware.mockImplementation(async () => {
       if (!api.rescanOk) throw new Error('HTTP 503');
     });
@@ -438,6 +534,343 @@ describe('AiSetupStep', () => {
     expect(screen.queryByTestId('install-block-reason')).not.toBeInTheDocument();
   });
 
+  /*
+   * #2113: the wizard ticked every model the engine had and marked the first in catalog order Default,
+   * so the Qwen 3.5 0.8B a Hub happened to have beat the recommended Qwen 3.5 4B. Finishing pinned
+   * all of them. Now it ticks the installed models it recommends and marks the highest of them Default.
+   * It ticks the first installed chat model as the Default only when none of those is installed.
+   */
+  describe('which installed models start ticked and which is Default', () => {
+    const continueWith = async (onComplete: ReturnType<typeof vi.fn>) => {
+      await userEvent.setup().click(screen.getByTestId('ai-continue-btn'));
+      return onComplete.mock.calls[0]?.[0];
+    };
+
+    it("marks the recommended 4B Default and ticks only recommended models, on the issue's 7.5 GB card", async () => {
+      api.profile = laptopProfile(['qwen3-5-0-8b', 'qwen3-5-4b', 'gemma3-270m', 'nomic-embed-text']);
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      expect(isTicked('qwen3-5-4b')).toBe(true);
+      expect(isMarkedDefault('qwen3-5-4b')).toBe(true);
+      expect(screen.getByText('2 models selected')).toBeInTheDocument();
+      expect(screen.queryByText('4 models selected')).not.toBeInTheDocument();
+
+      const config = await continueWith(onComplete);
+      expect(config).toMatchObject({
+        selectedModels: ['qwen3-5-4b', 'nomic-embed-text'],
+        ollamaSelectedModelIds: ['qwen3-5-4b', 'nomic-embed-text'],
+        preferredModelId: 'qwen3-5-4b',
+        preferredEmbeddingModelId: 'nomic-embed-text',
+        preferredVisionModelId: 'qwen3-5-4b',
+      });
+    });
+
+    it('marks MiniMax M2 Default on 128 GB when the engine has it beside Gemma 4 E4B and leaves Gemma unticked', async () => {
+      api.profile = unified128Profile(['gemma4-e4b', 'minimax-m2-community-230b']);
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      expect(isMarkedDefault('minimax-m2-community-230b')).toBe(true);
+      expect(screen.getByText('1 model selected')).toBeInTheDocument();
+      const config = await continueWith(onComplete);
+      expect(config).toMatchObject({ selectedModels: ['minimax-m2-community-230b'], preferredModelId: 'minimax-m2-community-230b' });
+      // Nothing ticked sees images, so the vision model the engine has is still saved, without a pin.
+      expect(config.preferredVisionModelId).toBe('gemma4-e4b');
+      expect(config.preferredEmbeddingModelId).toBeUndefined();
+    });
+
+    it('ticks the first installed chat model as Default when the engine has none of the recommended ones', async () => {
+      api.profile = laptopProfile(['gemma3-270m', 'qwen3-5-0-8b']);
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      expect(screen.getByText('1 model selected')).toBeInTheDocument();
+      expect(screen.getByTestId('model-checkbox-qwen3-5-4b')).not.toBeChecked();
+      const config = await continueWith(onComplete);
+      expect(config).toMatchObject({ selectedModels: ['qwen3-5-0-8b'], preferredModelId: 'qwen3-5-0-8b' });
+    });
+
+    it('keeps an embedder off the list ticked when the engine has no recommended one', async () => {
+      api.profile = laptopProfile(['qwen3-5-4b', 'embeddinggemma']);
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      const config = await continueWith(onComplete);
+      expect(config).toMatchObject({ selectedModels: ['qwen3-5-4b', 'embeddinggemma'], preferredEmbeddingModelId: 'embeddinggemma' });
+    });
+
+    it('ticks only the recommended embedder when the engine has another one too', async () => {
+      api.profile = laptopProfile(['qwen3-5-4b', 'nomic-embed-text', 'embeddinggemma']);
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      const config = await continueWith(onComplete);
+      expect(config).toMatchObject({ selectedModels: ['qwen3-5-4b', 'nomic-embed-text'], preferredEmbeddingModelId: 'nomic-embed-text' });
+    });
+
+    it('ticks nothing and offers the best recommended model when the engine has nothing', async () => {
+      api.profile = laptopProfile([]);
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      expect(isMarkedDefault('qwen3-5-4b')).toBe(true);
+      expect(isTicked('qwen3-5-4b')).toBe(false);
+      const config = await continueWith(onComplete);
+      expect(config.selectedModels).toEqual([]);
+      expect(config.preferredModelId).toBeUndefined();
+    });
+
+    it('moves the Default to the highest recommended model still ticked when the Default is unticked', async () => {
+      api.profile = laptopProfile(['qwen3-5-0-8b', 'qwen3-5-4b', 'qwen3-8b']);
+      const user = userEvent.setup();
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      await user.click(screen.getByTestId('other-group-small'));
+      await user.click(screen.getByTestId('model-checkbox-qwen3-5-0-8b'));
+      await user.click(screen.getByTestId('model-checkbox-qwen3-5-4b'));
+
+      // Qwen 3.5 0.8B comes first in the catalog; Qwen 3 8B is on the recommended list.
+      expect(isMarkedDefault('qwen3-8b')).toBe(true);
+      expect(isMarkedDefault('qwen3-5-0-8b')).toBe(false);
+      expect((await continueWith(onComplete)).preferredModelId).toBe('qwen3-8b');
+    });
+
+    it('leaves no Default when the last ticked chat model is unticked, so the next one ticked becomes it', async () => {
+      api.profile = laptopProfile(['qwen3-5-4b', 'nomic-embed-text']);
+      const user = userEvent.setup();
+      renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      await user.click(screen.getByTestId('model-checkbox-qwen3-5-4b'));
+      expect(isMarkedDefault('qwen3-5-4b')).toBe(false);
+
+      await user.click(screen.getByTestId('model-checkbox-qwen3-8b'));
+      expect(isMarkedDefault('qwen3-8b')).toBe(true);
+    });
+
+    it('saves the highest recommended model ticked when the Default card itself is not ticked', async () => {
+      api.profile = laptopProfile([]);
+      const user = userEvent.setup();
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      await user.click(screen.getByTestId('model-checkbox-qwen3-8b'));
+      await user.click(screen.getByTestId('other-group-small'));
+      await user.click(screen.getByTestId('model-checkbox-qwen3-5-0-8b'));
+
+      expect((await continueWith(onComplete)).preferredModelId).toBe('qwen3-8b');
+    });
+
+    it("keeps the person's ticks and Default through a re-check that finds new models", async () => {
+      api.profile = laptopProfile(['qwen3-5-0-8b', 'qwen3-5-4b', 'qwen3-8b', 'nomic-embed-text']);
+      const user = userEvent.setup();
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      await user.click(screen.getByTestId('other-group-small'));
+      await user.click(screen.getByTestId('model-checkbox-qwen3-5-0-8b'));
+      await user.click(screen.getByTestId('model-checkbox-qwen3-5-4b'));
+      await user.click(screen.getByTestId('model-checkbox-nomic-embed-text'));
+      expect(isMarkedDefault('qwen3-8b')).toBe(true);
+
+      // Gemma 4 E4B (recommended, above Qwen 3 8B) and Gemma 3 270M (not recommended) arrive meanwhile.
+      api.profile = laptopProfile(['qwen3-5-0-8b', 'qwen3-5-4b', 'qwen3-8b', 'nomic-embed-text', 'gemma4-e4b', 'gemma3-270m']);
+      await user.click(screen.getByTestId('ollama-recheck-btn'));
+      await waitFor(() => expect(isTicked('gemma4-e4b')).toBe(true));
+
+      expect(isMarkedDefault('qwen3-8b')).toBe(true);
+      const config = await continueWith(onComplete);
+      expect(config).toMatchObject({ selectedModels: ['gemma4-e4b', 'qwen3-5-0-8b', 'qwen3-8b'], preferredModelId: 'qwen3-8b' });
+    });
+
+    it('does not tick a model a re-check finds just because it would have been Default, while the Default stands', async () => {
+      api.profile = laptopProfile(['gemma3-270m']);
+      const user = userEvent.setup();
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByText('1 model selected')).toBeInTheDocument());
+
+      // Qwen 3.5 0.8B comes before Gemma 3 270M in the catalog. Neither is recommended.
+      await user.click(screen.getByTestId('other-group-small'));
+      api.profile = laptopProfile(['gemma3-270m', 'qwen3-5-0-8b']);
+      await user.click(screen.getByTestId('ollama-recheck-btn'));
+      await waitFor(() => expect(within(screen.getByTestId('model-row-qwen3-5-0-8b')).getByText('Installed')).toBeInTheDocument());
+
+      expect(await continueWith(onComplete)).toMatchObject({ selectedModels: ['gemma3-270m'], preferredModelId: 'gemma3-270m' });
+    });
+
+    it('ticks a model a re-check finds as the Default when nothing else is ticked, as the first load would', async () => {
+      api.profile = laptopProfile([]);
+      const user = userEvent.setup();
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      api.profile = laptopProfile(['gemma3-270m']);
+      await user.click(screen.getByTestId('ollama-recheck-btn'));
+      await waitFor(() => expect(screen.getByText('1 model selected')).toBeInTheDocument());
+
+      expect(await continueWith(onComplete)).toMatchObject({ selectedModels: ['gemma3-270m'], preferredModelId: 'gemma3-270m' });
+    });
+
+    it('does not tick a model off the list a re-check finds while a chat model the person ticked stands', async () => {
+      api.profile = laptopProfile([]);
+      const user = userEvent.setup();
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      // The Default card (Qwen 3.5 4B) stays unticked. Qwen 3 8B is ticked to download.
+      await user.click(screen.getByTestId('model-checkbox-qwen3-8b'));
+      api.profile = laptopProfile(['gemma3-270m']);
+      await user.click(screen.getByTestId('ollama-recheck-btn'));
+      await user.click(screen.getByTestId('other-group-small'));
+      await waitFor(() => expect(within(screen.getByTestId('model-row-gemma3-270m')).getByText('Installed')).toBeInTheDocument());
+
+      expect(isTicked('gemma3-270m')).toBe(false);
+      expect(await continueWith(onComplete)).toMatchObject({ selectedModels: ['qwen3-8b'], preferredModelId: 'qwen3-8b' });
+    });
+
+    it('leaves no Default through a re-check after the person unticked every chat model', async () => {
+      api.profile = laptopProfile(['qwen3-5-4b', 'nomic-embed-text']);
+      const user = userEvent.setup();
+      renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      await user.click(screen.getByTestId('model-checkbox-qwen3-5-4b'));
+      api.profile = laptopProfile(['qwen3-5-4b', 'nomic-embed-text', 'embeddinggemma']);
+      await user.click(screen.getByTestId('ollama-recheck-btn'));
+      await user.click(screen.getByTestId('other-group-embedding'));
+      await waitFor(() => expect(within(screen.getByTestId('model-row-embeddinggemma')).getByText('Installed')).toBeInTheDocument());
+
+      expect(isMarkedDefault('qwen3-5-4b')).toBe(false);
+      await user.click(screen.getByTestId('model-checkbox-qwen3-8b'));
+      expect(isMarkedDefault('qwen3-8b')).toBe(true);
+    });
+
+    it('leaves no Default through a rescan after the person unticked every chat model', async () => {
+      api.profile = laptopProfile(['qwen3-5-4b', 'nomic-embed-text']);
+      const user = userEvent.setup();
+      renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      await user.click(screen.getByTestId('model-checkbox-qwen3-5-4b'));
+      await user.click(screen.getByTestId('rescan-btn'));
+      await waitFor(() => expect(rescanInferenceHardware).toHaveBeenCalled());
+      await waitFor(() => expect(fetchInferenceOnboardingProfile).toHaveBeenCalledTimes(2));
+
+      expect(isMarkedDefault('qwen3-5-4b')).toBe(false);
+      await user.click(screen.getByTestId('model-checkbox-qwen3-8b'));
+      expect(isMarkedDefault('qwen3-8b')).toBe(true);
+    });
+
+    it('does not tick an embedder off the list a re-check finds while the person has one ticked', async () => {
+      api.profile = laptopProfile(['qwen3-5-4b']);
+      const user = userEvent.setup();
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      // Nomic Embed Text is ticked to download. EmbeddingGemma arrives meanwhile.
+      await user.click(screen.getByTestId('model-checkbox-nomic-embed-text'));
+      api.profile = laptopProfile(['qwen3-5-4b', 'embeddinggemma']);
+      await user.click(screen.getByTestId('ollama-recheck-btn'));
+      await user.click(screen.getByTestId('other-group-embedding'));
+      await waitFor(() => expect(within(screen.getByTestId('model-row-embeddinggemma')).getByText('Installed')).toBeInTheDocument());
+
+      expect(isTicked('embeddinggemma')).toBe(false);
+      expect(await continueWith(onComplete)).toMatchObject({ selectedModels: ['qwen3-5-4b', 'nomic-embed-text'] });
+    });
+
+    it('ticks a model a re-check finds as the Default after every chat model was unticked, wherever the catalog lists it', async () => {
+      api.profile = laptopProfile(['qwen3-5-0-8b']);
+      const user = userEvent.setup();
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      // Gemma 3 270M comes after the unticked Qwen 3.5 0.8B in the catalog. Neither is recommended.
+      await user.click(screen.getByTestId('other-group-small'));
+      await user.click(screen.getByTestId('model-checkbox-qwen3-5-0-8b'));
+      api.profile = laptopProfile(['qwen3-5-0-8b', 'gemma3-270m']);
+      await user.click(screen.getByTestId('ollama-recheck-btn'));
+      await waitFor(() => expect(isTicked('gemma3-270m')).toBe(true));
+
+      expect(await continueWith(onComplete)).toMatchObject({ selectedModels: ['gemma3-270m'], preferredModelId: 'gemma3-270m' });
+    });
+
+    it('does not tick a model the person unticked when a re-check finds it installed', async () => {
+      api.profile = laptopProfile(['qwen3-5-4b', 'nomic-embed-text']);
+      const user = userEvent.setup();
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      // Qwen 3 8B is ticked to download and then unticked. It arrives anyway.
+      await user.click(screen.getByTestId('model-checkbox-qwen3-8b'));
+      await user.click(screen.getByTestId('model-checkbox-qwen3-8b'));
+      api.profile = laptopProfile(['qwen3-5-4b', 'nomic-embed-text', 'qwen3-8b']);
+      await user.click(screen.getByTestId('ollama-recheck-btn'));
+      await waitFor(() => expect(within(screen.getByTestId('model-row-qwen3-8b')).getByText('Installed')).toBeInTheDocument());
+
+      expect(isTicked('qwen3-8b')).toBe(false);
+      expect(await continueWith(onComplete)).toMatchObject({ selectedModels: ['qwen3-5-4b', 'nomic-embed-text'] });
+    });
+
+    it('saves no vision model when the person unticked every model', async () => {
+      api.profile = laptopProfile(['qwen3-8b', 'qwen3-5-0-8b', 'nomic-embed-text']);
+      const user = userEvent.setup();
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      // Qwen 3.5 0.8B sees images but is off the list, so it was never ticked.
+      await user.click(screen.getByTestId('model-checkbox-qwen3-8b'));
+      await user.click(screen.getByTestId('model-checkbox-nomic-embed-text'));
+
+      const config = await continueWith(onComplete);
+      expect(config.selectedModels).toEqual([]);
+      expect(config.preferredModelId).toBeUndefined();
+      expect(config.preferredVisionModelId).toBeUndefined();
+    });
+
+    it('moves the Default to a ticked chat model when the Default card is left unticked', async () => {
+      api.profile = laptopProfile([]);
+      const user = userEvent.setup();
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+      expect(isMarkedDefault('qwen3-5-4b')).toBe(true);
+
+      await user.click(screen.getByTestId('model-checkbox-qwen3-8b'));
+
+      expect(isMarkedDefault('qwen3-8b')).toBe(true);
+      expect(isMarkedDefault('qwen3-5-4b')).toBe(false);
+      expect((await continueWith(onComplete)).preferredModelId).toBe('qwen3-8b');
+    });
+
+    it('marks the Default a first load would after a rescan of a profile that offered no chat model', async () => {
+      api.profile = { ...laptopProfile([]), recommendedModels: [nomicEmbed], availableModels: [nomicEmbed] } as any;
+      const user = userEvent.setup();
+      renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      api.profile = laptopProfile([]);
+      await user.click(screen.getByTestId('rescan-btn'));
+      await waitFor(() => expect(screen.getByTestId('model-row-qwen3-5-4b')).toBeInTheDocument());
+
+      expect(isMarkedDefault('qwen3-5-4b')).toBe(true);
+    });
+
+    it('does not save a vision model the person unticked', async () => {
+      api.profile = laptopProfile(['qwen3-8b', 'gemma4-e4b', 'nomic-embed-text']);
+      const user = userEvent.setup();
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      await user.click(screen.getByTestId('model-checkbox-gemma4-e4b'));
+
+      const config = await continueWith(onComplete);
+      expect(config).toMatchObject({ selectedModels: ['qwen3-8b', 'nomic-embed-text'], preferredModelId: 'qwen3-8b' });
+      expect(config.preferredVisionModelId).toBeUndefined();
+    });
+  });
+
   it('submits only Ollama-backed models with the agent framework and exposure', async () => {
     const user = userEvent.setup();
     const { onComplete } = renderStep();
@@ -452,6 +885,7 @@ describe('AiSetupStep', () => {
       agentFrameworks: ['openclaw'],
       selectedModels: ['phi-4-mini'],
       ollamaSelectedModelIds: ['phi-4-mini'],
+      downloadModelIds: ['phi-4-mini'],
       backend: 'ollama',
       cloudProviders: [],
       preferredModelId: 'phi-4-mini',
@@ -493,7 +927,7 @@ describe('AiSetupStep', () => {
           { type: 'ollama', running: true, healthy: true },
           { type: 'vllm', running: false, healthy: false },
           { type: 'lemonade', running: false, healthy: false },
-          { type: 'omlx', running: false, healthy: false },
+          { type: 'omlx', running: true, healthy: true },
         ],
       },
     };
@@ -589,6 +1023,64 @@ describe('AiSetupStep', () => {
     expect(screen.getByTestId('ai-continue-btn')).toBeDisabled();
   });
 
+  it('warns that embeddings wait on Ollama when it is not reachable', async () => {
+    api.profile = vllmProfile();
+    api.ollama = ollamaMissing;
+    api.vllm = vllmReady;
+
+    renderStep();
+
+    await waitFor(() => expect(screen.getByTestId('ollama-embeddings-warning')).toBeInTheDocument());
+  });
+
+  it('does not say Ollama is not reachable yet in a live session, where it can never start', async () => {
+    const tauriWindow = window as Window & { __TAURI_INTERNALS__?: { invoke: (command: string) => Promise<unknown> } };
+    api.profile = vllmProfile();
+    api.ollama = ollamaMissing;
+    api.vllm = vllmReady;
+    tauriWindow.__TAURI_INTERNALS__ = {
+      invoke: vi.fn(async (command: string) =>
+        command === 'live_session_state_command' ? { live: true, ollamaBlocked: true, tailscaleBlocked: true } : null,
+      ),
+    };
+    try {
+      renderStep();
+
+      await waitFor(() => expect(screen.getByTestId('ollama-live-session')).toBeInTheDocument());
+      expect(screen.queryByTestId('ollama-embeddings-warning')).not.toBeInTheDocument();
+    } finally {
+      delete tauriWindow.__TAURI_INTERNALS__;
+    }
+  });
+
+  it('shows the reason the desktop app gave when the vLLM button cannot set it up', async () => {
+    const tauriWindow = window as Window & { __TAURI_INTERNALS__?: { invoke: (command: string) => Promise<unknown> } };
+    tauriWindow.__TAURI_INTERNALS__ = {
+      invoke: vi.fn().mockResolvedValue([{ runner: 'vllm', state: 'skipped', detail: 'Automatic Linux vLLM setup requires a working NVIDIA GPU.' }]),
+    };
+    try {
+      api.profile = {
+        ...highTierProfile,
+        backends: { ...highTierProfile.backends, recommended: 'vllm' },
+      };
+      api.vllm = vllmMissing;
+      const user = userEvent.setup();
+      renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+      await user.click(screen.getByTestId('backend-option-vllm'));
+
+      await user.click(await screen.findByTestId('auto-install-runner-btn'));
+
+      await waitFor(() =>
+        expect(screen.getByTestId('auto-install-runner')).toHaveTextContent(
+          'Could not start automatically: Automatic Linux vLLM setup requires a working NVIDIA GPU.',
+        ),
+      );
+    } finally {
+      delete tauriWindow.__TAURI_INTERNALS__;
+    }
+  });
+
   it('refreshes the model list on vLLM re-check so a newly served model reads as installed', async () => {
     api.profile = vllmProfile();
     api.vllm = vllmReady;
@@ -628,7 +1120,7 @@ describe('AiSetupStep', () => {
     await user.click(screen.getByTestId('vllm-recheck-btn'));
 
     // Still on vLLM — the refetch must happen, and must not snap back to the recommended backend.
-    await waitFor(() => expect(fetchInferenceOnboardingProfile).toHaveBeenCalledWith('vllm', '', '', ''));
+    await waitFor(() => expect(fetchInferenceOnboardingProfile).toHaveBeenCalledWith('vllm', '', '', '', undefined));
     expect(screen.getByText('vLLM detected')).toBeInTheDocument();
   });
 
@@ -674,6 +1166,8 @@ describe('AiSetupStep', () => {
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
     const first = () => screen.getByTestId('model-checkbox-qwen3-4b-instruct-vllm') as HTMLInputElement;
     await waitFor(() => expect(first().checked).toBe(true));
+    // The load asks for Ollama's list, then for vLLM's once setup starts on vLLM.
+    const loadFetches = fetchInferenceOnboardingProfile.mock.calls.length;
 
     // Hold the refresh open so the operator's click lands while the fetch is still running.
     let release: (() => void) | undefined;
@@ -692,7 +1186,7 @@ describe('AiSetupStep', () => {
     release?.();
 
     // The refresh must merge onto the live selection, not the snapshot taken when it started.
-    await waitFor(() => expect(fetchInferenceOnboardingProfile).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(fetchInferenceOnboardingProfile).toHaveBeenCalledTimes(loadFetches + 1));
     expect(first().checked).toBe(false);
   });
 
@@ -705,6 +1199,7 @@ describe('AiSetupStep', () => {
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
     const checkbox = () => screen.getByTestId('model-checkbox-qwen3-4b-instruct-vllm') as HTMLInputElement;
     await waitFor(() => expect(checkbox().checked).toBe(true));
+    const loadFetches = fetchInferenceOnboardingProfile.mock.calls.length;
 
     // The operator restarts the host vLLM server and re-checks while it is still booting. The
     // profile endpoint swallows its own health-check failure and answers 200 with nothing served.
@@ -716,7 +1211,7 @@ describe('AiSetupStep', () => {
     // Adopting that answer would drop the card back into the "open Hugging Face" branch this
     // feature exists to leave, so an unreachable probe must not trigger the refresh at all.
     expect(checkbox().checked).toBe(true);
-    expect(fetchInferenceOnboardingProfile).toHaveBeenCalledTimes(1);
+    expect(fetchInferenceOnboardingProfile).toHaveBeenCalledTimes(loadFetches);
   });
 
   it('keeps the step usable when the profile refresh fails during a re-check', async () => {
@@ -902,6 +1397,290 @@ describe('AiSetupStep', () => {
     expect(latest.engineBlocked).toBeUndefined();
   });
 
+  it('starts on Ollama and lets you finish when vLLM is recommended but does not answer', async () => {
+    // An NVIDIA PC with Ollama running and no vLLM: the hardware suggests vLLM, nothing serves it.
+    api.profile = {
+      ...highTierProfile,
+      backends: {
+        recommended: 'vllm',
+        available: [
+          { type: 'ollama', running: true, healthy: true, modelsLoaded: 4 },
+          { type: 'vllm', running: false, healthy: false, modelsLoaded: 0 },
+        ],
+      },
+    };
+    api.ollama = ollamaReady;
+    api.vllm = vllmMissing;
+    const onConfigChange = vi.fn();
+    renderStep({ embedded: true, onConfigChange });
+
+    await waitFor(() => expect(screen.getByText('Ollama detected')).toBeInTheDocument());
+    expect(screen.getByTestId('backend-option-ollama').querySelector('input')).toBeChecked();
+    expect(screen.getByTestId('backend-option-ollama')).toHaveTextContent('Recommended');
+    expect(screen.getByTestId('backend-option-vllm')).not.toHaveTextContent('Recommended');
+    expect(screen.queryByText('vLLM not detected')).not.toBeInTheDocument();
+    // The models already in Ollama are the ones ticked, not just its embedder.
+    expect((screen.getByTestId('model-checkbox-phi-4-mini') as HTMLInputElement).checked).toBe(true);
+    await waitFor(() =>
+      expect(onConfigChange).toHaveBeenLastCalledWith(expect.objectContaining({ backend: 'ollama', selectedModels: ['phi-4-mini'] })),
+    );
+    expect(onConfigChange.mock.lastCall?.[0]).not.toHaveProperty('engineBlocked');
+  });
+
+  describe('models on oMLX', () => {
+    // A catalog row on oMLX, which the Hub downloads through oMLX's admin API.
+    const omlxModel = {
+      id: 'qwen3-8b-mlx',
+      displayName: 'Qwen 3 8B (MLX)',
+      description: '',
+      modality: 'llm',
+      purpose: 'general',
+      backend: 'omlx',
+      parameterScale: 8,
+      metadata: { capabilities: { tools: true } },
+      runtime: { backendModelId: 'mlx-community/Qwen3-8B-4bit', input: ['text'], pinnedByDefault: false, memoryFootprintMb: 5000 },
+      requirements: { minTier: 'low', diskMb: 4600 },
+      tiers: { high: 'recommended', medium: 'recommended', low: 'available', cpuOnly: 'available' },
+    };
+    const omlxReady = {
+      ready: true,
+      running: true,
+      endpointUrl: 'http://host.docker.internal:8000',
+      displayEndpoint: 'http://host.docker.internal:8000/v1',
+    };
+    const macProfile = (installedCatalogIds: string[] = []): HardwareProfileResponse =>
+      ({
+        ...highTierProfile,
+        hardware: {
+          ...highTierProfile.hardware,
+          gpu: { ...highTierProfile.hardware.gpu, vendor: 'apple', model: 'Apple M2 Max', unifiedMemory: true },
+          cpu: { ...highTierProfile.hardware.cpu, arch: 'arm64', model: 'Apple M2 Max' },
+          os: { platform: 'darwin', name: 'macOS', version: '15.6' },
+        },
+        backends: {
+          recommended: 'omlx',
+          available: [
+            { type: 'ollama', running: true, healthy: true },
+            { type: 'omlx', running: true, healthy: true },
+          ],
+        },
+        recommendedModels: [omlxModel, nomicEmbed],
+        availableModels: [omlxModel, nomicEmbed],
+        installedCatalogIds,
+      }) as any;
+
+    it('ticks a model oMLX does not have yet for the Hub to download, instead of opening Hugging Face, and pins only Ollama models', async () => {
+      api.profile = macProfile(['nomic-embed-text']);
+      fetchOmlxInstallStatus.mockImplementation(() => Promise.resolve(omlxReady));
+      const user = userEvent.setup();
+      const { onComplete } = renderStep();
+
+      await waitFor(() => expect(screen.getByTestId('backend-option-omlx').querySelector('input')).toBeChecked());
+      const checkbox = (await screen.findByTestId('model-checkbox-qwen3-8b-mlx')) as HTMLInputElement;
+      if (!checkbox.checked) await user.click(checkbox);
+
+      expect(mockOpenExternal).not.toHaveBeenCalled();
+      await waitFor(() => expect((screen.getByTestId('model-checkbox-qwen3-8b-mlx') as HTMLInputElement).checked).toBe(true));
+
+      await user.click(screen.getByTestId('ai-continue-btn'));
+      const config = onComplete.mock.calls[0]?.[0];
+      expect(config.downloadModelIds).toEqual(expect.arrayContaining(['qwen3-8b-mlx', 'nomic-embed-text']));
+      expect(config.ollamaSelectedModelIds).toEqual(['nomic-embed-text']);
+      // Embeddings on the oMLX path come from Ollama.
+      expect(config.preferredEmbeddingModelId).toBe('nomic-embed-text');
+    });
+
+    it('still opens Hugging Face for a vLLM model the server does not serve, which the Hub cannot download', async () => {
+      api.profile = vllmProfile();
+      api.vllm = vllmReady;
+      const user = userEvent.setup();
+      renderStep();
+      await waitFor(() => expect(screen.getByText('vLLM detected')).toBeInTheDocument());
+
+      await user.click(screen.getByTestId('model-checkbox-qwen3-4b-instruct-vllm'));
+
+      expect(mockOpenExternal).toHaveBeenCalledWith(expect.stringMatching(/^https:\/\/huggingface\.co\//));
+      expect((screen.getByTestId('model-checkbox-qwen3-4b-instruct-vllm') as HTMLInputElement).checked).toBe(false);
+    });
+
+    it('offers the desktop app a key for a keyless oMLX, stores it in the Hub and hands it to Continue', async () => {
+      const tauriWindow = window as Window & { __TAURI_INTERNALS__?: { invoke: (command: string) => Promise<unknown> } };
+      tauriWindow.__TAURI_INTERNALS__ = {
+        invoke: vi.fn(async (command: string) => {
+          if (command === 'omlx_admin_key_status_command') return { keySet: false };
+          if (command === 'omlx_setup_admin_key_command') return { apiKey: 'ci-hub-set-key' };
+          return null;
+        }),
+      };
+      try {
+        api.profile = macProfile();
+        fetchOmlxInstallStatus.mockImplementation(() => Promise.resolve(omlxReady));
+        saveOmlxApiKey.mockResolvedValue(undefined);
+        const user = userEvent.setup();
+        const { onComplete } = renderStep();
+
+        await user.click(await screen.findByTestId('omlx-admin-key-set-btn'));
+
+        await waitFor(() => expect(screen.getByTestId('omlx-admin-key-value')).toHaveTextContent('ci-hub-set-key'));
+        expect(saveOmlxApiKey).toHaveBeenCalledWith('ci-hub-set-key', 'omlx');
+        expect((screen.getByTestId('omlx-api-key-input') as HTMLInputElement).value).toBe('ci-hub-set-key');
+
+        await user.click(screen.getByTestId('ai-continue-btn'));
+        expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ backend: 'omlx', omlxApiKey: 'ci-hub-set-key' }));
+      } finally {
+        delete tauriWindow.__TAURI_INTERNALS__;
+      }
+    });
+
+    it('keeps the key the desktop app set when it installed oMLX, and hands it to Continue', async () => {
+      const tauriWindow = window as Window & { __TAURI_INTERNALS__?: { invoke: (command: string) => Promise<unknown> } };
+      tauriWindow.__TAURI_INTERNALS__ = {
+        invoke: vi.fn(async (command: string) =>
+          command === 'install_and_start_inference_runners_command'
+            ? [{ runner: 'omlx', state: 'installed_and_started', endpointUrl: 'http://host.docker.internal:8000', apiKey: 'omlx-main-key' }]
+            : null,
+        ),
+      };
+      try {
+        api.profile = macProfile();
+        fetchOmlxInstallStatus.mockImplementation((_url?: string, apiKey?: string) =>
+          Promise.resolve(apiKey ? omlxReady : { ready: false, running: false, endpointUrl: 'http://host.docker.internal:8000' }),
+        );
+        const user = userEvent.setup();
+        const { onComplete } = renderStep();
+        await waitFor(() => expect(screen.getByTestId('backend-option-omlx').querySelector('input')).toBeChecked());
+
+        await user.click(await screen.findByTestId('auto-install-runner-btn'));
+
+        await waitFor(() => expect(fetchOmlxInstallStatus).toHaveBeenCalledWith('http://host.docker.internal:8000', 'omlx-main-key'));
+        // Stored at once, so leaving setup before Continue still leaves the Hub with oMLX's key.
+        expect(saveOmlxApiKey).toHaveBeenCalledWith('omlx-main-key', 'omlx');
+        // Ready now, so the card shows oMLX detected in place of the button.
+        await waitFor(() => expect(screen.getByText('oMLX detected')).toBeInTheDocument());
+        expect((screen.getByTestId('omlx-api-key-input') as HTMLInputElement).value).toBe('omlx-main-key');
+        expect(fetchInferenceOnboardingProfile).toHaveBeenLastCalledWith('omlx', '', undefined, 'http://host.docker.internal:8000', 'omlx-main-key');
+
+        await user.click(screen.getByTestId('ai-continue-btn'));
+        expect(onComplete).toHaveBeenCalledWith(
+          expect.objectContaining({ backend: 'omlx', omlxUrl: 'http://host.docker.internal:8000', omlxApiKey: 'omlx-main-key' }),
+        );
+      } finally {
+        delete tauriWindow.__TAURI_INTERNALS__;
+      }
+    });
+  });
+
+  it('keeps oMLX in the Mac desktop app, which installs it itself, even with Ollama answering', async () => {
+    // The desktop window installs oMLX with Homebrew when setup finishes, so its pick stands.
+    const tauriWindow = window as Window & { __TAURI_INTERNALS__?: { invoke: (command: string) => Promise<unknown> } };
+    tauriWindow.__TAURI_INTERNALS__ = { invoke: vi.fn().mockResolvedValue(undefined) };
+    try {
+      api.profile = {
+        ...highTierProfile,
+        hardware: {
+          ...highTierProfile.hardware,
+          gpu: { ...highTierProfile.hardware.gpu, vendor: 'apple', model: 'Apple M2 Max', unifiedMemory: true },
+          cpu: { ...highTierProfile.hardware.cpu, arch: 'arm64', model: 'Apple M2 Max' },
+          os: { platform: 'darwin', name: 'macOS', version: '15.6' },
+        },
+        backends: {
+          recommended: 'omlx',
+          available: [
+            { type: 'ollama', running: true, healthy: true, modelsLoaded: 3 },
+            { type: 'omlx', running: false, healthy: false, modelsLoaded: 0 },
+          ],
+        },
+      };
+      const onConfigChange = vi.fn();
+      renderStep({ embedded: true, onConfigChange });
+
+      await waitFor(() => expect(screen.getByTestId('backend-option-omlx')).toBeInTheDocument());
+      expect(screen.getByTestId('backend-option-omlx').querySelector('input')).toBeChecked();
+      expect(screen.getByTestId('backend-option-omlx')).toHaveTextContent('Recommended');
+      expect(screen.getByTestId('backend-option-ollama')).not.toHaveTextContent('Recommended');
+      await waitFor(() => expect(onConfigChange).toHaveBeenLastCalledWith(expect.objectContaining({ backend: 'omlx' })));
+    } finally {
+      delete tauriWindow.__TAURI_INTERNALS__;
+    }
+  });
+
+  it('starts on an engine that answers in the phone app, which cannot install one on the Hub', async () => {
+    // The iOS and Android app is a Tauri webview as well, but it has no runner installer.
+    const tauriWindow = window as Window & { __TAURI_INTERNALS__?: { invoke: (command: string) => Promise<unknown> } };
+    resetMobileClientCacheForTests();
+    Object.defineProperty(window.navigator, 'userAgent', { configurable: true, value: 'Mozilla/5.0 (Linux; Android 14; Pixel 8)' });
+    tauriWindow.__TAURI_INTERNALS__ = { invoke: vi.fn().mockResolvedValue(undefined) };
+    try {
+      api.profile = {
+        ...highTierProfile,
+        backends: {
+          recommended: 'vllm',
+          available: [
+            { type: 'ollama', running: true, healthy: true, modelsLoaded: 4 },
+            { type: 'vllm', running: false, healthy: false, modelsLoaded: 0 },
+          ],
+        },
+      };
+      const onConfigChange = vi.fn();
+      renderStep({ embedded: true, onConfigChange });
+
+      await waitFor(() => expect(screen.getByText('Ollama detected')).toBeInTheDocument());
+      expect(screen.getByTestId('backend-option-ollama').querySelector('input')).toBeChecked();
+      expect(screen.getByTestId('backend-option-ollama')).toHaveTextContent('Recommended');
+      await waitFor(() => expect(onConfigChange).toHaveBeenLastCalledWith(expect.objectContaining({ backend: 'ollama' })));
+    } finally {
+      delete tauriWindow.__TAURI_INTERNALS__;
+      resetMobileClientCacheForTests();
+    }
+  });
+
+  it('waits for a ready engine in the phone app, which cannot install one', async () => {
+    const tauriWindow = window as Window & { __TAURI_INTERNALS__?: { invoke: (command: string) => Promise<unknown> } };
+    resetMobileClientCacheForTests();
+    Object.defineProperty(window.navigator, 'userAgent', { configurable: true, value: 'Mozilla/5.0 (Linux; Android 14; Pixel 8)' });
+    tauriWindow.__TAURI_INTERNALS__ = { invoke: vi.fn().mockResolvedValue(undefined) };
+    try {
+      api.profile = {
+        ...highTierProfile,
+        backends: {
+          recommended: 'vllm',
+          available: [
+            { type: 'ollama', running: false, healthy: false, modelsLoaded: 0 },
+            { type: 'vllm', running: false, healthy: false, modelsLoaded: 0 },
+          ],
+        },
+      };
+      api.ollama = ollamaMissing;
+      api.vllm = vllmMissing;
+      const onConfigChange = vi.fn();
+      renderStep({ embedded: true, onConfigChange });
+
+      await waitFor(() => expect(onConfigChange).toHaveBeenLastCalledWith(expect.objectContaining({ backend: 'vllm', engineBlocked: true })));
+    } finally {
+      delete tauriWindow.__TAURI_INTERNALS__;
+      resetMobileClientCacheForTests();
+    }
+  });
+
+  it('reads the installed models of the engine it starts on, not of the one the first request named', async () => {
+    // The first request names Ollama. Setup then starts on vLLM, which serves the model.
+    api.vllm = vllmReady;
+    fetchInferenceOnboardingProfile.mockImplementation((backend?: string) =>
+      Promise.resolve(vllmProfile(backend === 'vllm' ? ['qwen3-4b-instruct-vllm'] : [])),
+    );
+    renderStep();
+
+    await waitFor(() => expect((screen.getByTestId('model-checkbox-qwen3-4b-instruct-vllm') as HTMLInputElement).checked).toBe(true));
+    expect(fetchInferenceOnboardingProfile).toHaveBeenCalledWith('vllm', '', '', '', undefined);
+  });
+
+  it('says the apps install while the models download, which is the order the install step runs in', async () => {
+    renderStep();
+
+    expect(await screen.findByText('Apps install while your selected models download.')).toBeInTheDocument();
+    expect(screen.queryByText(/after your selected models finish downloading/i)).not.toBeInTheDocument();
+  });
+
   it('gives model tiles and access options a visible focus ring without showing the checkbox', async () => {
     renderStep();
     await waitFor(() => expect(screen.getByTestId('model-row-phi-4-mini')).toBeInTheDocument());
@@ -961,6 +1740,7 @@ describe('AiSetupStep', () => {
       agentFrameworks: ['openclaw'],
       selectedModels: ['phi-4-mini'],
       ollamaSelectedModelIds: ['phi-4-mini'],
+      downloadModelIds: ['phi-4-mini'],
       backend: 'ollama',
       cloudProviders: [],
       preferredModelId: 'phi-4-mini',

@@ -1,12 +1,16 @@
+import { isUtf8 } from 'node:buffer';
 import crypto from 'node:crypto';
 import net from 'node:net';
 import { APP_SESSION_COOKIE_NAME, SESSION_COOKIE_MAX_AGE, SESSION_COOKIE_NAME } from '@/common/constants';
+import { EDGE_SSO_PAGE_PATH, mintSessionToken, withSessionTokenFragment } from './session-token';
 import { buildHubPublicOrigin, resolveHubLocalDomainRoot, resolveHubPublicDomainRoot } from '@/common/helpers/hub-origin';
 import { hashEmailForLog } from '@/common/helpers/log-privacy';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { CacheService } from '@/core/cache/cache.service';
 import { SessionUserCache } from '@/core/cache/session-user.cache';
 import { ConfigurationService } from '@/core/config/configuration.service';
+import { DemoModeGuard } from '@/common/guards/demo-mode.guard';
+import { hubSessionOperatorUserId } from '@/core/portal/hub-session-operator';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { UserDto } from '@/modules/user/dto/user.dto';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -15,8 +19,11 @@ import {
   Body,
   Controller,
   Delete,
+  ForbiddenException,
   Get,
+  HttpCode,
   HttpStatus,
+  Optional,
   Patch,
   Post,
   Query,
@@ -28,23 +35,34 @@ import {
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { AuthGuard } from './auth.guard';
-import { AuthRateLimiter, authClientKey, type AuthRateScope } from './auth-rate-limiter';
+import { AuthRateLimiter, type AuthRateScope } from './auth-rate-limiter';
 import { AuthService, type PairedOrgMembership } from './auth.service';
+import { absentRoute, DidAuthFlagGuard, DidAuthJsonGuard, DidAuthSameOriginGuard } from './did-auth.guard';
+import { DidAuthRefusal, type DidAuthPurpose, DidAuthService } from './did-auth.service';
+import { HubSessionGuard } from './hub-session.guard';
 import { buildForwardAuthIdentityHeaders } from './utils/forward-auth-signing';
 import { normalizeForwardedHost, rawForwardedHost } from './utils/forward-auth-host';
 import { ForwardAuthIdentityResolver } from './forward-auth-identity.resolver';
 import { ForwardAuthSecretResolver } from './forward-auth-secret.resolver';
+import { MemoryApiKeyCheck } from './memory-api-key.check';
 import { BearerOrgMembershipCache } from './bearer-org-membership.cache';
 import { UserRepository } from '@/modules/user/user.repository';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { SessionManager } from './session.manager';
+import { DesktopWaitingChallenges } from './desktop-waiting-challenges';
 import {
   BrowserHandoffMintBody,
   BrowserHandoffMintDto,
   ChangePasswordBody,
   ChangeUsernameBody,
   CheckResetPasswordRequestDto,
+  DidChallengeBody,
+  DidChallengeDto,
+  DidLinkDto,
+  DidLinksDto,
+  DidProofBody,
+  DidUnlinkBody,
   DisableTotpBody,
   GetTotpUriBody,
   GetTotpUriDto,
@@ -59,6 +77,7 @@ import {
   PasswordResetRequestBody,
   PasswordResetRequestDto,
   PasswordResetVerifyResponseDto,
+  PortalDesktopConfigDto,
   PortalDesktopExchangeDto,
   PortalDesktopHandoffStatusDto,
   PortalSessionHintDto,
@@ -70,8 +89,15 @@ import {
   SetupTotpBody,
   VerifyTotpBody,
 } from './dto/auth.dto';
-import { HUB_FAVICON_LINK_TAG, HUB_FAVICON_PNG } from './hub-favicon';
-import { ApiExcludeEndpoint, ApiResponse } from '@nestjs/swagger';
+import { HUB_FAVICON_PNG } from './hub-favicon';
+import {
+  browserHandoffBusyLabel,
+  buildBrowserHandoffConfirmHtml,
+  describeBrowserHandoffTarget,
+  isSameOriginFormPost,
+  setBrowserHandoffConfirmHeaders,
+} from './browser-handoff-confirm';
+import { ApiBody, ApiExcludeEndpoint, ApiResponse } from '@nestjs/swagger';
 import {
   buildPortalDesktopDeepLink,
   buildPortalDesktopHandoffHtml,
@@ -86,8 +112,18 @@ import {
   shouldHandoffPortalLoginToDesktop,
   exchangePortalAuthorizationCode,
   fetchPortalSessionEmail,
+  fetchPortalUserinfo,
+  DESKTOP_SIGN_IN_WAIT_NONCE_HEADER,
+  DESKTOP_SIGN_IN_WAIT_PROOF_HEADER,
+  isDesktopSignInWaitProof,
+  isDirectLoopbackRequest,
   probePortalReachable,
+  portalBindingCookie,
+  portalBindingMatches,
+  PORTAL_SSO_STATE_TTL_SECONDS,
   type PortalDesktopExchange,
+  APP_CHALLENGE_PATTERN,
+  appVerifierMatches,
   type PortalSsoErrorCode,
   type PortalSsoState,
   resolveHubRequestOrigin,
@@ -102,6 +138,24 @@ import {
 import { extractBearerToken, portalClaimsIdentity, verifyPortalIdToken } from './portal-token';
 import { loadSessionUser, refuseRevokedSessionUser, sessionIdsFromRequest } from './auth.middleware';
 import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate';
+
+/** A browser-handoff ticket only has to survive the app handing one URL to the system browser. */
+const BROWSER_HANDOFF_TTL_SECONDS = 60;
+/** Long enough to explain a late or repeated arrival of a ticket, short enough to keep the store small. */
+const BROWSER_HANDOFF_ISSUED_TTL_SECONDS = 10 * 60;
+/** How long, from the mint, a ticket stays usable once its confirmation page is shown. */
+const BROWSER_HANDOFF_CONFIRM_WINDOW_SECONDS = 5 * 60;
+/** Where every refused handoff lands; the dashboard turns the marker into a toast. */
+const BROWSER_HANDOFF_FAILED_REDIRECT = '/?handoff=failed';
+const browserHandoffIssuedKey = (ticket: string) => `browser_handoff_issued:${ticket}`;
+/** A handoff redirect: 303 after the confirmation POST, so the browser follows it with a GET. */
+const browserHandoffRedirect = (req: Request, res: Response, url: string) => (req.method === 'POST' ? res.redirect(303, url) : res.redirect(url));
+
+/** What the Hub remembers about a browser-handoff ticket it minted, so a refusal of it can say why. */
+interface BrowserHandoffIssued {
+  mintedAt: number;
+  usedAt?: number;
+}
 
 /** Query param carrying the single-use edge-SSO ticket between the Hub and an app host (#77). */
 const EDGE_SSO_TICKET_PARAM = 'cihub_sso';
@@ -129,15 +183,97 @@ interface EdgeSsoTicket {
  * the Hub cookie, and its login exchange and API routes must reach Nest for
  * app-level authentication. Browser HTML remains on cookie SSO.
  *
+ * `/powersync` is Memory's sync engine, which the gateway proxies there. Its
+ * requests carry a PowerSync JWT that Memory's API signed with the appliance's
+ * own secret and that the engine verifies; it is not a Portal token, so the
+ * Bearer check below would refuse it, and the phone's sync could never connect
+ * through the Hub. Without a valid token the engine answers 401 on every route
+ * but its liveness probes.
+ *
+ * `/static` is Memory's object store: photos, videos and downloads, each link
+ * signed by Memory's API for the person it was handed to and checked by the
+ * store itself (unsigned requests and bucket listings answer 403 AccessDenied,
+ * measured 2026-10-30). An `<img>` cannot carry the phone's API key, so through
+ * the edge every photo in Phone Memory failed with a redirect to the Hub login.
+ * A signed link opens its file for anyone holding it until it expires (five
+ * minutes, Memory's `staticfiles.auth.signatureTTL`), as it already does on a
+ * Memory reached without a Hub.
+ *
+ * `/api/agent/v1` is where another person's Companion Memory reaches this one:
+ * asking a question, collecting an answer, checking this box holds a person's
+ * key, accepting an invite. Those requests come from another box, never with a
+ * Hub session or a member's Portal token, and Memory authenticates every one
+ * itself: each is signed with the sender's own key and answered only through a
+ * link the owner made for that key (an identity check needs no link and proves
+ * only that a key the caller already names is held here). Without this the Hub
+ * answered every one with its login, so two Memories behind Hubs could never
+ * link or ask each other anything.
+ *
  * ONLY for the official Memory install — see `isMemoryProviderHost`. Every
  * other edge-authenticated app relies on the Hub to authenticate for it, and
  * these paths mean nothing to them.
  */
-const FORWARD_AUTH_APP_PUBLIC_PREFIXES = ['/api/authenticate', '/api/health', '/api/keys'] as const;
+const FORWARD_AUTH_APP_PUBLIC_PREFIXES = ['/api/authenticate', '/api/health', '/api/keys', '/api/agent/v1', '/powersync', '/static'] as const;
 
+/** Memory's object keys are UUIDs, so its signed links need no decoding. A literal `%2F` in a key would take two rounds. */
+const MAX_FORWARDED_PATH_DECODE_ROUNDS = 4;
+
+/**
+ * One round of percent-decoding, or null when the bytes are not text a path can hold: invalid UTF-8
+ * or a control character. A `%` with no two hex digits after it stays as it is, because after the
+ * first round that is a percent sign in a file name.
+ */
+function decodeForwardedPathOnce(path: string): string | null {
+  let readable = true;
+  const decoded = path.replace(/(?:%[0-9a-f]{2})+/gi, (run) => {
+    const bytes = Buffer.from(run.replaceAll('%', ''), 'hex');
+    readable &&= isUtf8(bytes) && !bytes.some((byte) => byte < 0x20 || byte === 0x7f);
+    return bytes.toString('utf8');
+  });
+  return readable ? decoded : null;
+}
+
+/** Whether one form of a path is inside an exempt prefix with no dot segment, a backslash counting as a slash. */
+function staysInsidePublicPrefix(path: string): boolean {
+  if (!FORWARD_AUTH_APP_PUBLIC_PREFIXES.some((prefix) => path === prefix || path.startsWith(`${prefix}/`))) {
+    return false;
+  }
+  return !path
+    .replaceAll('\\', '/')
+    .split('/')
+    .some((segment) => segment === '.' || segment === '..');
+}
+
+/**
+ * Whether a forwarded request is for one of those paths, judged on what Memory ends up serving.
+ *
+ * `X-Forwarded-Uri` holds the path as the client sent it. Memory's gateway decodes it and resolves
+ * dot segments before it picks a route. How many times a path gets decoded on its way depends on the
+ * hop, so the text as sent says little about the route it reaches. The path therefore has to pass as
+ * sent and again after every round of decoding. Only the path counts: the query belongs to the app,
+ * so a signed link's `%2F`s there mean nothing here. A path that cannot be read, or is still encoded
+ * after the last round, is not exempt and goes to the login like any other request.
+ */
 function isForwardAuthAppPublicPath(uri: string): boolean {
-  const path = (uri.split('?')[0] || '/').replace(/\/+$/, '') || '/';
-  return FORWARD_AUTH_APP_PUBLIC_PREFIXES.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
+  let path = uri.split('?')[0] || '/';
+  // Neither Traefik nor the gateway accepts this in a request line, so only a malformed request has it.
+  if (/%(?![0-9a-f]{2})/i.test(path)) {
+    return false;
+  }
+  for (let round = 0; round <= MAX_FORWARDED_PATH_DECODE_ROUNDS; round++) {
+    if (!staysInsidePublicPrefix(path)) {
+      return false;
+    }
+    const decoded = decodeForwardedPathOnce(path);
+    if (decoded === null) {
+      return false;
+    }
+    if (decoded === path) {
+      return true;
+    }
+    path = decoded;
+  }
+  return false;
 }
 
 function translatableErrorKey(error: unknown): string {
@@ -151,20 +287,74 @@ function translatableErrorKey(error: unknown): string {
   return typeof error.message === 'string' ? error.message : '';
 }
 
-/**
- * Whether the request carries an `x-api-key` header at all. The VALUE is not
- * checked here — it is Memory's key, and Memory verifies it — which is exactly
- * why this exemption is scoped to the official Memory install by
- * `isMemoryProviderHost`. Applied to every edge-authenticated app, as it once
- * was, any non-empty header was an unauthenticated pass into apps that never
- * look at it (2026-09-24 audit).
- */
-function requestHasApiKey(req: Request): boolean {
-  const raw = req.headers['x-api-key'];
-  const value = Array.isArray(raw) ? raw[0] : raw;
-  return typeof value === 'string' && value.trim().length > 0;
+/** The errors that mean a password or two-factor code was checked and was not right. */
+function isWrongPasswordOrCode(error: unknown): boolean {
+  const key = translatableErrorKey(error);
+
+  return key === 'AUTH_ERROR_INVALID_PASSWORD' || key === 'AUTH_ERROR_TOTP_INVALID_CODE';
 }
 
+/**
+ * The request's `x-api-key`, or null. It is Memory's key: the edge passes it on only to the
+ * official Memory install (`isMemoryProviderHost`), and only once Memory has said it is one it
+ * accepts (`MemoryApiKeyCheck`). Applied to every edge-authenticated app, as it once was, any
+ * non-empty header was an unauthenticated pass into apps that never look at it (2026-09-24
+ * audit); until 2026-10-30 even Memory's pass took any non-empty value.
+ */
+function requestApiKey(req: Request): string | null {
+  const raw = req.headers['x-api-key'];
+  const value = (Array.isArray(raw) ? raw[0] : raw)?.trim();
+  return value ? value : null;
+}
+
+/**
+ * Whether the forwarded request is a CORS preflight: the original method was
+ * OPTIONS and it carries both `Origin` and `Access-Control-Request-Method`, as
+ * every browser preflight does and nothing else needs to.
+ *
+ * A preflight never carries cookies, keys or tokens — the browser leaves them
+ * off by design — so no request from Phone Memory's webview to Memory with an
+ * `x-api-key` or `Authorization` header can get past one here: answered with a
+ * redirect to the Hub login, the webview refuses the real request outright
+ * ("Redirect is not allowed for a preflight request"). A preflight returns no
+ * data; the app's CORS policy answers it, and the real request that follows
+ * goes through this check like any other. Narrow on purpose: an OPTIONS request
+ * missing either header is not a preflight and gets no pass.
+ */
+function isCorsPreflight(req: Request): boolean {
+  const method = req.headers['x-forwarded-method'];
+  const value = (Array.isArray(method) ? method[0] : method)?.trim().toUpperCase();
+  const present = (name: string) => {
+    const raw = req.headers[name];
+    const header = Array.isArray(raw) ? raw[0] : raw;
+    return typeof header === 'string' && header.trim().length > 0;
+  };
+  return value === 'OPTIONS' && present('origin') && present('access-control-request-method');
+}
+
+/**
+ * A service worker that removes itself. Traefik's `ci-hub-sw-reset` middleware (assets/traefik/
+ * dynamic/dynamic.yml) hands it to a browser that isn't signed in when the browser fetches an app's
+ * `/sw.js` to update its worker. The sign-in turns that fetch away and the update fails, so a browser
+ * holding a worker from before the sign-in kept answering every page load from its cache and never
+ * reached the sign-in (#2324). This one takes over, unregisters and reloads the app's open pages, so the
+ * next page load reaches the sign-in. Once signed in, the app registers its own worker again. It holds
+ * nothing of any app.
+ */
+export const SERVICE_WORKER_RESET_SCRIPT = `self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    (async () => {
+      await self.registration.unregister();
+      const clients = await self.clients.matchAll({ type: 'window' });
+      await Promise.all(clients.map((client) => client.navigate(client.url).catch(() => undefined)));
+    })(),
+  );
+});
+`;
+
+/** The Portal client the Hub's own sign-ins use (mobile-connect `OIDC_CLIENT_ID`). */
+const HUB_MOBILE_PORTAL_AUDIENCE = 'ci-hub';
 @Controller('auth')
 export class AuthController {
   constructor(
@@ -181,7 +371,12 @@ export class AuthController {
     private readonly sessionUserCache: SessionUserCache,
     private readonly forwardAuthIdentities: ForwardAuthIdentityResolver,
     private readonly rateLimiter: AuthRateLimiter,
+    private readonly memoryApiKeys: MemoryApiKeyCheck,
+    // Appended and optional: the DID sign-in is flag-gated, and a controller built without the service has no such routes.
+    @Optional() private readonly didAuth?: DidAuthService,
   ) {}
+
+  private readonly desktopWaitingChallenges = new DesktopWaitingChallenges();
 
   /**
    * Run an unauthenticated auth step under {@link AuthRateLimiter}: refuse if this client has
@@ -190,11 +385,61 @@ export class AuthController {
    * throws keeps its slot.
    */
   private async rateLimited<T>(scope: AuthRateScope, req: Request, step: () => Promise<T>): Promise<T> {
-    const refund = this.rateLimiter.admit(scope, authClientKey(req));
+    const refund = this.rateLimiter.admitRequest(scope, req);
     const result = await step();
     refund();
 
     return result;
+  }
+
+  /**
+   * Run a step that re-checks a signed-in person's own password or two-factor code, under
+   * {@link AuthRateLimiter}'s `accountRecheck` scope.
+   *
+   * The budget is the account's and one budget covers every route that does such a check, so it does
+   * not change with the address, the session or the route. Only a wrong password or code keeps its
+   * slot. Anything else, such as a correct password with a new password that is too short, was not a
+   * failed check and gives its slot back.
+   */
+  private async accountRechecked<T>(userId: number, req: Request, step: () => Promise<T>): Promise<T> {
+    const clientKey = String(userId);
+    const refund = this.admitAccountRecheck(clientKey, userId, req);
+
+    try {
+      const result = await step();
+      refund();
+
+      return result;
+    } catch (error) {
+      if (!isWrongPasswordOrCode(error)) {
+        refund();
+      } else if (this.rateLimiter.isSpent('accountRecheck', clientKey)) {
+        // Reached by the answer that used up the budget, so someone who stays exactly at the limit without being refused is still reported.
+        this.reportAccountRecheckLimit(clientKey, userId, req);
+      }
+
+      throw error;
+    }
+  }
+
+  private admitAccountRecheck(clientKey: string, userId: number, req: Request): () => void {
+    try {
+      return this.rateLimiter.admit('accountRecheck', clientKey);
+    } catch (error) {
+      this.reportAccountRecheckLimit(clientKey, userId, req);
+
+      throw error;
+    }
+  }
+
+  private reportAccountRecheckLimit(clientKey: string, userId: number, req: Request): void {
+    if (this.rateLimiter.firstNoticeInWindow('accountRecheck', clientKey)) {
+      this.logger.warn('Too many wrong password or two-factor attempts on a signed-in account', {
+        userId,
+        path: req.path,
+        ipAddress: req.ip,
+      });
+    }
   }
 
   private sessionCookieOptions(req: Request) {
@@ -206,37 +451,74 @@ export class AuthController {
     return { host, proto, domain, secure };
   }
 
-  private async setSessionCookie(res: Response, sessionId: string, req: Request) {
-    const options = this.sessionCookieOptions(req);
-    this.logger.debug('Setting session cookie', { host: options.host, domain: options.domain, proto: options.proto, secure: options.secure });
-
+  /**
+   * Secure/Domain for the Hub's session cookie (the Portal sign-in binding takes only Secure): dev
+   * insecure-cookie mode drops Secure and the Domain, otherwise both follow the forwarded origin.
+   */
+  private cookieSecurity(req: Request, options?: { secure: boolean; domain?: string }): { secure: boolean; domain?: string } {
     if (this.config.get('userSettings').experimental.insecureCookie) {
-      this.logger.warn('WARNING: Using insecure cookies. This is not recommended for production environments.');
-      res.cookie(SESSION_COOKIE_NAME, sessionId, { httpOnly: true, secure: false, sameSite: 'lax', maxAge: SESSION_COOKIE_MAX_AGE });
-      return;
+      return { secure: false };
     }
+    const { secure, domain } = options ?? this.sessionCookieOptions(req);
+    return { secure, domain };
+  }
 
-    res.cookie(SESSION_COOKIE_NAME, sessionId, {
+  /**
+   * The credential the client presents for `sessionId` from now on: a signed token for the
+   * `X-CI-Hub-Session` header (`session-token.ts`). Every sign-in returns it in its body, or, for a
+   * sign-in that ends in a redirect, in the redirect's fragment (`withSessionTokenFragment`).
+   *
+   * ⚠ NO COOKIE. The Hub used to plant `ci-hub-sid` here, and a cookie goes to every port on the host
+   * — every app the operator opens beside the Hub — where it was a full operator session. It
+   * authenticates nothing now (`sessionIdsFromRequest`), and the one a browser still holds is cleared.
+   */
+  private issueSessionToken(res: Response, sessionId: string, req: Request): string {
+    this.clearSessionCookie(res, req);
+    return mintSessionToken(sessionId, this.config.get('jwtSecret'));
+  }
+
+  /**
+   * Clears the `ci-hub-sid` an older Hub planted, under both shapes it could have: Domain-scoped to
+   * the forwarded host's parent (a named Hub), and host-only (an IP, or the insecure-cookie dev mode).
+   * Each clear must match the Domain the cookie was set with or the browser keeps it.
+   */
+  private clearSessionCookie(res: Response, req: Request) {
+    const security = this.cookieSecurity(req);
+    res.clearCookie(SESSION_COOKIE_NAME, { httpOnly: true, sameSite: 'lax', ...security });
+    if (security.domain) {
+      res.clearCookie(SESSION_COOKIE_NAME, { httpOnly: true, sameSite: 'lax', secure: security.secure });
+    }
+  }
+
+  /**
+   * The binding cookie that ties one Portal sign-in to the browser that ran `/start`, for this
+   * request's scheme: a `__Host-` cookie over https, a plain one on the callback path over http (see
+   * portalBindingCookie). Insecure-cookie dev mode gets the http form. Host-only (no Domain), unlike
+   * the session cookie: the callback always returns to the host that served `/start`, because the
+   * redirect URI is built from that request's origin, so no other host needs to see it.
+   */
+  private portalBindingCookieFor(req: Request, state: string) {
+    return portalBindingCookie(state, this.cookieSecurity(req).secure);
+  }
+
+  /** Set with a lifetime that matches the sign-in state's cache TTL. */
+  private setPortalBindingCookie(res: Response, cookie: ReturnType<typeof portalBindingCookie>, value: string) {
+    res.cookie(cookie.name, value, {
       httpOnly: true,
-      secure: options.secure,
       sameSite: 'lax',
-      maxAge: SESSION_COOKIE_MAX_AGE,
-      domain: options.domain,
+      path: cookie.path,
+      maxAge: PORTAL_SSO_STATE_TTL_SECONDS * 1000,
+      secure: cookie.secure,
     });
   }
 
-  /** Must pass the same Domain/Secure flags as Set-Cookie or the browser keeps the stale session. */
-  private async clearSessionCookie(res: Response, req: Request) {
-    const options = this.sessionCookieOptions(req);
-    if (this.config.get('userSettings').experimental.insecureCookie) {
-      res.clearCookie(SESSION_COOKIE_NAME, { httpOnly: true, secure: false, sameSite: 'lax' });
-      return;
-    }
-    res.clearCookie(SESSION_COOKIE_NAME, {
+  /** Must pass the same Path/Secure flags as Set-Cookie (and no Domain) or the browser keeps the stale binding. */
+  private clearPortalBindingCookie(res: Response, cookie: ReturnType<typeof portalBindingCookie>) {
+    res.clearCookie(cookie.name, {
       httpOnly: true,
-      secure: options.secure,
       sameSite: 'lax',
-      domain: options.domain,
+      path: cookie.path,
+      secure: cookie.secure,
     });
   }
 
@@ -277,6 +559,22 @@ export class AuthController {
   /** The local root the appliance's LAN hostnames are built with — same precedence as above. */
   private localDomainRoot(): string {
     return resolveHubLocalDomainRoot(this.config.getConfig());
+  }
+
+  /** The issued record for a browser-handoff ticket, or null for one this Hub never minted (read only, never written). */
+  private readBrowserHandoffIssued(ticket: string): BrowserHandoffIssued | null {
+    const raw = this.cache.get(browserHandoffIssuedKey(ticket));
+    if (!raw) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(raw) as Partial<BrowserHandoffIssued>;
+      return typeof parsed.mintedAt === 'number'
+        ? { mintedAt: parsed.mintedAt, usedAt: typeof parsed.usedAt === 'number' ? parsed.usedAt : undefined }
+        : null;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -328,10 +626,8 @@ export class AuthController {
     }
 
     await this.replacePresentedSessions(req, sessionId);
-    await this.setSessionCookie(res, sessionId, req);
 
-    // WebView2 over HTTP cannot rely on cross-origin cookies, so the desktop app also receives the ID.
-    return LoginDto.parse({ success: true, sessionId }, { reportOnly: true });
+    return LoginDto.parse({ success: true, sessionId: this.issueSessionToken(res, sessionId, req) }, { reportOnly: true });
   }
 
   @Post('/verify-totp')
@@ -340,15 +636,165 @@ export class AuthController {
     const { sessionId } = await this.rateLimited('totp', req, () => this.authService.verifyTotp(body));
 
     await this.replacePresentedSessions(req, sessionId);
-    await this.setSessionCookie(res, sessionId, req);
 
-    return LoginDto.parse({ success: true, sessionId }, { reportOnly: true });
+    return LoginDto.parse({ success: true, sessionId: this.issueSessionToken(res, sessionId, req) }, { reportOnly: true });
+  }
+
+  // ── Sign in with a DID ─────────────────────────────────────────────────────────────────────────
+  // Flag-gated (CI_HUB_DID_AUTH=true) and absent otherwise: DidAuthFlagGuard answers Nest's own 404
+  // before any other guard. See DidAuthService for what a proof is and what the Hub refuses to derive
+  // from one. A DID signs in only as the person who LINKED it, from a signed-in session, first;
+  // nothing here creates a person or a binding.
+  //
+  // Link and unlink read the session cookie and change something, so they are for a person's own
+  // page: HubSessionGuard (an interactive session, not a key), DemoModeGuard (a link is a way back
+  // in that outlives the shared demo user's password, which demo mode already stops anyone changing),
+  // DidAuthSameOriginGuard (not a page on another origin) and DidAuthJsonGuard (not a form post).
+  // Verify is anonymous and takes JSON only.
+
+  /** The service, or the 404 of a route that does not exist. Belt and braces behind {@link DidAuthFlagGuard}. */
+  private requireDidAuth(req: Request): DidAuthService {
+    if (!this.didAuth?.enabled) {
+      throw absentRoute(req);
+    }
+
+    return this.didAuth;
+  }
+
+  /**
+   * The person a link route acts for: the signed-in session's own, never a field of the body. The
+   * guards already refuse everything else; this keeps a handler that is called without them from
+   * acting for a key that speaks as the first operator.
+   */
+  private didPersonId(req: Request): number {
+    const userId = hubSessionOperatorUserId(req);
+    if (userId === undefined) {
+      throw new TranslatableError('AUTH_ERROR_SIGNED_IN_PERSON_REQUIRED', undefined, HttpStatus.FORBIDDEN);
+    }
+
+    return userId;
+  }
+
+  /**
+   * Check a proof for one purpose and return its DID. Every refusal is the same answer, and which
+   * check failed goes to the debug log, not to the caller.
+   *
+   * The status differs by route on purpose. Sign-in is anonymous, and there a refused proof is the
+   * 401 the caller asked for. A link is made by a person who IS signed in, and the SPA reads any 401
+   * as "your session ended" and signs them out, so a refused proof there is a 400.
+   */
+  private async verifyDidProof(didAuth: DidAuthService, body: DidProofBody, purpose: DidAuthPurpose): Promise<string> {
+    try {
+      return (await didAuth.verify(body.challengeId, body.idToken, purpose)).did;
+    } catch (error) {
+      if (error instanceof DidAuthRefusal) {
+        this.logger.debug('DID proof refused', { purpose, reason: error.reason });
+        throw purpose === 'sign-in'
+          ? new TranslatableError('AUTH_ERROR_DID_SIGN_IN_REFUSED', undefined, HttpStatus.UNAUTHORIZED)
+          : new TranslatableError('AUTH_ERROR_DID_PROOF_REFUSED', undefined, HttpStatus.BAD_REQUEST);
+      }
+      throw error;
+    }
+  }
+
+  @Post('/did/challenge')
+  @UseGuards(DidAuthFlagGuard)
+  @ApiBody({ type: DidChallengeBody, required: false })
+  @ApiResponse({ type: DidChallengeDto })
+  async didChallenge(@Body() body: unknown, @Req() req: Request) {
+    const didAuth = this.requireDidAuth(req);
+    // The body is optional and `purpose` defaults to `sign-in`. It is read here rather than by the
+    // global pipe, which refuses a request with no body at all.
+    const parsed = DidChallengeBody.schema.safeParse(body ?? {});
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.issues);
+    }
+
+    const challenge = await this.rateLimited('didAuthChallenge', req, () => didAuth.issueChallenge(parsed.data.purpose ?? 'sign-in'));
+
+    return DidChallengeDto.parse(challenge, { reportOnly: true });
+  }
+
+  @Post('/did/verify')
+  @UseGuards(DidAuthFlagGuard, DidAuthJsonGuard)
+  @ApiResponse({ type: LoginDto })
+  async didVerify(@Body() body: DidProofBody, @Res({ passthrough: true }) res: Response, @Req() req: Request) {
+    const didAuth = this.requireDidAuth(req);
+
+    // A failures-scope slot is taken when the request is admitted and handed back only when the person is let in.
+    const person = await this.rateLimited('didAuth', req, async () => {
+      const did = await this.verifyDidProof(didAuth, body, 'sign-in');
+      const userId = await didAuth.findUserId(did);
+      if (userId == null) {
+        // Reached only by someone who proved control of the key, so saying so tells them nothing they did not already hold.
+        throw new TranslatableError('AUTH_ERROR_DID_NOT_LINKED', undefined, HttpStatus.FORBIDDEN);
+      }
+
+      const user = await this.userRepository.getUserDtoById(userId);
+      if (!user || user.accessStatus === 'revoked') {
+        // The same answer as a proof that did not verify: a revoked person's DID is not a probe.
+        this.logger.debug('DID proof refused', { purpose: 'sign-in', reason: 'user-unavailable' });
+        throw new TranslatableError('AUTH_ERROR_DID_SIGN_IN_REFUSED', undefined, HttpStatus.UNAUTHORIZED);
+      }
+
+      // The live membership check every other first factor makes for a Portal-linked person: Portal
+      // removed them from the organization, the row still says active, and nothing else has noticed yet.
+      // A definitive "not a member" revokes and answers 403; Portal being unreachable lets them in, as
+      // it does for an existing Portal link.
+      await this.authService.assertStillOrgMember(user.id);
+
+      return user;
+    });
+
+    // A person who turned TOTP on keeps it: the DID replaces the password, not the second factor.
+    // (Portal SSO, `/portal/callback`, creates its session without asking for it; this path does not copy that.)
+    if (person.totpEnabled) {
+      return LoginDto.parse({ success: true, totpSessionId: this.authService.beginTotpStep(person.id) }, { reportOnly: true });
+    }
+
+    const sessionId = await this.sessionManager.createSession(person.id);
+    await this.replacePresentedSessions(req, sessionId);
+
+    return LoginDto.parse({ success: true, sessionId: this.issueSessionToken(res, sessionId, req) }, { reportOnly: true });
+  }
+
+  @Get('/did/links')
+  @UseGuards(DidAuthFlagGuard, AuthGuard, HubSessionGuard)
+  @ApiResponse({ type: DidLinksDto })
+  async didLinks(@Req() req: Request) {
+    const didAuth = this.requireDidAuth(req);
+    const userId = this.didPersonId(req);
+
+    return DidLinksDto.parse({ links: await didAuth.list(userId) }, { reportOnly: true });
+  }
+
+  @Post('/did/link')
+  @UseGuards(DidAuthFlagGuard, AuthGuard, HubSessionGuard, DemoModeGuard, DidAuthSameOriginGuard, DidAuthJsonGuard)
+  @ApiResponse({ type: DidLinkDto })
+  async didLink(@Body() body: DidProofBody, @Req() req: Request) {
+    const didAuth = this.requireDidAuth(req);
+    const userId = this.didPersonId(req);
+    const did = await this.rateLimited('didAuth', req, () => this.verifyDidProof(didAuth, body, 'link'));
+    await didAuth.link(userId, did);
+
+    return DidLinkDto.parse({ success: true, did }, { reportOnly: true });
+  }
+
+  @Delete('/did/link')
+  @UseGuards(DidAuthFlagGuard, AuthGuard, HubSessionGuard, DemoModeGuard, DidAuthSameOriginGuard, DidAuthJsonGuard)
+  @ApiResponse({ type: DidLinkDto })
+  async didUnlink(@Body() body: DidUnlinkBody, @Req() req: Request) {
+    const didAuth = this.requireDidAuth(req);
+    const userId = this.didPersonId(req);
+    await didAuth.unlink(userId, body.did);
+
+    return DidLinkDto.parse({ success: true, did: body.did }, { reportOnly: true });
   }
 
   @Post('/register')
   @ApiResponse({ type: RegisterDto })
   async register(@Body() body: RegisterBody, @Res({ passthrough: true }) res: Response, @Req() req: Request) {
-    this.rateLimiter.admit('register', authClientKey(req));
+    this.rateLimiter.admitRequest('register', req);
     const result = await this.authService.register(body);
 
     if (result.requiresEmailVerification) {
@@ -356,7 +802,7 @@ export class AuthController {
     }
 
     if (result.sessionId) {
-      await this.setSessionCookie(res, result.sessionId, req);
+      return RegisterDto.parse({ success: true, sessionId: this.issueSessionToken(res, result.sessionId, req) }, { reportOnly: true });
     }
 
     return RegisterDto.parse({ success: true }, { reportOnly: true });
@@ -390,9 +836,9 @@ export class AuthController {
    *
    * Until now the ONLY thing that could write that row was an interactive Portal login landing on
    * `/api/auth/portal/callback` — `cihub register` writes the device key and the organization id
-   * and stops there, and `POST /register` cannot finish headlessly because Portal answers it with
-   * `requiresEmailVerification`. So every headless appliance came up registered, keyed, and unable
-   * to authenticate its own operator API. That is the gap this closes.
+   * and stops there, and `POST /register` refuses on a paired Hub: the CI Account it would make is in
+   * no organization (#2061). So every headless appliance came up registered, keyed, and unable to
+   * authenticate its own operator API. That is the gap this closes.
    *
    * It is deliberately not a new way IN. Three things gate it, and each is already true of the
    * browser path it substitutes for:
@@ -402,9 +848,9 @@ export class AuthController {
    *      strictly less than the root shell that could write the `user` table directly.
    *   2. This Hub must be paired. Pairing is what proved org membership in the first place; a Hub
    *      that has not done it has no organization for an operator to belong to.
-   *   3. There must be no operator yet. First-operator bootstrap is the ONE admission that skips
-   *      the Portal membership check (see `admitHubPerson`), so it must happen at most once —
-   *      after that, additional people go through Portal and get checked.
+   *   3. There must be no operator yet. This claim is the ONE admission on a paired Hub that skips
+   *      the Portal membership check (`hostLocalClaim` in `admitHubPerson`), so it must happen at
+   *      most once. After that, additional people go through Portal and get checked.
    *
    * The row itself is written by `admitHubPerson`, not here: the rules about who may become an
    * operator on this appliance live in one place, and a second creation path would be a second
@@ -438,7 +884,10 @@ export class AuthController {
     // That fill-in throws 503 when `CI_CLOUD_URL` is unset, which is left alone deliberately: a Hub
     // that got past the registration gate above and still has no Portal URL is genuinely broken,
     // and "CI_CLOUD_URL is not configured" is a better answer than a claim that half-works.
-    const user = await this.authService.admitHubPerson({ issuer: '', subject: null, email: body.email, emailVerified: false });
+    const user = await this.authService.admitHubPerson(
+      { issuer: '', subject: null, email: body.email, emailVerified: false },
+      { hostLocalClaim: true },
+    );
 
     this.logger.info(`Hub claimed headlessly by device key for ${hashEmailForLog(user.username)}`);
 
@@ -463,11 +912,9 @@ export class AuthController {
 
   @Post('/logout')
   async logout(@Res() res: Response, @Req() req: Request) {
-    await this.clearSessionCookie(res, req);
-    // Cookie and header can name different sessions after a login race. Destroy every
-    // id the client presented so a stale cookie cannot leave the live header session
-    // (or vice versa) authenticated after "log out".
-    const sessionIds = new Set(sessionIdsFromRequest(req));
+    this.clearSessionCookie(res, req);
+    // Destroy every session the client presented a token for, and the one it authenticated with.
+    const sessionIds = new Set(sessionIdsFromRequest(req, this.config.get('jwtSecret')));
     if (req.hubSessionId) {
       sessionIds.add(req.hubSessionId);
     }
@@ -481,12 +928,13 @@ export class AuthController {
 
   /** A new login must kill every other id this browser presented so a stale cookie cannot win. */
   private async replacePresentedSessions(req: Request, keepSessionId: string) {
-    for (const presented of sessionIdsFromRequest(req)) {
+    const presentedIds = sessionIdsFromRequest(req, this.config.get('jwtSecret'));
+    for (const presented of presentedIds) {
       if (presented !== keepSessionId) {
         await this.sessionManager.deleteSession(presented);
       }
     }
-    this.invalidateEdgeSsoForSessions([...sessionIdsFromRequest(req), keepSessionId].filter((id) => id !== keepSessionId));
+    this.invalidateEdgeSsoForSessions(presentedIds.filter((id) => id !== keepSessionId));
   }
 
   /** App-host tickets stay valid after Hub logout unless we burn the ones bound to this session. */
@@ -519,15 +967,14 @@ export class AuthController {
   @UseGuards(AuthGuard)
   @ApiResponse({ type: SessionRefreshDto })
   async refreshSession(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
-    const sessionId = req.hubSessionId ?? req.cookies[SESSION_COOKIE_NAME] ?? req.get('x-ci-hub-session');
+    const sessionId = req.hubSessionId;
     if (!sessionId) {
       throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN', undefined, HttpStatus.UNAUTHORIZED);
     }
 
     const nextSessionId = await this.authService.refreshSession(sessionId);
-    await this.setSessionCookie(res, nextSessionId, req);
 
-    return SessionRefreshDto.parse({ sessionId: nextSessionId, issuedAt: Date.now() }, { reportOnly: true });
+    return SessionRefreshDto.parse({ sessionId: this.issueSessionToken(res, nextSessionId, req), issuedAt: Date.now() }, { reportOnly: true });
   }
 
   /**
@@ -538,7 +985,7 @@ export class AuthController {
   @UseGuards(AuthGuard)
   @ApiResponse({ type: BrowserHandoffMintDto })
   async mintBrowserHandoff(@Body() body: BrowserHandoffMintBody, @Req() req: Request) {
-    const sessionId = req.hubSessionId ?? req.cookies[SESSION_COOKIE_NAME] ?? req.get('x-ci-hub-session');
+    const sessionId = req.hubSessionId;
     if (!sessionId) {
       throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN', undefined, HttpStatus.UNAUTHORIZED);
     }
@@ -554,34 +1001,101 @@ export class AuthController {
 
     const ticket = crypto.randomUUID();
     // Keeping the target server-side prevents the consume URL from carrying an open-redirect target.
-    this.cache.set(`browser_handoff:${ticket}`, JSON.stringify({ sessionId, next: body.next }), 60);
+    this.cache.set(`browser_handoff:${ticket}`, JSON.stringify({ sessionId, next: body.next }), BROWSER_HANDOFF_TTL_SECONDS);
+    // Outlives the ticket so a refusal of a ticket this Hub really issued can say why (used, expired),
+    // while a made-up ticket finds neither key and stays silent. Written here, behind AuthGuard.
+    this.cache.set(
+      browserHandoffIssuedKey(ticket),
+      JSON.stringify({ mintedAt: Date.now() } satisfies BrowserHandoffIssued),
+      BROWSER_HANDOFF_ISSUED_TTL_SECONDS,
+    );
 
     return BrowserHandoffMintDto.parse({ url: `${hub.origin}/api/auth/browser-handoff?ticket=${encodeURIComponent(ticket)}` }, { reportOnly: true });
   }
 
   /**
    * The single-use ticket acts as the credential for a delegated browser session, so missing or stale tickets fail without setting a cookie.
-   * Only fresh user-initiated navigation may consume it, preventing login CSRF from page-initiated requests.
-   * Rejections stay silent because this unauthenticated endpoint would otherwise amplify log floods.
+   *
+   * A fresh user-initiated navigation (`Sec-Fetch-Site: none`, or no Fetch Metadata) redeems it at
+   * once. Anything else is answered with a confirmation page instead of a session: Chrome on Android
+   * marks EVERY link another app opens `cross-site`, so the Hub's Android app always arrives that
+   * way, and refusing it outright made Connect Memory and Open fail there every time. The page shows
+   * whom the browser would be signed in as and only redeems the ticket on a same-origin POST from
+   * itself, so a site that lures someone into opening a ticket (login CSRF) still cannot complete
+   * it: it can neither submit the form for them nor frame the page to take the click.
+   *
+   * Every refusal lands on `/?handoff=failed`, so the dashboard can say the browser was not signed in
+   * instead of the click looking like it did nothing. Only a refusal of a ticket this Hub really issued
+   * is logged (the issued record is unguessable, so a flood of made-up tickets stays silent and
+   * write-free), and the log names the check that refused it.
    */
   @Get('/browser-handoff')
   async consumeBrowserHandoff(@Query('ticket') ticket: string | undefined, @Req() req: Request, @Res() res: Response) {
+    const { issued, refuse } = this.browserHandoffContext(ticket, req, res);
+    if (!ticket) {
+      return refuse('no ticket');
+    }
+
     const fetchSite = req.get('sec-fetch-site');
     if (fetchSite !== undefined && fetchSite !== 'none') {
-      return res.redirect('/');
+      return this.renderBrowserHandoffConfirmation(ticket, issued, res, refuse, fetchSite);
     }
 
+    return this.redeemBrowserHandoff(ticket, issued, req, res, refuse);
+  }
+
+  /** The confirmation page's Continue. Redeems only for a POST from that page on this Hub's own origin. */
+  @Post('/browser-handoff/confirm')
+  async confirmBrowserHandoff(@Body('ticket') rawTicket: unknown, @Req() req: Request, @Res() res: Response) {
+    const ticket = typeof rawTicket === 'string' && rawTicket ? rawTicket : undefined;
+    const { issued, refuse } = this.browserHandoffContext(ticket, req, res);
     if (!ticket) {
-      return res.redirect('/');
+      return refuse('confirmation without a ticket');
     }
 
-    const cacheKey = `browser_handoff:${ticket}`;
-    const cached = this.cache.get(cacheKey);
-    if (!cached) {
-      // Avoid a synchronous store write for every unauthenticated ticket miss.
-      return res.redirect('/');
+    const hub = await this.resolvePublicHub();
+    if (!hub) {
+      return refuse('no public Hub origin');
     }
-    this.cache.del(cacheKey); // single-use — burn the real hit before acting on it.
+    if (!isSameOriginFormPost(req, hub.origin)) {
+      return refuse(`confirmation not posted from this Hub's own page (origin=${req.get('origin') ?? 'absent'})`);
+    }
+
+    return this.redeemBrowserHandoff(ticket, issued, req, res, refuse);
+  }
+
+  /** The issued record for a ticket, and the one way a handoff route refuses (logged only for a real ticket). */
+  private browserHandoffContext(ticket: string | undefined, req: Request, res: Response) {
+    const issued = ticket ? this.readBrowserHandoffIssued(ticket) : null;
+    const refuse = (reason: string) => {
+      if (issued) {
+        const age = Math.round((Date.now() - issued.mintedAt) / 1000);
+        const used = issued.usedAt === undefined ? '' : `, used ${Math.round((Date.now() - issued.usedAt) / 1000)}s ago`;
+        this.logger.warn(
+          `[BrowserHandoff] refused a ticket minted ${age}s ago${used}: ${reason} (sec-fetch-site=${req.get('sec-fetch-site') ?? 'absent'}, ua=${(req.get('user-agent') ?? 'absent').slice(0, 160)})`,
+        );
+      }
+      return browserHandoffRedirect(req, res, BROWSER_HANDOFF_FAILED_REDIRECT);
+    };
+    return { issued, refuse };
+  }
+
+  /**
+   * Reads and checks a ticket WITHOUT spending it. `hit` says whether a ticket was stored at all,
+   * which the redeem path needs to burn even a ticket whose record then fails a check.
+   */
+  private async inspectBrowserHandoffTicket(
+    ticket: string,
+    issued: BrowserHandoffIssued | null,
+  ): Promise<{ hit: true; cached: string; next: string; userId: number; hubOrigin: string } | { hit: boolean; reason: string }> {
+    const cached = this.cache.get(`browser_handoff:${ticket}`);
+    if (!cached) {
+      // No store write on a miss: this endpoint is unauthenticated.
+      return {
+        hit: false,
+        reason: issued?.usedAt === undefined ? `not found and never used (tickets last ${BROWSER_HANDOFF_TTL_SECONDS}s)` : 'already used',
+      };
+    }
 
     let sessionId: string;
     let next: string;
@@ -590,40 +1104,108 @@ export class AuthController {
       sessionId = parsed.sessionId;
       next = parsed.next;
     } catch {
-      return res.redirect('/');
+      return { hit: true, reason: 'unreadable ticket record' };
     }
 
     // Revalidate in case registration changed after the ticket was minted.
     const hub = await this.resolvePublicHub();
-    if (!sessionId || !next || !hub || !this.isSafeHandoffNext(next, hub.origin, hub.orgSlug)) {
-      return res.redirect('/');
+    if (!sessionId || !next || !hub) {
+      return { hit: true, reason: hub ? 'incomplete ticket record' : 'no public Hub origin' };
+    }
+    if (!this.isSafeHandoffNext(next, hub.origin, hub.orgSlug)) {
+      return { hit: true, reason: 'target no longer allowed' };
+    }
+
+    // Do not plant (or offer) a session that died during the ticket window.
+    const userId = this.sessionManager.resolveSessionUserId(sessionId);
+    if (userId === null) {
+      return { hit: true, reason: 'the minting session has ended' };
+    }
+
+    return { hit: true, cached, next, userId, hubOrigin: hub.origin };
+  }
+
+  /** Shows whom the browser would be signed in as. Spends nothing and plants nothing. */
+  private async renderBrowserHandoffConfirmation(
+    ticket: string,
+    issued: BrowserHandoffIssued | null,
+    res: Response,
+    refuse: (reason: string) => void,
+    fetchSite: string,
+  ) {
+    const found = await this.inspectBrowserHandoffTicket(ticket, issued);
+    if (!('cached' in found)) {
+      return refuse(found.reason);
+    }
+
+    const user = await this.userRepository.getUserDtoById(found.userId);
+    if (!user || user.accessStatus === 'revoked') {
+      return refuse('the minting person may no longer sign in');
+    }
+
+    // Time to read the page and press Continue, counted from the mint so reloading cannot keep a
+    // ticket alive. A ticket with no issued record keeps its normal lifetime.
+    if (issued) {
+      const remaining = Math.ceil((issued.mintedAt + BROWSER_HANDOFF_CONFIRM_WINDOW_SECONDS * 1000 - Date.now()) / 1000);
+      if (remaining > BROWSER_HANDOFF_TTL_SECONDS) {
+        this.cache.set(`browser_handoff:${ticket}`, found.cached, remaining);
+      }
+      this.logger.info(
+        `[BrowserHandoff] asked to confirm a ticket minted ${Math.round((Date.now() - issued.mintedAt) / 1000)}s ago (sec-fetch-site=${fetchSite})`,
+      );
+    }
+
+    res.status(200);
+    setBrowserHandoffConfirmHeaders(res);
+    res.send(
+      buildBrowserHandoffConfirmHtml({
+        ticket,
+        username: user.username,
+        target: describeBrowserHandoffTarget(found.next),
+        busyLabel: browserHandoffBusyLabel(found.next),
+      }),
+    );
+  }
+
+  /** Spends the ticket and plants a browser session for its person, then continues to its target. */
+  private async redeemBrowserHandoff(
+    ticket: string,
+    issued: BrowserHandoffIssued | null,
+    req: Request,
+    res: Response,
+    refuse: (reason: string) => void,
+  ) {
+    const found = await this.inspectBrowserHandoffTicket(ticket, issued);
+    if (found.hit) {
+      this.cache.del(`browser_handoff:${ticket}`); // single-use — burn the real hit before acting on it.
+      if (issued) {
+        // A second arrival of this ticket can then say it was already used, and when.
+        this.cache.set(
+          browserHandoffIssuedKey(ticket),
+          JSON.stringify({ ...issued, usedAt: Date.now() } satisfies BrowserHandoffIssued),
+          BROWSER_HANDOFF_ISSUED_TTL_SECONDS,
+        );
+      }
+    }
+    if (!('cached' in found)) {
+      return refuse(found.reason);
+    }
+    const { next, userId, hubOrigin } = found;
+
+    if (issued) {
+      this.logger.info(`[BrowserHandoff] redeemed a ticket minted ${Math.round((Date.now() - issued.mintedAt) / 1000)}s ago`);
     }
 
     // Give the browser its own session because browser rotation deletes the replaced ID and would log out the desktop (#944).
     // Independent session lifecycles prevent the two contexts from invalidating each other.
-    const userId = this.sessionManager.resolveSessionUserId(sessionId);
-    if (userId === null) {
-      // Do not plant a session that died during the ticket window.
-      return res.redirect('/');
-    }
-
-    // Reuse a live same-user session to avoid leaving week-long sessions behind.
-    // `touchSession` rejects rotation-grace IDs and extends a session that must survive the round trip.
-    const existingSessionId = req.cookies[SESSION_COOKIE_NAME];
-    const reusableSessionId =
-      typeof existingSessionId === 'string' && existingSessionId && this.sessionManager.resolveSessionUserId(existingSessionId) === userId
-        ? existingSessionId
-        : null;
-
-    if (reusableSessionId && this.sessionManager.touchSession(reusableSessionId)) {
-      // Reissue the cookie because extending only server expiry can still let the browser cookie die mid-flow (#944).
-      await this.setSessionCookie(res, reusableSessionId, req);
-      return res.redirect(next);
-    }
-
+    // (A live session this browser already held used to be reused, found by its cookie. The cookie
+    // names nothing now, and this top-level POST carries no header, so a fresh session it is.)
     const browserSessionId = await this.sessionManager.createSession(userId);
-    await this.setSessionCookie(res, browserSessionId, req);
-    return res.redirect(next);
+    // The token rides in the fragment, which only a Hub page may receive: whatever page the browser
+    // ends on can read it. A `next` on an app's host (`isSafeHandoffNext` allows this appliance's own)
+    // goes through the Hub page that signs in to an app, which takes the token and mints that app's ticket.
+    const landing = new URL(next, hubOrigin).origin === hubOrigin ? next : `${EDGE_SSO_PAGE_PATH}?redirect=${encodeURIComponent(next)}`;
+    return browserHandoffRedirect(req, res, withSessionTokenFragment(landing, this.issueSessionToken(res, browserSessionId, req), hubOrigin));
   }
 
   /** Desktop login returns through its deep link, while browser login returns to the initiating Hub origin. */
@@ -634,8 +1216,11 @@ export class AuthController {
     @Query('redirect_url') redirectUrl?: string,
     @Query('desktop') desktop?: string,
     @Query('desktop_channel') desktopChannel?: string,
+    @Query('app_challenge') appChallengeParam?: string,
   ) {
-    const isDesktop = desktop === '1' || desktop === 'true' || this.cache.get(PORTAL_DESKTOP_PRESENCE_CACHE_KEY) === '1';
+    // Only this sign-in's own request decides. The desktop app always sends desktop=1, and the
+    // presence flag is applied at the callback, to loopback sign-ins only.
+    const isDesktop = desktop === '1' || desktop === 'true';
     // Declared by the client. Absent reads as 'packaged' — see
     // resolvePortalDesktopDeepLinkScheme for why that is the safe default.
     const channel = parseDesktopChannel(desktopChannel);
@@ -668,10 +1253,26 @@ export class AuthController {
     const state = crypto.randomUUID();
     const codeVerifier = crypto.randomBytes(32).toString('base64url');
     const codeChallenge = crypto.createHash('sha256').update(codeVerifier).digest('base64url');
+    // Binds this sign-in to the browser that started it: stored with the state and dropped as a
+    // short-lived cookie, then required back at the callback (see portalCallback).
+    const binding = crypto.randomBytes(32).toString('base64url');
     // A short callback window limits stale PKCE state.
-    const portalState: PortalSsoState = { codeVerifier, redirectUrl: redirectUrl || null, hubOrigin, desktop: isDesktop, desktopChannel: channel };
-    this.cache.set(`portal_sso:${state}`, JSON.stringify(portalState), 10 * 60);
+    // Only for a sign-in that ends in a one-time code handed to an app, and only a well-formed one:
+    // anything else is dropped, which leaves the code redeemable the old way rather than by no one.
+    const appChallenge =
+      isDesktop && typeof appChallengeParam === 'string' && APP_CHALLENGE_PATTERN.test(appChallengeParam) ? appChallengeParam : undefined;
+    const portalState: PortalSsoState = {
+      codeVerifier,
+      redirectUrl: redirectUrl || null,
+      hubOrigin,
+      desktop: isDesktop,
+      desktopChannel: channel,
+      binding,
+      ...(appChallenge ? { appChallenge } : {}),
+    };
 
+    // Built before the state and cookie are written: CI_CLOUD_URL is only checked as a string, so
+    // a value `new URL` rejects must not leave a binding cookie behind on the error response.
     const authorizeUrl = new URL('/api/auth/oauth2/authorize', portalBaseUrl);
     authorizeUrl.searchParams.set('client_id', 'ci-hub');
     authorizeUrl.searchParams.set('redirect_uri', callbackUrl);
@@ -680,6 +1281,9 @@ export class AuthController {
     authorizeUrl.searchParams.set('code_challenge', codeChallenge);
     authorizeUrl.searchParams.set('code_challenge_method', 'S256');
     authorizeUrl.searchParams.set('state', state);
+
+    this.cache.set(`portal_sso:${state}`, JSON.stringify(portalState), PORTAL_SSO_STATE_TTL_SECONDS);
+    this.setPortalBindingCookie(res, this.portalBindingCookieFor(req, state), binding);
 
     return res.redirect(authorizeUrl.toString());
   }
@@ -723,6 +1327,8 @@ export class AuthController {
       let codeVerifier: string;
       let redirectUrl: string | null;
       let hubOrigin: string;
+      let binding: string | undefined;
+      let appChallenge: string | undefined;
 
       try {
         const parsed = JSON.parse(cached) as PortalSsoState;
@@ -731,8 +1337,24 @@ export class AuthController {
         hubOrigin = parsed.hubOrigin;
         desktop = parsed.desktop;
         desktopChannel = parsed.desktopChannel ?? 'packaged';
+        binding = parsed.binding;
+        appChallenge = parsed.appChallenge;
       } catch {
         return redirectError(null, 'callback_error');
+      }
+
+      // Only the browser that ran `/start` holds this sign-in's binding cookie, so a callback opened
+      // anywhere else never reaches the code exchange or replaces that browser's session. The state
+      // is spent either way, so its cookie is cleared on every exit from here on; other sign-ins
+      // keep theirs. Earlier exits (no code, unknown state) leave it to expire with the state TTL.
+      // Read under the name this request's scheme gives, never the other one: a scheme that changed
+      // since `/start` finds no cookie and is refused (see portalBindingCookie).
+      const bindingCookie = this.portalBindingCookieFor(req, state);
+      const presentedBinding: unknown = req.cookies?.[bindingCookie.name];
+      this.clearPortalBindingCookie(res, bindingCookie);
+      if (!portalBindingMatches(binding, presentedBinding)) {
+        this.logger.warn('Portal OAuth callback rejected: sign-in was not completed in the browser that started it', { hubOrigin });
+        return redirectError(hubOrigin, 'state_expired');
       }
 
       const callbackUrl = resolvePortalCallbackUrl(hubOrigin);
@@ -793,7 +1415,9 @@ export class AuthController {
 
       const sessionId = await this.sessionManager.createSession(operator.id);
       await this.replacePresentedSessions(req, sessionId);
-      await this.setSessionCookie(res, sessionId, req);
+      // A redirect carries no body, so the browser gets its token in the fragment of the Hub page it
+      // lands on (`withSessionTokenFragment`). The desktop takes the session through its exchange.
+      const sessionToken = this.issueSessionToken(res, sessionId, req);
 
       const handoffToDesktop = shouldHandoffPortalLoginToDesktop({
         desktop,
@@ -807,6 +1431,7 @@ export class AuthController {
           sessionId,
           redirectPath: toDesktopRedirectPath(redirectUrl, hubOrigin),
           userId: operator.id,
+          ...(appChallenge ? { appChallenge } : {}),
         };
         this.cache.set(portalDesktopPendingKey(desktopToken), JSON.stringify(exchangePayload), PORTAL_DESKTOP_HANDOFF_TTL_SECONDS);
         const deepLink = buildPortalDesktopDeepLink(desktopToken, desktopChannel);
@@ -819,11 +1444,10 @@ export class AuthController {
           buildPortalDesktopHandoffHtml({
             deepLink,
             /*
-             * The cookie went out with this same response, so this link is the
-             * whole of "carry on in the browser" — no token, no second sign-in.
-             * It is the same destination the app is being sent to.
+             * "Carry on in the browser": the same destination the app is being sent to, with this
+             * browser's own token in the fragment, so no second sign-in.
              */
-            continueHref: exchangePayload.redirectPath,
+            continueHref: withSessionTokenFragment(exchangePayload.redirectPath, sessionToken, hubOrigin),
             statusHref: `/api/auth/portal/desktop-handoff-status?token=${encodeURIComponent(desktopToken)}`,
           }),
         );
@@ -832,12 +1456,7 @@ export class AuthController {
 
       // Redirect back to the requested URL if it's same-origin; otherwise go home.
       const safeRedirect = resolveSameOriginRedirectUrl(redirectUrl, hubOrigin);
-      if (safeRedirect) {
-        res.redirect(safeRedirect);
-        return;
-      }
-
-      res.redirect(new URL('/home', hubOrigin).toString());
+      res.redirect(withSessionTokenFragment(safeRedirect ?? '/home', sessionToken, hubOrigin));
       return;
     } catch (error) {
       this.logger.error('Portal OAuth callback crashed', error);
@@ -845,11 +1464,53 @@ export class AuthController {
     }
   }
 
+  /**
+   * A nonce for the desktop shell to sign before `POST /portal/desktop-waiting`. Unauthenticated
+   * because a nonce grants nothing until it comes back signed with the host-local key; rate-limited
+   * like the other unauthenticated auth routes. Only a caller that `isDirectLoopbackRequest` admits
+   * gets one: the shell always passes, and a caller from the internet could otherwise fill the open
+   * set and push the shell's nonce out. Left out of the API client because the frontend never calls it.
+   */
+  @Post('/portal/desktop-waiting/challenge')
+  @HttpCode(HttpStatus.OK)
+  @ApiExcludeEndpoint()
+  desktopSignInWaitChallenge(@Req() req: Request) {
+    if (!isDirectLoopbackRequest(req)) {
+      throw new ForbiddenException();
+    }
+    this.rateLimiter.admitRequest('desktopWaitingChallenge', req);
+    return { nonce: this.desktopWaitingChallenges.issue() };
+  }
+
+  /**
+   * The desktop app on this machine is signed out and waiting for a sign-in, so a browser sign-in on
+   * the loopback address hands off to it (shouldHandoffPortalLoginToDesktop). The desktop shell sends
+   * this from Rust every 60 s while its window is signed out, with a challenge's nonce and its
+   * `desktopSignInWaitProof`. The nonce is spent here whether or not the proof matches.
+   */
+  @Post('/portal/desktop-waiting')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiExcludeEndpoint()
+  desktopSignInWait(@Req() req: Request) {
+    const nonce = req.headers[DESKTOP_SIGN_IN_WAIT_NONCE_HEADER];
+    const proof = req.headers[DESKTOP_SIGN_IN_WAIT_PROOF_HEADER];
+    if (
+      typeof nonce !== 'string' ||
+      !this.desktopWaitingChallenges.take(nonce) ||
+      !isDesktopSignInWaitProof(proof, nonce, this.config.get('hubLocalKey'))
+    ) {
+      throw new UnauthorizedException();
+    }
+    this.cache.set(PORTAL_DESKTOP_PRESENCE_CACHE_KEY, '1', PORTAL_DESKTOP_PRESENCE_TTL_SECONDS);
+  }
+
   @Get('/portal/session-hint')
   @ApiResponse({ type: PortalSessionHintDto })
   async portalSessionHint(@Req() req: Request, @Query('desktop') desktop?: string) {
-    if (desktop === '1' || desktop === 'true') {
-      this.cache.set(PORTAL_DESKTOP_PRESENCE_CACHE_KEY, '1', PORTAL_DESKTOP_PRESENCE_TTL_SECONDS);
+    // A signed-in desktop window is not waiting for a sign-in, so its heartbeat clears the flag.
+    // Only the desktop app sets it, through POST /portal/desktop-waiting.
+    if ((desktop === '1' || desktop === 'true') && req.user && isDirectLoopbackRequest(req)) {
+      this.cache.del(PORTAL_DESKTOP_PRESENCE_CACHE_KEY);
     }
     const portalBaseUrl = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '') || null;
 
@@ -891,19 +1552,8 @@ export class AuthController {
       );
     }
 
-    const operator = await this.userRepository.getFirstOperator();
-    if (operator?.username?.trim()) {
-      return PortalSessionHintDto.parse(
-        {
-          email: operator.username.trim(),
-          portalBaseUrl,
-          source: 'hub_operator',
-          portalReachable,
-        },
-        { reportOnly: true },
-      );
-    }
-
+    // A caller the Hub cannot identify gets no account name. This route takes no session, so it must
+    // never fall back to an operator's.
     return PortalSessionHintDto.parse({ email: null, portalBaseUrl, source: null, portalReachable }, { reportOnly: true });
   }
 
@@ -929,7 +1579,12 @@ export class AuthController {
 
   @Get('/portal/desktop-exchange')
   @ApiResponse({ type: PortalDesktopExchangeDto })
-  async exchangePortalDesktopLogin(@Req() req: Request, @Res({ passthrough: true }) res: Response, @Query('token') token?: string) {
+  async exchangePortalDesktopLogin(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+    @Query('token') token?: string,
+    @Query('verifier') verifier?: string,
+  ) {
     if (!token) {
       throw new BadRequestException('Missing desktop exchange token');
     }
@@ -949,6 +1604,28 @@ export class AuthController {
       throw new BadRequestException('Malformed desktop exchange payload');
     }
 
+    // A code minted for an app that kept a secret goes only to that app. A wrong or missing secret
+    // burns the code: whoever is presenting it took it off the link and is not the app that asked,
+    // and the same refusal as an unknown code tells them nothing more.
+    if (parsed.appChallenge !== undefined && !appVerifierMatches(parsed.appChallenge, verifier)) {
+      this.cache.del(cacheKey);
+      this.logger.warn('Portal desktop exchange refused a code presented without its app secret');
+      throw new BadRequestException('Invalid or expired desktop exchange token');
+    }
+
+    // An app that sends a secret asked for a bound code. A code with no challenge was minted for
+    // some other sign-in (a page can start one without app_challenge) and must not sign this app
+    // in as whoever finished it. Burn it the same way.
+    if (parsed.appChallenge === undefined && verifier !== undefined) {
+      this.cache.del(cacheKey);
+      this.logger.warn('Portal desktop exchange refused an unbound code presented with an app secret');
+      throw new BadRequestException('Invalid or expired desktop exchange token');
+    }
+
+    if (parsed.appChallenge === undefined) {
+      this.logger.info('Portal desktop exchange redeemed a code with no app secret (an app from before app binding)');
+    }
+
     let sessionId = parsed.sessionId;
     if (!this.sessionManager.resolveSessionUserId(sessionId)) {
       if (!parsed.userId) {
@@ -966,9 +1643,11 @@ export class AuthController {
      */
     this.cache.set(portalDesktopClaimedKey(token), '1', PORTAL_DESKTOP_CLAIMED_TTL_SECONDS);
     this.cache.del(cacheKey);
-    await this.setSessionCookie(res, sessionId, req);
-    this.logger.info('Portal desktop exchange planted a session cookie', { redirectPath: parsed.redirectPath });
-    return PortalDesktopExchangeDto.parse({ sessionId, redirectPath: parsed.redirectPath }, { reportOnly: true });
+    this.logger.info('Portal desktop exchange issued a session', { redirectPath: parsed.redirectPath });
+    return PortalDesktopExchangeDto.parse(
+      { sessionId: this.issueSessionToken(res, sessionId, req), redirectPath: parsed.redirectPath },
+      { reportOnly: true },
+    );
   }
 
   /**
@@ -976,15 +1655,19 @@ export class AuthController {
    * then pick is the same account, so the second in-app sheet is not a new
    * login: it is this id_token becoming a Hub session.
    *
-   * The token is the one `ci-hub` PKCE minted (`aud` includes `ci-hub`). An
-   * unverified email is refused the same way the browser callback refuses it.
+   * The token is the one `ci-hub` PKCE minted (`aud` includes `ci-hub`), and only that audience is
+   * accepted here. The default list also takes tokens Portal minted for the extension, the applet,
+   * Capture and the rest, which forward-auth needs; a session on this Hub is not one of their uses, and
+   * a token handed to any of those clients was otherwise a Hub sign-in too. An unverified email is
+   * refused the same way the browser callback refuses it.
    */
   @Post('/portal/mobile-session')
   @ApiResponse({ type: PortalDesktopExchangeDto })
   async establishPortalMobileSession(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const bearer = extractBearerToken(typeof req.headers.authorization === 'string' ? req.headers.authorization : undefined);
     const portalBase = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '');
-    const claims = bearer && portalBase ? await verifyPortalIdToken(bearer, { publicCiCloudUrl: portalBase }) : null;
+    const claims =
+      bearer && portalBase ? await verifyPortalIdToken(bearer, { publicCiCloudUrl: portalBase, audiences: [HUB_MOBILE_PORTAL_AUDIENCE] }) : null;
     if (!claims?.email || claims.emailVerified !== true) {
       throw new UnauthorizedException('Portal sign-in could not be used on this Hub');
     }
@@ -996,11 +1679,58 @@ export class AuthController {
       emailVerified: true,
     });
     const sessionId = await this.sessionManager.createSession(operator.id);
-    await this.setSessionCookie(res, sessionId, req);
     this.logger.info('Portal mobile session planted from the cloud-connect id_token', {
       portalEmailHash: hashEmailForLog(claims.email),
     });
-    return PortalDesktopExchangeDto.parse({ sessionId, redirectPath: '/home' }, { reportOnly: true });
+    return PortalDesktopExchangeDto.parse({ sessionId: this.issueSessionToken(res, sessionId, req), redirectPath: '/home' }, { reportOnly: true });
+  }
+
+  /**
+   * The desktop app ran its own sign-in: PKCE S256 with a 127.0.0.1 loopback redirect, against Portal as the
+   * public client `ci-hub` (no secret). It sends the access token that came back as a Bearer header, so no
+   * token goes into a URL. The Hub checks that token with Portal's userinfo endpoint, the same check the
+   * browser callback makes. The id_token audience check the mobile route does is not available from an
+   * access token, which is a known limit of this route.
+   */
+  @Post('/portal/desktop-session')
+  @ApiResponse({ type: PortalDesktopExchangeDto })
+  async establishPortalDesktopSession(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    const bearer = extractBearerToken(typeof req.headers.authorization === 'string' ? req.headers.authorization : undefined);
+    const portalBase = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '');
+    if (!bearer || !portalBase) {
+      throw new UnauthorizedException('Portal sign-in could not be used on this Hub');
+    }
+
+    const userinfo = await fetchPortalUserinfo({ publicPortalBaseUrl: portalBase, accessToken: bearer });
+    if (!userinfo.ok) {
+      throw new UnauthorizedException('Portal sign-in could not be used on this Hub');
+    }
+    if (!userinfo.subject) {
+      throw new UnauthorizedException('Portal sign-in could not be used on this Hub');
+    }
+
+    const operator = await this.authService.admitHubPerson({
+      issuer: userinfo.issuer || portalBase,
+      subject: userinfo.subject,
+      email: userinfo.email,
+      emailVerified: true,
+    });
+    const sessionId = await this.sessionManager.createSession(operator.id);
+    this.logger.info("Portal desktop session planted from the app's own sign-in", {
+      portalEmailHash: hashEmailForLog(userinfo.email),
+    });
+    return PortalDesktopExchangeDto.parse({ sessionId: this.issueSessionToken(res, sessionId, req), redirectPath: '/home' }, { reportOnly: true });
+  }
+
+  /**
+   * The Portal origin is public, and the desktop app needs it to run its own sign-in against the same Portal
+   * the Hub checks tokens with. Unauthenticated, because nothing in it is secret.
+   */
+  @Get('/portal/desktop-config')
+  @ApiResponse({ type: PortalDesktopConfigDto })
+  portalDesktopConfig() {
+    const portalUrl = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '');
+    return PortalDesktopConfigDto.parse({ portalUrl: portalUrl || null }, { reportOnly: true });
   }
 
   /**
@@ -1051,7 +1781,7 @@ export class AuthController {
       throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN');
     }
 
-    await this.authService.changeUsername({ userId, ...body });
+    await this.accountRechecked(userId, req, () => this.authService.changeUsername({ userId, ...body }));
 
     await this.clearSessionCookie(res, req);
     return res.status(204).send();
@@ -1066,7 +1796,7 @@ export class AuthController {
       throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN');
     }
 
-    await this.authService.changePassword({ userId, ...body });
+    await this.accountRechecked(userId, req, () => this.authService.changePassword({ userId, ...body }));
 
     await this.clearSessionCookie(res, req);
     return res.status(204).send();
@@ -1082,7 +1812,7 @@ export class AuthController {
       throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN');
     }
 
-    const res = await this.authService.getTotpUri({ userId, ...body });
+    const res = await this.accountRechecked(userId, req, () => this.authService.getTotpUri({ userId, ...body }));
     return GetTotpUriDto.parse(res, { reportOnly: true });
   }
 
@@ -1095,7 +1825,7 @@ export class AuthController {
       throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN');
     }
 
-    await this.authService.setupTotp({ userId, totpCode: body.code });
+    await this.accountRechecked(userId, req, () => this.authService.setupTotp({ userId, totpCode: body.code }));
   }
 
   @Patch('/totp/disable')
@@ -1107,7 +1837,7 @@ export class AuthController {
       throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN');
     }
 
-    await this.authService.disableTotp({ userId, ...body });
+    await this.accountRechecked(userId, req, () => this.authService.disableTotp({ userId, ...body }));
   }
 
   /**
@@ -1155,7 +1885,7 @@ export class AuthController {
   @Post('/password-reset/request')
   @ApiResponse({ type: PasswordResetRequestDto })
   async requestPasswordReset(@Body() body: PasswordResetRequestBody, @Req() req: Request) {
-    this.rateLimiter.admit('passwordResetRequest', authClientKey(req));
+    this.rateLimiter.admitRequest('passwordResetRequest', req);
 
     const { domain, localDomain } = this.config.getConfig();
     const hubOrigin = resolveTrustedReturnOrigin(req, { domain, localDomain });
@@ -1441,6 +2171,15 @@ export class AuthController {
     return appUrn != null && isMemoryProviderApp({ urn: appUrn });
   }
 
+  /** See {@link SERVICE_WORKER_RESET_SCRIPT}. Public: Traefik asks for it after the sign-in refused a request. */
+  @ApiExcludeEndpoint()
+  @Get('/service-worker-reset.js')
+  serviceWorkerReset(@Res() res: Response) {
+    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(200).send(SERVICE_WORKER_RESET_SCRIPT);
+  }
+
   @Get('/traefik')
   async traefik(@Req() req: Request, @Res() res: Response) {
     const forwardedHost = normalizeForwardedHost(req.headers['x-forwarded-host']);
@@ -1462,8 +2201,20 @@ export class AuthController {
     // the same request falls through to the Bearer / session checks below and is refused like
     // any other anonymous one. Resolved from the forwarded host, which Traefik sets from the
     // router that matched — not from anything the client sent.
-    if (!forwardAuthUser && (isForwardAuthAppPublicPath(cleanUri) || requestHasApiKey(req))) {
+    const apiKey = requestApiKey(req);
+    const selfAuthenticating = !forwardAuthUser && (isForwardAuthAppPublicPath(cleanUri) || isCorsPreflight(req));
+    if (!forwardAuthUser && (selfAuthenticating || apiKey)) {
       if (await this.isMemoryProviderHost(forwardedHost)) {
+        if (selfAuthenticating || !apiKey) {
+          return res.status(200).send();
+        }
+        // Memory decides whether its key is real; the edge asks before letting the request in, so
+        // a made-up key stops here. `unknown` (Memory unreachable, or too old to have the check)
+        // passes as before: Memory still checks the key on the request itself.
+        if ((await this.memoryApiKeys.check(apiKey)) === 'invalid') {
+          this.logger.debug(`Traefik forward auth refused an API key Memory does not accept for ${forwardedHost} ${cleanUri}`);
+          return res.status(401).send();
+        }
         return res.status(200).send();
       }
       this.logger.debug(`Traefik forward auth: Memory-only exemption refused for ${forwardedHost || '(no host)'} ${cleanUri}`);
@@ -1563,6 +2314,13 @@ export class AuthController {
 
     // Never log the raw URI because its ticket is a session-planting credential.
     this.logger.debug('Unauthenticated Traefik forward auth request', { uri: cleanUri, proto, host: forwardedHost });
+
+    // A browser fetching a service worker script refuses a redirect anyway. A 401 is the one refusal
+    // Traefik's `ci-hub-sw-reset` middleware catches (#2324), so an app's own redirect for its
+    // `/sw.js` reaches the browser untouched.
+    if (req.headers['service-worker'] === 'script') {
+      return res.status(401).send();
+    }
 
     // Public Hub and app hosts are cookie-scope siblings, so a single-use ticket plants the app-host cookie (CI-Engineering#77).
     // Consume failures fall through to login and a fresh ticket instead of dead-ending.
@@ -1675,9 +2433,16 @@ export class AuthController {
   }
 
   /**
-   * Public sibling hosts cannot share the Hub cookie, so edge SSO uses a short-lived, single-use, host-bound ticket (CI-Engineering#77, ADR 002).
-   * Browser navigation must redirect through login instead of returning AuthGuard JSON, while loopback open bypasses this flow under ADR 001.
-   * Fetch Metadata cannot gate a redirect chain, so host binding, one-use, short TTL, and authenticated minting mitigate login CSRF.
+   * The entry an app's sign-in redirect names (`/traefik` sends the visitor here). It decides nothing:
+   * it hands the navigation to the Hub page at {@link EDGE_SSO_PAGE_PATH}, which asks
+   * `POST /edge-sso` for the ticket with the page's own session token.
+   *
+   * ⚠ A NAVIGATION CARRIES NO HEADER, AND THE COOKIE IS NO CREDENTIAL. This route used to mint the
+   * ticket from the `ci-hub-sid` the navigation brought along, and that cookie goes to every port on
+   * the Hub's host — so an app holding it could mint tickets for any other app. The token lives in
+   * the Hub page's storage, which only the page can read.
+   *
+   * The target is validated here too, so a bad one stops before the page.
    */
   @Get('/edge-sso')
   async edgeSso(@Query('redirect') redirect: string | undefined, @Req() req: Request, @Res() res: Response) {
@@ -1685,38 +2450,42 @@ export class AuthController {
     if (!validated) {
       throw new BadRequestException('Unsupported edge SSO target');
     }
+    // Force tunnel requests to HTTPS because their internal hop reports HTTP while the browser uses HTTPS.
+    // Match the scheme case-insensitively as required by RFC 3986.
+    const requestOrigin = resolveRequestOriginFallback(req);
+    const origin = this.viaCloudflareTunnel(req) ? requestOrigin.replace(/^http:/i, 'https:') : requestOrigin;
+    const pageUrl = new URL(EDGE_SSO_PAGE_PATH, origin);
+    pageUrl.searchParams.set('redirect', validated.url.toString());
+    return res.status(302).redirect(pageUrl.toString());
+  }
+
+  /**
+   * Public sibling hosts cannot share the Hub session, so edge SSO uses a short-lived, single-use, host-bound ticket (CI-Engineering#77, ADR 002).
+   * Asked by the Hub page at {@link EDGE_SSO_PAGE_PATH} with its session token; answers the URL to navigate to.
+   * Loopback open bypasses this flow under ADR 001. Host binding, one-use, short TTL and an authenticated mint mitigate login CSRF.
+   */
+  @Post('/edge-sso')
+  @UseGuards(AuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiExcludeEndpoint()
+  async mintEdgeSsoTicket(@Body() body: { redirect?: unknown }, @Req() req: Request, @Res() res: Response) {
+    const validated = await this.validateEdgeSsoTarget(typeof body?.redirect === 'string' ? body.redirect : undefined);
+    if (!validated) {
+      throw new BadRequestException('Unsupported edge SSO target');
+    }
     const { url: target, appUrn } = validated;
 
-    const sessionId = req.user ? (req.hubSessionId ?? req.cookies[SESSION_COOKIE_NAME] ?? req.get('x-ci-hub-session')) : undefined;
+    const sessionId = req.hubSessionId;
     if (!sessionId) {
-      // Return unauthenticated navigation through normal login with the absolute same-origin URL Portal expects.
-      // Force tunnel requests to HTTPS because their internal hop reports HTTP while the browser uses HTTPS.
-      // Match the scheme case-insensitively as required by RFC 3986.
-      const requestOrigin = resolveRequestOriginFallback(req);
-      const origin = this.viaCloudflareTunnel(req) ? requestOrigin.replace(/^http:/i, 'https:') : requestOrigin;
-      const selfUrl = new URL('/api/auth/edge-sso', origin);
-      selfUrl.searchParams.set('redirect', target.toString());
-      const loginUrl = new URL('/login', origin);
-      loginUrl.searchParams.set('redirect_url', selfUrl.toString());
-      loginUrl.searchParams.set('app', target.hostname.split('.')[0] ?? '');
-      return res.status(302).redirect(loginUrl.toString());
+      throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN', undefined, HttpStatus.UNAUTHORIZED);
     }
 
     // Cap mints per session and app so a browser that rejects cookies cannot redirect forever.
     const counterKey = `${EDGE_SSO_COUNTER_PREFIX}${sessionId}:${target.hostname}`;
     const mints = Number.parseInt(this.cache.get(counterKey) ?? '0', 10) || 0;
     if (mints >= EDGE_SSO_MAX_MINTS_PER_MINUTE) {
-      return res
-        .status(409)
-        .type('html')
-        .send(
-          '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Cookies required — Companion Hub</title>' +
-            HUB_FAVICON_LINK_TAG +
-            '</head><body style="font-family:sans-serif;max-width:32rem;margin:4rem auto">' +
-            '<h1>Cookies required</h1><p>Signing in to this app requires cookies, and your browser ' +
-            'does not appear to be accepting them. Enable cookies for this site and try again.</p>' +
-            '</body></html>',
-        );
+      // The page explains: signing in to an app needs that app's cookie, and this browser keeps refusing it.
+      return res.status(409).json({ code: 'EDGE_SSO_COOKIES_REQUIRED' });
     }
     // A fixed window prevents legitimate spaced sign-ins from extending themselves into the cap.
     const windowEndsAt = this.cache.getExpirationAt(counterKey);
@@ -1736,6 +2505,6 @@ export class AuthController {
     // Append the ticket raw because URLSearchParams would re-encode unrelated query segments.
     const ticketParam = `${EDGE_SSO_TICKET_PARAM}=${encodeURIComponent(ticket)}`;
     target.search = target.search ? `${target.search}&${ticketParam}` : `?${ticketParam}`;
-    return res.status(302).redirect(target.toString());
+    return res.status(200).json({ url: target.toString() });
   }
 }

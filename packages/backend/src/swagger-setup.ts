@@ -149,8 +149,8 @@ export function buildSwaggerDocument(app: INestApplication) {
   return document;
 }
 
-export async function writeSwaggerJsonFile(document: object) {
-  const swaggerPath = path.join(APP_DIR, 'packages', 'backend', 'src', 'swagger.json');
+/** Writes `document` to `swaggerPath`, by default the tracked `packages/backend/src/swagger.json`. */
+export async function writeSwaggerJsonFile(document: object, swaggerPath = path.join(APP_DIR, 'packages', 'backend', 'src', 'swagger.json')) {
   await fs.promises.mkdir(path.dirname(swaggerPath), { recursive: true });
   await fs.promises.writeFile(swaggerPath, `${JSON.stringify(document, null, 2)}\n`);
 }

@@ -15,3 +15,9 @@ export function extractOverlapCidrsFromError(error: unknown): string[] {
   const matches = message.match(/\b(?:\d{1,3}\.){3}\d{1,3}\/\d{1,2}\b/g) ?? [];
   return [...new Set(matches)];
 }
+
+/** Whether a network removal failed because a container joined it meanwhile or it was already gone. */
+export function isNetworkRemovalRace(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /already in use|has active endpoints|not found/i.test(message);
+}

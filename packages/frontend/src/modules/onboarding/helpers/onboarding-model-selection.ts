@@ -1,4 +1,5 @@
 import type { CuratedModel } from '@ci-hub/common/types';
+import { backendDisplayName } from '@/lib/inference/backend-names';
 
 export interface SelectionBudgetResult {
   downloadDiskMb: number;
@@ -21,6 +22,15 @@ function formatSizeMb(mb: number): string {
 }
 
 /**
+ * The engines `models` are in, as the note names them: "Ollama", or "vLLM and Ollama". Each model's
+ * own engine, not the selected one: with vLLM or oMLX selected the embedders the Hub lists are
+ * Ollama's, and the note called Nomic Embed Text "already in vLLM".
+ */
+function engineNames(models: CuratedModel[]): string {
+  return [...new Set(models.map((m) => backendDisplayName(m.backend)))].join(' and ');
+}
+
+/**
  * What a selection costs in DISK, plus the note about models that need no download. Nothing here
  * judges inference memory against the selection: downloading a model touches no GPU, and loading
  * one is the router's job — it fits, evicts or refuses per load (see the Hub's `loadTrackedModel`).
@@ -31,8 +41,6 @@ export function computeSelectionBudget(
   selectedModels: CuratedModel[],
   installedCatalogIds: string[],
   availableDiskMb: number,
-  /** The selected engine, as the notes should name it ("already in Lemonade"). */
-  backendName = 'Ollama',
 ): SelectionBudgetResult {
   const installed = new Set(installedCatalogIds);
   const modelsNeedingDownload = selectedModels.filter((m) => !installed.has(m.id));
@@ -46,17 +54,18 @@ export function computeSelectionBudget(
   const overDisk = downloadDiskMb > availableDiskMb;
 
   let memoryNote: string | undefined;
+  const engines = engineNames(modelsAlreadyInstalled);
   if (modelsAlreadyInstalled.length > 0 && modelsNeedingDownload.length === 0) {
     memoryNote =
       modelsAlreadyInstalled.length === 1
-        ? `This model is already in ${backendName}. Nothing new to download.`
-        : `${modelsAlreadyInstalled.length} selected models are already in ${backendName}. Nothing new to download.`;
+        ? `This model is already in ${engines}. Nothing new to download.`
+        : `${modelsAlreadyInstalled.length} selected models are already in ${engines}. Nothing new to download.`;
   } else if (installedMemoryMb > 0) {
     const installedCount = modelsAlreadyInstalled.length;
     memoryNote =
       installedCount === 1
-        ? `One selected model (${formatSizeMb(installedMemoryMb)} runtime footprint) is already in ${backendName} and will not be downloaded again.`
-        : `${installedCount} selected models (${formatSizeMb(installedMemoryMb)} combined runtime footprint) are already in ${backendName} and will not be downloaded again.`;
+        ? `One selected model (${formatSizeMb(installedMemoryMb)} runtime footprint) is already in ${engines} and will not be downloaded again.`
+        : `${installedCount} selected models (${formatSizeMb(installedMemoryMb)} combined runtime footprint) are already in ${engines} and will not be downloaded again.`;
   }
 
   let diskReason: string | undefined;
@@ -82,15 +91,17 @@ export function isSelectionWithinBudget(selectedModels: CuratedModel[], installe
 
 /**
  * The inference memory the engines may use on this host, and how much of it is free right now —
- * VRAM on a discrete GPU, the model share of RAM otherwise. Mirrors `availableMemoryMb` in the
- * Hub's onboarding profile, which is the same budget minus what every engine holds.
+ * VRAM on a discrete GPU of known size, the model share of RAM otherwise (a card the Hub could not
+ * size is budgeted on RAM, like the Hub's `modelPoolFor`). Mirrors `availableMemoryMb` in the Hub's
+ * onboarding profile, which is the same budget minus what every engine holds.
  */
 export function inferenceMemoryMb(profile: {
-  hardware: { gpu: { available: boolean; unifiedMemory: boolean } };
+  hardware: { gpu: { available: boolean; unifiedMemory: boolean; vramMb?: number } };
   memoryBudget: { modelBudgetVramMb: number; modelBudgetRamMb: number };
   resourceEstimate: { availableMemoryMb: number };
 }): { totalMb: number; freeMb: number } {
   const { gpu } = profile.hardware;
-  const totalMb = gpu.available && !gpu.unifiedMemory ? profile.memoryBudget.modelBudgetVramMb : profile.memoryBudget.modelBudgetRamMb;
+  const onCard = gpu.available && !gpu.unifiedMemory && (gpu.vramMb === undefined || gpu.vramMb > 0);
+  const totalMb = onCard ? profile.memoryBudget.modelBudgetVramMb : profile.memoryBudget.modelBudgetRamMb;
   return { totalMb: Math.max(0, totalMb), freeMb: Math.max(0, Math.min(totalMb, profile.resourceEstimate.availableMemoryMb ?? 0)) };
 }

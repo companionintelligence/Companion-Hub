@@ -4,6 +4,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from '@/components/ui/Input';
 import { PasswordInput } from '@/components/ui/PasswordInput/PasswordInput';
 import { clearClientHubState } from '@/lib/clear-client-hub-state';
+import { emailField } from '@/modules/auth/helpers/email-field';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
 import { SIGNED_OUT_PARAM } from '@/lib/signed-out-reasons';
 import type { TranslatableError } from '@/types/error.types';
@@ -23,8 +24,8 @@ export const ChangeUsernameForm = ({ username }: Props) => {
   const changeUsernameDisclosure = useDisclosure();
   const { t } = useTranslation();
   const schema = z.object({
-    newUsername: z.string().email(t('SETTINGS_SECURITY_CHANGE_USERNAME_FORM_INVALID_USERNAME')),
-    password: z.string().min(1),
+    newUsername: emailField(t),
+    password: z.string().min(1, t('AUTH_FORM_ERROR_PASSWORD_REQUIRED')),
   });
   const formId = useId();
   type FormValues = z.infer<typeof schema>;
@@ -42,7 +43,7 @@ export const ChangeUsernameForm = ({ username }: Props) => {
       window.location.assign(`/login?${SIGNED_OUT_PARAM}=username_changed`);
     },
     onError: (e: TranslatableError) => {
-      toast.error(t(e.message, e.intlParams));
+      toast.error(t(e.message, e.intlParams ?? {}));
     },
   });
 

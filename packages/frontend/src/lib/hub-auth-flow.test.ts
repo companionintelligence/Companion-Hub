@@ -78,14 +78,15 @@ describe('hubAuthFlowPolicy — the four flows stay distinct', () => {
       flow: 'desktop-hub-sso',
       pkce: false,
       hubSso: true,
-      deepLink: true,
-      // Same as mobile-hub-sso: the deep-link return is only exchangeable while
-      // this React app is still mounted, so the authorization request has to
-      // happen somewhere else — the system browser.
+      // The desktop signs in itself (desktop-portal-sign-in.ts), so no token arrives on a deep link and
+      // nothing on the desktop listens for one.
+      deepLink: false,
+      // The authorization request opens in the system browser, so it sits outside this React app.
       systemBrowser: true,
       switchHub: false,
-      listenAuth: true,
-      desktopPresence: true,
+      listenAuth: false,
+      // Retired: the desktop no longer announces its presence to the Hub.
+      desktopPresence: false,
     },
     {
       flow: 'browser-hub-sso',

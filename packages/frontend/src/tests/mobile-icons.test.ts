@@ -2,15 +2,15 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { getLogo } from '@/lib/theme/theme';
 
 /**
  * Guards the mobile app-icon critical path.
  *
  * Background: the Tauri iOS (`gen/apple/.../AppIcon.appiconset`) and Android
  * (`gen/android/.../res/mipmap-*`) icon sets are what actually get compiled
- * into the shipped apps. They are generated copies of the canonical CI brand
- * assets under `src-tauri/icons/`. A regression once left the whole `gen/` set
+ * into the shipped apps. They are generated from the Hub mark
+ * (`packages/frontend/hub-brand`, `pnpm --filter mobile icons`), and `src-tauri/icons/`
+ * holds a copy. A regression once left the whole `gen/` set
  * as the DEFAULT TAURI PLACEHOLDER (cyan/yellow "8") while `icons/` already
  * held the CI globe logo — so both simulators showed the wrong icon. These
  * tests assert, structurally:
@@ -21,7 +21,7 @@ import { getLogo } from '@/lib/theme/theme';
  *   - every compiled `gen/` icon is byte-identical to its `icons/` source
  *     (catches the placeholder-drift / out-of-sync bug that caused this);
  *   - `tauri.conf.json` `bundle.icon` paths all exist and are non-empty;
- *   - `getLogo()` returns a path to a real in-app logo asset.
+ *   - the in-app logo files exist.
  */
 
 const here = path.dirname(fileURLToPath(import.meta.url)); // packages/frontend/src/tests
@@ -171,21 +171,11 @@ describe('tauri.conf.json bundle.icon', () => {
 });
 
 // ---------------------------------------------------------------------------
-// In-app logo (getLogo)
+// In-app logo
 // ---------------------------------------------------------------------------
 
-describe('getLogo() in-app logo', () => {
-  it.each([true, false])('getLogo(%s) resolves to a real public asset', (auto) => {
-    const rel = getLogo(auto);
-    expect(typeof rel).toBe('string');
-    expect(rel.startsWith('/')).toBe(true);
-    const file = path.join(frontendPublic, rel.replace(/^\//, ''));
-    expect(isNonEmptyFile(file), `getLogo(${auto}) => ${rel} is missing/empty in public/`).toBe(true);
-  });
-
-  // Both possible getLogo() branches (default + christmas) must have real assets,
-  // independent of the current date.
-  it.each(['/hub.png', '/hub-christmas.png', '/brands/ci-server-e-brain.png'])('logo asset %s exists in public/', (rel) => {
+describe('in-app logo', () => {
+  it.each(['/hub.png', '/logo.svg', '/hub-mark.svg'])('logo asset %s exists in public/', (rel) => {
     const file = path.join(frontendPublic, rel.replace(/^\//, ''));
     expect(isNonEmptyFile(file), `logo asset missing/empty: ${rel}`).toBe(true);
   });

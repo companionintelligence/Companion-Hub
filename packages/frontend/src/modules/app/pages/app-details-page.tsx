@@ -5,6 +5,7 @@ import type { AppInfo } from '@/types/app.types';
 import { Card, CardContent } from '@/components/ui/Card/Card';
 import { useAppContext } from '@/context/app-context';
 import { useQuery } from '@tanstack/react-query';
+import { useMemo } from 'react';
 import { redirect, useParams } from 'react-router';
 import { AppStatus } from '../components/app-status/app-status';
 import { AppActions } from '../containers/app-actions/app-actions';
@@ -20,6 +21,7 @@ import { AppMediaGallery } from '../components/app-media-gallery/app-media-galle
 import { useAppMedia } from '../hooks/use-app-media';
 import { AppAccessPoints } from '../components/app-access-points/app-access-points';
 import { AppBackupsCard } from '../components/app-backups-card/app-backups-card';
+import { AppLinksCard } from '../components/app-links-card/app-links-card';
 import { AppReadinessBadge, AppReadinessChecksCard } from '../components/app-readiness/app-readiness';
 import { AppRuntimeDegradedBanner } from '../components/app-runtime-degraded-banner';
 import { CustomDomainRestartBanner } from '../components/custom-domain-restart-banner';
@@ -27,6 +29,8 @@ import { PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY, queryPublicWebDiagnostics } from '@/l
 import { McpAccessCard } from '../components/mcp-access-card/mcp-access-card';
 import { MemoryStatusBadge } from '../components/memory-status-badge/memory-status-badge';
 import { useAppUrlAvailability } from '../helpers/use-app-url-availability';
+import { useInstallRequestPending, withInstallRequest } from '../helpers/install-request';
+import { AppHeaderStat, versionLabel } from '../components/app-header-stat/app-header-stat';
 
 export async function clientLoader({ params }: Route.ClientLoaderArgs) {
   const { storeId } = params;
@@ -38,10 +42,16 @@ export async function clientLoader({ params }: Route.ClientLoaderArgs) {
   return null;
 }
 
+/** `v2026.11.2` for a numbered release; a tag such as `latest`, or one already starting with `v`, reads as it is. */
+
 const INFORMATION_ROWS = ['provider', 'categories', 'updated', 'version', 'source', 'size'];
 
 function isGrantDenied(error: unknown): error is TranslatableError {
   return typeof error === 'object' && error !== null && 'message' in error && error.message === 'APP_ACTION_GRANT_DENIED';
+}
+
+function isAppNotInstalled(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'message' in error && error.message === 'APP_ERROR_APP_NOT_FOUND';
 }
 
 // Laid out like the loaded page (hero card, then About and Information) so
@@ -70,6 +80,7 @@ function AppDetailsSkeleton() {
                 <Skeleton className="h-9 w-20 rounded-md" />
               </div>
               <div className="flex flex-wrap items-center gap-2">
+                <Skeleton className="h-4 w-16" />
                 <Skeleton className="h-8 w-36 max-w-full rounded-full sm:h-9 sm:w-44" />
                 <Skeleton className="h-8 w-32 max-w-full rounded-full sm:h-9 sm:w-48" />
                 <Skeleton className="h-8 w-44 max-w-full rounded-full sm:h-9 sm:w-60" />
@@ -129,7 +140,17 @@ export default () => {
     enabled: listingVisible,
     retry: false,
   });
-  const privateRecord = getApp.isError ? undefined : getApp.data;
+  const installRequestPending = useInstallRequestPending(appUrn);
+  // Only the Hub's own "not installed" or refusal means there is no record to show. A read that failed
+  // while the Hub restarts says nothing about the app. Dropping the record for it offered Install on an installed app (#2286).
+  const fetchedRecord = isAppNotInstalled(getApp.error) || isGrantDenied(getApp.error) ? undefined : getApp.data;
+  // An install still in the Hub's checks has no row yet; the page shows it as installing anyway,
+  // whether this page sent it or another one did (the Hub names it in `operation`).
+  const installUnderWay = installRequestPending || fetchedRecord?.operation?.command === 'install';
+  const privateRecord = useMemo(() => withInstallRequest(fetchedRecord, appUrn, installUnderWay), [fetchedRecord, appUrn, installUnderWay]);
+  // Until the Hub answers, the listing cannot say whether the app is installed or at which version:
+  // it is the catalog's copy, and with no record the actions would offer Install on an installed app.
+  const recordLoading = getApp.isLoading && !privateRecord?.app;
   const runtimeHealthEnabled = Boolean(privateRecord?.app && privateRecord.app.status !== 'uninstalling');
 
   const imageSize = useQuery({
@@ -144,8 +165,13 @@ export default () => {
   });
 
   const runtimeHealth = useQuery({
-    queryKey: ['app-runtime-health', appUrn],
+    // Keyed on the status too, so a change of status (the end of a restart) asks for a snapshot of
+    // the new one at once rather than at the next poll.
+    queryKey: ['app-runtime-health', appUrn, privateRecord?.app?.status],
     queryFn: () => fetchAppRuntimeHealth(appUrn),
+    // The last snapshot stays up while the new one loads, so the readiness badge and checks card do
+    // not drop out on every change of status. The status pill ignores a snapshot of another status.
+    placeholderData: (previous) => previous,
     refetchInterval: 15_000,
     enabled: runtimeHealthEnabled,
   });
@@ -185,7 +211,7 @@ export default () => {
     const refusedName = listing.error.intlParams?.app;
     return (
       <div className="mx-auto max-w-2xl px-4 py-16 text-center">
-        <h1 className="text-2xl font-semibold">{refusedName || t('APP_ACTION_GRANT_DENIED', { action: 'view' })}</h1>
+        <h1 className="text-2xl font-medium">{refusedName || t('APP_ACTION_GRANT_DENIED', { action: 'view' })}</h1>
         {refusedName ? <p className="mt-2 text-muted-foreground">{t('APP_ACTION_GRANT_DENIED', { action: 'view', app: refusedName })}</p> : null}
       </div>
     );
@@ -194,7 +220,7 @@ export default () => {
   if (listing.isError || !listingInfo) {
     return (
       <div className="mx-auto max-w-2xl px-4 py-16 text-center">
-        <h1 className="text-2xl font-semibold">{t('APP_ERROR_APP_NOT_FOUND', { id: appUrn })}</h1>
+        <h1 className="text-2xl font-medium">{t('APP_ERROR_APP_NOT_FOUND', { id: appUrn })}</h1>
         <p className="mt-2 text-muted-foreground">{t('APP_DETAILS_LOAD_FAILED')}</p>
       </div>
     );
@@ -212,7 +238,7 @@ export default () => {
       key: 'rating',
       value: (
         <span className="flex items-center gap-1.5">
-          <span className="text-sm font-semibold">0.0</span>
+          <span className="text-sm font-medium">0.0</span>
           <Star className="h-3.5 w-3.5 fill-yellow-500 text-yellow-500" />
         </span>
       ),
@@ -264,21 +290,23 @@ export default () => {
                   wrap this chip onto the next line, under the author. */}
               <span
                 data-testid="app-price-badge"
-                className="col-start-2 row-start-1 justify-self-end rounded-md bg-emerald-500 px-3 py-1.5 text-sm font-semibold uppercase tracking-wide text-emerald-950 shadow-sm sm:hidden"
+                className="col-start-2 row-start-1 justify-self-end rounded-md bg-emerald-500 px-3 py-1.5 text-sm font-medium   text-emerald-950 shadow-sm sm:hidden"
               >
                 {t('APP_PRICE_FREE')}
               </span>
 
               <div className="col-span-2 min-w-0 space-y-3 sm:flex-1 sm:space-y-4">
-                <div className="flex flex-wrap items-start justify-between gap-3">
+                {/* Beside the title from sm up, so a long Memory badge ("Memory connected by
+                    someone else") keeps its column instead of wrapping under the title at 985px. */}
+                <div className="flex flex-wrap items-start justify-between gap-3 sm:flex-nowrap">
                   <div className="min-w-0 space-y-2">
-                    <h1 className="break-words text-2xl font-semibold tracking-tight sm:text-4xl">{info?.name}</h1>
+                    <h1 className="break-words text-2xl font-medium tracking-tight sm:text-4xl">{info?.name}</h1>
                     {info?.author ? <p className="text-base font-medium text-emerald-800 dark:text-emerald-400 sm:text-lg">{info.author}</p> : null}
                   </div>
                   <div className="flex shrink-0 flex-col items-end gap-2">
                     <span
                       data-testid="app-price-badge"
-                      className="hidden rounded-md bg-emerald-500 px-3 py-1.5 text-sm font-semibold uppercase tracking-wide text-emerald-950 shadow-sm sm:inline-flex"
+                      className="hidden rounded-md bg-emerald-500 px-3 py-1.5 text-sm font-medium   text-emerald-950 shadow-sm sm:inline-flex"
                     >
                       {t('APP_PRICE_FREE')}
                     </span>
@@ -287,15 +315,16 @@ export default () => {
                   </div>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                <div data-testid="app-header-stats" className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                  {recordLoading ? (
+                    <Skeleton data-testid="app-version-skeleton" className="h-4 w-16" />
+                  ) : info.version ? (
+                    <span data-testid="app-version" title={t('COMMON_VERSION')} className="max-w-48 truncate text-xs">
+                      {versionLabel(info.version)}
+                    </span>
+                  ) : null}
                   {headerStats.map((stat) => (
-                    <div
-                      key={stat.key}
-                      className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-muted/30 px-2.5 py-1 sm:px-3 sm:py-1.5"
-                    >
-                      <span className="text-foreground">{stat.value}</span>
-                      <span className="text-xs text-muted-foreground">{stat.label}</span>
-                    </div>
+                    <AppHeaderStat key={stat.key} value={stat.value} label={stat.label} />
                   ))}
                 </div>
 
@@ -313,17 +342,25 @@ export default () => {
                 />
               ) : null}
               <div className="min-w-0 md:flex-1">
-                <AppActions
-                  app={app}
-                  metadata={metadata}
-                  info={info}
-                  appDataHostPath={appDataHostPath}
-                  localDomain={userSettings.localDomain}
-                  sslPort={userSettings.sslPort}
-                  runtimeHealth={runtimeHealth.data}
-                  urlAvailability={urlAvailability}
-                  layout="hero"
-                />
+                {recordLoading ? (
+                  // Where the install button sits, as in the page's skeleton above.
+                  <div className="flex min-[1280px]:justify-end">
+                    <Skeleton data-testid="app-actions-skeleton" className="h-12 w-full rounded-md sm:w-44" />
+                  </div>
+                ) : (
+                  <AppActions
+                    app={app}
+                    metadata={metadata}
+                    info={info}
+                    appDataHostPath={appDataHostPath}
+                    failure={privateRecord?.failure}
+                    localDomain={userSettings.localDomain}
+                    sslPort={userSettings.sslPort}
+                    runtimeHealth={runtimeHealth.data}
+                    urlAvailability={urlAvailability}
+                    layout="hero"
+                  />
+                )}
               </div>
             </div>
           </div>
@@ -337,11 +374,13 @@ export default () => {
         isLoading={appMedia.isLoading}
       />
 
-      <AppAccessPoints app={app} info={info} />
+      <AppAccessPoints app={app} info={info} publicAddressRefusal={urlAvailability.publicAddressRefusal} />
 
       <AppReadinessChecksCard readiness={runtimeHealth.data?.readiness} />
 
       <McpAccessCard app={app} info={info} mcpRuntime={privateRecord?.mcpRuntime ?? null} />
+
+      {app ? <AppLinksCard appUrn={appUrn} /> : null}
 
       {app ? <AppBackupsCard appUrn={appUrn} appName={info.name} status={app.status} /> : null}
 

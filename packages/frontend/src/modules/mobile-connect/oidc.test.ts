@@ -183,6 +183,27 @@ describe('loginWithPortalOidc — PKCE security properties', () => {
     expect(authorizeUrl.searchParams.get('code_challenge_method')).toBe('S256');
   });
 
+  it('keeps the PKCE verifier and state in sessionStorage, never in localStorage', async () => {
+    const controller = new AbortController();
+    const promise = loginWithPortalOidc(undefined, { signal: controller.signal });
+    await vi.waitFor(() => expect(openAuthSession).toHaveBeenCalled());
+    const state = new URL(openAuthSession.mock.calls[0]?.[0] as string).searchParams.get('state') ?? '';
+
+    expect(localStorage.getItem('cihub.oidc.pending')).toBeNull();
+    const pending = JSON.parse(sessionStorage.getItem('cihub.oidc.pending') ?? 'null') as { verifier?: string; state?: string } | null;
+    expect(pending?.state).toBe(state);
+    const verifier = pending?.verifier ?? '';
+    expect(verifier).toMatch(/^[A-Za-z0-9_-]{20,}$/);
+
+    // Neither value may sit under any other key in localStorage either.
+    const localValues = Array.from({ length: localStorage.length }, (_, i) => localStorage.getItem(localStorage.key(i) ?? '') ?? '');
+    expect(localValues.some((value) => value.includes(verifier))).toBe(false);
+    expect(localValues.some((value) => value.includes(state))).toBe(false);
+
+    controller.abort();
+    await expect(promise).rejects.toMatchObject({ name: 'OidcCancelledError' });
+  });
+
   it('never leaks the code_verifier to the browser/authorize URL', async () => {
     httpFetch.mockResolvedValue(tokenResponse({ access_token: 'AT' }));
 
@@ -354,7 +375,7 @@ describe('resumePendingOidcLogin', () => {
     await expect(first).rejects.toMatchObject({ name: 'OidcCancelledError' });
   });
 
-  it('resumes from a persisted callback URL when Rust consume is empty after a reload', async () => {
+  it('resumes from a callback URL persisted in sessionStorage when Rust consume is empty after a reload', async () => {
     httpFetch.mockResolvedValue(tokenResponse({ access_token: 'AT' }));
     const controller = new AbortController();
     const first = loginWithPortalOidc(undefined, { signal: controller.signal });
@@ -364,11 +385,28 @@ describe('resumePendingOidcLogin', () => {
     const state = authorizeUrl.searchParams.get('state') ?? '';
 
     invoke.mockResolvedValue(null);
-    localStorage.setItem('cihub.oidc.callback', `${OIDC_REDIRECT_URI}?code=reloaded&state=${state}`);
+    sessionStorage.setItem('cihub.oidc.callback', `${OIDC_REDIRECT_URI}?code=reloaded&state=${state}`);
     await expect(resumePendingOidcLogin()).resolves.toMatchObject({ accessToken: 'AT' });
 
     const body = new URLSearchParams(httpFetch.mock.calls[0]?.[1].body);
     expect(body.get('code')).toBe('reloaded');
+
+    controller.abort();
+    await expect(first).rejects.toMatchObject({ name: 'OidcCancelledError' });
+  });
+
+  it('does not resume from a callback URL left in localStorage', async () => {
+    const controller = new AbortController();
+    const first = loginWithPortalOidc(undefined, { signal: controller.signal });
+    await vi.waitFor(() => expect(openAuthSession).toHaveBeenCalled());
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalled());
+    const authorizeUrl = new URL(openAuthSession.mock.calls[0]?.[0] as string);
+    const state = authorizeUrl.searchParams.get('state') ?? '';
+
+    invoke.mockResolvedValue(null);
+    localStorage.setItem('cihub.oidc.callback', `${OIDC_REDIRECT_URI}?code=stored-in-local&state=${state}`);
+    await expect(resumePendingOidcLogin()).resolves.toBeNull();
+    expect(httpFetch).not.toHaveBeenCalled();
 
     controller.abort();
     await expect(first).rejects.toMatchObject({ name: 'OidcCancelledError' });

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  arrivedThroughTunnel,
   callerSourceIp,
   DEFAULT_POOL_PRESSURE_WEIGHT,
   MAX_POOL_PRESSURE_WEIGHT,
@@ -217,6 +218,18 @@ describe('resolveHubPoolDirections', () => {
     expect(describeHubPoolInboundRefused('inbound_disabled')).toContain('inbound pooling');
     expect(describeHubPoolInboundRefused('peer_disabled')).toContain('this peer');
     expect(describeHubPoolInboundRefused('inbound_disabled')).not.toContain('HUB_POOL_USER_DISABLED');
+  });
+});
+
+describe('arrivedThroughTunnel', () => {
+  it.each(['cf-ray', 'cf-connecting-ip', 'cf-visitor', 'true-client-ip'])('reads %s as the tunnel', (header) => {
+    expect(arrivedThroughTunnel({ headers: { [header]: 'x' } })).toBe(true);
+  });
+
+  it('reads no marker, an empty marker and a missing request as not the tunnel', () => {
+    expect(arrivedThroughTunnel({ headers: {} })).toBe(false);
+    expect(arrivedThroughTunnel({ headers: { 'cf-ray': '' } })).toBe(false);
+    expect(arrivedThroughTunnel(undefined)).toBe(false);
   });
 });
 

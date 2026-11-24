@@ -34,9 +34,15 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
-import type { BackendResidency, HardwareProfile, InferenceBackendType } from '@ci-hub/common/types';
+import { KvCacheLoadError } from '../backends/lemonade-kv-cache.util';
+import type { BackendResidency, CuratedModel, HardwareProfile, InferenceBackendType } from '@ci-hub/common/types';
 import { LoggerService } from '@/core/logger/logger.service';
-import type { ConfigurationService } from '@/core/config/configuration.service';
+import { CacheService } from '@/core/cache/cache.service';
+import { SessionUserCache } from '@/core/cache/session-user.cache';
+import { ConfigurationService } from '@/core/config/configuration.service';
+import { FilesystemService } from '@/core/filesystem/filesystem.service';
+import { RegistrationService } from '@/modules/registration/registration.service';
+import { FactoryResetService } from '@/modules/system/factory-reset.service';
 import type { AppsRepository } from '@/modules/apps/apps.repository';
 import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from '@/modules/hub-pool/hub-pool-load.service';
 import { handoutContextLength } from '../app-model-handout';
@@ -52,6 +58,12 @@ import { estimateContextCost, parseModelGeometry } from '../model-geometry.util'
 import type { ModelPullerService } from '../model-puller.service';
 import { ModelRegistryService } from '../model-registry.service';
 import { ModelResidencyService } from '../model-residency.service';
+
+// These scenarios pin the floor and eviction arithmetic to the context ladder, which a Lemonade model
+// with no measured cost used to fall back to. The header-derived cost (`catalog/kv-geometry.generated.ts`)
+// makes most of them fit trivially, so it is off here unless a test puts a row in.
+const ggufTable = vi.hoisted(() => ({}) as Record<string, unknown>);
+vi.mock('../catalog/kv-geometry.generated', () => ({ GGUF_KV_GEOMETRY: ggufTable }));
 
 const MiB = 1024 * 1024;
 
@@ -99,7 +111,13 @@ type Resident = { id: string; ctx: number; psMb: number; processMb: number; gpuM
 class FakeOllama {
   readonly type = 'ollama' as const;
   resident = new Map<string, Resident>();
+  /** What `/api/tags` lists: on disk, loaded or not. */
+  readonly installed = new Set(Object.keys(OLLAMA_MODELS));
   loads: { id: string; ctx: number }[] = [];
+  /** The factory reset's unloads, at the address the Hub is configured with. */
+  configuredUnloads: { id: string; embedding: boolean }[] = [];
+  /** The configured address does not answer, as with a Hub whose Ollama is down. */
+  configuredDown = false;
 
   constructor(
     private readonly defaultWindow: number,
@@ -138,10 +156,16 @@ class FakeOllama {
     return {
       type: this.type,
       getBaseUrl: () => 'http://fake-ollama:11434',
-      healthCheck: async () => ({ running: true, healthy: true, modelsLoaded: [...Object.keys(OLLAMA_MODELS)] }),
-      isModelLoaded: async (id: string) => this.resident.has(id),
+      healthCheck: async () => ({ running: true, healthy: true, modelsLoaded: [...this.installed] }),
+      // As `OllamaBackend.matchesModel` does: a prefix counts, so nomic-embed-text-v2-moe reads as nomic-embed-text.
+      isModelLoaded: async (id: string) => [...this.resident.keys()].some((name) => name === id || name.startsWith(id)),
       loadModel: async (id: string, options?: { contextLength?: number }) => this.load(id, options?.contextLength ?? this.defaultWindow),
       unloadModel: async (id: string) => {
+        this.resident.delete(id);
+      },
+      residentAtConfiguredEndpoint: async () => (this.configuredDown ? null : [...this.resident.keys()]),
+      unloadAtConfiguredEndpoint: async (id: string, options?: { embedding?: boolean }) => {
+        this.configuredUnloads.push({ id, embedding: options?.embedding === true });
         this.resident.delete(id);
       },
       contextCostForModel: async (id: string) => {
@@ -173,6 +197,18 @@ class FakeLemonade {
   readonly type = 'lemonade' as const;
   /** `provisional` only when the load said its window is not to replace a larger saved one. */
   loads: { id: string; ctx: number | undefined; provisional?: true }[] = [];
+  /** The KV cache each load asked for, beside `loads`. */
+  caches: (string | undefined)[] = [];
+  /** Models marked unable to run a quantized cache (`markKvCacheUnsupported`). */
+  marked: string[] = [];
+
+  /**
+   * `offersQ8`: whether this Lemonade offers q8_0 for its llama.cpp models (2026.x does, 10.2.0 does
+   * not). `failsQ8`: a q8_0 load throws as a model without flash attention would; a 16-bit one, the
+   * same model loaded the old way, still works unless `failsAll`. `offersQ4` adds q4_0 after q8_0, as
+   * the Hub's Lemonade backend offers it; `failsQ4` fails a q4_0 load as `failsQ8` does a q8_0 one.
+   */
+  constructor(private readonly opts: { offersQ8?: boolean; offersQ4?: boolean; failsQ8?: boolean; failsQ4?: boolean; failsAll?: boolean } = {}) {}
 
   backend(): Record<string, unknown> {
     return {
@@ -181,11 +217,28 @@ class FakeLemonade {
       healthCheck: async () => ({
         running: true,
         healthy: true,
-        modelsLoaded: ['Gemma-4-E4B-it-GGUF', 'kokoro-v1', 'Whisper-Base', 'Whisper-Large-v3-Turbo'],
+        modelsLoaded: ['Gemma-4-E4B-it-GGUF', 'Qwen3.8-27B-GGUF', 'kokoro-v1', 'Whisper-Base', 'Whisper-Large-v3-Turbo'],
       }),
       isModelLoaded: async () => false,
-      loadModel: async (id: string, options?: { contextLength?: number; provisionalWindow?: boolean }) => {
+      loadModel: async (id: string, options?: { contextLength?: number; provisionalWindow?: boolean; kvCacheType?: string }) => {
+        if (options?.kvCacheType === 'q8_0' && this.opts.failsQ8) {
+          throw new KvCacheLoadError('q8_0', new Error('V cache quantization requires flash_attn'));
+        }
+        if (options?.kvCacheType === 'q4_0' && this.opts.failsQ4) {
+          throw new KvCacheLoadError('q4_0', new Error('V cache quantization requires flash_attn'));
+        }
+        if (this.opts.failsAll) throw new Error('llama-server exited with code 1');
         this.loads.push({ id, ctx: options?.contextLength, ...(options?.provisionalWindow ? { provisional: true as const } : {}) });
+        this.caches.push(options?.kvCacheType);
+      },
+      kvCacheTypesFor: (model: CuratedModel) =>
+        (this.opts.offersQ8 || this.opts.offersQ4) && model.modality === 'llm' && !this.marked.includes(model.backendModelId)
+          ? this.opts.offersQ4
+            ? ['q8_0', 'q4_0']
+            : ['q8_0']
+          : [],
+      markKvCacheUnsupported: (model: CuratedModel) => {
+        this.marked.push(model.backendModelId);
       },
       unloadModel: async () => undefined,
       weightsOnDiskMb: async () => null,
@@ -231,6 +284,8 @@ function world(opts: {
   ollama?: FakeOllama;
   lemonade?: FakeLemonade;
   ollamaSlots?: number | null;
+  /** The operator's `inferenceOllamaKvCacheType`. */
+  ollamaKvCacheType?: 'f16' | 'q8_0' | 'q4_0' | null;
   installedApps?: string[];
   /** Unified memory: MemAvailable with nothing resident; the live reading subtracts what the engines hold. */
   freeWithNothingLoadedMb?: number;
@@ -263,7 +318,7 @@ function world(opts: {
 
   const engines = { ollama, lemonade } as const;
   const puller = {
-    loadModel: vi.fn(async (catalogId: string, options?: { contextLength?: number; provisionalWindow?: boolean }) => {
+    loadModel: vi.fn(async (catalogId: string, options?: { contextLength?: number; provisionalWindow?: boolean; kvCacheType?: 'f16' | 'q8_0' }) => {
       const curated = registry.getCuratedModel(catalogId);
       if (!curated) throw new Error(`no ${catalogId}`);
       if (registry.getTrackedModel(catalogId)) registry.updateModelState(catalogId, 'loading');
@@ -273,6 +328,8 @@ function world(opts: {
         embedding: curated.modality === 'embedding',
         contextLength: options?.contextLength,
         ...(options?.provisionalWindow ? { provisionalWindow: true } : {}),
+        // As ModelPullerService: the cache the plan sized the window for, for a text model.
+        ...(curated.modality !== 'embedding' && options?.kvCacheType && { kvCacheType: options.kvCacheType }),
       });
       registry.updateModelState(catalogId, 'loaded');
     }),
@@ -284,7 +341,12 @@ function world(opts: {
     }),
   } as unknown as ModelPullerService;
   const configuration = {
-    getInferencePreferences: () => ({ maxNumCtx: null, ollamaSlots: opts.ollamaSlots ?? null, preferredModel: null }),
+    getInferencePreferences: () => ({
+      maxNumCtx: null,
+      ollamaSlots: opts.ollamaSlots ?? null,
+      ollamaKvCacheType: opts.ollamaKvCacheType ?? null,
+      preferredModel: null,
+    }),
   } as unknown as ConfigurationService;
   const apps = { getApps: async () => (opts.installedApps ?? []).map((appName) => ({ appName })) } as unknown as AppsRepository;
   // The pool's real record of what is in flight, which the eviction plan (and so the floor decision) reads.
@@ -303,7 +365,7 @@ function world(opts: {
     apps,
   );
   vi.spyOn(router as unknown as { delay: (ms: number) => Promise<void> }, 'delay').mockResolvedValue(undefined);
-  return { router, registry, memoryManager, logger, engines, hardwareInspector, poolLoad };
+  return { router, registry, memoryManager, logger, engines, hardwareInspector, poolLoad, puller };
 }
 
 describe('the load window on the fleet', () => {
@@ -616,6 +678,228 @@ describe('the load window on the fleet', () => {
       expect(lemonade.loads).toEqual([{ id: 'Gemma-4-E4B-it-GGUF', ctx: 64_000 }]);
     });
 
+    // 2026-11-10 on this card: the 27B's 16-bit cache holds 32768, so Hermes refused; with q8_0 it holds 65536.
+    // Ollama runs one cache for every model (OLLAMA_KV_CACHE_TYPE), which the Hub cannot set: it sizes at
+    // what the operator stated and says which setting would reach an app's floor. gemma4:e4b here costs
+    // Ollama's own 0.09375 MB a token (the header table is stubbed out in this file).
+    describe("Ollama's server-wide KV cache", () => {
+      it('recommends the 8-bit cache where 16-bit falls short of Hermes floor and 8-bit reaches it', async () => {
+        const { router, registry } = world({ profile: BETA_RED, installedApps: ['ci-hermes'] });
+        const plan = await router.contextPlanFor(registry.getCuratedModel('gemma4-e4b') as CuratedModel, BETA_RED);
+
+        expect(plan).toMatchObject({ kvCacheType: 'f16', kvCacheSetBy: 'server', floor: { minContextLength: 64_000, met: false } });
+        expect(plan?.window).toBeLessThan(64_000);
+        expect(plan?.kvCacheAdvice).toMatchObject({ type: 'q8_0', setting: 'OLLAMA_KV_CACHE_TYPE=q8_0' });
+        expect(plan?.kvCacheAdvice?.window).toBeGreaterThanOrEqual(64_000);
+      });
+
+      it('sizes at the cache the operator stated, and has nothing to advise once it reaches the floor', async () => {
+        const { router, registry } = world({ profile: BETA_RED, installedApps: ['ci-hermes'], ollamaKvCacheType: 'q8_0' });
+        const plan = await router.contextPlanFor(registry.getCuratedModel('gemma4-e4b') as CuratedModel, BETA_RED);
+
+        expect(plan).toMatchObject({ kvCacheType: 'q8_0', kvCacheSetBy: 'server', kvCacheAdvice: null, floor: { met: true } });
+      });
+
+      it('advises nothing where no cache reaches the floor, or no installed app has one', async () => {
+        const small = world({ profile: BETA_3_GLASS, installedApps: ['ci-hermes'] });
+        await expect(small.router.contextPlanFor(small.registry.getCuratedModel('gemma4-e4b') as CuratedModel, BETA_3_GLASS)).resolves.toMatchObject({
+          kvCacheAdvice: null,
+          floor: { met: false },
+        });
+        const noFloor = world({ profile: BETA_RED, installedApps: ['ci-openclaw'] });
+        await expect(noFloor.router.contextPlanFor(noFloor.registry.getCuratedModel('gemma4-e4b') as CuratedModel, BETA_RED)).resolves.toMatchObject({
+          kvCacheAdvice: null,
+          floor: null,
+        });
+      });
+
+      it('says which setting to use when it loads the model, once', async () => {
+        const { router, logger } = world({ profile: BETA_RED, installedApps: ['ci-hermes'] });
+        await router.loadTrackedModel('gemma4-e4b', { origin: 'operator' });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        await router.loadTrackedModel('gemma4-e4b', { origin: 'operator' });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+
+        const advice = logger.warn.mock.calls.filter(([message]) => String(message).includes('OLLAMA_KV_CACHE_TYPE=q8_0'));
+        expect(advice).toHaveLength(1);
+        expect(String(advice[0]?.[0])).toContain('"ollamaKvCacheType":"q8_0"');
+      });
+    });
+
+    describe('a KV cache sized to the floor', () => {
+      it('plans the 27B with a q8_0 cache when 16-bit cannot reach Hermes floor on the card', async () => {
+        const lemonade = new FakeLemonade({ offersQ8: true });
+        const { router } = world({ profile: BETA_1, lemonade, installedApps: ['ci-hermes'] });
+
+        await expect(router.loadTrackedModel('qwen3-8-27b-lemonade', { origin: 'operator' })).resolves.toEqual({ loaded: true });
+
+        // Its own handout at q8_0 is 65536, above the floor, so the load takes that: what this card runs now.
+        expect(lemonade.loads).toEqual([{ id: 'Qwen3.8-27B-GGUF', ctx: 65_536 }]);
+        expect(lemonade.caches).toEqual(['q8_0']);
+      });
+
+      // A card a little short of what the 27B needs for Hermes' 64000 at q8_0 (18,473 MB, 1,024 kept free,
+      // 1,024 for its vision encoder, 0.0667 MB a token at 34/64): 4-bit reaches it, so 4-bit is used.
+      const SHORT_FOR_Q8 = discrete('amd', '22 GB card', 22_784);
+
+      it('plans q4_0 only where q8_0 cannot reach the floor and q4_0 can', async () => {
+        const lemonade = new FakeLemonade({ offersQ4: true });
+        const { router, registry } = world({ profile: SHORT_FOR_Q8, lemonade, installedApps: ['ci-hermes'] });
+
+        await expect(router.loadTrackedModel('qwen3-8-27b-lemonade', { origin: 'operator' })).resolves.toEqual({ loaded: true });
+        expect(lemonade.caches).toEqual(['q4_0']);
+        expect(lemonade.loads[0]?.ctx).toBeGreaterThanOrEqual(64_000);
+        await expect(router.contextPlanFor(registry.getCuratedModel('qwen3-8-27b-lemonade') as CuratedModel, SHORT_FOR_Q8)).resolves.toMatchObject({
+          kvCacheType: 'q4_0',
+          kvCacheMeasured: false,
+          floor: { minContextLength: 64_000, met: true },
+        });
+      });
+
+      it('keeps q8_0 where it reaches the floor though q4_0 is offered, and q8_0 where neither does', async () => {
+        const beta1 = new FakeLemonade({ offersQ4: true });
+        await world({ profile: BETA_1, lemonade: beta1, installedApps: ['ci-hermes'] }).router.loadTrackedModel('qwen3-8-27b-lemonade', {
+          origin: 'operator',
+        });
+        expect(beta1.caches).toEqual(['q8_0']);
+
+        // On a 21 GB card the 27B loads but not even 4-bit reaches 64000: the floor is missed either way,
+        // and the more precise cache is kept.
+        const small = new FakeLemonade({ offersQ4: true });
+        await world({ profile: discrete('amd', '21 GB card', 21_504), lemonade: small, installedApps: ['ci-hermes'] }).router.loadTrackedModel(
+          'qwen3-8-27b-lemonade',
+          { origin: 'operator' },
+        );
+        expect(small.caches).toEqual(['q8_0']);
+      });
+
+      it('falls back to 16-bit when q4_0 fails to load, and marks the model', async () => {
+        const lemonade = new FakeLemonade({ offersQ4: true, failsQ4: true });
+        const { router } = world({ profile: SHORT_FOR_Q8, lemonade, installedApps: ['ci-hermes'] });
+
+        await expect(router.loadTrackedModel('qwen3-8-27b-lemonade', { origin: 'operator' })).resolves.toEqual({ loaded: true });
+        expect(lemonade.caches).toEqual(['f16']);
+        expect(lemonade.marked).toEqual(['Qwen3.8-27B-GGUF']);
+      });
+
+      it('keeps 16-bit where it reaches the floor, and where no installed app has one', async () => {
+        const gemma = new FakeLemonade({ offersQ8: true });
+        await world({ profile: BETA_1, lemonade: gemma, installedApps: ['ci-hermes'] }).router.loadTrackedModel('gemma4-e4b-lemonade', {
+          origin: 'operator',
+        });
+        expect(gemma.caches).toEqual(['f16']);
+
+        const noFloor = new FakeLemonade({ offersQ8: true });
+        await world({ profile: BETA_1, lemonade: noFloor, installedApps: ['ci-openclaw'] }).router.loadTrackedModel('qwen3-8-27b-lemonade', {
+          origin: 'operator',
+        });
+        expect(noFloor.caches).toEqual(['f16']);
+      });
+
+      it('stays 16-bit, under the floor and saying so, on a Lemonade that cannot set the cache', async () => {
+        const lemonade = new FakeLemonade({ offersQ8: false });
+        const { router, logger } = world({ profile: BETA_1, lemonade, installedApps: ['ci-hermes'] });
+
+        await expect(router.loadTrackedModel('qwen3-8-27b-lemonade', { origin: 'operator' })).resolves.toEqual({ loaded: true });
+
+        expect(lemonade.caches).toEqual(['f16']);
+        expect(lemonade.loads[0]?.ctx).toBeLessThan(64_000);
+        expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('below the 64000-token floor of ci-hermes'));
+      });
+
+      it('retries at 16-bit when the q8_0 load fails, and only then marks the model unable to use it', async () => {
+        const lemonade = new FakeLemonade({ offersQ8: true, failsQ8: true });
+        const { router, logger } = world({ profile: BETA_1, lemonade, installedApps: ['ci-hermes'] });
+
+        await expect(router.loadTrackedModel('qwen3-8-27b-lemonade', { origin: 'operator' })).resolves.toEqual({ loaded: true });
+
+        expect(lemonade.caches).toEqual(['f16']);
+        expect(lemonade.loads[0]?.ctx).toBeLessThan(64_000);
+        expect(lemonade.marked).toEqual(['Qwen3.8-27B-GGUF']);
+        expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('loading it again with the 16-bit KV cache'));
+      });
+
+      // The model picker reads this, so it must say what the load above does.
+      it('tells the picker what the 27B gets here: 65536 with a q8_0 cache, measured, meeting Hermes floor', async () => {
+        const lemonade = new FakeLemonade({ offersQ8: true });
+        const { router, registry } = world({ profile: BETA_1, lemonade, installedApps: ['ci-hermes'] });
+        const model = registry.getCuratedModel('qwen3-8-27b-lemonade') as CuratedModel;
+
+        await expect(router.contextPlanFor(model, BETA_1)).resolves.toEqual({
+          window: 65_536,
+          kvCacheType: 'q8_0',
+          kvCacheSetBy: 'hub',
+          kvCacheAdvice: null,
+          basis: 'measured',
+          kvCacheMeasured: true,
+          floor: { minContextLength: 64_000, apps: ['ci-hermes'], met: true },
+        });
+      });
+
+      it('tells the picker plainly when a model cannot meet the floor here', async () => {
+        const lemonade = new FakeLemonade({ offersQ8: false });
+        const { router, registry } = world({ profile: BETA_1, lemonade, installedApps: ['ci-hermes'] });
+        const plan = await router.contextPlanFor(registry.getCuratedModel('qwen3-8-27b-lemonade') as CuratedModel, BETA_1);
+
+        expect(plan).toMatchObject({ kvCacheType: 'f16', floor: { minContextLength: 64_000, met: false } });
+        expect(plan?.window).toBeLessThan(64_000);
+      });
+
+      it('keeps a model that reaches the floor at 16-bit in the picker too, and plans nothing for an embedder', async () => {
+        const lemonade = new FakeLemonade({ offersQ8: true });
+        const { router, registry } = world({ profile: BETA_1, lemonade, installedApps: ['ci-hermes'] });
+
+        await expect(router.contextPlanFor(registry.getCuratedModel('gemma4-e4b-lemonade') as CuratedModel, BETA_1)).resolves.toMatchObject({
+          kvCacheType: 'f16',
+          floor: { met: true },
+        });
+        const embedder = registry.getCuratedModel('nomic-embed-text-v1-5-lemonade') as CuratedModel;
+        await expect(router.contextPlanFor(embedder, BETA_1)).resolves.toBeNull();
+      });
+
+      // The case that started it: with no measured cost, Qwen 3.5 27B was charged the ladder's 0.25 MB a
+      // token and offered 8k on this card. Its file says 16 of 64 layers keep a cache, 0.0625 MB a token.
+      it('plans an unmeasured Lemonade model from its file header: Qwen 3.5 27B gets 32k at 16-bit, 64k at 8-bit', async () => {
+        const { GGUF_KV_GEOMETRY } = await vi.importActual<typeof import('../catalog/kv-geometry.generated')>('../catalog/kv-geometry.generated');
+        ggufTable['qwen3-5-27b-lemonade'] = GGUF_KV_GEOMETRY['qwen3-5-27b-lemonade'];
+        try {
+          // The registry was built from the stubbed table, so the file-based footprint the catalog gives it is put back here.
+          const row = GGUF_KV_GEOMETRY['qwen3-5-27b-lemonade'];
+          const model = () => {
+            const m = registry().getCuratedModel('qwen3-5-27b-lemonade') as CuratedModel;
+            return { ...m, runtime: { ...m.runtime, memoryFootprintMb: Math.ceil((row?.fileBytes ?? 0) / 1024 ** 2 + 768) } };
+          };
+          let registry: () => { getCuratedModel(id: string): unknown };
+          {
+            const w = world({ profile: BETA_1, lemonade: new FakeLemonade({ offersQ8: false }) });
+            registry = () => w.registry;
+            await expect(w.router.contextPlanFor(model(), BETA_1)).resolves.toMatchObject({ window: 32_768, kvCacheType: 'f16', basis: 'estimated' });
+          }
+          {
+            const w = world({ profile: BETA_1, lemonade: new FakeLemonade({ offersQ8: true }), installedApps: ['ci-hermes'] });
+            registry = () => w.registry;
+            await expect(w.router.contextPlanFor(model(), BETA_1)).resolves.toMatchObject({
+              window: 65_536,
+              kvCacheType: 'q8_0',
+              floor: { minContextLength: 64_000, met: true },
+            });
+          }
+        } finally {
+          delete ggufTable['qwen3-5-27b-lemonade'];
+        }
+      });
+
+      it('marks nothing when the 16-bit retry fails too, and gives both reasons', async () => {
+        const lemonade = new FakeLemonade({ offersQ8: true, failsQ8: true, failsAll: true });
+        const { router } = world({ profile: BETA_1, lemonade, installedApps: ['ci-hermes'] });
+
+        const outcome = await router.loadTrackedModel('qwen3-8-27b-lemonade', { origin: 'operator' });
+
+        expect(outcome).toMatchObject({ loaded: false, reason: expect.stringMatching(/q8_0 KV cache failed.*at 16-bit: .*exited with code 1/) });
+        expect(lemonade.marked).toEqual([]);
+      });
+    });
+
     it('says so when the card cannot hold the floor, and loads at what it can', async () => {
       const lemonade = new FakeLemonade();
       const { router, logger } = world({ profile: discrete('nvidia', '12 GB card', 12_288), lemonade, installedApps: ['ci-hermes'] });
@@ -827,13 +1111,313 @@ describe('the load window on the fleet', () => {
       tier: 'high',
     };
     const { router, registry, engines } = world({ profile: cpu, ollama, freeWithNothingLoadedMb: 20_000 + 17_406 });
-    // Pulled by the Hub, so the load gets past the not-downloaded refusal that comes before any eviction.
+    // Pulled by the Hub, and so on Ollama's disk: the load gets past the not-downloaded refusal that
+    // comes before any eviction.
     registry.trackModel('qwen3-coder-30b', 'pulled');
+    ollama.installed.add('qwen3-coder:30b');
 
     // qwen3-coder-30b: 20,951 MB, no geometry here (the ladder), text only. The qwen3.8:27b it evicts
     // was loaded by an app, which only an operator's load may unload.
     await expect(router.loadTrackedModel('qwen3-coder-30b', { origin: 'operator' })).resolves.toEqual({ loaded: true });
 
     expect([...engines.ollama.resident.keys()]).toEqual(['qwen3-coder:30b']);
+  });
+});
+
+// A factory reset forgets every pin while a pin may still be loading its model. That pin landed once the
+// load finished, so the reset Hub pinned the old Hub's model again and wrote it back to the pins file.
+describe('a factory reset while a pin is still loading its model', () => {
+  it('leaves the model loaded but not pinned', async () => {
+    const ollama = new FakeOllama(16_384, gemma4E4bHeld);
+    const { router, registry, puller } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const load = vi.mocked(puller.loadModel).getMockImplementation();
+    vi.mocked(puller.loadModel).mockImplementationOnce(async (...args) => {
+      await held;
+      return load?.(...args);
+    });
+
+    const pinning = router.pinTrackedModel('gemma4-e4b', { origin: 'operator' });
+    await vi.waitFor(() => expect(puller.loadModel).toHaveBeenCalled());
+    await registry.forgetPins();
+    release();
+
+    await expect(pinning).resolves.toEqual({ pinned: false, reason: expect.stringContaining('a factory reset ran before this pin finished') });
+    expect(registry.getPinnedCatalogIds()).toEqual([]);
+    expect(registry.getTrackedModel('gemma4-e4b')).toMatchObject({ state: 'loaded', pinned: false });
+    expect([...ollama.resident.keys()]).toEqual(['gemma4:e4b']);
+  });
+
+  it('pins as before when no reset came in between', async () => {
+    const { router, registry } = world({ profile: BETA_RED, ollama: new FakeOllama(16_384, gemma4E4bHeld), ollamaSlots: 4 });
+    await registry.forgetPins();
+
+    await expect(router.pinTrackedModel('gemma4-e4b', { origin: 'operator' })).resolves.toEqual({ pinned: true });
+    expect(registry.getPinnedCatalogIds()).toEqual(['gemma4-e4b']);
+  });
+
+  /** The pin of a model already in memory tells Ollama to keep it (`setResidentKeepAlive`), which the fake has no hook for. */
+  const withKeepAlive = (router: InferenceRouterService, keepAlive: (modelId: string, keep: 'pinned' | 'default') => Promise<string>) => {
+    const backend = (router as unknown as { backends: { get: (type: string) => Record<string, unknown> } }).backends.get('ollama');
+    const setResidentKeepAlive = vi.fn(keepAlive);
+    backend.setResidentKeepAlive = setResidentKeepAlive;
+    return setResidentKeepAlive;
+  };
+
+  // A reset that came while the pin waited for the lock: the model keeps the keep_alive it had.
+  it('asks Ollama nothing for a pin a reset overtook before it reached the model', async () => {
+    const { router, registry } = world({ profile: BETA_RED, ollama: new FakeOllama(16_384, gemma4E4bHeld), ollamaSlots: 4 });
+    await router.loadTrackedModel('gemma4-e4b', { origin: 'operator' });
+    const keepAlive = withKeepAlive(router, async () => 'set');
+
+    const pinning = router.pinTrackedModel('gemma4-e4b', { origin: 'operator' });
+    await registry.forgetPins();
+
+    await expect(pinning).resolves.toEqual({ pinned: false, reason: expect.stringContaining('a factory reset ran before this pin finished') });
+    expect(keepAlive).not.toHaveBeenCalled();
+    expect(registry.getPinnedCatalogIds()).toEqual([]);
+  });
+
+  // A reset that came while Ollama was asked to keep the model: the pin must not land after it.
+  it('refuses a pin when a reset ran while Ollama was asked to keep the model', async () => {
+    const { router, registry } = world({ profile: BETA_RED, ollama: new FakeOllama(16_384, gemma4E4bHeld), ollamaSlots: 4 });
+    await router.loadTrackedModel('gemma4-e4b', { origin: 'operator' });
+    const keepAlive = withKeepAlive(router, async () => {
+      await registry.forgetPins();
+      return 'set';
+    });
+
+    await expect(router.pinTrackedModel('gemma4-e4b', { origin: 'operator' })).resolves.toEqual({
+      pinned: false,
+      reason: expect.stringContaining('a factory reset ran before this pin finished'),
+    });
+    expect(keepAlive).toHaveBeenCalledWith('gemma4:e4b', 'pinned', expect.anything());
+    expect(registry.getPinnedCatalogIds()).toEqual([]);
+    expect(registry.getTrackedModel('gemma4-e4b')).toMatchObject({ pinned: false });
+  });
+});
+
+// The Hub loads a model at keep_alive -1, so a model the reset only unpinned stayed in Ollama for good.
+describe('a factory reset unloads the models it unpins', () => {
+  it('unloads each pinned model the engine still holds and asks nothing of one it no longer holds', async () => {
+    const ollama = new FakeOllama(16_384, gemma4E4bHeld);
+    const { router, registry, puller } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
+    await expect(router.pinTrackedModel('gemma4-e4b', { origin: 'operator' })).resolves.toEqual({ pinned: true });
+    // Pinned too, but the engine dropped it: an unload naming it would make Ollama load it first.
+    registry.trackModel('gemma3-1b', 'pulled');
+    registry.pinModel('gemma3-1b');
+    expect([...ollama.resident.keys()]).toEqual(['gemma4:e4b']);
+    const loadsBefore = [...ollama.loads];
+
+    await (await router.forgetPinnedModels()).unloads;
+
+    expect(registry.getPinnedCatalogIds()).toEqual([]);
+    expect([...ollama.resident.keys()]).toEqual([]);
+    expect(ollama.configuredUnloads).toEqual([{ id: 'gemma4:e4b', embedding: false }]);
+    // Not through the usual path, which may resolve to a fallback address.
+    expect(puller.unloadModel).not.toHaveBeenCalled();
+    expect(ollama.loads).toEqual(loadsBefore);
+    expect(registry.getTrackedModel('gemma4-e4b')).toMatchObject({ state: 'pulled', pinned: false });
+  });
+
+  // Ollama's own match takes a prefix, so the reset sent `/api/embed {model: nomic-embed-text, keep_alive: 0}`
+  // with only nomic-embed-text-v2-moe in memory, which loads nomic-embed-text first. A 26 to 35B sibling
+  // loaded that way would evict whatever else the engine held.
+  it('takes no other model for a pinned one that shares its name as a prefix', async () => {
+    const ollama = new FakeOllama(16_384);
+    const { router, registry, puller } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
+    for (const catalogId of ['gemma4-26b', 'qwen3-8-27b', 'qwen3-6-35b', 'nomic-embed-text']) {
+      registry.trackModel(catalogId, 'pulled');
+      registry.pinModel(catalogId);
+    }
+    for (const sibling of [
+      'gemma4:26b-a4b-it-mtp-q4_K_M',
+      'qwen3.8:27b-mtp-q4_K_M',
+      'qwen3.6:35b-a3b-mtp-q4_K_M',
+      'nomic-embed-text-v2-moe:latest',
+    ]) {
+      ollama.hold(sibling, 16_384, 1000, 1500);
+    }
+
+    await (await router.forgetPinnedModels()).unloads;
+
+    expect(ollama.configuredUnloads).toEqual([]);
+    expect(puller.unloadModel).not.toHaveBeenCalled();
+    expect(ollama.loads).toEqual([]);
+    expect(ollama.resident.size).toBe(4);
+    expect(registry.getPinnedCatalogIds()).toEqual([]);
+  });
+
+  it('unloads a pinned model the engine lists as <name>:latest, under that name', async () => {
+    const ollama = new FakeOllama(16_384);
+    const { router, registry } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
+    registry.trackModel('nomic-embed-text', 'loaded');
+    registry.pinModel('nomic-embed-text');
+    ollama.hold('nomic-embed-text:latest', 2_048, 300, 500);
+    ollama.hold('nomic-embed-text-v2-moe:latest', 2_048, 300, 500);
+
+    await (await router.forgetPinnedModels()).unloads;
+
+    expect(ollama.configuredUnloads).toEqual([{ id: 'nomic-embed-text:latest', embedding: true }]);
+    expect([...ollama.resident.keys()]).toEqual(['nomic-embed-text-v2-moe:latest']);
+  });
+
+  // Not resident yet, so skipped, then loaded at keep_alive -1 once the reset had passed: gemma3:1b stayed.
+  it('waits for a pin still loading and unloads its model once it has loaded', async () => {
+    const ollama = new FakeOllama(16_384, gemma4E4bHeld);
+    const { router, registry, puller } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const load = vi.mocked(puller.loadModel).getMockImplementation();
+    vi.mocked(puller.loadModel).mockImplementationOnce(async (...args) => {
+      await held;
+      return load?.(...args);
+    });
+
+    const pinning = router.pinTrackedModel('gemma4-e4b', { origin: 'operator' });
+    await vi.waitFor(() => expect(puller.loadModel).toHaveBeenCalled());
+    const forgetting = router.forgetPinnedModels();
+    release();
+
+    await expect(pinning).resolves.toMatchObject({ pinned: false });
+    await (await forgetting).unloads;
+    expect(ollama.configuredUnloads).toEqual([{ id: 'gemma4:e4b', embedding: false }]);
+    expect([...ollama.resident.keys()]).toEqual([]);
+    expect(registry.getPinnedCatalogIds()).toEqual([]);
+  });
+
+  // A fallback address (host.docker.internal, the docker0 gateway, localhost) can be another Ollama.
+  it('unloads nothing when the configured address does not answer and says so', async () => {
+    const ollama = new FakeOllama(16_384, gemma4E4bHeld);
+    const { router, registry, puller, logger } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
+    await router.pinTrackedModel('gemma4-e4b', { origin: 'operator' });
+    ollama.configuredDown = true;
+
+    await (await router.forgetPinnedModels()).unloads;
+
+    expect(registry.getPinnedCatalogIds()).toEqual([]);
+    expect(ollama.configuredUnloads).toEqual([]);
+    expect(puller.unloadModel).not.toHaveBeenCalled();
+    expect([...ollama.resident.keys()]).toEqual(['gemma4:e4b']);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('did not answer at the address the Hub is configured with'));
+  });
+
+  it('still unpins everything when the engine refuses the unload', async () => {
+    const ollama = new FakeOllama(16_384, gemma4E4bHeld);
+    const { router, registry, logger, engines } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
+    await router.pinTrackedModel('gemma4-e4b', { origin: 'operator' });
+    vi.spyOn(engines.ollama.configuredUnloads, 'push').mockImplementationOnce(() => {
+      throw new Error('connect ECONNREFUSED');
+    });
+
+    await expect((await router.forgetPinnedModels()).unloads).resolves.toBeUndefined();
+
+    expect(registry.getPinnedCatalogIds()).toEqual([]);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('could not unload gemma4-e4b'));
+  });
+
+  // The page polls while the reset runs, and the reset has signed it out: a reset that waited for a model
+  // load sent it to /login before the answer came, so the page never cleared what it keeps of the old Hub.
+  it('resolves while a model load holds the lock and unloads once that load is done', async () => {
+    const ollama = new FakeOllama(16_384, gemma4E4bHeld);
+    const { router, registry, puller } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
+    registry.trackModel('qwen3-8-27b', 'loaded');
+    registry.pinModel('qwen3-8-27b');
+    ollama.hold('qwen3.8:27b', 16_384, 1000, 1500);
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const load = vi.mocked(puller.loadModel).getMockImplementation();
+    vi.mocked(puller.loadModel).mockImplementationOnce(async (...args) => {
+      await held;
+      return load?.(...args);
+    });
+    const pinning = router.pinTrackedModel('gemma4-e4b', { origin: 'operator' });
+    await vi.waitFor(() => expect(puller.loadModel).toHaveBeenCalled());
+
+    // Answered with the load still holding the lock, and nothing unloaded yet.
+    const { unloads } = await router.forgetPinnedModels();
+    expect(registry.getPinnedCatalogIds()).toEqual([]);
+    expect(ollama.configuredUnloads).toEqual([]);
+
+    release();
+    await expect(pinning).resolves.toMatchObject({ pinned: false });
+    await unloads;
+    expect(ollama.configuredUnloads).toEqual([
+      { id: 'qwen3.8:27b', embedding: false },
+      { id: 'gemma4:e4b', embedding: false },
+    ]);
+  });
+
+  it('stops waiting for a load that does not end and unloads what is in memory', async () => {
+    const ollama = new FakeOllama(16_384, gemma4E4bHeld);
+    const { router, registry, puller, logger } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
+    registry.trackModel('qwen3-8-27b', 'loaded');
+    registry.pinModel('qwen3-8-27b');
+    ollama.hold('qwen3.8:27b', 16_384, 1000, 1500);
+    vi.mocked(puller.loadModel).mockImplementationOnce(() => new Promise<void>(() => undefined));
+    void router.pinTrackedModel('gemma4-e4b', { origin: 'operator' });
+    await vi.waitFor(() => expect(puller.loadModel).toHaveBeenCalled());
+    const cap = Object.getOwnPropertyDescriptor(InferenceRouterService, 'FACTORY_RESET_LOCK_WAIT_MS');
+    Object.defineProperty(InferenceRouterService, 'FACTORY_RESET_LOCK_WAIT_MS', { value: 20, configurable: true });
+    try {
+      await (await router.forgetPinnedModels()).unloads;
+    } finally {
+      if (cap) Object.defineProperty(InferenceRouterService, 'FACTORY_RESET_LOCK_WAIT_MS', cap);
+    }
+
+    // The pin that never loaded has nothing in memory to unload.
+    expect(ollama.configuredUnloads).toEqual([{ id: 'qwen3.8:27b', embedding: false }]);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('for a model load ahead of it; unloading what is in memory now'));
+  });
+  // The whole reset, with the real router: it answers while the load holds the lock, and the pinned
+  // model is unloaded once that load is done.
+  it('lets a factory reset answer while a model load holds the lock', async () => {
+    const ollama = new FakeOllama(16_384, gemma4E4bHeld);
+    const { router, registry, puller } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
+    registry.trackModel('qwen3-8-27b', 'loaded');
+    registry.pinModel('qwen3-8-27b');
+    ollama.hold('qwen3.8:27b', 16_384, 1000, 1500);
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.mocked(puller.loadModel).mockImplementationOnce(async () => held);
+    const pinning = router.pinTrackedModel('gemma4-e4b', { origin: 'operator' });
+    await vi.waitFor(() => expect(puller.loadModel).toHaveBeenCalled());
+    const forget = vi.spyOn(router, 'forgetPinnedModels');
+
+    const logger = mock<LoggerService>();
+    const configuration = Object.assign(Object.create(ConfigurationService.prototype) as ConfigurationService, {
+      logger,
+      config: { demoMode: false, rootFolderHost: '/opt/ci-hub', directories: { dataDir: '/data' }, userSettings: {} },
+    });
+    const registration = mock<RegistrationService>();
+    registration.resetRegistration.mockResolvedValue(undefined);
+    const reset = new FactoryResetService(
+      { execute: vi.fn(async () => undefined), query: { app: { findMany: async () => [] } } } as never,
+      {} as never,
+      { get: (token: unknown) => (token === InferenceRouterService ? router : undefined) } as never,
+      new FilesystemService(logger),
+      configuration,
+      mock<CacheService>(),
+      new SessionUserCache(),
+      logger,
+      registration,
+    );
+
+    await expect(reset.execute()).resolves.toMatchObject({ success: true });
+    expect(ollama.configuredUnloads).toEqual([]);
+
+    release();
+    await pinning;
+    await (await forget.mock.results[0].value).unloads;
+    expect(ollama.configuredUnloads).toEqual([{ id: 'qwen3.8:27b', embedding: false }]);
   });
 });

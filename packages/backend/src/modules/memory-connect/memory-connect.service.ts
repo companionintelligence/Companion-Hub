@@ -1,22 +1,27 @@
 import { createHash } from 'node:crypto';
-import { BadRequestException, Injectable, type OnApplicationBootstrap, type OnModuleDestroy, ServiceUnavailableException } from '@nestjs/common';
+import net from 'node:net';
+import { BadRequestException, HttpStatus, Injectable, type OnApplicationBootstrap, type OnModuleDestroy } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
+import { TranslatableError } from '@/common/error/translatable-error';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
+import { resolveBrowserHost } from '@/common/helpers/browser-host';
 import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
 import { buildHubLocalOrigin, buildHubPublicOrigin, buildHubTailnetOrigin, isPrivateHostname, isTailnetHostname } from '@/common/helpers/hub-origin';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { AppStatus } from '@/core/database/drizzle/types';
 import { LoggerService } from '@/core/logger/logger.service';
-import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
+import { AppLifecycleService, type HeldApp } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { AppsRepository } from '@/modules/apps/apps.repository';
+import type { PublicDnsFailureReason } from '@/modules/cloudflare/cloudflare-client.service';
 import { TunnelHealthService } from '@/modules/cloudflare/tunnel-health.service';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
-import { type MemoryConnectionState } from './memory-connection.repository';
-import { MemoryConnectionService } from './memory-connection.service';
+import { AsyncMutex } from '@/utils/mutex/async-mutex';
+import { INSTALL_GLOBAL_HUB_USER_ID, type MemoryConnectionRow, type MemoryConnectionState } from './memory-connection.repository';
+import { MemoryConnectionService, normalizeHubUserId } from './memory-connection.service';
 import { MemoryExchangeClient } from './memory-exchange.client';
 import { isMemoryProviderApp } from './memory-provider.predicate';
-import { MemoryProviderResolver, type MemoryProviderRuntimeStatus } from './memory-provider.resolver';
+import { type MemoryProviderRuntimeInfo, MemoryProviderResolver, type MemoryProviderRuntimeStatus } from './memory-provider.resolver';
 import { PendingConnectStore } from './pending-connect.store';
 
 /** Must remain below CI-Server's CONNECT_KEY_TTL_DAYS so apps rotate before their credentials expire. */
@@ -45,6 +50,51 @@ const DOWN_APP_STATUSES: readonly AppStatus[] = [
 
 type ApplyOutcome = 'restarted' | 'restarting' | 'deferred' | 'failed';
 
+/**
+ * What a connect decided under the connection lock: where the person lands, and the restart that
+ * applies it, which runs after the lock is let go.
+ */
+interface ConnectOutcome {
+  next: string;
+  error?: true;
+  /** `finish`: connected, so restart and show the interstitial. `apply`: failed after keys were revoked, so restart to drop them. */
+  restart?: 'finish' | 'apply';
+}
+
+type ActiveConnection = Awaited<ReturnType<MemoryConnectionService['getActiveConnection']>>;
+
+/** Rows hold `normalizeHubUserId` of the id they were written with, so ids compare the same way. */
+function isSameHubUser(a: string | number | null | undefined, b: string | number | null | undefined): boolean {
+  return normalizeHubUserId(a) === normalizeHubUserId(b);
+}
+
+/**
+ * A connection with no Hub person on it (`hub_user_id` 0), from before connections were per person.
+ * It is nobody's, so it reads as the app's connection for everyone and anyone may disconnect it.
+ */
+function isInstallGlobal(row: Pick<MemoryConnectionRow, 'hubUserId'>): boolean {
+  return normalizeHubUserId(row.hubUserId) === INSTALL_GLOBAL_HUB_USER_ID;
+}
+
+/** Whether `row` belongs to a Hub person other than `hubUserId`. */
+function isAnotherPersons(row: Pick<MemoryConnectionRow, 'hubUserId'>, hubUserId: string | number | null | undefined): boolean {
+  return !isInstallGlobal(row) && !isSameHubUser(row.hubUserId, hubUserId);
+}
+
+/** Stands in for a failed provider lookup, which withholds launchers instead of failing the independent state poll. */
+const PROVIDER_INFO_UNKNOWN: MemoryProviderRuntimeInfo = { status: 'absent', localOnly: false };
+
+/** Where a callback lands when the connect failed after another person's connection was revoked. */
+const PREVIOUS_CONNECTION_REMOVED_REDIRECT = '/?memoryConnect=previous_removed';
+
+/** Where a callback lands when the person no longer holds the grant that connecting takes. */
+const CONNECT_DENIED_REDIRECT = '/?memoryConnect=denied';
+
+/** Where a callback lands when another operation holds the app: nothing was revoked or exchanged. */
+function connectBusyRedirect(appUrn: AppUrn): string {
+  return `/?${new URLSearchParams({ memoryConnect: 'busy', app: appUrn }).toString()}`;
+}
+
 /** Machine-readable reasons let the UI explain a disabled Connect button. */
 export type ConnectBlockedReason =
   /** ci-memory is not installed; there is nothing to connect to. */
@@ -58,7 +108,15 @@ export type ConnectBlockedReason =
   /** The Hub's public origin is down and this caller cannot reach the LAN route either. */
   | 'hub_unreachable'
   /** ci-memory only has a LAN address and this caller is off-network. */
-  | 'provider_local_only';
+  | 'provider_local_only'
+  /**
+   * ci-memory's address is the Hub machine's loopback (a listen-all Hub with a local-only ci-memory), and
+   * this caller reached the Hub on a host that can't stand in for it, so its consent page has no address
+   * this browser can open.
+   */
+  | 'memory_loopback_only'
+  /** The Portal refused ci-memory a public address, so its consent page has no address to reach. */
+  | 'memory_address_refused';
 
 /** Launcher availability is caller-scoped because a LAN route is not reachable from every browser. */
 export interface ConnectLaunchers {
@@ -75,6 +133,11 @@ export interface ConnectLaunchers {
 /** State + the browser-reachable launcher URLs a wrapper needs to render its gate. */
 export interface MemoryConnectStatus extends ConnectLaunchers {
   state: MemoryConnectionState;
+  /**
+   * The app runs with another Hub person's connection. `state` is the caller's own, so a page or
+   * gate can say so instead of calling the app unconnected; connecting replaces that person's key.
+   */
+  connectedByOther: boolean;
 }
 
 /** Preserves the request origin so the flow does not move across cookie scopes. */
@@ -100,12 +163,38 @@ export interface MemoryConnectUiStatus extends MemoryConnectStatus {
 /**
  * AppLifecycleService is resolved lazily because a static dependency would create a cycle through AppsModule.
  */
+/** Loopback names a browser resolves to its own machine. Takes a bare hostname (IPv6 without brackets). */
+function isLoopbackHostname(hostname: string | null | undefined): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+}
+
+/**
+ * `start` refused because ci-memory's consent page has no address this browser can open. The controller
+ * lands the browser on the Hub with its own marker rather than the generic "not ready yet" one.
+ */
+export class MemoryConsentUnreachableException extends BadRequestException {
+  constructor() {
+    super('CI Memory is only reachable on this Hub machine and its local network, and this browser reached the Hub another way');
+  }
+}
+
 @Injectable()
 export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDestroy {
   private rotationTimer: ReturnType<typeof setInterval> | null = null;
   private initialRotationTimer: ReturnType<typeof setTimeout> | null = null;
   /** Guards against a slow sweep (each rotation restarts an app) overlapping itself. */
   private rotating = false;
+  /**
+   * Per app, so two people finishing Connect at once cannot both find nobody else connected and
+   * both mint a key. A Disconnect cannot revoke a key minted after its ownership check. A
+   * rotation cannot store its key over a connection that changed meanwhile. Its own instance:
+   * the lifecycle mutex is keyed by app URN too and the restarts run under it.
+   *
+   * Always taken inside the app's hold ({@link AppLifecycleService.withAppHeld}) and let go before
+   * the restart, so nothing waits for the app while holding it. Taking the two the other way round
+   * let a Connect callback and a Disconnect each hold what the other waited for.
+   */
+  private readonly connectionMutex = new AsyncMutex();
 
   constructor(
     private readonly resolver: MemoryProviderResolver,
@@ -188,12 +277,47 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
             continue;
           }
 
-          const rotated = await this.exchange.rotate(provider.internalUrl, appUrn);
-          await this.connections.storeConnected(appUrn, provider.internalUrl, rotated.key, rotated.expiresAt, row.hubUserId);
+          // Held before the old key is retired. Rotating and then waiting for an app busy with another
+          // operation left it on the retired key for as long as that lasted. A busy app keeps its key,
+          // and its untouched `updatedAt` lets the next sweep try again.
+          const held = await this.lifecycle().withAppHeldUnlessBusy(appUrn, async (app) => {
+            // CI Memory rotates by app. Only the connection the app runs with may rotate, checked again
+            // under the lock: a Connect or Disconnect that finished after the list was read would
+            // otherwise see its key replaced and handed to the person it replaced.
+            const rotated = await this.withConnectionLock(appUrn, async () => {
+              const active = await this.connections.getActiveConnection(appUrn);
 
-          // A running container uses the retired key until its environment is regenerated.
+              if (!active || active.id !== row.id || active.encryptedKey !== row.encryptedKey) {
+                return false;
+              }
+
+              const fresh = await this.exchange.rotate(provider.internalUrl, appUrn);
+              await this.connections.storeConnected(appUrn, provider.consumerUrl, fresh.key, fresh.expiresAt, row.hubUserId);
+
+              return true;
+            });
+
+            // A running container uses the retired key until its environment is regenerated.
+            return rotated ? this.applyConnection(appUrn, 'await', app) : ('changed' as const);
+          });
+
+          if ('busy' in held) {
+            this.logger.info(`[MemoryConnect] key rotation for ${appUrn} left to the next sweep: a ${held.busy} is under way`);
+
+            continue;
+          }
+
+          const applied = held.result;
+
+          if (applied === 'changed') {
+            this.logger.debug(`[MemoryConnect] skipping key rotation for ${appUrn}: its connection changed since the sweep began`);
+
+            continue;
+          }
+
           // Retry once, then log loudly because the fresh `updatedAt` delays another rotation attempt.
-          let outcome = await this.applyConnection(appUrn, 'await');
+          // The retry claims the app afresh: the hold ended when the first restart settled.
+          let outcome = applied;
 
           if (outcome === 'failed') {
             const retry = await this.applyConnection(appUrn, 'await');
@@ -235,6 +359,18 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       throw new BadRequestException('CI Memory is not reachable yet; try again once it is running');
     }
 
+    // A local-only ci-memory on a listen-all Hub is addressed as 127.0.0.1, which is this browser's own
+    // machine unless the browser is on the Hub. Never send it there from anywhere else.
+    const consentOrigin = this.consentOriginFor(provider.publicUrl, provider.hostPortOnLoopback === true, origin?.host);
+
+    if (!consentOrigin) {
+      this.logger.warn(
+        `[MemoryConnect] ${appUrn}: CI Memory answers only on this machine's loopback, which a browser on ${this.hostnameOf(origin?.host) ?? 'an unknown host'} cannot open`,
+      );
+
+      throw new MemoryConsentUnreachableException();
+    }
+
     // Keep the callback, interstitial, and session cookie on one origin to avoid a second login.
     const hubOrigin = await this.resolveFlowOrigin(origin);
 
@@ -247,7 +383,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
 
     const state = this.pending.create(appUrn, safeNext, userId);
     const callbackUrl = `${hubOrigin}/api/memory-connect/callback`;
-    const consentUrl = new URL('/api/connect', new URL(provider.publicUrl).origin);
+    const consentUrl = new URL('/api/connect', consentOrigin);
 
     consentUrl.searchParams.set('app', appUrn);
     consentUrl.searchParams.set('state', state);
@@ -268,8 +404,16 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * The callback schedules rather than awaits the restart so browser navigation cannot time out.
    * Same-code replays reuse the recorded redirect, while foreign users receive an indistinguishable failure to prevent login CSRF and code injection.
    * Once the owner resolves the state, downstream failures return to the originating app instead of dead-ending on the Hub.
+   *
+   * `mayConnect` asks again for the grant `/start` checked. The callback is what restarts the app and
+   * ends another person's connection, and a grant can be taken away in the minutes consent takes.
    */
-  async handleCallback(code: string, state: string, currentUserId: string): Promise<{ next: string; error?: boolean }> {
+  async handleCallback(
+    code: string,
+    state: string,
+    currentUserId: string,
+    mayConnect?: (appUrn: AppUrn) => Promise<boolean>,
+  ): Promise<{ next: string; error?: boolean }> {
     const attempt = this.pending.consume(state, currentUserId, this.hashCode(code));
 
     if (attempt.outcome === 'unknown') {
@@ -290,15 +434,51 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       return { next: attempt.redirect };
     }
 
-    const result = await this.completeConnect(attempt.appUrn, attempt.next, code, currentUserId);
+    // Refused before the exchange, so CI Memory never mints a key and nobody's connection is touched.
+    if (mayConnect && !(await mayConnect(attempt.appUrn))) {
+      this.logger.warn(`[MemoryConnect] connect refused at the callback for ${attempt.appUrn}: the restart grant is gone`);
+      this.pending.recordOutcome(state, CONNECT_DENIED_REDIRECT);
+
+      return { next: CONNECT_DENIED_REDIRECT, error: true };
+    }
+
+    // Held before anything is revoked or exchanged, and before the connection lock. A busy app sends
+    // the person back with `busy` at once: nothing is revoked and the request never waits for the
+    // app. The single-use code is spent, so connecting again goes through consent again.
+    const held = await this.lifecycle().withAppHeldUnlessBusy(attempt.appUrn, (app) =>
+      this.connectHeld(app, attempt.appUrn, attempt.next, code, currentUserId),
+    );
+
+    if ('busy' in held) {
+      this.logger.info(`[MemoryConnect] connect refused at the callback for ${attempt.appUrn}: a ${held.busy} is under way`);
+      const busy = connectBusyRedirect(attempt.appUrn);
+      this.pending.recordOutcome(state, busy);
+
+      return { next: busy, error: true };
+    }
 
     // Recording every outcome makes a replay preserve success, failure, and deferral.
-    this.pending.recordOutcome(state, result.next);
+    this.pending.recordOutcome(state, held.result.next);
 
-    return result;
+    return held.result;
   }
 
-  private async completeConnect(appUrn: AppUrn, next: string, code: string, hubUserId: string): Promise<{ next: string; error?: boolean }> {
+  /** A connect with the app held: its locked part, then the restart that applies it, under the hold and after the lock. */
+  private async connectHeld(app: HeldApp, appUrn: AppUrn, next: string, code: string, hubUserId: string): Promise<{ next: string; error?: boolean }> {
+    const outcome = await this.withConnectionLock(appUrn, () => this.completeConnect(appUrn, next, code, hubUserId));
+    const landing = outcome.error ? { next: outcome.next, error: true } : { next: outcome.next };
+
+    if (!outcome.restart) {
+      return landing;
+    }
+
+    const applied = await this.applyConnection(appUrn, 'schedule', app);
+
+    // Without a scheduled restart, the interstitial has nothing to watch.
+    return outcome.restart === 'finish' && applied === 'restarting' ? { next: this.buildFinishingPath(appUrn, outcome.next) } : landing;
+  }
+
+  private async completeConnect(appUrn: AppUrn, next: string, code: string, hubUserId: string): Promise<ConnectOutcome> {
     const provider = await this.resolver.findProvider();
 
     if (!provider) {
@@ -307,33 +487,135 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       return { next, error: true };
     }
 
+    const released = await this.releaseOtherConnections(appUrn, provider.internalUrl, hubUserId);
+
+    if (released === 'failed') {
+      return { next, error: true };
+    }
+
+    let exchanged: { appUrn: string; key: string; expiresAt: string };
+
     try {
-      const exchanged = await this.exchange.exchange(provider.internalUrl, code);
-
-      // Defense in depth: the code must be for the same app the flow started for.
-      if (exchanged.appUrn !== appUrn) {
-        this.logger.error(`[MemoryConnect] app mismatch on exchange: expected ${appUrn}, got ${exchanged.appUrn}`);
-
-        // Revoke a mismatched exchange so its unmanaged key does not remain valid.
-        await this.exchange.revoke(provider.internalUrl, exchanged.appUrn);
-
-        return { next, error: true };
-      }
-
-      // The container shares the Hub's internal network, so it stores the internal provider URL.
-      await this.connections.storeConnected(appUrn, provider.internalUrl, exchanged.key, exchanged.expiresAt, hubUserId);
-      const applied = await this.applyConnection(appUrn, 'schedule');
-
-      if (applied === 'restarting') {
-        return { next: this.buildFinishingPath(appUrn, next) };
-      }
-
-      // Without a scheduled restart, the interstitial has nothing to watch.
-      return { next };
+      exchanged = await this.exchange.exchange(provider.internalUrl, code);
     } catch (err) {
       this.logger.error(`[MemoryConnect] exchange failed for ${appUrn}`, err);
 
-      return { next, error: true };
+      return this.failConnect(appUrn, next, hubUserId, released);
+    }
+
+    // Defense in depth: the code must be for the same app the flow started for.
+    if (exchanged.appUrn !== appUrn) {
+      this.logger.error(`[MemoryConnect] app mismatch on exchange: expected ${appUrn}, got ${exchanged.appUrn}`);
+
+      // Revoke a mismatched exchange so its unmanaged key does not remain valid.
+      await this.exchange.revoke(provider.internalUrl, exchanged.appUrn);
+
+      return this.failConnect(appUrn, next, hubUserId, released);
+    }
+
+    try {
+      // The container shares the Hub's internal network, so it stores the internal provider URL.
+      await this.connections.storeConnected(appUrn, provider.consumerUrl, exchanged.key, exchanged.expiresAt, hubUserId);
+    } catch (err) {
+      // Nothing holds the new key, so revoke it rather than leave a valid key nobody can rotate or
+      // revoke from here. The exchange also replaced this person's own earlier key, if they had one.
+      this.logger.error(`[MemoryConnect] could not store the new key for ${appUrn}; revoking it`, err);
+      if (!(await this.exchange.revoke(provider.internalUrl, appUrn))) {
+        this.logger.error(`[MemoryConnect] ${appUrn}: the unstored key could not be revoked either; it stays valid on CI Memory until it expires`);
+      }
+
+      return this.failConnect(appUrn, next, hubUserId, released, true);
+    }
+
+    return { next, restart: 'finish' };
+  }
+
+  /**
+   * Ends a connect that failed. When another person's connection was already revoked for it, that
+   * connection is gone and cannot be brought back (CI Memory revokes by app), so the person lands on
+   * the dashboard with a message that says so instead of back on the app as if nothing happened. The
+   * app is restarted after the lock so it stops presenting a key CI Memory no longer accepts.
+   */
+  private async failConnect(
+    appUrn: AppUrn,
+    next: string,
+    hubUserId: string,
+    released: 'none' | 'released',
+    keyDropped = false,
+  ): Promise<ConnectOutcome> {
+    const restart = released === 'released' || keyDropped ? 'apply' : undefined;
+
+    if (restart) {
+      // Those revokes were by app, so they also took this person's own earlier key. Left connected,
+      // that row would be the newest connected one and the restart would hand its dead key back.
+      try {
+        const own = (await this.connections.listConnected(appUrn)).filter((row) => isSameHubUser(row.hubUserId, hubUserId));
+        await this.clearRevokedConnections(appUrn, own);
+      } catch (err) {
+        this.logger.error(`[MemoryConnect] ${appUrn}: could not clear the revoked connection of Hub user ${hubUserId}`, err);
+      }
+    }
+
+    if (released === 'released') {
+      this.logger.warn(`[MemoryConnect] ${appUrn}: connect failed after the previous connection was revoked; the app has no Memory connection now`);
+
+      return { next: PREVIOUS_CONNECTION_REMOVED_REDIRECT, error: true, restart };
+    }
+
+    return { next, error: true, restart };
+  }
+
+  /**
+   * Connecting replaces the connection the app runs with now. CI Memory revokes by app, not by
+   * person, so another person's key has to go before this person's is minted. Revoking afterwards
+   * would take the new key too. Keeping both leaves CI Memory two owners for one app, which its
+   * key rotation refuses. Their rows are cleared so their view stops claiming a connection.
+   */
+  private async releaseOtherConnections(appUrn: AppUrn, providerUrl: string | null, hubUserId: string): Promise<'none' | 'released' | 'failed'> {
+    const others = (await this.connections.listConnected(appUrn)).filter((row) => !isSameHubUser(row.hubUserId, hubUserId));
+
+    if (others.length === 0) {
+      return 'none';
+    }
+
+    if (!(await this.exchange.revoke(providerUrl, appUrn))) {
+      this.logger.error(`[MemoryConnect] could not revoke the current key for ${appUrn}; the existing connection stays`);
+
+      return 'failed';
+    }
+
+    // The key is gone on CI Memory now, so a row that fails to clear must not abort the connect.
+    await this.clearRevokedConnections(appUrn, others);
+
+    this.logger.info(
+      `[MemoryConnect] ${appUrn}: Hub user ${hubUserId} replaces the connection of Hub user ${others.map((row) => row.hubUserId).join(', ')}`,
+    );
+
+    return 'released';
+  }
+
+  /**
+   * Clears connected rows whose key CI Memory already revoked. A row that fails to clear is logged,
+   * not thrown: the rotation sweep skips it and its owner's next status read finds the dead key.
+   */
+  private async clearRevokedConnections(appUrn: AppUrn, rows: readonly MemoryConnectionRow[]): Promise<void> {
+    for (const row of rows) {
+      try {
+        await this.connections.clear(appUrn, row.hubUserId);
+      } catch (err) {
+        this.logger.error(`[MemoryConnect] ${appUrn}: could not clear the revoked connection of Hub user ${row.hubUserId}`, err);
+      }
+    }
+  }
+
+  /** Runs `work` while holding this app's connection lock (see {@link connectionMutex}). */
+  private async withConnectionLock<T>(appUrn: AppUrn, work: () => Promise<T>): Promise<T> {
+    const release = await this.connectionMutex.acquire(appUrn);
+
+    try {
+      return await work();
+    } finally {
+      release();
     }
   }
 
@@ -365,25 +647,30 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * The provider check stays DB-only because this method runs on the status-poll path.
    */
   async getStatus(appUrn: AppUrn, origin?: RequestOriginContext, hubUserId?: string | null): Promise<MemoryConnectStatus> {
-    if (hubUserId) {
-      await this.ensureCurrentUserOwnsRunningToken(appUrn, hubUserId);
-    }
-
-    const [state, providerInfo] = await Promise.all([
+    // Read-only for other people's connections: whoever looks last must not take the app's key
+    // away from the person who connected it (Companion-Hub#2080). Only a finished connect replaces it.
+    const [ownState, active, providerInfo] = await Promise.all([
       this.connections.getState(appUrn, hubUserId),
-      // A transient provider lookup failure withholds launchers instead of failing the independent state poll.
-      this.resolver.getProviderRuntimeInfo().catch(() => ({ status: 'absent' as const, localOnly: false })),
+      hubUserId ? this.connections.getActiveConnection(appUrn) : Promise.resolve(undefined),
+      this.resolver.getProviderRuntimeInfo().catch(() => PROVIDER_INFO_UNKNOWN),
     ]);
+
+    // A gate that knows someone else connected the app can say so rather than ask again.
+    const nobodysConnection = ownState !== 'connected' && ownState !== 'manual' && !!active && isInstallGlobal(active);
+    const state = nobodysConnection ? 'connected' : ownState;
+    const connectedByOther = state !== 'connected' && !!hubUserId && !!active && isAnotherPersons(active, hubUserId);
 
     const launchers = await this.resolveLaunchers({
       appUrn,
       providerStatus: providerInfo.status,
       providerLocalOnly: providerInfo.localOnly,
+      providerOnHostPort: providerInfo.onHostPort,
+      providerAddressRefusal: providerInfo.publicAddressRefusal,
       origin,
     });
 
     // This blocking gate fails open for app access while retaining a reason for diagnostics.
-    return { state, ...launchers };
+    return { state, connectedByOther, ...launchers };
   }
 
   async getUiStatus(appUrn: AppUrn, origin?: RequestOriginContext, hubUserId?: string | null): Promise<MemoryConnectUiStatus> {
@@ -400,17 +687,16 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
         connectable: false,
         reason: null,
         keyExpiresAt: null,
+        connectedByOther: false,
       };
     }
 
-    // A provider row that is still installing must not read as ready.
-    if (hubUserId) {
-      await this.ensureCurrentUserOwnsRunningToken(appUrn, hubUserId);
-    }
-
-    const [providerInfo, row] = await Promise.all([
-      this.resolver.getProviderRuntimeInfo().catch(() => ({ status: 'absent' as const, localOnly: false })),
+    // Read-only for other people's connections, as in getStatus. A provider row that is still
+    // installing must not read as ready.
+    const [providerInfo, row, active] = await Promise.all([
+      this.resolver.getProviderRuntimeInfo().catch(() => PROVIDER_INFO_UNKNOWN),
       this.connections.getRow(appUrn, hubUserId),
+      this.connections.getActiveConnection(appUrn),
     ]);
 
     const providerStatus = providerInfo.status;
@@ -418,23 +704,37 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     const memoryInstalled = providerStatus !== 'absent';
     const memoryReady = providerStatus === 'ready';
 
-    let effectiveState = row?.state ?? 'unconfigured';
+    // The caller's own row decides, except that a connection with no person on it is the app's for everyone.
+    const shown = row?.state !== 'connected' && active && isInstallGlobal(active) ? active : row;
+
+    let effectiveState = shown?.state ?? 'unconfigured';
     // Safari rejects Postgres's space-separated timestamp, so never expose the raw value.
-    let keyExpiresAt = this.toIsoInstant(row?.keyExpiresAt);
+    let keyExpiresAt = this.toIsoInstant(shown?.keyExpiresAt);
 
     // Validate keys only while CI Memory is ready; otherwise every poll would pay a network timeout.
     // A rejected key is cleared so the app prompts again instead of silently using dead credentials.
     if (effectiveState === 'connected' && memoryReady) {
       const provider = await this.resolver.findProvider();
       // Decrypt from the row already loaded above — avoids a second findByAppUrn.
-      const creds = this.connections.credsFromRow(row);
-      if (provider && creds && !(await this.exchange.isKeyValid(provider.internalUrl, creds.token))) {
-        // Restarting removes the injected dead credential immediately instead of waiting for an unrelated restart.
-        await this.connections.clear(appUrn);
-        await this.applyConnection(appUrn, 'await');
-        effectiveState = 'unconfigured';
-        keyExpiresAt = null;
-        this.logger.info(`[MemoryConnect] cleared stale key for ${appUrn} (ci-memory rejected it)`);
+      const creds = this.connections.credsFromRow(shown);
+      if (shown && provider && creds && !(await this.exchange.isKeyValid(provider.internalUrl, creds.token))) {
+        // Held before the lock, so a status poll never waits behind another operation: on a busy app a
+        // later poll clears the key.
+        const held = await this.lifecycle().withAppHeldUnlessBusy(appUrn, async (app) => {
+          const cleared = await this.clearRejectedKey(appUrn, shown);
+          // Restarting removes the injected dead credential immediately instead of waiting for an unrelated restart.
+          if (cleared === 'cleared-active') {
+            await this.applyConnection(appUrn, 'await', app);
+          }
+
+          return cleared;
+        });
+
+        if (!('busy' in held) && held.result !== 'changed') {
+          effectiveState = 'unconfigured';
+          keyExpiresAt = null;
+          this.logger.info(`[MemoryConnect] cleared stale key for ${appUrn} (ci-memory rejected it)`);
+        }
       }
     }
 
@@ -443,6 +743,8 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       appUrn,
       providerStatus,
       providerLocalOnly: providerInfo.localOnly,
+      providerOnHostPort: providerInfo.onHostPort,
+      providerAddressRefusal: providerInfo.publicAddressRefusal,
       origin,
     });
 
@@ -454,58 +756,89 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       state: effectiveState,
       ...launchers,
       keyExpiresAt,
+      connectedByOther: effectiveState !== 'connected' && !!hubUserId && !!active && isAnotherPersons(active, hubUserId),
     };
   }
 
   /**
-   * When the running container token belongs to a different Hub person, revoke
-   * it and return that row to unconfigured so the current person is prompted
-   * to connect as themselves.
+   * Clears a row whose key CI Memory rejected, under the app's lock and only if it still holds that
+   * key: a Connect that finished after the check stored a fresh one, which must not be wiped. Says
+   * whether the cleared row was the one the app runs with, so the caller knows to restart it. The
+   * restart itself runs after the lock, as in Disconnect, so nothing waits for the app under it.
    */
-  private async ensureCurrentUserOwnsRunningToken(appUrn: AppUrn, hubUserId: string): Promise<void> {
-    const latest = await this.connections.getRow(appUrn);
-    if (latest?.state !== 'connected' || !latest.hubUserId) {
-      return;
-    }
+  private async clearRejectedKey(appUrn: AppUrn, rejected: MemoryConnectionRow): Promise<'cleared-active' | 'cleared' | 'changed'> {
+    return this.withConnectionLock(appUrn, async () => {
+      const current = await this.connections.getRow(appUrn, rejected.hubUserId);
 
-    if (String(latest.hubUserId) === String(hubUserId)) {
-      return;
-    }
-
-    const provider = await this.resolver.findProvider();
-    if (provider) {
-      const creds = this.connections.credsFromRow(latest);
-      if (creds) {
-        await this.exchange.revoke(provider.internalUrl, appUrn);
+      if (current?.state !== 'connected' || current.encryptedKey !== rejected.encryptedKey) {
+        return 'changed';
       }
-    }
 
-    await this.connections.clear(appUrn, latest.hubUserId);
-    await this.applyConnection(appUrn, 'schedule');
-    this.logger.info(`[MemoryConnect] stale connect for ${appUrn}: token owner ${latest.hubUserId} ≠ current Hub user ${hubUserId}`);
+      const active = await this.connections.getActiveConnection(appUrn);
+      await this.connections.clear(appUrn, rejected.hubUserId);
+
+      return active?.id === current.id ? 'cleared-active' : 'cleared';
+    });
   }
 
   /** Record that the user chose not to connect (do not re-prompt). */
   async skip(appUrn: AppUrn, hubUserId?: string | null): Promise<void> {
+    // A skip with no Hub person on it lands on the install-global row. If that row is the app's
+    // connection, "Not now" would unplug it for everyone on the next restart.
+    if ((await this.connections.getRow(appUrn, normalizeHubUserId(hubUserId)))?.state === 'connected') {
+      return;
+    }
+
     await this.connections.markSkipped(appUrn, hubUserId);
   }
 
   /**
    * Keep the local connection when revocation fails so the UI cannot claim a still-valid key is disconnected.
    * If the provider no longer exists, clearing locally is sufficient.
+   *
+   * In this order: whose connection it is, read without taking anything; the app's hold, refused with
+   * the usual 409 while another operation holds the app; the connection lock, for the revoke and the
+   * clear; then the restart, under the hold and after the lock. The key is never revoked while the app
+   * can't be restarted onto the change, and nothing waits for the app under the lock.
    */
   async disconnect(appUrn: AppUrn, hubUserId?: string | null): Promise<void> {
-    const provider = await this.resolver.findProvider();
+    this.assertMayDisconnect(await this.connections.getActiveConnection(appUrn), hubUserId);
 
-    if (provider) {
-      const revoked = await this.exchange.revoke(provider.internalUrl, appUrn);
-      if (!revoked) {
-        throw new ServiceUnavailableException('Could not revoke the memory key on CI Memory; the app is still connected. Please try again.');
-      }
+    await this.lifecycle().withAppHeld(appUrn, async (app) => {
+      await this.withConnectionLock(appUrn, async () => {
+        // Asked again under the lock: a Connect may have finished since the read above.
+        this.assertMayDisconnect(await this.connections.getActiveConnection(appUrn), hubUserId);
+
+        const provider = await this.resolver.findProvider();
+
+        if (provider) {
+          const revoked = await this.exchange.revoke(provider.internalUrl, appUrn);
+          if (!revoked) {
+            throw new TranslatableError('MEMORY_CONNECT_DISCONNECT_NOT_CONFIRMED', {}, HttpStatus.SERVICE_UNAVAILABLE);
+          }
+        }
+
+        await this.connections.clear(appUrn, hubUserId);
+
+        // The revoke took every key of the app. Another person's connected row left over from a
+        // replace whose clear failed is dead too. The restart below would give its key to the app.
+        const leftover = (await this.connections.listConnected(appUrn)).filter((row) => !isSameHubUser(row.hubUserId, hubUserId));
+        await this.clearRevokedConnections(appUrn, leftover);
+      });
+
+      await this.applyConnection(appUrn, 'await', app);
+    });
+  }
+
+  /**
+   * CI Memory revokes by app, so a disconnect would take the key of whoever connected it. A connection
+   * with no person on it is nobody's, so anyone who can open the app page may disconnect it. A request
+   * with no Hub person on it owns nobody's connection, so it is refused too.
+   */
+  private assertMayDisconnect(active: ActiveConnection, hubUserId?: string | null): void {
+    if (active && isAnotherPersons(active, hubUserId)) {
+      throw new TranslatableError('MEMORY_CONNECT_DISCONNECT_REFUSED', {}, HttpStatus.FORBIDDEN);
     }
-
-    await this.connections.clear(appUrn, hubUserId);
-    await this.applyConnection(appUrn, 'await');
   }
 
   /**
@@ -573,7 +906,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
         const consumerUrn = row.appUrn as AppUrn;
 
         try {
-          await this.connections.clear(consumerUrn);
+          await this.connections.clear(consumerUrn, row.hubUserId);
           await this.applyConnection(consumerUrn, 'await');
           this.logger.info(`[MemoryConnect] cleared ${consumerUrn}: CI Memory was uninstalled`);
         } catch (err) {
@@ -632,6 +965,8 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     providerStatus: MemoryProviderRuntimeStatus;
     origin?: RequestOriginContext;
     providerLocalOnly?: boolean;
+    providerOnHostPort?: boolean;
+    providerAddressRefusal?: PublicDnsFailureReason;
   }): Promise<ConnectLaunchers> {
     const blocked = (reason: ConnectBlockedReason): ConnectLaunchers => ({
       connectUrl: null,
@@ -646,6 +981,13 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       );
     }
 
+    // ci-memory's consent page is on its public address, so with none the flow ends on a browser error. A zone
+    // refusal is left to the probe in startConnect: Cloudflare refusing the Portal's token on a zone leaves records
+    // already published in place and this poll can't tell those from a name that never existed.
+    if (input.providerAddressRefusal && input.providerAddressRefusal !== 'zone_unreachable') {
+      return blocked('memory_address_refused');
+    }
+
     // Block only confirmed remote callers; an ambiguous rewritten host may belong to a valid LAN visitor.
     const locality = this.callerLocality(input.origin?.host);
     const callerIsLocal = locality === 'local';
@@ -656,6 +998,18 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       );
 
       return blocked('provider_local_only');
+    }
+
+    // On a listen-all Hub a local-only ci-memory is addressed as 127.0.0.1. `start` can stand the caller's
+    // own host in for it when that host names the Hub machine (see consentOriginFor). A remote caller was
+    // refused above; one with no usable host (the wrappers' state poll) would be sent to its own machine.
+    // ci-memory's port is never loopback-bound, so this DB-only check leaves that case to `start`.
+    if (input.providerOnHostPort && this.hubAddressIsLoopback() && !this.callerReachesHubMachine(input.origin?.host)) {
+      this.logger.warn(
+        `[MemoryConnect] ${input.appUrn}: CI Memory answers only on this machine's loopback; a caller on ${this.hostnameOf(input.origin?.host) ?? 'an unknown host'} cannot open its consent page`,
+      );
+
+      return blocked('memory_loopback_only');
     }
 
     // Resolve VPN status only for tailnet callers so other polls avoid the extra read.
@@ -738,6 +1092,12 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       return 'unknown';
     }
 
+    // A single-label name (`core-5`, `hubbox`) only resolves through local DNS, search domains or
+    // MagicDNS; a public tunnel always forwards a dotted hostname.
+    if (net.isIP(candidate) === 0 && !candidate.includes('.')) {
+      return 'local';
+    }
+
     return isPrivateHostname(hostname) ? 'local' : 'remote';
   }
 
@@ -752,9 +1112,62 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       return true;
     }
 
+    return isLoopbackHostname(this.hostnameOf(callerHost));
+  }
+
+  /** Whether the Hub writes its own address as loopback: INTERNAL_IP unset, listen-all, or loopback itself. */
+  private hubAddressIsLoopback(): boolean {
+    return isLoopbackHostname(this.hostnameOf(resolveBrowserHost(this.config.getConfig().userSettings?.internalIp)));
+  }
+
+  /**
+   * Whether the host this caller opened the Hub on names the Hub machine itself: loopback, a LAN or tailnet
+   * address or name, or a name under the local domain. Only a confirmed remote host, or none, does not. The
+   * tunnel also forwards a local-domain Host, and a remote visitor can't resolve that name, but the loopback
+   * address was no better for them; for a visitor on the network it is the name they reached the Hub by.
+   */
+  private callerReachesHubMachine(callerHost: string | undefined): boolean {
+    const hostname = this.hostnameOf(callerHost);
+
+    if (!hostname) {
+      return false;
+    }
+
+    return isLoopbackHostname(hostname) || this.callerLocality(callerHost) !== 'remote';
+  }
+
+  /**
+   * The origin to send this browser to for ci-memory's consent page, or null when it has none the browser
+   * can open. Only a loopback provider address is ever changed. A browser on the Hub machine keeps it. A
+   * browser that reached the Hub machine directly gets the same host it used for the Hub, on ci-memory's
+   * port, because that port is published on every interface unless the manifest keeps it on loopback.
+   */
+  private consentOriginFor(providerUrl: string, hostPortOnLoopback: boolean, callerHost: string | undefined): string | null {
+    let consent: URL;
+
+    try {
+      consent = new URL(providerUrl);
+    } catch {
+      return null;
+    }
+
+    if (!isLoopbackHostname(this.hostnameOf(consent.origin))) {
+      return consent.origin;
+    }
+
     const callerHostname = this.hostnameOf(callerHost);
 
-    return callerHostname === 'localhost' || callerHostname === '127.0.0.1' || callerHostname === '::1';
+    if (isLoopbackHostname(callerHostname)) {
+      return consent.origin;
+    }
+
+    if (hostPortOnLoopback || !callerHostname || !this.callerReachesHubMachine(callerHost)) {
+      return null;
+    }
+
+    consent.hostname = net.isIP(callerHostname) === 6 ? `[${callerHostname}]` : callerHostname;
+
+    return consent.origin;
   }
 
   /**
@@ -792,7 +1205,11 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
   /** Restrict `next` to the Hub and connecting app origins to prevent an open redirect after consent. */
   private async resolveSafeNext(next: string | undefined, appUrn: AppUrn, hubOrigin: string, origin?: RequestOriginContext): Promise<string> {
     const appAccessUrls = await this.resolver.getAppAccessUrls(appUrn);
-    const appPublicUrl = appAccessUrls.publicUrl;
+    // An app whose host port stays on loopback (OpenClaw, Hermes) is addressed as 127.0.0.1. For any
+    // browser but one on the Hub machine that is its own machine, so it is neither allowed nor a default.
+    const reachable = (url: string | undefined): string | undefined => (url && this.localOriginReachableBy(url, origin?.host) ? url : undefined);
+    const appPublicUrl = reachable(appAccessUrls.publicUrl);
+    const appLocalUrl = reachable(appAccessUrls.localUrl);
     // Allow both Hub and app origins so a LAN flow is not relocated to a different cookie scope.
     // The memory provider is not a valid landing page.
     const allowedOrigins = new Set<string>([hubOrigin]);
@@ -808,7 +1225,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       allowedOrigins.add(tailnetHubOrigin);
     }
 
-    for (const candidate of [appAccessUrls.publicUrl, appAccessUrls.localUrl]) {
+    for (const candidate of [appPublicUrl, appLocalUrl]) {
       if (!candidate) {
         continue;
       }
@@ -838,7 +1255,26 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       return appPublicUrl;
     }
 
-    return appAccessUrls.localUrl ?? appPublicUrl ?? hubOrigin;
+    const appUrl = appLocalUrl ?? appPublicUrl;
+
+    if (appUrl) {
+      return appUrl;
+    }
+
+    // Nothing of the app's own is reachable from here, or it was only a loopback address: end on the
+    // app's page in the Hub, on the flow's origin, rather than on a page this browser can't open.
+    return appAccessUrls.publicUrl || appAccessUrls.localUrl ? this.hubAppPage(hubOrigin, appUrn) : hubOrigin;
+  }
+
+  /** The app's page in the Hub (`/apps/<store>/<app>`), on the given Hub origin. */
+  private hubAppPage(hubOrigin: string, appUrn: AppUrn): string {
+    const [appName, storeSlug] = appUrn.split(':');
+
+    if (!appName || !storeSlug) {
+      return hubOrigin;
+    }
+
+    return `${hubOrigin}/apps/${encodeURIComponent(storeSlug)}/${encodeURIComponent(appName)}`;
   }
 
   /** Normalize Postgres timestamps because Safari rejects their space-separated representation. */
@@ -881,12 +1317,14 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * Down apps get a rewritten environment without a restart, preserving user intent while removing stale credentials.
    * Live apps restart; background callers await the real outcome, while browser callbacks return once restart is scheduled.
    * Every path skips pulls because this change needs only the existing image and must not depend on registry availability.
+   * With `held`, the caller holds the app already and the restart runs under that claim. Without it, the restart waits
+   * for an operation under way, so it must never run under the connection lock.
    */
-  private async applyConnection(appUrn: AppUrn, restart: 'await'): Promise<'restarted' | 'deferred' | 'failed'>;
-  private async applyConnection(appUrn: AppUrn, restart: 'schedule'): Promise<'restarting' | 'deferred' | 'failed'>;
-  private async applyConnection(appUrn: AppUrn, restart: 'await' | 'schedule'): Promise<ApplyOutcome> {
+  private async applyConnection(appUrn: AppUrn, restart: 'await', held?: HeldApp): Promise<'restarted' | 'deferred' | 'failed'>;
+  private async applyConnection(appUrn: AppUrn, restart: 'schedule', held: HeldApp): Promise<'restarting' | 'deferred' | 'failed'>;
+  private async applyConnection(appUrn: AppUrn, restart: 'await' | 'schedule', held?: HeldApp): Promise<ApplyOutcome> {
     try {
-      const lifecycle = this.moduleRef.get(AppLifecycleService, { strict: false });
+      const lifecycle = this.lifecycle();
 
       if (await this.isAppDown(appUrn)) {
         const applied = await lifecycle.regenerateAppEnv(appUrn);
@@ -902,13 +1340,15 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
         return 'deferred';
       }
 
-      if (restart === 'schedule') {
-        await lifecycle.restartApp({ appUrn, skipPull: true, actor: { kind: 'system', reason: 'memory-connect' } });
+      if (restart === 'schedule' && held) {
+        await held.restart({ skipPull: true, reason: 'memory-connect' });
 
         return 'restarting';
       }
 
-      const restarted = await lifecycle.restartAppAndWait({ appUrn, skipPull: true });
+      const restarted = held
+        ? await held.restartAndWait({ skipPull: true })
+        : await lifecycle.restartAppAndWait({ appUrn, skipPull: true, waitForApp: true });
 
       return restarted ? 'restarted' : 'failed';
     } catch (err) {
@@ -916,6 +1356,11 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
 
       return 'failed';
     }
+  }
+
+  /** Through ModuleRef, as this service has always reached it. */
+  private lifecycle(): AppLifecycleService {
+    return this.moduleRef.get(AppLifecycleService, { strict: false });
   }
 
   private async isAppDown(appUrn: AppUrn): Promise<boolean> {

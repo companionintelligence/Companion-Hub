@@ -1,5 +1,5 @@
-import { Link, NavLink, useNavigate } from 'react-router';
-import { LogOut, Home, Settings, Store, Menu, LogIn, Sun, Moon, Activity, Loader2 } from 'lucide-react';
+import { Link, NavLink, useLocation, useNavigate } from 'react-router';
+import { LogOut, Home, Settings, Store, Menu, LogIn, Sun, Moon, Monitor, Activity, Loader2 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { useTranslation } from 'react-i18next';
 import { Button, buttonVariants } from '@/components/ui/Button';
@@ -11,12 +11,18 @@ import { clearClientHubState } from '@/lib/clear-client-hub-state';
 import { logoutMutation } from '@/api-client/@tanstack/react-query.gen';
 import { useAppStoreState } from '@/stores/app-store';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useAppContext } from '@/context/app-context';
+import { isMobileClient } from '@/lib/mobile-connection';
 
 type HeaderProps = {
   isLoggedIn?: boolean;
-  allowAutoThemes?: boolean;
+  /** Scrolls the page under the header to the top. Called when the empty header band is tapped on the mobile app. */
+  onScrollToTop?: () => void;
 };
+
+// Controls in the header that handle the tap themselves.
+const HEADER_CONTROLS = 'a,button,input,[role="menu"]';
 
 export const Header = (props: HeaderProps) => {
   const userContext = useUserContext();
@@ -25,6 +31,8 @@ export const Header = (props: HeaderProps) => {
   const { resetBrowseToFeatured } = useAppStoreState();
   // Prefer context for authentication state
   const isLoggedIn = props.isLoggedIn ?? userContext.isLoggedIn;
+  const { onScrollToTop } = props;
+  const headerRef = useRef<HTMLElement>(null);
 
   const navigate = useNavigate();
   const { t } = useTranslation();
@@ -49,12 +57,28 @@ export const Header = (props: HeaderProps) => {
 
   const deviceName = useMemo(() => {
     const source = userSettings?.ciHubDeviceSlug?.trim();
-    if (!source) return 'CI HUB';
-    return source.replace(/[-_]+/g, ' ').toUpperCase();
+    if (!source) return 'Companion Hub';
+    return source.replace(/[-_]+/g, ' ');
   }, [userSettings?.ciHubDeviceSlug]);
 
   const navButtonBase = 'cursor-pointer text-foreground/80 hover:bg-accent hover:text-accent-foreground';
   const navButtonActive = 'bg-accent text-accent-foreground shadow-sm';
+
+  // On iOS a status-bar tap scrolls only the web view, but the pages scroll <main> or their own
+  // panes, so it does nothing. On the mobile app the header band under the status bar does it
+  // instead (#1879). A native listener, so taps in the menu's scrim (portaled to <body>) never
+  // reach it through React's tree.
+  useEffect(() => {
+    const header = headerRef.current;
+    if (!header || !onScrollToTop) return;
+    const onClick = (event: MouseEvent) => {
+      if (!isMobileClient()) return;
+      if (event.target instanceof Element && event.target.closest(HEADER_CONTROLS)) return;
+      onScrollToTop();
+    };
+    header.addEventListener('click', onClick);
+    return () => header.removeEventListener('click', onClick);
+  }, [onScrollToTop]);
 
   // Common NavLink classes logic
   const getNavLinkClass = ({ isActive }: { isActive: boolean }) =>
@@ -62,6 +86,7 @@ export const Header = (props: HeaderProps) => {
 
   return (
     <header
+      ref={headerRef}
       data-testid="app-header"
       className="fixed left-0 top-0 z-50 flex w-full items-center gap-2 border-b bg-background/90 px-4 shadow-sm backdrop-blur-md"
       style={{
@@ -72,9 +97,9 @@ export const Header = (props: HeaderProps) => {
     >
       {/* Logo (Left) */}
       <div className="flex items-center justify-start">
-        <Link to="/home" className="flex items-center gap-2" aria-label={t('COMMON_HOME')}>
-          <img src="/logo.svg" alt="CI Logo Icon" className="h-8 w-8 object-contain" />
-          <span className="max-w-48 truncate text-sm font-semibold tracking-wide text-chart-3 dark:text-aqua-light">{deviceName}</span>
+        <Link to="/home" className="flex items-center gap-2">
+          <img src="/logo.svg" alt="" className="h-8 w-8 object-contain" />
+          <span className="max-w-48 truncate text-sm font-medium text-foreground">{deviceName}</span>
         </Link>
       </div>
 
@@ -170,16 +195,40 @@ function MobileAppMenu({
   const menuRef = useRef<HTMLDivElement>(null);
   const toggleRef = useRef<HTMLButtonElement>(null);
 
+  // The header outlives the page. Without this, the logo link or a back gesture loads the next
+  // page dimmed under a menu nobody asked for.
+  const { pathname } = useLocation();
+  const [menuPath, setMenuPath] = useState(pathname);
+  if (menuPath !== pathname) {
+    setMenuPath(pathname);
+    setOpen(false);
+  }
+
+  const closeAndRefocus = useCallback(() => {
+    setOpen(false);
+    toggleRef.current?.focus();
+  }, []);
+
   useEffect(() => {
     if (!open) return;
     menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      setOpen(false);
-      toggleRef.current?.focus();
+      if (event.key === 'Escape') closeAndRefocus();
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
+  }, [open, closeAndRefocus]);
+
+  // At Tailwind's `lg` the wrapper and the scrim are hidden by CSS, but the menu would stay open
+  // and come back over a dimmed page when the window narrows again. Close it there.
+  useEffect(() => {
+    if (!open || typeof window.matchMedia !== 'function') return;
+    const fullHeader = window.matchMedia('(min-width: 64rem)');
+    const onChange = (event: { matches: boolean }) => {
+      if (event.matches) setOpen(false);
+    };
+    fullHeader.addEventListener('change', onChange);
+    return () => fullHeader.removeEventListener('change', onChange);
   }, [open]);
 
   return (
@@ -192,7 +241,7 @@ function MobileAppMenu({
         aria-expanded={open}
         aria-haspopup="menu"
         data-testid="mobile-app-menu-btn"
-        className="text-foreground"
+        className="min-h-[44px] min-w-[44px] text-foreground"
         loading={loggingOut}
         onClick={() => setOpen((current) => !current)}
       >
@@ -201,20 +250,29 @@ function MobileAppMenu({
       </Button>
       {open ? (
         <>
-          <button
-            type="button"
-            aria-label={t('COMMON_CLOSE')}
-            data-testid="mobile-app-menu-scrim"
-            tabIndex={-1}
-            className="fixed inset-x-0 bottom-0 z-40 bg-black/25"
-            style={{ top: 'var(--header-offset)' }}
-            onClick={() => setOpen(false)}
-          />
+          {/*
+           * On document.body, not in the header: the header's backdrop blur makes it the containing
+           * block of a fixed child, which sized the scrim to the bar and left it 0px tall. From the
+           * body it covers the page from the header's bottom edge down. `lg:hidden` matches the menu's
+           * wrapper, which no longer hides it, so widening the window does not leave the page dimmed.
+           */}
+          {createPortal(
+            <button
+              type="button"
+              aria-label={t('COMMON_CLOSE')}
+              data-testid="mobile-app-menu-scrim"
+              tabIndex={-1}
+              className="fixed inset-x-0 bottom-0 z-40 bg-black/25 lg:hidden"
+              style={{ top: 'calc(var(--titlebar-height, 0px) + var(--header-offset))' }}
+              onClick={closeAndRefocus}
+            />,
+            document.body,
+          )}
           <div
             ref={menuRef}
             role="menu"
             data-testid="mobile-app-menu"
-            className="absolute right-0 top-full z-50 mt-2 max-h-[calc(100dvh-var(--header-offset)-1rem)] w-56 origin-top-right animate-in overflow-y-auto fade-in-0 zoom-in-95 slide-in-from-top-2 rounded-md border bg-popover p-1 text-popover-foreground shadow-md duration-200"
+            className="absolute right-0 top-full z-50 mt-2 max-h-[calc(100dvh-var(--titlebar-height,0px)-var(--header-offset)-1rem)] w-56 origin-top-right animate-in overflow-y-auto fade-in-0 zoom-in-95 slide-in-from-top-2 rounded-md border bg-popover p-1 text-popover-foreground shadow-md duration-200 motion-reduce:animate-none"
           >
             {isLoggedIn ? (
               <>
@@ -253,6 +311,7 @@ function MobileAppMenu({
                   {t('THEME_DARK')}
                 </button>
                 <button type="button" role="menuitem" className={menuItemClass} onClick={() => setTheme('system')}>
+                  <Monitor className="mr-2 size-4" />
                   {t('COMMON_SYSTEM')}
                 </button>
                 <div className="my-1 h-px bg-muted" />

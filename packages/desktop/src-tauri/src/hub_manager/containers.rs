@@ -2,7 +2,73 @@
 
 use super::*;
 
+const TRAEFIK_REMOVE_ATTEMPTS: u32 = 4;
+const TRAEFIK_REMOVE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+const TRAEFIK_GONE_POLL_ATTEMPTS: u32 = 20;
+const TRAEFIK_GONE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// An engine refusal that clears on its own: the old process is still stopping, or another
+/// recreate is already removing the same container.
+pub(crate) fn is_transient_container_removal_failure(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("could not kill container")
+        || lower.contains("marked for removal")
+        || lower.contains("did not receive an exit event")
+}
+
+/// Removes the Traefik container before a recreate. A refusal that clears on its own is retried
+/// after a pause, and a removal that succeeds is followed by a wait until the name is free, because
+/// compose cannot recreate Traefik while the old container still holds the name.
 pub(crate) fn remove_existing_traefik_container(data_dir: &Path) -> Result<(), String> {
+    let mut attempt = 1;
+    loop {
+        match remove_traefik_container_once(data_dir) {
+            Ok(()) => return wait_until_traefik_gone(),
+            Err(error)
+                if attempt < TRAEFIK_REMOVE_ATTEMPTS
+                    && is_transient_container_removal_failure(&error) =>
+            {
+                // The line carries no error text: a refusal that a retry clears is not a fault.
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "hub.start",
+                    &format!(
+                        "Traefik removal was refused (attempt {attempt} of {TRAEFIK_REMOVE_ATTEMPTS}); trying again in {}s.",
+                        TRAEFIK_REMOVE_RETRY_DELAY.as_secs()
+                    ),
+                );
+                std::thread::sleep(TRAEFIK_REMOVE_RETRY_DELAY);
+                attempt += 1;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// Waits until `docker container inspect traefik` reports that the name is free.
+fn wait_until_traefik_gone() -> Result<(), String> {
+    for _ in 0..TRAEFIK_GONE_POLL_ATTEMPTS {
+        let output = docker_command()
+            .args(["container", "inspect", "traefik"])
+            .output()
+            .map_err(|error| format!("Could not check the Traefik container: {error}"))?;
+        if output.status.success() {
+            std::thread::sleep(TRAEFIK_GONE_POLL_INTERVAL);
+            continue;
+        }
+        let combined = format_command_output(
+            &String::from_utf8_lossy(&output.stdout),
+            &String::from_utf8_lossy(&output.stderr),
+        );
+        if is_docker_missing_resource_message(&combined) {
+            return Ok(());
+        }
+        return Err(format!("Could not check the Traefik container. {combined}"));
+    }
+    Err("The Traefik container is still present after its removal.".to_string())
+}
+
+fn remove_traefik_container_once(data_dir: &Path) -> Result<(), String> {
     let output = docker_command()
         .args(["rm", "-f", "traefik"])
         .output()
@@ -606,24 +672,6 @@ pub(crate) fn hub_queue_name() -> &'static str {
     first_existing_container(HUB_QUEUE_NAMES).unwrap_or(HUB_QUEUE)
 }
 
-fn docker_network_exists(name: &str) -> bool {
-    docker_command()
-        .args(["network", "inspect", name, "--format", "{{.Id}}"])
-        .output()
-        .map(|output| {
-            output.status.success() && !String::from_utf8_lossy(&output.stdout).trim().is_empty()
-        })
-        .unwrap_or(false)
-}
-
-pub(crate) fn postgres_docker_network() -> &'static str {
-    if docker_network_exists(HUB_NETWORK) {
-        HUB_NETWORK
-    } else {
-        LEGACY_HUB_NETWORK
-    }
-}
-
 fn inspect_status_ok(status: &str) -> bool {
     !status.is_empty() && !status.contains("No such object") && !status.contains("Error")
 }
@@ -681,6 +729,32 @@ fn wait_for_named_container_healthy(
     ))
 }
 
+/// Starts the app containers Stop Hub stopped (see [`stop_managed_app_containers`]). Best effort:
+/// an app that doesn't come back shows as stopped in the Hub, with a Start button.
+pub(crate) fn start_apps_stopped_with_hub(data_dir: &Path) {
+    let ids = take_apps_stopped_with_hub(data_dir);
+    if ids.is_empty() {
+        return;
+    }
+
+    let message = match docker_command().arg("start").args(&ids).output() {
+        Ok(output) if output.status.success() => format!(
+            "Started {} app container(s) that Stop Hub stopped.",
+            ids.len()
+        ),
+        Ok(output) => format!(
+            "Starting the {} app container(s) that Stop Hub stopped failed. {}",
+            ids.len(),
+            format_command_output(
+                &String::from_utf8_lossy(&output.stdout),
+                &String::from_utf8_lossy(&output.stderr),
+            )
+        ),
+        Err(error) => format!("Failed to start the app containers that Stop Hub stopped: {error}"),
+    };
+    let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+}
+
 pub(crate) fn wait_for_hub_healthy() -> Result<(), String> {
     wait_for_named_container_healthy(HUB_CONTAINER_NAMES, "Hub", HUB_START_HEALTHY_TIMEOUT_SECS)
 }
@@ -693,6 +767,10 @@ pub(crate) fn wait_for_queue_healthy() -> Result<(), String> {
     )
 }
 
+/// How long the copy route waits for `node -p process.arch` in the Hub container. The start
+/// result waits on it, though the answer only goes to the log.
+const HUB_NODE_ARCH_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Log loudly when the Hub container's Node arch does not match this desktop binary.
 /// An amd64 Node image on Apple Silicon runs under Rosetta and has been observed to
 /// wedge the HTTP accept loop shortly after boot.
@@ -702,45 +780,77 @@ pub(crate) fn warn_if_hub_node_arch_mismatches_host(data_dir: &Path) {
     } else {
         "x64"
     };
-    let output = match docker_command()
-        .args(["exec", hub_container_name(), "node", "-p", "process.arch"])
-        .output()
-    {
-        Ok(output) => output,
-        Err(err) => {
-            let _ = append_desktop_log_for(
-                data_dir,
-                "hub.start",
-                &format!("Could not probe Hub Node arch: {err}"),
-            );
-            return;
-        }
-    };
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let _ = append_desktop_log_for(
-            data_dir,
-            "hub.start",
-            &format!("Could not probe Hub Node arch: {stderr}"),
-        );
-        return;
-    }
-    let actual = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if actual == expected {
-        let _ = append_desktop_log_for(
-            data_dir,
-            "hub.start",
-            &format!("Hub Node arch ok: process.arch={actual}"),
-        );
-        return;
-    }
-    let _ = append_desktop_log_for(
-        data_dir,
-        "hub.start",
-        &format!(
-            "WARNING: Hub Node arch mismatch — container process.arch={actual}, desktop expects {expected}. \
-             On Apple Silicon this usually means the arm64 image slot contains amd64 content (Rosetta). \
-             Pull/rebuild a native arm64 Hub image before relying on this stack."
-        ),
+    let hub = ContainerReader::new(
+        &run_docker_cli,
+        hub_container_name(),
+        HUB_NODE_ARCH_PROBE_TIMEOUT,
     );
+    log_hub_node_arch(&hub, expected, data_dir);
+}
+
+/// The values Node gives `process.arch`, from Node's docs. `ppc` is from older docs and `mips64el`
+/// is a target in Node's configure.py.
+const NODE_PROCESS_ARCHES: &[&str] = &[
+    "arm", "arm64", "ia32", "loong64", "mips", "mipsel", "mips64el", "ppc", "ppc64", "riscv64",
+    "s390", "s390x", "x64",
+];
+
+/// Logs the Hub's Node `process.arch` against `expected`. A plain `docker exec` that exits 0 counts
+/// when it prints an arch from `NODE_PROCESS_ARCHES`, so a real mismatch costs one Node start. Any
+/// other answer with status 0, such as the WSL engine's empty one, is read again through the copy
+/// route. One that still can't be read is never a mismatch.
+pub(crate) fn log_hub_node_arch(hub: &ContainerReader, expected: &str, data_dir: &Path) {
+    // An engine that cuts the output short can't turn `arm64` into `arm`: Node prints the arch in
+    // one write and the docker CLI drops an output frame that the stream ends partway through.
+    let output = hub.run_accepting(&["node", "-p", "process.arch"], |output| {
+        node_arch_line(output).is_some()
+    });
+    let actual = output.stdout.as_str();
+    let message = if !output.succeeded() || actual.is_empty() {
+        format!(
+            "Hub Node arch not read: {}",
+            hub_node_arch_unread_reason(&output)
+        )
+    } else if output.printed_line(expected) {
+        format!("Hub Node arch ok: process.arch={expected}")
+    } else {
+        hub_node_arch_mismatch_message(node_arch_line(&output).unwrap_or(actual), expected)
+    };
+    let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+}
+
+/// The first line of `output` that is a Node arch.
+fn node_arch_line(output: &ContainerOutput) -> Option<&str> {
+    output
+        .stdout
+        .lines()
+        .map(str::trim)
+        .find(|line| NODE_PROCESS_ARCHES.contains(line))
+}
+
+/// What Node or docker printed to stderr, or else what the exit status says.
+fn hub_node_arch_unread_reason(output: &ContainerOutput) -> String {
+    if !output.stderr.is_empty() {
+        return output.stderr.clone();
+    }
+    match output.status {
+        Some(0) => "node printed nothing.".to_string(),
+        Some(code) => format!("node exited with status {code}."),
+        None => "no exit status came back.".to_string(),
+    }
+}
+
+/// The Rosetta advice fits only an arm64 Mac running x64 Node, so every other mismatch gets the
+/// plain message.
+fn hub_node_arch_mismatch_message(actual: &str, expected: &str) -> String {
+    let mut message = format!(
+        "WARNING: Hub Node arch mismatch: container process.arch={actual}, desktop expects {expected}."
+    );
+    if cfg!(target_os = "macos") && expected == "arm64" && actual == "x64" {
+        message.push_str(
+            " On Apple Silicon this usually means the arm64 image slot contains amd64 content (Rosetta). \
+             Pull/rebuild a native arm64 Hub image before relying on this stack.",
+        );
+    }
+    message
 }

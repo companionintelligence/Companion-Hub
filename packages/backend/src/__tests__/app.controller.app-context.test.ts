@@ -10,6 +10,7 @@ import type { AppsReadService } from '../modules/apps/apps-read.service';
 import type { CloudflareClientService } from '../modules/cloudflare/cloudflare-client.service';
 import type { TailscaleService, TailscaleStatus } from '../modules/tailscale/tailscale.service';
 import type { ConfigurationService } from '@/core/config/configuration.service';
+import type { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import type { RegistrationService } from '@/modules/registration/registration.service';
 
 /** A host Tailscale client that is signed in, with HTTPS certificates on for the tailnet. */
@@ -27,18 +28,20 @@ const CONNECTED: TailscaleStatus = {
   authUrl: null,
 };
 
-describe('GET /api/app-context — whether Private VPN is offered', () => {
+describe('GET /api/app-context', () => {
   const savedEnv = {
     PRIVATE_VPN_USER_DISABLED: process.env.PRIVATE_VPN_USER_DISABLED,
     TAILSCALE_SERVE_USER_DISABLED: process.env.TAILSCALE_SERVE_USER_DISABLED,
   };
   let controller: AppController;
+  let configuration: ReturnType<typeof mock<ConfigurationService>>;
+  let whois: ReturnType<typeof mock<MarketplaceWhoIsService>>;
 
   beforeEach(() => {
     delete process.env.PRIVATE_VPN_USER_DISABLED;
     delete process.env.TAILSCALE_SERVE_USER_DISABLED;
 
-    const configuration = mock<ConfigurationService>();
+    configuration = mock<ConfigurationService>();
     configuration.getConfig.mockReturnValue({ userSettings: {}, isProduction: true, rootFolderHost: '/opt/ci-hub', architecture: 'amd64' } as never);
     const appService = mock<AppService>();
     appService.getVersion.mockResolvedValue({ current: '1.0.0', latest: '1.0.0', body: '', releases: [] } as never);
@@ -50,6 +53,8 @@ describe('GET /api/app-context — whether Private VPN is offered', () => {
     appsReadService.peekUpdatesAvailableCached.mockReturnValue(0);
     const cloudflareClientService = mock<CloudflareClientService>();
     cloudflareClientService.getTunnelToken.mockReturnValue(null as never);
+    whois = mock<MarketplaceWhoIsService>();
+    whois.hubManageHint.mockResolvedValue(true);
 
     // Only the collaborators this route reads matter; the rest are inert stand-ins.
     const unused = () => mock<never>();
@@ -65,6 +70,7 @@ describe('GET /api/app-context — whether Private VPN is offered', () => {
       unused(),
       unused(),
       unused(),
+      whois,
     );
   });
 
@@ -76,6 +82,34 @@ describe('GET /api/app-context — whether Private VPN is offered', () => {
   });
 
   const appContext = () => controller.appContext({ user: { id: 1 } } as unknown as Request);
+
+  it('sends no key, whatever settings.json and the in-memory settings hold', async () => {
+    configuration.getConfig.mockReturnValue({
+      userSettings: {
+        domain: 'ci0.pw',
+        sslPort: 443,
+        inferenceVllmUrl: 'http://host.docker.internal:8000',
+        ciHubApiKey: 'device-key-secret',
+        ciHubMoveKey: 'move-key-secret',
+        inferenceVllmApiKey: 'vllm-key-secret',
+        inferenceCloudProviders: [{ provider: 'openai', apiKey: 'sk-cloud-secret', defaultModel: 'gpt-4o', enabled: true }],
+        // A credential a later build adds to settings.json, which no list here names yet.
+        someFutureToken: 'future-secret',
+      },
+      isProduction: true,
+      rootFolderHost: '/opt/ci-hub',
+      architecture: 'amd64',
+    } as never);
+
+    const context = await appContext();
+
+    expect(JSON.stringify(context)).not.toMatch(/secret/);
+    expect(context.userSettings).not.toHaveProperty('ciHubApiKey');
+    expect(context.userSettings).not.toHaveProperty('ciHubMoveKey');
+    expect(context.userSettings).not.toHaveProperty('inferenceVllmApiKey');
+    expect(context.userSettings).not.toHaveProperty('inferenceCloudProviders');
+    expect(context.userSettings).toMatchObject({ domain: 'ci0.pw', sslPort: 443, inferenceVllmUrl: 'http://host.docker.internal:8000' });
+  });
 
   it('offers Private VPN on a Hub whose tailnet is connected', async () => {
     await expect(appContext()).resolves.toMatchObject({ tailscaleAvailable: true, tailscaleNodeFqdn: 'laptop.tailxyz.ts.net' });
@@ -91,5 +125,29 @@ describe('GET /api/app-context — whether Private VPN is offered', () => {
     process.env.TAILSCALE_SERVE_USER_DISABLED = 'true';
 
     await expect(appContext()).resolves.toMatchObject({ tailscaleAvailable: false, tailscaleNodeFqdn: null });
+  });
+
+  /*
+   * Every step of the device wizard changes the whole Hub, which the Hub refuses a member. A member who
+   * signs in before the owner finishes it skips it, like a later operator whose wizard already ran.
+   */
+  describe('the device wizard', () => {
+    const asUser = (hasCompletedOnboarding: boolean) =>
+      controller.appContext({ hubPrincipal: 'session', user: { id: 2, hasCompletedOnboarding } } as unknown as Request);
+
+    it('sends a member who has not run it to the Hub instead', async () => {
+      whois.hubManageHint.mockResolvedValue(false);
+
+      await expect(asUser(false)).resolves.toMatchObject({ user: { hasCompletedOnboarding: true } });
+    });
+
+    it('still sends an owner, an admin or the claimer through it', async () => {
+      await expect(asUser(false)).resolves.toMatchObject({ user: { hasCompletedOnboarding: false } });
+    });
+
+    it('asks nothing once it has run', async () => {
+      await expect(asUser(true)).resolves.toMatchObject({ user: { hasCompletedOnboarding: true } });
+      expect(whois.hubManageHint).not.toHaveBeenCalled();
+    });
   });
 });

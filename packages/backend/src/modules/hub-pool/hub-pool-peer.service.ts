@@ -4,6 +4,7 @@ import {
   ConflictException,
   ForbiddenException,
   forwardRef,
+  HttpStatus,
   Inject,
   Injectable,
   NotFoundException,
@@ -13,6 +14,8 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
+import type { InferenceBackendType } from '@ci-hub/common/types';
+import { TranslatableError } from '@/common/error/translatable-error';
 import { LoggerService } from '@/core/logger/logger.service';
 import { EncryptionService } from '@/core/encryption/encryption.service';
 import {
@@ -43,6 +46,7 @@ import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { TailscaleAdminApiService, type TailscaleDevice } from '@/modules/tailscale/tailscale-admin-api.service';
 import { InferenceRouterService } from '@/modules/inference/inference-router.service';
+import { engineModelKey } from '@/modules/inference/model-availability.util';
 import { HubPoolPeerRepository } from './hub-pool-peer.repository';
 import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from './hub-pool-load.service';
 import { HubPoolIdentityService } from './hub-pool-identity.service';
@@ -74,19 +78,39 @@ import {
 import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
 
 /**
- * The reason a peer gave for declining a pairing request, when it gave one.
+ * The reason a peer gave for refusing a request, such as a pairing request or a training job, when it gave one.
  *
  * Nest serializes an `HttpException` as `{ message, statusCode }`; `error` is the fallback shape.
  * Bounded, because this string is authored by the far end and ends up in an operator-facing message.
+ * A translation key (a peer's `INTERNAL_SERVER_ERROR`, say) is dropped: it is copy for that Hub's own
+ * page, and quoted on this one it reads as the raw key.
  */
-async function peerRefusalDetail(response: Response): Promise<string | null> {
+export async function peerRefusalDetail(response: Response): Promise<string | null> {
   try {
     const body = (await response.json()) as { message?: unknown; error?: unknown };
     const detail = typeof body.message === 'string' ? body.message : typeof body.error === 'string' ? body.error : null;
-    return detail ? detail.slice(0, 200) : null;
+    if (!detail || /^[A-Z][A-Z0-9_]+$/.test(detail)) return null;
+    return detail.slice(0, 200);
   } catch {
     return null;
   }
+}
+
+/**
+ * The ids to advertise for one backend, one per model.
+ *
+ * A model the Hub has tracked (loaded, pinned or pull-checked) comes out of `listModels` twice: under
+ * its catalog id from the registry and under its engine id from the backend's own inventory. The
+ * engine id is the one kept. It is what requests carry and what routing compares. It is also what this
+ * node advertised before the Hub touched the model, so a load no longer changes the list. Compared
+ * per engine because Lemonade can list a model the Hub registered as `user.<id>`. Only a row the
+ * engine reported can replace a tracked one, so two tracked spellings of one model can't both go.
+ */
+function oneIdPerModel(backend: InferenceBackendType, models: Array<{ id: string; backend_model_id?: string }>): string[] {
+  const listedByEngine = new Set(models.filter((model) => !model.backend_model_id).map((model) => engineModelKey(backend, model.id)));
+  return models
+    .filter((model) => !model.backend_model_id || !listedByEngine.has(engineModelKey(backend, model.backend_model_id)))
+    .map((model) => model.id);
 }
 
 /** Consecutive failed capability probes before a connected peer is marked unreachable (matches the 3-strikes convention in registration.service.ts). */
@@ -629,6 +653,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       const inventory = await this.getOwnInventory();
       return {
         inFlightRequests,
+        mediaInFlight: this.loadService.activeMediaWork(),
         hardwareTier: inventory.hardwareTier,
         backends: inventory.backends,
         capabilitiesError: null,
@@ -640,7 +665,15 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       // of this payload are exactly what an operator needs while inference is broken.
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(`[HubPool] could not build local capabilities for pool status: ${message}`);
-      return { inFlightRequests, hardwareTier: null, backends: [], capabilitiesError: message, gpuPressure, gpuPressureSource };
+      return {
+        inFlightRequests,
+        mediaInFlight: this.loadService.activeMediaWork(),
+        hardwareTier: null,
+        backends: [],
+        capabilitiesError: message,
+        gpuPressure,
+        gpuPressureSource,
+      };
     }
   }
 
@@ -773,14 +806,25 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       signal: AbortSignal.timeout(HANDSHAKE_TIMEOUT_MS),
     });
     if (!response.ok) {
+      // Both refusals are TranslatableErrors with their own key. A plain Error reaches the page as a
+      // bare 500 `INTERNAL_SERVER_ERROR`, which says only that pairing failed, not why.
+      const status = String(response.status);
       // A refused PIN is the one failure an operator can act on, and a bare status code hides it.
-      if (pin !== undefined && (response.status === 401 || response.status === 403)) {
-        throw new Error(`Peer refused the pairing PIN (${response.status}). Mint a fresh one on that Hub — a PIN is single-use and expires.`);
+      // Answered 400 rather than with the peer's 401: the page reads a 401 as its own session ending.
+      // Only a 401 is the PIN. The peer's 403 is its tailnet check, which runs after the PIN was
+      // accepted, so a fresh PIN would be refused the same way. That one falls through with its reason.
+      if (pin !== undefined && response.status === 401) {
+        this.logger.warn(`[HubPool] ${url} refused the pairing PIN (${status}). A PIN is single-use and expires, so mint a fresh one on that Hub.`);
+        throw new TranslatableError('HUB_POOL_PAIR_ERROR_PIN_REFUSED', undefined, HttpStatus.BAD_REQUEST);
       }
       // Carry the peer's own reason through when it gave one. Pairing by address is the case that
       // needs it: the operator typed an address and has no other way to see what is at the far end.
+      // 502, like a refused CI Account call: the request was fine, the Hub it was sent on to said no.
       const detail = await peerRefusalDetail(response);
-      throw new Error(`Peer declined pairing request (${response.status})${detail ? `: ${detail}` : ''}`);
+      this.logger.warn(`[HubPool] ${url} declined the pairing request (${status})${detail ? `: ${detail}` : ''}`);
+      throw detail
+        ? new TranslatableError('HUB_POOL_PAIR_ERROR_PEER_DECLINED_REASON', { status, detail }, HttpStatus.BAD_GATEWAY)
+        : new TranslatableError('HUB_POOL_PAIR_ERROR_PEER_DECLINED', { status }, HttpStatus.BAD_GATEWAY);
     }
     return (await response.json().catch(() => ({}))) as PoolPairingAnswer;
   }
@@ -1448,7 +1492,10 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
           return {
             type: b.type,
             healthy: b.healthy,
-            modelsLoaded: models.filter((m) => m.backend === b.type && m.local && m.state !== 'available' && !unservable.has(m.id)).map((m) => m.id),
+            modelsLoaded: oneIdPerModel(
+              b.type,
+              models.filter((m) => m.backend === b.type && m.local && m.state !== 'available' && !unservable.has(m.id)),
+            ),
           };
         }),
       };
@@ -1744,11 +1791,18 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     } catch (error) {
       const failures = peer.consecutiveFailures + 1;
       const failure = await this.recordProbeFailure(peer, error);
-      this.logger.warn(
-        `[HubPool] capabilities probe for ${peer.nodeFqdn} failed (${failures}/${UNREACHABLE_THRESHOLD}): ${failure.detail}${
-          failure.action ? ` — ${failure.action} Next probe after ${failure.nextProbeAt}.` : ''
-        }`,
-      );
+      const message = `[HubPool] capabilities probe for ${peer.nodeFqdn} failed (${failures}/${UNREACHABLE_THRESHOLD}): ${failure.detail}${
+        failure.action ? ` — ${failure.action} Next probe after ${failure.nextProbeAt}.` : ''
+      }`;
+      // A peer the operator switched off is still probed (see `refreshPeerHealth`), but this Hub sends
+      // it nothing, so its being down asks nothing of anyone. A warning on every poll only filled the log.
+      // A refusal stays a warning: waiting never clears it, the line names the fix and the backoff
+      // already holds it to four an hour.
+      if (peer.enabled === false && failure.kind === 'unreachable') {
+        this.logger.debug(message);
+      } else {
+        this.logger.warn(message);
+      }
       await this.repo.update(peer.id, {
         consecutiveFailures: failures,
         // A changed identity is a definite answer, not a flaky network, so it leaves routing on the

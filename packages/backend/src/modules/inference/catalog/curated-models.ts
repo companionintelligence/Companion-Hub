@@ -7,6 +7,8 @@ import type {
   ModelPurpose,
   TierRecommendation,
 } from '@ci-hub/common/types';
+import { FIXED_RUNNER_OVERHEAD_MB } from '../model-geometry.util';
+import { GGUF_KV_GEOMETRY } from './kv-geometry.generated';
 
 // ─── LLM catalog (TOON) ──────────────────────────────────────────────────────
 // The LLM catalog is authored as a TOON table (https://toonformat.dev) — one compact, pipe-delimited
@@ -17,18 +19,20 @@ import type {
 // exceptions: rows whose backendModelId carries a `namespace/model:tag` shape (e.g.
 // `gabegoodhart/minimax-m2`, `bjoernb/gemma4-26b-think`, `jordimurgo/medgemma1.5-thinking`) pull a
 // community quant/fine-tune from an individual publisher rather than the official library — quality and
-// provenance are that publisher's, not vetted the way official-library rows are; and rows like `inkling`
-// and `glm-5-2`, which have no (or no longer any) ollama.com/library listing, pull the GGUF repack
-// directly from Hugging Face via Ollama's `hf.co/{repo}:{quant}` pull syntax
-// (`ollama pull hf.co/unsloth/inkling-GGUF:UD-Q4_K_XL`).
+// provenance are that publisher's, not vetted the way official-library rows are; and rows like
+// `nanbeige4-3-33b` and `arete-27b`, which have no ollama.com/library listing, pull a single-file GGUF
+// repack directly from Hugging Face via Ollama's `hf.co/{repo}:{quant}` pull syntax
+// (`ollama pull hf.co/bartowski/NousResearch_Arete-27B-GGUF:Q4_K_M`). That syntax fails for a sharded repo:
+// `inkling` and `glm-5-2` were added this way and probably cannot be pulled (see the first 2026-11-15 note).
 //
 // LOCAL ONLY: this catalog must never contain an ollama `:cloud`-tagged backendModelId. Those proxy
 // inference through Ollama Cloud's own API rather than running on the user's hardware, which breaks the
 // hardware-fit recommender (a cloud row's nominal "size" trivially "fits" any budget, so it can silently
 // win every "best local model for this box" comparison — see `isCloudProxyModel` in
 // model-registry.service.ts, added after this exact bug surfaced during the 2026-07-27 audit below). If a
-// model is only available as `:cloud` on Ollama, either find a real local GGUF (as `glm-5-2` does, via
-// `hf.co/unsloth/GLM-5.2-GGUF`) or leave it out of the catalog rather than adding the cloud tag.
+// model is only available as `:cloud` on Ollama, either find a real single-file local GGUF (the pattern
+// `arete-27b` uses, through `hf.co/bartowski/NousResearch_Arete-27B-GGUF`) or leave it out of the catalog rather
+// than adding the cloud tag.
 //
 // KNOWN LIMITATION (2026-07-27 audit): the 2026-07-27 audit pass caught the session's own web-research
 // tools fabricating convincing, internally-consistent pages for at least two model names this codebase's
@@ -228,8 +232,162 @@ import type {
 // Index scores dropped noticeably across almost every re-checked model between the 2026-05 and 2026-07-27
 // passes (e.g. gpt-oss-120b 33.3→24, llama-3.3-70b 14.5→9) — consistent with AA having rebased/recalibrated
 // the index in between, not with the older numbers being wrong at the time they were entered.
+//
+// 2026-11-08: four new local Ollama tags verified by rendering their official library /tags pages in a
+// real browser: mimo-v2.6:9b, flint:40b, nemotron-3.5-bolt:e4b, and lfm3:1.7b. Sizes and context below
+// are the listed Q4_K_M/default builds; no Artificial Analysis entries were found, so scores stay blank.
+//
+// 2026-11-15: 16 rows from ollama.com/search?o=newest (the first 140 of its 270 entries, 7 of 14 pages; the oldest
+// entry on page 7 was last updated in November 2024), Hugging Face, and the Artificial Analysis (AA) open-weights
+// page. Every field came from raw data
+// (registry.ollama.ai manifests and config blobs, ranged GGUF header reads, the Hugging Face API), and a second,
+// independent pass re-derived each row. No weights were pulled or loaded, so none of these rows has run end to end.
+//   - `qwen3.8-flash-next:125b-a6b-q4_K_M` reverses the 2026-08-29 verdict above. The family has no bare default,
+//     but this tag is a plain llama.cpp GGUF (arch `qwen4exp`, `file_type` Q4_K_M, 120 GB), so it needs neither a
+//     quant column nor a `gpuVendors` gate. Its MLX and NVFP4 tags stay out.
+//   - Mistral Medium 3.5 is listed again. The 2026-07-27 and 2026-08-12 notes removed it as unconfirmed, but the
+//     registry manifest (80.24 GB, `file_type` Q4_K_M, no cloud tag), the GGUF header (arch `mistral3`, 88 blocks,
+//     context_length 262144) and the Hugging Face repo (created 2026-03-31, public history from 2026-04-29) all
+//     predate those notes, so the fetch tooling failed, not the model. Its guard entries are gone from
+//     curated-models.test.ts. Ollama's build has two quirks: a system prompt copied from Mistral Small 4 (a chat
+//     with no system message is told it is Mistral Small 4) and no license layer (the vendor's
+//     license, a modified MIT, grants no rights above $20M in monthly revenue). `granite4.1` and `lfm2:24b`, on the
+//     2026-07-27 guard, are real too but superseded by granite4.2 and lfm2.5:24b, so they stay there.
+//   - Outside the library: `frob/mistral-small-4:119b` (a merged single-blob re-host from the publisher of
+//     `frob/deepseek-v4-flash-0731`; Mistral Small 4 has no library page), `openbmb/minicpm-v4.7:35b-a3b` and
+//     `:1b` (the vendor's own namespace), and two single-file Hugging Face GGUFs through `hf.co/` (bartowski's
+//     Q4_K_M): `nanbeige4-3-33b` and `arete-27b`. `Ricursive` (Ripple, from Ricursive Intelligence) and `Recursive`
+//     (Flint) are two companies, spelled so on their library pages.
+//   - Flags follow the library badges (the second pass below takes them from the build's own capabilities instead, and
+//     did not recheck these rows). The `hf.co/` and `frob/` rows follow the vendor card, and `granite4.2`, whose
+//     page shows no badges at all, follows its GGUF chat template (one `/api/show` on a node would confirm). The
+//     Ornith 1.5 page now shows vision, tools, and thinking, so its 9B/35B/397B flags are flipped; the 397B is a MoE
+//     (`qwen35moe`, 512 experts, 10 used, about 17B active) that the active-parameter map below used to call dense.
+//   - Ollama's registry answers a client older than a build's `requires` field with HTTP 412 ("requires a newer
+//     version of Ollama"). ripple-preview needs 0.40.16, lfm3-vl 0.40.13, nemotron-3.5-super 0.40.5, and lfm2.5:24b
+//     0.40.4, all above the fleet's pin (`scripts/lib/fleet-ollama-version.ts`, 0.34.0), as flint, nemotron-3.5-bolt,
+//     lfm3, and mimo-v2.6 already were. qwen3.8-flash-next needs 0.33.3, which the pin covers.
+//   - `flint:40b` (added 2026-11-08) is an NVFP4 build under its default tag, yet its row carries the default
+//     q4_K_M label and has no `gpuVendors` gate, which the 2026-08-29 note asks of NVFP4 rows. This pass leaves it.
+// Real models left out:
+//   - Sharded Q4-class repos on Hugging Face, which Ollama cannot pull: `ollama pull hf.co/<repo>:<quant>` asks
+//     Hugging Face's registry endpoint, which answers HTTP 400 "This repository only contains sharded GGUF files" to
+//     Ollama's User-Agent (single-file repos answer 200). Seen 2026-11-15 for Kimi K2.7 Code, MiMo-V2.6 Pro, Beam
+//     1.0, Nemotron 3 Ultra, Ling 3.1 Flash, K2 Horizon 375B, GLM 5.3, and MiniMax M3. The same 400 came back for
+//     this table's own `glm-5-2` and `inkling` rows, which may not install as written (`inkling`'s GGUF arch is
+//     not in llama.cpp b12257 either).
+//   - Muse Spark Open (466 GB Q4_0), GLM 5.3 Flash (193 GB Q4_K_M), and MiMo-V2.6 Flash (169 GB MXFP4) have
+//     single-file builds, but only from individual re-quantizers (Interchained, vcruz305, and kernelpool, in that
+//     order) that this pass did not vet. Command A+, the fourth, was vetted in the second pass below.
+//   - Archs that the llama.cpp in Ollama's latest release and main cannot load (v0.40.16 has b12177 and main b12257;
+//     the fleet's 0.34.0 has b10760): Inkling 2 Small (arch `inkling2`, upstream support is b12406), MiniMax-M3.1-Flash
+//     (indexer tensors the loader never creates), DeepSeek V4.1 Flash 1017 (its Q4 build stores the engram table as
+//     MXFP8, which that llama.cpp reads as plain F8_E4M3) and Step 5 Preview (no `step5` arch, no GGUF from a trusted
+//     publisher).
+//   - Over the 600 GB limit this pass used (just above `inkling`, the largest row at 587 GB): Kimi K3 and K3.1 Pro
+//     (about 1.5 TB) and Mistral Large 4 (605 GB).
+//   - Families whose bare default is not Q4_K_M: `bonsai-2` (ternary Q2_0), `cogito-2.1` (F16) and
+//     `nemotron-3.5-bolt:74b-a9b` (IQ2_XXS). `lfm3-omni` and `lfm3-audio` list no audio in their tags page's Input
+//     column. Cloud-only pages, `decision` classifiers, and embedding, TTS, and OCR families are out by the rules above.
+//   - Local models older than this pass, checked once and left for a follow-up: laguna-xs.2, minicpm-v4.5:8b and
+//     v4.6:1b. The rest of that list (devstral-small-2:24b, devstral-2:123b, qwen3-next:80b, qwen3-coder-next,
+//     olmo-3.1:32b, rnj-1:8b, lfm2.5-thinking:1.2b, the other qwen3-vl sizes, Hy3, MiniCPM5 1B and 2B, Mellum 2.1, and
+//     K2 Horizon 0.9B to 36B) went in with the second pass below.
+//
+// 2026-11-15, second pass: 21 rows for the older local models that the pass above left out. Each was read from raw data
+// twice, by two independent readers of the registry manifest, the config blob, and the GGUF header (or, for `hf.co/`
+// rows, Hugging Face's Ollama manifest and the file's header), and checked against the vendor's card. The recommendation
+// sweep (251 profiles) moves no default and changes eight top-5 lists below their first pick: all eight put qwen3-next-80b
+// fifth on a 54 to 72 GB machine, in place of qwen3-6-27b, and no other new row reaches a top-5 list. Only K2 Horizon
+// 0.9B was run (below); no other row has been pulled or loaded.
+//   - From Ollama's library: devstral-small-2:24b, devstral-2:123b, qwen3-next:80b, qwen3-coder-next, olmo-3.1:32b,
+//     rnj-1:8b, lfm2.5-thinking:1.2b, and the qwen3-vl 2b, 4b, 8b, 30b, and 235b tags. Every manifest answers 200 with
+//     `file_type` Q4_K_M, and the only `requires` fields among them (lfm2.5-thinking 0.14.3, qwen3-coder-next 0.15.5,
+//     qwen3-vl 4b and 8b 0.30.0) are under the fleet's pin. `qwen3-coder-next` has no size tag, so the row names its
+//     `q4_K_M` tag, which is what `latest` points at. The tags these rows name (`qwen3-next:80b`, `olmo-3.1:32b`, and
+//     the qwen3-vl size tags) are the thinking builds. Devstral 2's Ollama template defaults its system prompt to "You
+//     are Ministral-3-123B-Instruct-2512" (a chat with no system message is told it is Ministral 3), and neither
+//     Devstral build on Ollama has a license layer.
+//   - Flags follow what the build offers through Ollama 0.34.0 (the fleet's pin), not the library page's badges, which
+//     join every build of a family and ignore a GGUF chat template that Ollama prefers. Ollama (`Model.Capabilities`, with
+//     `OLLAMA_GO_TEMPLATE` unset) adds up the config's `capabilities`, the tool and thinking support of its `parser`
+//     (devstral-2 `ministral`, qwen3-coder-next `qwen3-coder`, olmo-3.1 `olmo3-think`, lfm2.5-thinking `lfm2-thinking`,
+//     qwen3-vl `qwen3-vl-thinking`), vision from a projector layer or the model file's `vision.block_count`, and one
+//     template's tools and thinking. A build with a Go template layer uses it (`.Tools` for tools, `.Thinking` in its
+//     messages loop for thinking: devstral-2, devstral-small-2, rnj-1, qwen3-next, and Mellum have `.Tools`, and the last
+//     two `.Thinking`), unless it has no `parser` or `renderer` and the GGUF's chat template offers more capabilities while
+//     keeping any tool round trip the Go template has, or offers the same and alone completes one (MiniCPM5). A build with
+//     no Go template layer uses the GGUF's chat template (a `tools` or `tool_call` substring for tools, a literal `<think>`
+//     and `</think>` or a split of `content` at `</think>` for thinking), but a build with a `parser` never has it read, so
+//     olmo-3.1, qwen3-coder-next, lfm2.5-thinking, and qwen3-vl, which have a parser and no Go template layer, have only
+//     what the parser and their config offer. K2 Horizon, which 0.34.0 cannot pull, rests on its config's `capabilities`
+//     and the 0.40.16 run below. The pool routes a request that asks for tools or thinking by these flags
+//     (`pool-auto-model.ts`). So `olmo-3.1:32b`, the Think build, is thinking without tools, although its family page
+//     shows both badges: its parser has no tool support. `olmo-3-7b` and `olmo-3-32b` (2026-08-12) say the opposite (tools,
+//     no thinking) for builds with the same parser, and are left for a follow-up.
+//   - The vendors' own Ollama namespaces carry two of the "Hugging Face-first" families, so they are listed from there, as
+//     `openbmb/minicpm-v4.7` is. MiniCPM5 is two repos: `openbmb/minicpm5` (the 1B, which has no size tag, so `:q4_K_M`)
+//     and `openbmb/minicpm5-2b`. K2 Horizon is `ifm/k2-horizon` (0.9B, 3.7B, 7B, 32B, and MoVA 36B-A4B, each by its
+//     explicit `-q4_K_M` tag, since the 0.9B and 3.7B defaults are Q8_0). It needs Ollama 0.40.4, above the fleet's pin:
+//     its config blobs say `requires` 0.40.4, and the llama.cpp in 0.34.0 (b10760) has no `k2-horizon` architecture while
+//     the one in 0.40.16 (b12177) has. The fleet cannot pull those five rows until the pin moves: a node on 0.34.0 asked to
+//     pull one should be refused with HTTP 412 (Ollama issues 19085 and 18414; not observed here, since the registry answers
+//     an `ollama/` User-Agent with 401 unless it carries Ollama's token), though no K2 row is in a top-5 recommendation.
+//     The K2 sizes are the
+//     vendor's names (the cards say "3.7B-core" and "7B-core"); the files hold 1.08B, 5.06B, 9.0B, 34.8B, and 37.4B
+//     parameters.
+//   - MiniCPM5's two builds carry the same 9,062-byte GGUF chat template, which names tools and thinking, while their Go
+//     templates (172 and 692 bytes) name neither tools nor `.Thinking`; so Ollama 0.34.0 prefers the GGUF's and reports both,
+//     although the library page's badges show none (the 1B) and thinking (the 2B). That is from Ollama's source, and the
+//     cards' XML-style tool calls were not run through it. The 2B's params layer holds its stop list as one string that
+//     contains a JSON array, so `<|im_end|>` is not a stop sequence of its own there; whether the runner still ends the
+//     turn on it was not run. That layer also sets `num_ctx` to 4096, which matters only to a request that sends no
+//     context size of its own.
+//   - K2 Horizon's chat template. The Q4_K_M files of IFM's five GGUF repos and its five `-q4_K_M` registry builds are the
+//     same five files (each model layer's digest equals the repo file's hash), and carry one GGUF chat template (43,040
+//     bytes) with no check for a missing thinking field. bartowski's 3.7B, 7B, 32B, MoVA, and 375B GGUFs carry a 51,034-byte one that raises
+//     "Assistant message is missing a thinking field" on an assistant turn with none (his 0.9B carries a third, without
+//     that check). On Ollama 0.40.16, `ifm/k2-horizon:0.9b-q4_K_M` answered HTTP 200 to a multi-turn chat whose assistant
+//     turn has no thinking field, to `think` true and false, and to a tool call with its result. The same model layer
+//     through `hf.co/IFM/K2-Horizon-0.9B-GGUF:Q4_K_M` chats the same, but its manifest adds its own template and stop
+//     parameters, leaves out IFM's temperature and top_p, and reports tools and completion only, so `think: true`
+//     answers HTTP 400; the registry build declares thinking and tools in its config, which is why K2 Horizon is listed
+//     from IFM's namespace. Only the 0.9B was run; the other four builds share its template, byte for byte.
+//   - Through `hf.co/`, where the registry endpoint answers 200 to Ollama's User-Agent (single-file Q4_K_M): JetBrains'
+//     `Mellum2.1-12B-A2.5B-Thinking-GGUF` (its own repo, 8.07 GB; JetBrains' Ollama namespace stops at Mellum 2, and
+//     `decadence/mellum2.1` is a community re-host of the same file) and `AngelSlim/Hy3-GGUF` (182.33 GB). AngelSlim is an
+//     unverified Hugging Face organization, outside Tencent's `tencent/` namespace, that Tencent's AngelSlim README links
+//     and whose toolkit Hy3's card names. Hy3's repo lists `Hy3-Q4_K_M-mtp.gguf` beside `Hy3-Q4_K_M.gguf`; the `Q4_K_M`
+//     tag serves the plain 80-block file. bartowski's Hy3 Q4_K_M is sharded (HTTP 400), and `frob/hy3` is frob's own
+//     Q4_K_M (81 blocks, with the MTP head, 181.0 GB) with the same template. llama.cpp b10760, in Ollama 0.34.0, has both
+//     `mellum` and `hy_v3` (Hy3 support came with llama.cpp PR 25395, which merged on 2026-07-13 and is in b10760).
+//   - Hy3 carries no thinking flag. Its manifest has no template layer and no `capabilities`, so Ollama 0.34.0 reads the
+//     GGUF's chat template: it reports thinking only for a literal `<think>` and `</think>` there (or a split of `content`
+//     at `</think>`), and Hy3's template has neither, building its think tokens from a format string, so it would answer
+//     `think: true` with HTTP 400, as the `hf.co` K2 Horizon build did on 0.40.16. It reports tools when the template
+//     contains `tools` or `tool_call`, which Hy3's does. Both are from Ollama's source and the template, not from a run.
+//     The template defaults `reasoning_effort` to `no_think`.
+//   - Command A+ is left out, after vetting `coder543/command-a-plus-05-2026-gguf`, the only single-file build found: one
+//     132 GB Q4_K_M that the registry request accepts, with a chat template identical to Cohere's and Apache-2.0 on
+//     Cohere's card. But it is one person's upload (223 downloads in the past 30 days, 2,936 in all), the GGUFs of
+//     bartowski, diablomike20, SixVolts, and DevQuasar are sharded, Ollama's registry search lists no Command A+, and at
+//     132 GB it was not run. Its header names no quantizer or base model (nor does Hy3's, so the publisher is what
+//     separates the two).
+//   - Windows. Devstral Small 2 carries 256K, which Mistral's card states, though its file (393,216) and Ollama's page
+//     (384K) allow more. LFM 2.5 Thinking carries 32K, which Liquid's card states, though its file (128,000) and Ollama's
+//     page (125K) allow more. The other rows carry their file's token count divided by 1,024, so 256 for the nine whose
+//     files run to 262,144 (devstral-2, qwen3-next, qwen3-coder-next, hy3, and the five qwen3-vl sizes, whose pages say
+//     256K too), where older rows such as `qwen3-6-27b` and `qwen3-vl-32b` carry 262 (the second, added from an engine
+//     reading on 2026-09-09, also carries 33B). 256 is the lower figure, so the safe one for sizing.
+//   - Licenses with revenue limits: Devstral 2 123B (a modified MIT that grants no rights to a company whose global
+//     consolidated monthly revenue exceeds $20 million) and LFM 2.5 Thinking (LFM Open License v1.0, which does not
+//     license commercial use by an entity at $10 million a year or more). The vendors' cards say Apache-2.0 for the rest,
+//     Devstral Small 2 among them.
+// AA moved its open-weights leaderboard to Intelligence Index v5.0.1; this table's column is v4.3 (2026-09-16). Few
+// rows have a v5.0.1 score, so the column stays whole on v4.3 and every row added above leaves intel/tps/ttft/e2e
+// blank: a mixed-scale column would rank wrongly.
 const CATALOG_TOON = `
-llms[105|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,reason,vision,tools,audio,tps,ttft,e2e,ramGb}:
+llms[146|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,reason,vision,tools,audio,tps,ttft,e2e,ramGb}:
   gemma4-e2b|gemma4:e2b|Gemma 4 E2B|general|2|7.2|cpu-only|128|Google|7.8|1|1|1|1|||
   gemma4-e4b|gemma4:e4b|Gemma 4 E4B|general|4|9.6|cpu-only|128|Google|8.9|1|1|1|1|63.2|0.84|40.4|4.26
   gemma4-12b|gemma4:12b|Gemma 4 12B|general|12|7.6|low|256|Google|14.2|1|1|1|0|114.2|2.46|24.4
@@ -320,9 +478,9 @@ llms[105|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,reas
   glm-4-7-flash-30b|glm-4.7-flash:latest|GLM-4.7 Flash|reasoning|30|19|medium|200|Z AI|14.9|1|0|1|0|63.3|1.55|41.1
   nemotron-3-5-lightning-30b|nemotron-3.5-lightning:30b|Nemotron 3.5 Lightning|general|30|25|medium|1000|NVIDIA|12.9|0|0|1|0|286.1|0.62|9.4
   deepseek-v4-flash-0731-284b|frob/deepseek-v4-flash-0731:284b-a13b-ud-q4_k_xl|DeepSeek V4 Flash 0731|reasoning|284|155|high|1000|DeepSeek|34.3|1|0|1|0|218|1.04|12.5
-  ornith-1-5-9b|ornith-1.5:9b|Ornith 1.5 9B|coding|9|6.6|low|256|Deep Reinforce||0|1|0|0|||
-  ornith-1-5-35b|ornith-1.5:35b|Ornith 1.5 35B|coding|35|23|medium|256|Deep Reinforce||0|1|0|0|||
-  ornith-1-5-397b|ornith-1.5:397b|Ornith 1.5 397B|coding|397|242|high|256|Deep Reinforce||0|1|0|0|||
+  ornith-1-5-9b|ornith-1.5:9b|Ornith 1.5 9B|coding|9|6.6|low|256|Deep Reinforce||1|1|1|0|||
+  ornith-1-5-35b|ornith-1.5:35b|Ornith 1.5 35B|coding|35|23|medium|256|Deep Reinforce||1|1|1|0|||
+  ornith-1-5-397b|ornith-1.5:397b|Ornith 1.5 397B|coding|397|242|high|256|Deep Reinforce||1|1|1|0|||
   qwen3-coder-30b|qwen3-coder:30b|Qwen 3 Coder 30B|coding|30|18.6|medium|262|Alibaba|9.6|0|0|1|0|79.7|2.62|8.9
   qwen3-vl-32b|qwen3-vl:32b|Qwen 3 VL 32B|general|33|20.9|medium|262|Alibaba|11.9|1|1|1|0|91|2.71|30.2
   qwen3-coder-480b|qwen3-coder:480b|Qwen 3 Coder 480B|coding|480|290.1|high|262|Alibaba|11.9|0|0|1|0|54.8|3.13|12.2
@@ -335,6 +493,47 @@ llms[105|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,reas
   codestral-22b|codestral:22b|Codestral 22B|coding|22|12.6|medium|32|Mistral||0|0|0|0|||
   deepcoder-1-5b|deepcoder:1.5b|DeepCoder 1.5B|coding|1.5|1.1|cpu-only|64|Agentica||1|0|0|0|||
   deepcoder-14b|deepcoder:14b|DeepCoder 14B|coding|14|9|low|64|Agentica||1|0|0|0|||
+  mimo-v2-6-9b|mimo-v2.6:9b|MiMo-V2.6 9B|coding|9|6.6|low|256|Xiaomi||1|1|1|0||||
+  flint-40b|flint:40b|Flint 40B|coding|39.8|23|medium|256|Recursive||1|0|1|0||||
+  nemotron-3-5-bolt-e4b|nemotron-3.5-bolt:e4b|Nemotron 3.5 Bolt E4B|reasoning|4|7.9|low|128|NVIDIA||1|1|1|0||||
+  lfm3-1-7b|lfm3:1.7b|LFM3 1.7B|general|1.7|1.1|cpu-only|256|Liquid AI||1|0|1|0||||
+  ripple-preview-65b|ripple-preview:65b|Ripple 65B Preview|coding|65|38.8|high|1000|Ricursive||1|0|1|0||||
+  nemotron-3-5-super-120b|nemotron-3.5-super:120b|Nemotron 3.5 Super 120B|reasoning|120|90.2|high|1000|NVIDIA||1|1|1|0||||
+  granite4-2-3b|granite4.2:3b|Granite 4.2 3B|general|3|2.2|cpu-only|128|IBM||1|0|1|0||||
+  granite4-2-8b|granite4.2:8b|Granite 4.2 8B|general|8|5.3|low|128|IBM||1|0|1|0||||
+  granite4-2-30b|granite4.2:30b|Granite 4.2 30B|general|30|17.7|medium|128|IBM||1|0|1|0||||
+  lfm3-vl-2b|lfm3-vl:2b|LFM3 VL 2B|general|1.92|1.5|cpu-only|128|Liquid AI||1|1|1|0||||
+  lfm2-5-24b|lfm2.5:24b|LFM 2.5 24B|reasoning|24|14.5|medium|128|Liquid AI||1|0|1|0||||
+  ornith-1-5-122b|ornith-1.5:122b|Ornith 1.5 122B|coding|122|76.8|high|256|Deep Reinforce||1|1|1|0||||
+  nemotron-cascade-2-30b|nemotron-cascade-2:30b|Nemotron Cascade 2 30B|reasoning|30|24.3|medium|256|NVIDIA||1|0|1|0||||
+  mistral-medium-3-5-128b|mistral-medium-3.5:128b|Mistral Medium 3.5 128B|general|128|80.2|high|256|Mistral||1|1|1|0||||
+  qwen3-8-flash-next-125b|qwen3.8-flash-next:125b-a6b-q4_K_M|Qwen 3.8 Flash Next 125B A6B|reasoning|125|120.1|high|256|Alibaba||1|1|1|0||||
+  mistral-small-4-119b|frob/mistral-small-4:119b|Mistral Small 4 119B|general|119|74.6|high|256|Mistral||1|1|1|0||||
+  nanbeige4-3-33b|hf.co/bartowski/Nanbeige_Nanbeige4.3-33B-GGUF:Q4_K_M|Nanbeige 4.3 33B|coding|33|20.8|medium|512|Nanbeige||1|0|1|0||||
+  arete-27b|hf.co/bartowski/NousResearch_Arete-27B-GGUF:Q4_K_M|Arete 27B|reasoning|27|18.1|medium|262|Nous Research||1|1|1|0||||
+  minicpm-v4-7-35b-a3b|openbmb/minicpm-v4.7:35b-a3b|MiniCPM-V 4.7 35B-A3B|general|35|22.3|medium|256|OpenBMB||0|1|0|0||||
+  minicpm-v4-7-1b|openbmb/minicpm-v4.7:1b|MiniCPM-V 4.7 1B|general|1|1.8|cpu-only|256|OpenBMB||0|1|0|0||||
+  devstral-small-2-24b|devstral-small-2:24b|Devstral Small 2 24B|coding|24|15.2|medium|256|Mistral||0|1|1|0||||
+  devstral-2-123b|devstral-2:123b|Devstral 2 123B|coding|123|74.9|high|256|Mistral||0|0|1|0||||
+  qwen3-next-80b|qwen3-next:80b|Qwen 3 Next 80B A3B|reasoning|80|50.4|high|256|Alibaba||1|0|1|0||||
+  qwen3-coder-next-80b|qwen3-coder-next:q4_K_M|Qwen 3 Coder Next 80B A3B|coding|80|51.7|high|256|Alibaba||0|0|1|0||||
+  olmo-3-1-32b|olmo-3.1:32b|OLMo 3.1 32B|reasoning|32|19.5|medium|64|Allen Institute||1|0|0|0||||
+  rnj-1-8b|rnj-1:8b|Rnj-1 8B|coding|8|5.1|low|32|Essential AI||0|0|1|0||||
+  lfm2-5-thinking-1-2b|lfm2.5-thinking:1.2b|LFM 2.5 Thinking 1.2B|reasoning|1.2|0.7|cpu-only|32|Liquid AI||1|0|1|0||||
+  qwen3-vl-2b|qwen3-vl:2b|Qwen 3 VL 2B|general|2|1.9|cpu-only|256|Alibaba||1|1|1|0||||
+  qwen3-vl-4b|qwen3-vl:4b|Qwen 3 VL 4B|general|4|3.3|cpu-only|256|Alibaba||1|1|1|0||||
+  qwen3-vl-8b|qwen3-vl:8b|Qwen 3 VL 8B|general|8|6.2|low|256|Alibaba||1|1|1|0||||
+  qwen3-vl-30b|qwen3-vl:30b|Qwen 3 VL 30B A3B|general|30|19.6|medium|256|Alibaba||1|1|1|0||||
+  qwen3-vl-235b|qwen3-vl:235b|Qwen 3 VL 235B A22B|general|235|143.3|high|256|Alibaba||1|1|1|0||||
+  minicpm5-1b|openbmb/minicpm5:q4_K_M|MiniCPM5 1B|general|1|0.7|cpu-only|128|OpenBMB||1|0|1|0||||
+  minicpm5-2b|openbmb/minicpm5-2b:2b|MiniCPM5 2B|general|2|1.6|cpu-only|128|OpenBMB||1|0|1|0||||
+  k2-horizon-0-9b|ifm/k2-horizon:0.9b-q4_K_M|K2 Horizon 0.9B|reasoning|0.9|0.7|cpu-only|128|IFM||1|0|1|0||||
+  k2-horizon-3-7b|ifm/k2-horizon:3.7b-q4_K_M|K2 Horizon 3.7B|reasoning|3.7|3.2|cpu-only|512|IFM||1|0|1|0||||
+  k2-horizon-7b|ifm/k2-horizon:7b-q4_K_M|K2 Horizon 7B|reasoning|7|5.6|low|512|IFM||1|0|1|0||||
+  k2-horizon-32b|ifm/k2-horizon:32b-q4_K_M|K2 Horizon 32B|reasoning|32|21.1|medium|512|IFM||1|0|1|0||||
+  k2-horizon-mova-36b|ifm/k2-horizon:36b-q4_K_M|K2 Horizon MoVA 36B A4B|reasoning|36|22.4|medium|512|IFM||1|0|1|0||||
+  mellum2-1-12b|hf.co/JetBrains/Mellum2.1-12B-A2.5B-Thinking-GGUF:Q4_K_M|Mellum 2.1 12B A2.5B|coding|12|8.1|low|128|JetBrains||1|0|1|0||||
+  hy3-295b|hf.co/AngelSlim/Hy3-GGUF:Q4_K_M|Hy3 295B A21B|general|295|182.3|high|256|Tencent||0|0|1|0||||
 `;
 
 /** A decoded TOON row: every column mapped to its raw string cell (empty string when blank). */
@@ -356,6 +555,7 @@ function defaultSupportedPlatforms(backend: InferenceBackendType): HostPlatform[
       return ['darwin'];
     case 'ollama':
     case 'lemonade':
+    case 'localai':
       return [...ALL_HOST_PLATFORMS];
   }
 }
@@ -449,7 +649,8 @@ const MOE_ACTIVE_PARAMS_B: Record<string, number> = {
   'glm-4-7-flash-30b': 3, // GLM-4.7 Flash — 30B-A3B MoE
   'nemotron-3-5-lightning-30b': 3, // Nemotron 3.5 Lightning — 30B-A3B MoE
   'deepseek-v4-flash-0731-284b': 13, // DeepSeek V4 Flash 0731 — 284B total / 13B active MoE
-  'ornith-1-5-35b': 3, // Ornith 1.5 35B — 35B-A3B MoE per the library readme; the 9B/397B sizes are dense
+  'flint-40b': 2.5, // Flint 40B — 39.8B total / 2.5B active per token, per Recursive's model page
+  'ornith-1-5-35b': 3, // Ornith 1.5 35B — 35B-A3B MoE per the library readme; the 9B is dense, the 122B and 397B are MoE (below)
   'qwen3-coder-30b': 3, // Qwen3-Coder-30B-A3B — same 30B-A3B MoE as qwen3-30b/qwen3-coder-30b-vllm above
   'qwen3-coder-480b': 35, // Qwen3-Coder-480B-A35B
   // 2026-08-24 MLX expansion — active params reused from the matching Ollama-backend row above, or
@@ -472,6 +673,34 @@ const MOE_ACTIVE_PARAMS_B: Record<string, number> = {
   'deepseek-v4-flash-0731-mlx': 13, // DeepSeek V4 Flash 0731 (MLX) — same MoE as deepseek-v4-flash-0731-284b above
   'north-mini-code-1-0-mlx': 3, // North Mini Code 1.0 (MLX) — same MoE as north-mini-code-1-0 above
   'minimax-m2-mlx': 10, // MiniMax M2 (MLX) — same MoE as minimax-m2-community-230b above
+  // 2026-11-15 refresh — vendor-stated active sizes, or the GGUF's expert counts where a vendor states none.
+  'nemotron-3-5-super-120b': 12, // Nemotron 3.5 Super 120B-A12B
+  'lfm2-5-24b': 2.45, // LFM2.5-24B-A2B — 24B total, 2.45B active per the vendor card (64 experts, 4 used)
+  'ornith-1-5-122b': 10, // Ornith 1.5 122B — qwen35moe, 256 experts / 8 used: about 10B active (a Qwen3.5-122B-A10B shape)
+  'ornith-1-5-397b': 17, // Ornith 1.5 397B — qwen35moe, 512 experts / 10 used: about 17B active (a Qwen3.5-397B-A17B shape)
+  'ornith-35b': 3, // Ornith 1.0 35B — the same qwen35moe 35B-A3B shape as ornith-1-5-35b (it was treated as dense before 2026-11-15)
+  'nemotron-cascade-2-30b': 3, // Nemotron Cascade 2 30B-A3B
+  'qwen3-8-flash-next-125b': 6, // Qwen 3.8 Flash-Next 125B-A6B
+  'mistral-small-4-119b': 6.5, // Mistral Small 4 119B — 6.5B active per the vendor card (title says A6B)
+  'minicpm-v4-7-35b-a3b': 3, // MiniCPM-V 4.7 35B-A3B
+  'lfm2-5-24b-mlx': 2.45, // LFM2.5 24B (MLX) — same MoE as lfm2-5-24b above
+  'qwen3-8-flash-next-125b-mlx': 6, // Qwen 3.8 Flash Next (MLX) — same MoE as qwen3-8-flash-next-125b above
+  'laguna-s-2-1-mlx': 8, // Laguna S 2.1 (MLX) — same MoE as laguna-s-2-1 above
+  'ornith-35b-mlx': 3, // Ornith 1.0 35B (MLX) — same MoE as ornith-35b above
+  'ornith-1-5-35b-mlx': 3, // Ornith 1.5 35B (MLX) — same MoE as ornith-1-5-35b above
+  'flint-40b-mlx': 2.5, // Flint 40B (MLX) — same MoE as flint-40b above
+  'qwen3-6-35b-vllm': 3, // Qwen3.6-35B-A3B (vLLM) — same MoE as qwen3-6-35b above
+  'glm-4-7-flash-30b-vllm': 3, // GLM-4.7 Flash (vLLM) — same 30B-A3B MoE as the Ollama row
+  // 2026-11-15 second pass — vendor-stated active sizes, which leave out the embedding tables. An estimate from the GGUFs'
+  // expert counts (total less the unused experts' share, embedding tables included) lands within about 1B of each, except
+  // K2 Horizon MoVA below.
+  'qwen3-next-80b': 3, // Qwen3-Next-80B-A3B — 512 experts, 10 used (qwen3next)
+  'qwen3-coder-next-80b': 3, // Qwen3-Coder-Next — 80B total, 3B activated per the vendor card (the same qwen3next shape)
+  'qwen3-vl-30b': 3, // Qwen3-VL-30B-A3B — 128 experts, 8 used (qwen3vlmoe)
+  'qwen3-vl-235b': 22, // Qwen3-VL-235B-A22B — 128 experts, 8 used (qwen3vlmoe)
+  'k2-horizon-mova-36b': 4, // K2-Horizon-MoVA-36B-A4B — "stores 36B parameters and runs 4B per token" per the vendor card; its tensors give about 6B with the embedding and output tables and 4.7B without them
+  'mellum2-1-12b': 2.5, // Mellum2.1 12B-A2.5B — 64 experts, 8 used (mellum)
+  'hy3-295b': 21, // Hy3 — 295B total, 21B active per the vendor card (192 experts, 8 used)
 };
 
 /**
@@ -706,15 +935,25 @@ const lemonadeLlms: CuratedModel[] = decodeToonTable(LEMONADE_LLM_TOON, 'llms').
 // that models are configured at container startup). Selection criteria, in the spirit of this file's
 // fabrication-guard history: every row is a widely-known, UNGATED HF repo whose exact id predates and
 // survives independent verification (Qwen3 April 2025, Qwen3-2507 refresh July 2025, GPT-OSS August
-// 2025, Phi-4 December 2024) — no gated repos (meta-llama/*, google/gemma-*) since those 401 without
+// 2025, Phi-4 December 2024) — no gated repos (meta-llama/*, Google's Gemma 1 to 3 repos such as google/gemma-3-*) since those 401 without
 // an HF token the Hub doesn't manage, and no rows sourced from this session's own web research.
+// 2026-11-15: five rows added for current families whose repos are newer than that list (Qwen3.8 27B, Qwen3.6
+// 35B-A3B, Qwen3.5 9B, Gemma 4 31B, GLM-4.7 Flash). The same bar, applied to the Hugging Face API instead of
+// a summary: each repo's `gated` is false and an anonymous ranged read of its first safetensors shard
+// answers 206 (Gemma 4, unlike Gemma 3, is Apache-2.0 and ungated); `gb` is the summed bf16 shard bytes; the
+// first `architectures` entry is registered in vLLM's model registry (main and v0.33.0); params, context
+// and capability flags follow the vendor card and the repo's `config.json`. None was served with `vllm
+// serve` (no GPU was available), so loading is untested. `tools` = 1 means the chat template supports tools:
+// vLLM still needs `--enable-auto-tool-choice` and a `--tool-call-parser` at launch, as with the rows above.
+// Left out on purpose: `nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16` (the card calls that repo mainly a
+// customization base and points deployments at NVFP4, which this table does not allow).
 // Sizes are the actual serving footprint: bf16 safetensors (≈2 bytes/param) for most rows; the two
 // GPT-OSS rows ship natively MXFP4-quantized so their on-disk/VRAM size is far below 2 bytes/param.
 // intel/perf columns are left blank rather than copied from the Ollama rows — AA benchmarks
 // specific serving setups, and none of these bf16/MXFP4 checkpoints were re-verified under vLLM.
 // The extra trailing `quant` column names the served precision (see buildLlmModel).
 const VLLM_LLM_TOON = `
-llms[8|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,reason,vision,tools,audio,tps,ttft,e2e,quant}:
+llms[13|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,reason,vision,tools,audio,tps,ttft,e2e,quant}:
   qwen3-4b-instruct-vllm|Qwen/Qwen3-4B-Instruct-2507|Qwen 3 4B Instruct (vLLM)|general|4|8.1|low|262|Alibaba||0|0|1|0||||bf16
   qwen3-8b-vllm|Qwen/Qwen3-8B|Qwen 3 8B (vLLM)|general|8|16.4|medium|32|Alibaba||1|0|1|0||||bf16
   qwen3-14b-vllm|Qwen/Qwen3-14B|Qwen 3 14B (vLLM)|general|15|29.6|high|32|Alibaba||1|0|1|0||||bf16
@@ -723,6 +962,11 @@ llms[8|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,reason
   gpt-oss-20b-vllm|openai/gpt-oss-20b|GPT-OSS 20B (vLLM)|general|20|13.8|medium|131|OpenAI||1|0|1|0||||mxfp4
   gpt-oss-120b-vllm|openai/gpt-oss-120b|GPT-OSS 120B (vLLM)|general|120|65|high|131|OpenAI||1|0|1|0||||mxfp4
   phi-4-vllm|microsoft/phi-4|Phi-4 (vLLM)|general|15|29.4|high|16|Microsoft||0|0|0|0||||bf16
+  qwen3-8-27b-vllm|Qwen/Qwen3.8-27B|Qwen 3.8 27B (vLLM)|reasoning|27|55.6|high|262|Alibaba||1|1|1|0||||bf16
+  qwen3-6-35b-vllm|Qwen/Qwen3.6-35B-A3B|Qwen 3.6 35B (vLLM)|coding|35|71.9|high|262|Alibaba||1|1|1|0||||bf16
+  gemma4-31b-vllm|google/gemma-4-31B-it|Gemma 4 31B (vLLM)|general|31|62.5|high|256|Google||1|1|1|0||||bf16
+  qwen3-5-9b-vllm|Qwen/Qwen3.5-9B|Qwen 3.5 9B (vLLM)|reasoning|9|19.3|medium|262|Alibaba||1|1|1|0||||bf16
+  glm-4-7-flash-30b-vllm|zai-org/GLM-4.7-Flash|GLM-4.7 Flash (vLLM)|reasoning|30|62.4|high|202|Z AI||1|0|1|0||||bf16
 `;
 
 const vllmLlms: CuratedModel[] = decodeToonTable(VLLM_LLM_TOON, 'llms').map((row) => buildLlmModel(row, 'vllm'));
@@ -766,8 +1010,38 @@ const vllmLlms: CuratedModel[] = decodeToonTable(VLLM_LLM_TOON, 'llms').map((row
 // `deepseek-coder-v2-236b` were not pursued. `params`/`ctxK`/purpose/capability flags for every row
 // below are reused from the matching Ollama-backend row as before; MoE active-params are added to
 // MOE_ACTIVE_PARAMS_B below where the HF repo name itself states an `-A#B` active-expert size.
+//
+// 2026-11-15: re-checked against the Hugging Face API (listing, file tree, `config.json`, summed `.safetensors`
+// bytes). Some of the "no quant" verdicts above no longer hold, and some never did: mlx-community already had
+// Laguna XS 2.1 and S 2.1 (July) and Ornith 1.0 9B/35B (June). Twelve rows are added for the 2026 releases:
+// Laguna S 2.1, Ornith 1.0 and 1.5, the four Ollama rows of 2026-11-08 (flint, mimo-v2.6 9B, nemotron-3.5 Bolt
+// E4B, lfm3 1.7B), and the three Ollama rows of 2026-11-15 that have a partner (LFM3 VL 2B, LFM2.5 24B, Qwen3.8
+// Flash-Next). Laguna XS 2.1 (`mlx-community/Laguna-XS-2.1-4bit`, 18.8 GB) is the one partner left out: every
+// oMLX row is unscored, so ranking falls back to parameter count, and its 33B would displace DeepSeek R1 32B
+// as the default on a 32 GB Mac. `flint-40b-mlx` does become the default on a 40 GB Mac, but Apple ships no such
+// Mac. Moving a default on a size that ships needs an owner's decision (scoring oMLX rows from their Ollama
+// partners, as Lemonade rows are, would settle it).
+// Nine of the twelve are OptiQ or oQ4e mixed-precision builds, labelled `mlx-4bit` because that is the family
+// label on their cards; `gb` is the real shard sum (about 4.4 to 7.5 bits per weight, with the small vision rows
+// at the top), so the footprint matches the download. Only existence, size, and architecture were checked, not
+// a load. The cards and release notes say Laguna needs oMLX 0.5.3 or later and Flint one with Flint support (0.7.3
+// or later). The LFM3 repos and Laguna S 2.1 ship modeling code behind an `auto_map` (byte-identical to the
+// vendors' files), but oMLX builds those models from its own Laguna and LFM3 code and runs repo code only for a
+// model with `trust_remote_code` switched on (off by default). LFM3 VL, Ornith 1.5 35B, and Nemotron 3.5 Bolt add
+// an `optiq_vision` sidecar, and the Ornith 1.5 repos need OptiQ's `import optiq` registration, which stock
+// mlx-lm lacks, so an older or unconfigured oMLX may refuse them.
+// `ornith-1-5-9b-mlx` and `mimo-v2-6-9b-mlx` are text-only (their repos carry no vision tower), unlike their Ollama
+// rows. `ornith-9b-mlx` and `ornith-35b-mlx` are the reverse: their repos carry a vision tower that the text-only
+// Ollama builds lack, so they are flagged vision. ctxK is each repo's own `max_position_embeddings` where it is
+// lower than the Ollama row's (Bolt: 64K, not 128K).
+// Real mlx-community repos still without a row, on purpose: the older models (Llama 4, Command A, Qwen3-Coder,
+// Qwen3-VL 32B, Qwen2.5-Coder, Devstral, Codestral, DeepCoder, Gemma 3, Mistral Small 22B, Nemotron 3 33B,
+// DeepSeek-Coder-V2 236B), kept out so this pass stays on 2026 releases; LFM2.5-8B-A1B, whose Ollama row's
+// reason flag is stale (the vendor calls it a reasoning model) and should be settled with its row first; and
+// Mistral Medium 3.5, whose repo (2026-04-29) still carries the pre-fix rope config (`mscale_all_dim` 1.0; the
+// vendor set 0.0 on 2026-05-01 after long-context degradation) — the Ollama GGUF has the fixed value.
 const VLLM_MLX_LLM_TOON = `
-llms[64|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,reason,vision,tools,audio,tps,ttft,e2e,quant}:
+llms[76|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,reason,vision,tools,audio,tps,ttft,e2e,quant}:
   llama3-2-3b-mlx|mlx-community/Llama-3.2-3B-Instruct-4bit|Llama 3.2 3B (MLX)|general|3|1.8|low||Meta||0|0|1|0||||mlx-4bit
   qwen3-8b-mlx|mlx-community/Qwen3-8B-4bit|Qwen 3 8B (MLX)|general|8|4.6|low|40|Alibaba||1|0|1|0||||mlx-4bit
   gpt-oss-20b-mlx|mlx-community/gpt-oss-20b-MXFP4-Q8|GPT-OSS 20B (MLX)|general|20|12.1|medium|131|OpenAI||1|0|1|0||||mxfp4
@@ -832,6 +1106,18 @@ llms[64|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,reaso
   phi4-mini-3-8b-mlx|mlx-community/Phi-4-mini-instruct-4bit|Phi-4 Mini 3.8B (MLX)|general|3.8|2.2|cpu-only|128|Microsoft||0|0|1|0||||mlx-4bit
   phi4-reasoning-14b-mlx|mlx-community/Phi-4-reasoning-4bit|Phi-4 Reasoning 14B (MLX)|reasoning|14|8.3|low|32|Microsoft||1|0|1|0||||mlx-4bit
   minimax-m2-mlx|mlx-community/MiniMax-M2-4bit|MiniMax M2 (MLX)|general|230|128.7|high|205|MiniMax||1|0|1|0||||mlx-4bit
+  laguna-s-2-1-mlx|mlx-community/Laguna-S-2.1-oQ4e|Laguna S 2.1 (MLX)|coding|118|64.1|high|256|Poolside||1|0|1|0||||mlx-4bit
+  ornith-9b-mlx|mlx-community/Ornith-1.0-9B-4bit|Ornith 9B (MLX)|coding|9|6.0|low|256|Deep Reinforce||1|1|1|0||||mlx-4bit
+  ornith-35b-mlx|mlx-community/Ornith-1.0-35B-4bit|Ornith 35B (MLX)|coding|35|20.4|medium|256|Deep Reinforce||1|1|1|0||||mlx-4bit
+  ornith-1-5-9b-mlx|mlx-community/Ornith-1.5-9B-OptiQ-4bit|Ornith 1.5 9B (MLX)|coding|9|7.1|low|256|Deep Reinforce||1|0|1|0||||mlx-4bit
+  ornith-1-5-35b-mlx|mlx-community/Ornith-1.5-35B-A3B-OptiQ-4bit|Ornith 1.5 35B (MLX)|coding|35|23.5|medium|256|Deep Reinforce||1|1|1|0||||mlx-4bit
+  mimo-v2-6-9b-mlx|mlx-community/MiMo-V2.6-Distill-Qwen-9B-OptiQ-4bit|MiMo-V2.6 9B (MLX)|coding|9|7.1|low|256|Xiaomi||1|0|1|0||||mlx-4bit
+  flint-40b-mlx|mlx-community/flint-oQ4e|Flint 40B (MLX)|coding|39.8|23.4|medium|256|Recursive||1|0|1|0||||mlx-4bit
+  nemotron-3-5-bolt-e4b-mlx|mlx-community/NVIDIA-Nemotron-3.5-Bolt-E4B-OptiQ-4bit|Nemotron 3.5 Bolt E4B (MLX)|reasoning|4|7.5|low|64|NVIDIA||1|1|1|0||||mlx-4bit
+  lfm3-1-7b-mlx|mlx-community/LFM3-1.7B-OptiQ-4bit|LFM3 1.7B (MLX)|general|1.7|1.3|cpu-only|256|Liquid AI||1|0|1|0||||mlx-4bit
+  lfm3-vl-2b-mlx|mlx-community/LFM3-VL-2B-OptiQ-4bit|LFM3 VL 2B (MLX)|general|1.92|1.7|cpu-only|128|Liquid AI||1|1|1|0||||mlx-4bit
+  lfm2-5-24b-mlx|mlx-community/LFM2.5-24B-A2B-OptiQ-4bit|LFM 2.5 24B (MLX)|reasoning|24|16.7|medium|128|Liquid AI||1|0|1|0||||mlx-4bit
+  qwen3-8-flash-next-125b-mlx|mlx-community/Qwen3.8-Flash-Next-4bit|Qwen 3.8 Flash Next 125B A6B (MLX)|reasoning|125|111.5|high|256|Alibaba||1|1|1|0||||mlx-4bit
 `;
 
 const omlxLlms: CuratedModel[] = decodeToonTable(VLLM_MLX_LLM_TOON, 'llms').map((row) =>
@@ -931,9 +1217,77 @@ const MEASURED_KV_MB_PER_TOKEN: Record<string, number> = {
   'qwen3-8-27b-lemonade': 0.0667,
 };
 
+/**
+ * Rows measured to run with an 8-bit KV cache (see `CuratedModel.runtime.kvCacheType`).
+ *
+ * Qwen 3.8 27B on Lemonade 2026.45.3, measured 2026-11-10 on a 7900 XTX (ROCm, llama.cpp b11836, MTP
+ * draft on): 22.01 GiB in use at 32768 with the 16-bit cache, 22.50 GiB at 65536 with
+ * `-fa on --cache-type-k q8_0 --cache-type-v q8_0`. Prompt 924 vs 937 tok/s, generation 63.8 vs 64.8
+ * tok/s, the same greedy answer word for word, and a 55,812-token prompt recalled 4 of 4 facts placed
+ * through it. Hermes needs 64000, which the 16-bit cache cannot give on that card. Only the Lemonade
+ * row: the Hub sets a Lemonade model's cache type per model, while Ollama's is the server-wide
+ * `OLLAMA_KV_CACHE_TYPE`, a provisioning setting the Hub does not read.
+ */
+const MEASURED_KV_CACHE_TYPE: Record<string, NonNullable<CuratedModel['runtime']['kvCacheType']>> = {
+  'qwen3-8-27b-lemonade': 'q8_0',
+};
+
 function withMeasuredKv(model: CuratedModel): CuratedModel {
   const kvMbPerToken = MEASURED_KV_MB_PER_TOKEN[model.id];
-  return kvMbPerToken === undefined ? model : { ...model, runtime: { ...model.runtime, kvMbPerToken } };
+  const kvCacheType = MEASURED_KV_CACHE_TYPE[model.id];
+  if (kvMbPerToken === undefined && kvCacheType === undefined) return model;
+  return {
+    ...model,
+    runtime: {
+      ...model.runtime,
+      ...(kvMbPerToken !== undefined && { kvMbPerToken }),
+      ...(kvCacheType !== undefined && { kvCacheType }),
+    },
+  };
 }
 
-export const CURATED_MODELS: CuratedModel[] = [...generatedLlms, ...lemonadeLlms, ...vllmLlms, ...omlxLlms, ...extraModels].map(withMeasuredKv);
+/**
+ * A Lemonade or Ollama row whose footprint was not measured is charged its files plus the runner's fixed
+ * overhead (`kv-geometry.generated.ts`, from Hugging Face and Ollama's registry), not the TOON's download
+ * size plus 10 % — the same base the sizing charges once the files are on disk (`weightMb` + 768). Its
+ * download size becomes the files' too: five rows were more than 10 % off (gemma4:e2b's tag shrank from
+ * 7,373 to 4,375 MiB). Qwen 3.8
+ * 27B's files are 17,630 MiB, which with the 768 MB overhead is 18,398 against the 18,473 measured; the
+ * 10 % rule put the same-size Qwen 3.5 27B at 20,838, and with its context that left it 16k on a 24 GB
+ * card that holds 32k. The KV cost from the same table is applied where the cost is probed
+ * (`probeContextCost`), not here, so a measured `kvMbPerToken` stays distinguishable from a computed one.
+ */
+function withFileFootprint(row: CuratedModel): CuratedModel {
+  if (row.backend !== 'lemonade' && row.backend !== 'ollama') return row;
+  const model = withFileWindow(row);
+  const fileBytes = GGUF_KV_GEOMETRY[model.id]?.fileBytes;
+  if (!fileBytes || fileBytes <= 0) return model;
+  // A measured footprint stays: only its download size, a fact about the files, is taken from them.
+  if (model.runtime.footprintMeasured) return { ...model, requirements: { ...model.requirements, diskMb: Math.round(fileBytes / 1024 ** 2) } };
+  // The requirements the TOON derives from its download size are derived from the files instead, by the
+  // same expressions (buildLlmModel), so the download gate's weights floor (`weightsFloorMb`, from
+  // `diskMb`) stays at or under the footprint.
+  const diskMb = Math.round(fileBytes / 1024 ** 2);
+  const footprintMb = Math.ceil(fileBytes / 1024 ** 2 + FIXED_RUNNER_OVERHEAD_MB);
+  return {
+    ...model,
+    requirements: { ...model.requirements, diskMb, minVramMb: diskMb, recommendedVramMb: footprintMb + 1024, minRamMb: Math.round(diskMb * 1.15) },
+    runtime: { ...model.runtime, memoryFootprintMb: footprintMb },
+  };
+}
+
+/**
+ * A row's window capped at its file's `context_length`, the most it runs at as configured. The TOON's
+ * ctxK is the model card's figure, which for some families is reached only with rope scaling neither
+ * engine switches on: Lemonade's Qwen3-8B said 131072 and its file 40960, and Lemonade refused every
+ * 58k-token prompt to it (2026-11-10), while the Hub would have handed an app 64k.
+ */
+function withFileWindow(model: CuratedModel): CuratedModel {
+  const fileWindow = GGUF_KV_GEOMETRY[model.id]?.contextLength;
+  if (!fileWindow || !(model.runtime.contextWindow > fileWindow)) return model;
+  return { ...model, runtime: { ...model.runtime, contextWindow: fileWindow } };
+}
+
+export const CURATED_MODELS: CuratedModel[] = [...generatedLlms, ...lemonadeLlms, ...vllmLlms, ...omlxLlms, ...extraModels]
+  .map(withMeasuredKv)
+  .map(withFileFootprint);

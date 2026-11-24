@@ -1,24 +1,54 @@
 import { Injectable } from '@nestjs/common';
-import type { AppInfo } from '@ci-hub/common/schemas';
-import type { AppUrn } from '@ci-hub/common/types';
+import { ModuleRef } from '@nestjs/core';
+import { type AppInfo, hostPortStaysOnLoopback } from '@ci-hub/common/schemas';
+import { type AppUrn, normalizeStoredHostname } from '@ci-hub/common/types';
+import { createAppUrn } from '@/common/helpers/app-helpers';
 import type { AppStatus } from '@/core/database/drizzle/types';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppsReadService } from '@/modules/apps/apps-read.service';
 import { AppsService } from '@/modules/apps/apps.service';
+import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
+import type { PublicDnsFailureReason } from '@/modules/cloudflare/cloudflare-client.service';
+import { memoryConsumerUrl } from './memory-consumer-url';
 import { isMemoryProviderApp } from './memory-provider.predicate';
 
 /** Fallbacks when ci-memory's manifest omits an explicit provider descriptor. */
 const DEFAULT_PROVIDER_SERVICE = 'gateway';
 const DEFAULT_PROVIDER_PORT = 8642;
 
+/**
+ * Verdicts of `checkAppAvailability` that mean the public route answered and said ci-memory is not behind
+ * it: the tunnel has no connector, Cloudflare reached no origin, or the Hub's side answered a 5xx or a
+ * missing-route 404. Sending the browser there only shows it that error.
+ */
+const ROUTE_DOWN_ERROR_CODES: ReadonlySet<string> = new Set(['CF_TUNNEL_NOT_FOUND', 'CF_ORIGIN_DOWN', 'CF_UPSTREAM_ERROR']);
+
 /** Where the Hub can reach an installed Companion Memory, both internally and for the browser. */
 export interface ResolvedMemoryProvider {
   /** URN of the installed ci-memory app. */
   appUrn: AppUrn;
-  /** Internal address on the shared docker network (server-to-server exchange). */
-  internalUrl: string;
-  /** Browser-reachable public URL (base of the consent flow), when resolvable. */
+  /**
+   * Where the Hub itself reaches ci-memory's gateway (the connect exchange, key checks): the gateway
+   * container's address on ci-memory's own network. Null while that container is not running.
+   *
+   * ⚠ NEVER THE SERVICE NAME. The Hub is on every app's network, and Docker answers a name from
+   * whichever network claims it first; any app with a service called `gateway` answered the exchange
+   * and was handed the user's new Memory key (see `mainServiceAddressOf`).
+   */
+  internalUrl: string | null;
+  /**
+   * The address a consumer app is given (its `url_env`): `http://ci-memory:<port>`. The name exists
+   * only on the network that links that consumer to ci-memory's gateway (`AppLinkService`), where the
+   * Hub connects the gateway under it, so nothing else can answer for it there.
+   */
+  consumerUrl: string;
+  /** Browser-reachable public URL (base of the consent flow), unless the probe saw that route answer without ci-memory. */
   publicUrl?: string;
+  /**
+   * Whether ci-memory's host port is published on loopback only. When it is not, the port answers on
+   * every interface, so a browser that reached the Hub machine directly reaches ci-memory on that host.
+   */
+  hostPortOnLoopback?: boolean;
 }
 
 /** The env-var names a consumer app reads its memory URL + token from. */
@@ -40,6 +70,18 @@ export interface MemoryConsumerEnv {
  * BEGINS — long before ci-memory is reachable — so "installed" must not read as "ready".
  */
 export type MemoryProviderRuntimeStatus = 'ready' | 'starting' | 'offline' | 'absent';
+
+/** What {@link MemoryProviderResolver.getProviderRuntimeInfo} reads for the status poll. */
+export interface MemoryProviderRuntimeInfo {
+  status: MemoryProviderRuntimeStatus;
+  localOnly: boolean;
+  /**
+   * Whether ci-memory's consent page is its host-port address (`exposureMode` local). On a listen-all
+   * Hub that address is 127.0.0.1, which only a browser on the Hub machine can open as written.
+   */
+  onHostPort?: boolean;
+  publicAddressRefusal?: PublicDnsFailureReason;
+}
 
 /**
  * App statuses in which ci-memory is booting / coming up (not reachable yet, but on
@@ -63,8 +105,9 @@ const PROVIDER_STARTING_STATUSES: ReadonlySet<AppStatus> = new Set<AppStatus>([
  *
  * This is the one piece the earlier plan under-specified: the Hub has no
  * generic "internal address of installed app X" helper, so ci-memory's manifest
- * carries `provider: { service, port }` and we build the shared-network URL from
- * it (falling back to the historical `gateway:8642`).
+ * carries `provider: { service, port }`, from which the Hub reads that
+ * service's address on ci-memory's own network (falling back to the historical
+ * `gateway:8642`).
  */
 @Injectable()
 export class MemoryProviderResolver {
@@ -72,6 +115,7 @@ export class MemoryProviderResolver {
     private readonly appsReadService: AppsReadService,
     private readonly appsService: AppsService,
     private readonly logger: LoggerService,
+    private readonly moduleRef: ModuleRef,
   ) {}
 
   /** Whether an app is a memory consumer (declares both url + token env names). */
@@ -185,23 +229,35 @@ export class MemoryProviderResolver {
    * `tailscale`, and a missing/empty value (pre-`exposureMode` installs, treated
    * as local to match the conservative fallback used everywhere else). Only a
    * Cloudflare-tunnelled provider is reachable by an arbitrary public browser.
+   *
+   * `publicAddressRefusal` is why the last sync says the Portal refused ci-memory's address on Public web,
+   * so its consent page may have no address a browser can reach (#2309). Read from memory, like the rest
+   * of this status poll. A custom hostname keeps it unset: the refusal names the platform
+   * hostname and the connect flow goes to the custom one, which the Portal can keep serving after a DNS
+   * write for the platform name fails.
    */
-  async getProviderRuntimeInfo(): Promise<{ status: MemoryProviderRuntimeStatus; localOnly: boolean }> {
+  async getProviderRuntimeInfo(): Promise<MemoryProviderRuntimeInfo> {
     const installed = await this.appsReadService.getInstalledAppsLite();
 
-    const row = installed.find((r) => isMemoryProviderApp({ urn: `${r.appName}:${r.appStoreSlug}` as AppUrn }));
+    const row = installed.find((r) => isMemoryProviderApp({ urn: createAppUrn(r.appName, r.appStoreSlug) }));
 
     if (!row) {
       return { status: 'absent', localOnly: false };
     }
 
-    const localOnly = (row.exposureMode || 'local') !== 'cloudflare';
+    const exposureMode = row.exposureMode || 'local';
+    const localOnly = exposureMode !== 'cloudflare';
+    const onHostPort = exposureMode === 'local';
 
     if (row.status === 'running') {
-      return { status: 'ready', localOnly };
+      const publicAddressRefusal =
+        !localOnly && !normalizeStoredHostname(row.customDomain)
+          ? await this.appsService.publicAddressRefusalFor(createAppUrn(row.appName, row.appStoreSlug))
+          : null;
+      return publicAddressRefusal ? { status: 'ready', localOnly, onHostPort, publicAddressRefusal } : { status: 'ready', localOnly, onHostPort };
     }
 
-    return { status: PROVIDER_STARTING_STATUSES.has(row.status) ? 'starting' : 'offline', localOnly };
+    return { status: PROVIDER_STARTING_STATUSES.has(row.status) ? 'starting' : 'offline', localOnly, onHostPort };
   }
 
   /**
@@ -235,12 +291,38 @@ export class MemoryProviderResolver {
     if (opts.withPublicUrl) {
       try {
         const availability = await this.appsService.checkAppAvailability(appUrn);
-        publicUrl = availability.appUrl;
+        // Not an address the tunnel said ci-memory does not answer at. A failed verdict still names the
+        // address, and the browser sent there landed on a bare 404 while ci-memory's containers were down.
+        // Any other failure keeps the address, as before: a probe that got no answer at all says more about
+        // the Hub's own network than about what the browser will reach.
+        const routeDown = Boolean(availability.errorCode && ROUTE_DOWN_ERROR_CODES.has(availability.errorCode));
+        // Asked as the status poll asks, so a page opened before the refusal can't reach the address the button
+        // now hides, whichever reason the Portal gave. An address that answers wins over a remembered refusal.
+        const refused = !availability.available && Boolean((await this.getProviderRuntimeInfo()).publicAddressRefusal);
+        if (routeDown || refused) {
+          this.logger.info(`[MemoryConnect] ci-memory does not answer at its public address (${availability.errorCode ?? 'refused'})`);
+        } else {
+          publicUrl = availability.appUrl;
+        }
       } catch (err) {
         this.logger.warn(`[MemoryConnect] could not resolve ci-memory public URL: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
-    return { appUrn, internalUrl: `http://${service}:${port}`, publicUrl };
+    const address = await this.moduleRef
+      .get(DockerReadFacade, { strict: false })
+      .getServiceAddressOnAppNetwork(appUrn, service)
+      .catch((err: unknown) => {
+        this.logger.warn(`[MemoryConnect] could not read ci-memory's ${service} address: ${err instanceof Error ? err.message : String(err)}`);
+        return null;
+      });
+
+    return {
+      appUrn,
+      internalUrl: address ? `http://${address}:${port}` : null,
+      consumerUrl: memoryConsumerUrl(port),
+      publicUrl,
+      hostPortOnLoopback: hostPortStaysOnLoopback(provider.info),
+    };
   }
 }

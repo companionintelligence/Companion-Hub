@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
 import { castAppUrn, createAppUrn, extractAppUrn } from '../app-helpers';
 
@@ -61,6 +62,11 @@ describe('castAppUrn', () => {
     ['immich\0:ci-marketplace', 'contains a NUL'],
   ])('refuses %j because it %s', (urn) => {
     expect(() => castAppUrn(urn)).toThrow();
+  });
+
+  it('answers a malformed id as a client error, not a server error', () => {
+    expect(() => castAppUrn('list')).toThrow(BadRequestException);
+    expect(() => castAppUrn('list')).toThrow('Invalid namespaced app id: list');
   });
 });
 

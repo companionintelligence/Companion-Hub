@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { copiedCommandFolder } from './docker-cp-archive';
 
 const spawnSync = vi.fn();
 const parseEnvFile = vi.fn();
@@ -1445,6 +1446,9 @@ describe('D2 backend DNS', () => {
     expect(notes).toContain('blocks then fails EAI_AGAIN');
     expect(notes).toContain('attempts:5');
     expect(notes).toContain('timeout:2');
+    // The "point it at a closed port" example names a variable the Hub still reads, not a retired runner's.
+    expect(notes).toContain('OMLX_URL=http://127.0.0.1:1');
+    expect(notes).not.toContain('MTPLX_URL');
   });
 
   it('treats a fast failure as a real finding from the container and undecidable from the host', () => {
@@ -1509,6 +1513,19 @@ describe('D2 backend DNS', () => {
     resolveHubContainerName.mockReturnValue(undefined);
     expect(probeDnsFromContainer(['mtplx'])).toBeNull();
     expect(spawnSync).not.toHaveBeenCalled();
+  });
+
+  // Through the Docker engine the desktop app runs in WSL2, `docker exec` exits 0 and prints nothing
+  // whatever the command did. Read as "no answer", the check fell back to the host and said there was
+  // no Hub container to probe from, with the container running.
+  it('reads the answer back with docker cp when docker exec returns it empty', () => {
+    resolveHubContainerName.mockReturnValue('ci-hub');
+    const answer = JSON.stringify([{ host: 'mtplx', ms: 5010, code: 'EAI_AGAIN' }]);
+    spawnSync.mockImplementation((_command: string, args: string[]) =>
+      args[0] === 'cp' ? { status: 0, stdout: copiedCommandFolder(String(args[1]).split('/').pop() ?? '', answer) } : { status: 0, stdout: '' },
+    );
+
+    expect(probeDnsFromContainer(['mtplx'])).toEqual([{ host: 'mtplx', ms: 5010, code: 'EAI_AGAIN' }]);
   });
 
   // An empty list of backend URLs is two opposite findings wearing the same shape, and reporting
@@ -1982,9 +1999,10 @@ describe('runPoolDoctorSection', () => {
    * configured, so the capabilities build resolves nothing" — and nothing in the suite noticed.
    */
   it('resolves the backend URLs the container has, and lets them override the env file', async () => {
-    // The env file names MTPLX_URL too, at a different address — an IP literal, which needs no
+    // The env file names OMLX_URL too, at a different address — an IP literal, which needs no
     // lookup at all. Whichever side wins is visible in the verdict, so precedence is pinned by it.
-    parseEnvFile.mockReturnValue({ API_PORT: '5002', ROOT_FOLDER_HOST: '/data/hub', MTPLX_URL: 'http://127.0.0.1:1' });
+    // (It has to be a variable the check reads: a retired one in the file would be ignored on both sides.)
+    parseEnvFile.mockReturnValue({ API_PORT: '5002', ROOT_FOLDER_HOST: '/data/hub', OMLX_URL: 'http://127.0.0.1:1' });
     existsSync.mockReturnValue(true);
     statSync.mockReturnValue({ uid: 1000, gid: 1000, mode: 0o40755 });
     resolveHubContainerName.mockReturnValue('ci-hub');

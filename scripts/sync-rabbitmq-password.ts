@@ -7,6 +7,7 @@
  * or recreate the queue container.
  */
 import { spawnSync } from 'node:child_process';
+import { readContainerOutput } from './lib/docker-exec-output';
 import { isDirectScriptRun } from './lib/is-direct-run';
 import { parseEnvFile } from './env-file';
 
@@ -50,24 +51,41 @@ async function waitForContainerHealthy(name: string): Promise<boolean> {
   return false;
 }
 
+/**
+ * Both rabbitmqctl commands print a banner line, and running either twice is harmless, so they go
+ * through the reader: through the Docker engine the Windows desktop app runs in WSL2, a plain
+ * `docker exec` exits 0 whatever rabbitmqctl did, and a wrong password read as a working one.
+ */
+const RABBITMQCTL_TIMEOUT_MS = 60_000;
+
+/**
+ * The password never goes in an argument, where `ps` on the host or in the container shows it. It
+ * reaches the container through `docker exec -e`, and the shell's printf builtin pipes it to
+ * rabbitmqctl, which reads the password from stdin when the argument is left out (checked against
+ * rabbitmq:4-alpine, rabbitmqctl 4.4.0).
+ */
+const PASSWORD_VARIABLE = 'CIHUB_RABBITMQ_PASSWORD';
+const PASSWORD_ON_STDIN = `printf '%s' "$${PASSWORD_VARIABLE}" | "$@"`;
+
+function rabbitmqctlWithPassword(queue: string, verb: 'authenticate_user' | 'change_password', password: string): boolean {
+  return (
+    readContainerOutput(queue, ['sh', '-c', PASSWORD_ON_STDIN, 'sh', 'rabbitmqctl', verb, 'companion'], {
+      timeoutMs: RABBITMQCTL_TIMEOUT_MS,
+      env: { [PASSWORD_VARIABLE]: password },
+    }).status === 0
+  );
+}
+
 function rabbitmqAuthWorks(password: string): boolean {
   const queue = resolveQueueContainer();
   if (!queue) return false;
-  const result = spawnSync('docker', ['exec', queue, 'rabbitmqctl', 'authenticate_user', 'companion', password], {
-    encoding: 'utf-8',
-    stdio: 'pipe',
-  });
-  return result.status === 0;
+  return rabbitmqctlWithPassword(queue, 'authenticate_user', password);
 }
 
 function changeRabbitmqPassword(password: string): boolean {
   const queue = resolveQueueContainer();
   if (!queue) return false;
-  const result = spawnSync('docker', ['exec', queue, 'rabbitmqctl', 'change_password', 'companion', password], {
-    encoding: 'utf-8',
-    stdio: 'pipe',
-  });
-  return result.status === 0;
+  return rabbitmqctlWithPassword(queue, 'change_password', password);
 }
 
 function recreateQueue(envFile: string): boolean {

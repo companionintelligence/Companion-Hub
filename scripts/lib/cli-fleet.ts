@@ -83,11 +83,13 @@ import {
 import {
   describeHubContextCapPlan,
   HUB_CONTEXT_CAP_SETTING,
+  HUB_OLLAMA_KEEP_ALIVE_SETTING,
   HUB_OLLAMA_SLOTS_SETTING,
   describeRuntimeEnvironment,
   describeRuntimeTransition,
   type HubContextCap,
   type HubInferenceSetting,
+  ollamaKeepAliveSeconds,
   OllamaRuntimeFlagError,
   type OllamaRuntimePlan,
   type OllamaRuntimeSettings,
@@ -108,7 +110,7 @@ import {
   parseOllamaBindProbe,
   planBindConsolidation,
 } from './fleet-ollama-bind.js';
-import { gpuProbeTimerStep, installNode, pullModelScript, updateHubScript } from './fleet-install.js';
+import { gpuProbeTimerStep, type InstallOptions, installNode, pullModelScript, updateHubScript } from './fleet-install.js';
 import { type CihubBinarySource, parseCihubVersionOutput, pinCihubReleaseSource, resolveCihubBinarySource } from './fleet-cihub-binary.js';
 import {
   assessKeptPairingCode,
@@ -195,6 +197,7 @@ import {
   summariseOllamaVersions,
   upgradeOllamaOnNode,
 } from './fleet-ollama-version.js';
+import { OmlxHelperVersionError, resolveOmlxHelperVersion } from './fleet-omlx-helper.js';
 import {
   type CpuResidentFinding,
   describeCpuResident,
@@ -264,7 +267,7 @@ export interface FleetArgs {
   /** A cihub-linux-* release asset on this machine, streamed to every node that needs one. */
   cihubBinary?: string;
   /**
-   * Release tag to fetch with GH_TOKEN when no --cihub-binary is given (default: latest, resolved to
+   * Release tag to fetch from GitHub when no --cihub-binary is given (default: latest, resolved to
    * its tag before any node is dialled); with --cihub-binary, what the file is when it will not run here.
    */
   cihubVersion?: string;
@@ -365,25 +368,45 @@ export interface FleetArgs {
    */
   hubOllamaSlots?: HubContextCap;
   /**
+   * `backends` only: the Hub's half of `--ollama-keep-alive`, in seconds (-1 for forever). Written as
+   * `inferenceOllamaKeepAlive` on each node's Hub after the runtime drop-in applies, so a model the
+   * operator unpins goes back to the daemon's keep-alive, which Ollama's API does not expose. `null`
+   * (`--ollama-keep-alive unset`) clears it; the Hub then names Ollama's 5 minutes. Absent when
+   * the flag was not given, on the same terms as the cap above.
+   */
+  hubOllamaKeepAlive?: HubContextCap;
+  /**
    * `backends` only: the Ollama tag llama-server serves (`--llamacpp-model`). Absent means each
    * node's own Hub is asked which model it hands out for `auto`, and that tag is used — so a fleet
    * whose nodes pin different models gets each node's own. Ignored unless `--backends` names llamacpp.
    */
   llamacppModel?: string;
+  /**
+   * `backends` only: the `jundot/omlx-cuda-helper` tag a fresh helper gets, already validated.
+   * Absent means the pin in `fleet-omlx-helper.ts`; `latest` is refused, as it is for Ollama.
+   */
+  omlxHelperVersion?: string;
 }
 
 /** The two Hub halves a runtime flag carries, in the order they are planned and applied after the drop-in. */
 interface HubHalf {
   /** The `FleetArgs` field, and the key the JSON report carries the outcome under. */
-  key: 'hubContextCap' | 'hubOllamaSlots';
+  key: 'hubContextCap' | 'hubOllamaSlots' | 'hubOllamaKeepAlive';
   value: HubContextCap;
   setting: HubInferenceSetting;
 }
 
-function hubHalvesOf(args: FleetArgs): HubHalf[] {
+/**
+ * `llamacpp` is the llama-server half: its slots and context are the same two numbers as Ollama's,
+ * but the keep-alive is Ollama's alone, so it is left out there.
+ */
+function hubHalvesOf(args: FleetArgs, engine: 'ollama' | 'llamacpp' = 'ollama'): HubHalf[] {
   const halves: HubHalf[] = [];
   if (args.hubContextCap !== undefined) halves.push({ key: 'hubContextCap', value: args.hubContextCap, setting: HUB_CONTEXT_CAP_SETTING });
   if (args.hubOllamaSlots !== undefined) halves.push({ key: 'hubOllamaSlots', value: args.hubOllamaSlots, setting: HUB_OLLAMA_SLOTS_SETTING });
+  if (args.hubOllamaKeepAlive !== undefined && engine === 'ollama') {
+    halves.push({ key: 'hubOllamaKeepAlive', value: args.hubOllamaKeepAlive, setting: HUB_OLLAMA_KEEP_ALIVE_SETTING });
+  }
   return halves;
 }
 
@@ -456,6 +479,7 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     ollamaRuntime: undefined,
     hubContextCap: undefined,
     hubOllamaSlots: undefined,
+    hubOllamaKeepAlive: undefined,
   };
 
   const rest = [...argv];
@@ -541,28 +565,48 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
         if (error instanceof OllamaVersionError) throw new FleetArgError(error.message);
         throw error;
       }
+    } else if (isFlag('--omlx-helper-version')) {
+      try {
+        args.omlxHelperVersion = resolveOmlxHelperVersion(readValue('--omlx-helper-version'));
+      } catch (error) {
+        if (error instanceof OmlxHelperVersionError) throw new FleetArgError(error.message);
+        throw error;
+      }
     } else if (
       isFlag('--ollama-parallel') ||
       isFlag('--ollama-keep-alive') ||
       isFlag('--ollama-context') ||
       isFlag('--ollama-igpu') ||
-      isFlag('--ollama-max-loaded')
+      isFlag('--ollama-max-loaded') ||
+      isFlag('--ollama-kv-cache')
     ) {
       // Validated here, like --ollama-version: a typo is refused before any machine is dialled. The
       // first of the five to appear is what turns the runtime step on for this run.
-      const flag = arg.split('=')[0] as '--ollama-parallel' | '--ollama-keep-alive' | '--ollama-context' | '--ollama-igpu' | '--ollama-max-loaded';
+      const flag = arg.split('=')[0] as
+        | '--ollama-parallel'
+        | '--ollama-keep-alive'
+        | '--ollama-context'
+        | '--ollama-igpu'
+        | '--ollama-max-loaded'
+        | '--ollama-kv-cache';
       const runtime = args.ollamaRuntime ?? {};
       try {
         if (flag === '--ollama-parallel') {
           runtime.parallel = parseOllamaRuntimeValue(flag, readValue(flag));
           // The same number goes to the node's Hub as `inferenceOllamaSlots`; `unset` clears it there too.
           args.hubOllamaSlots = runtime.parallel ?? null;
-        } else if (flag === '--ollama-keep-alive') runtime.keepAlive = parseOllamaRuntimeValue(flag, readValue(flag));
-        else if (flag === '--ollama-context') {
+        } else if (flag === '--ollama-keep-alive') {
+          runtime.keepAlive = parseOllamaRuntimeValue(flag, readValue(flag));
+          // The same keep-alive goes to the node's Hub as `inferenceOllamaKeepAlive`, in seconds; `unset` clears it there too.
+          args.hubOllamaKeepAlive = runtime.keepAlive === undefined ? null : ollamaKeepAliveSeconds(runtime.keepAlive);
+        } else if (flag === '--ollama-context') {
           runtime.contextLength = parseOllamaRuntimeValue(flag, readValue(flag));
           // The same number goes to the node's Hub as `inferenceMaxNumCtx`; `unset` clears it there too.
           args.hubContextCap = runtime.contextLength ?? null;
         } else if (flag === '--ollama-max-loaded') runtime.maxLoaded = parseOllamaRuntimeValue(flag, readValue(flag));
+        // No Hub half written here: the Hub's setting is text, which the numeric Hub-half step cannot carry.
+        // The operator states it per node with `cihub pool kv-cache <type>`; until then the Hub sizes for 16-bit.
+        else if (flag === '--ollama-kv-cache') runtime.kvCache = parseOllamaRuntimeValue(flag, readValue(flag));
         else runtime.igpu = parseOllamaRuntimeValue(flag, readValue(flag));
       } catch (error) {
         if (error instanceof OllamaRuntimeFlagError) throw new FleetArgError(error.message);
@@ -656,11 +700,14 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
   }
   if (args.ollamaRuntime && args.subcommand !== 'backends') {
     throw new FleetArgError(
-      '--ollama-parallel, --ollama-keep-alive, --ollama-context, --ollama-igpu and --ollama-max-loaded only apply to `fleet backends`.',
+      '--ollama-parallel, --ollama-keep-alive, --ollama-context, --ollama-igpu, --ollama-kv-cache and --ollama-max-loaded only apply to `fleet backends`.',
     );
   }
   if (args.llamacppModel !== undefined && args.subcommand !== 'backends') {
     throw new FleetArgError('--llamacpp-model only applies to `fleet backends`.');
+  }
+  if (args.omlxHelperVersion !== undefined && args.subcommand !== 'backends') {
+    throw new FleetArgError('--omlx-helper-version only applies to `fleet backends --backends omlx-helper`.');
   }
 
   // Read last, and only where it means something. Parsed with the defaults, a malformed value left in
@@ -1655,6 +1702,7 @@ async function runBackends(args: FleetArgs): Promise<void> {
     const plans = planAllBackends(facts, args.dataDir, args.backends.length ? args.backends : undefined, {
       ollamaBind: args.bind,
       ollamaVersion: args.ollamaVersion,
+      omlxHelperVersion: args.omlxHelperVersion,
       ...(llamacppOpts ? { llamacpp: llamacppOpts } : {}),
     });
     // The Hub halves (`inferenceOllamaSlots`, `inferenceMaxNumCtx`) follow whichever engine this run
@@ -1698,7 +1746,12 @@ async function runBackends(args: FleetArgs): Promise<void> {
         // in the run they follow llama-server, whose slots × context are the same two numbers —
         // when it was named; a run that did not name it plans nothing on the Hub for it.
         const llamacppHub = plan.backend === 'llamacpp' && llamacppNamed && plan.action !== 'skip';
-        const hubHalves = (plan.backend === 'ollama' && bindPlan?.runtime !== undefined) || (llamacppHub && !ollamaInRun) ? hubHalvesOf(args) : [];
+        const hubHalves =
+          plan.backend === 'ollama' && bindPlan?.runtime !== undefined
+            ? hubHalvesOf(args)
+            : llamacppHub && !ollamaInRun
+              ? hubHalvesOf(args, 'llamacpp')
+              : [];
         if (llamacppHub) console.log(colorize(`            ${describeHubLlamacppUrlPlan()}`, 'green'));
         for (const half of hubHalves) console.log(colorize(`            ${describeHubContextCapPlan(half.value, half.setting)}`, 'green'));
         // What is loaded and where, on every readable Ollama — the plan's one line that can say a
@@ -1781,7 +1834,7 @@ async function runBackends(args: FleetArgs): Promise<void> {
         const shapeRead =
           plan.llamacpp && result.llamacpp?.totalSlots === plan.llamacpp.parallel && result.llamacpp?.nCtx === plan.llamacpp.contextLength;
         if (!ollamaInRun && shapeRead) {
-          for (const half of hubHalvesOf(args)) {
+          for (const half of hubHalvesOf(args, 'llamacpp')) {
             const cap = await applyHubContextCap(target, half.value, args.dataDir, undefined, half.setting);
             if (cap.outcome === 'failed') failed += 1;
             const capTone = cap.outcome === 'failed' ? 'red' : cap.outcome === 'applied' ? 'green' : 'dim';
@@ -1911,7 +1964,7 @@ function readLocalCihubVersion(binaryPath: string): string | undefined {
 /**
  * The source, decided once per run and pinned to a version: a `latest` becomes the tag GitHub
  * resolves it to right now, so every node compares against — and installs — the same release, and a
- * token that cannot see the repository is one line here rather than a silent adopt on every node.
+ * lookup that fails is one line here rather than a silent adopt on every node.
  */
 async function resolveBinarySourceForRun(args: FleetArgs): Promise<CihubBinarySource> {
   return pinCihubReleaseSource(
@@ -1924,7 +1977,7 @@ function describeBinarySource(source: CihubBinarySource): string {
     case 'local':
       return `cihub binary: ${source.path}${source.version ? ` (${source.version})` : ' (version unknown: it would not run here — is it executable? — and --cihub-version can say what it is)'}, streamed to nodes that need one`;
     case 'release':
-      return `cihub binary: release ${source.version}${source.resolvedFrom ? ` (${source.resolvedFrom})` : ''}, fetched here with the GitHub token and streamed to nodes that need one`;
+      return `cihub binary: release ${source.version}${source.resolvedFrom ? ` (${source.resolvedFrom})` : ''}, fetched here ${source.token ? 'with the GitHub token in GH_TOKEN or GITHUB_TOKEN' : 'from the public GitHub release'} and streamed to nodes that need one`;
     case 'unavailable':
       return `${source.why} — nodes that already have a cihub are adopted without a version check; the rest fail at 'install cihub'. ${source.fix.join(' ')}`;
   }
@@ -2122,7 +2175,7 @@ async function runInstall(args: FleetArgs): Promise<void> {
   // exists, and so `latest` is one tag for the whole run.
   const binarySource = await resolveBinarySourceForRun(args);
   console.log(colorize(`  ${describeBinarySource(binarySource)}`, binarySource.kind === 'unavailable' ? 'yellow' : 'dim'));
-  const binaryCache = new Map<string, { path: string; sha256: string; label: string }>();
+  const binaryCache: NonNullable<InstallOptions['binaryCache']> = new Map();
   const pacing = describePairingPacing(args.pairingGapMs, run.length);
   if (pacing) console.log(colorize(`  ${pacing}`, 'dim'));
   // One for the whole run: Portal counts pairings per network address, and every node's Hub calls

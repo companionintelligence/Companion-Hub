@@ -153,6 +153,14 @@ export type ProdApplianceContext = {
 };
 
 /**
+ * An appliance install's two env files, primary first: the desktop writes a primary env file plus a
+ * compat copy with identical content (`.env.dev` and `.env` on Unix, the other way round on Windows).
+ */
+export function applianceEnvFilePaths(dataDir: string, platform: NodeJS.Platform = process.platform): [primary: string, compat: string] {
+  return [path.join(dataDir, platform === 'win32' ? '.env' : '.env.dev'), path.join(dataDir, platform === 'win32' ? '.env.dev' : '.env')];
+}
+
+/**
  * Resolve the canonical prod data dir and the desktop-seeded `.env` / compose paths so the
  * CLI can manage a prod install from anywhere (no CI-Hub checkout required).
  */
@@ -162,9 +170,7 @@ export function resolveProdApplianceContext(
   home: string = homedir(),
 ): ProdApplianceContext {
   const dataDir = resolveCanonicalDataDir(env, platform, home);
-  // The desktop writes a primary env file plus a compat copy with identical content.
-  const primaryEnv = path.join(dataDir, platform === 'win32' ? '.env' : '.env.dev');
-  const compatEnv = path.join(dataDir, platform === 'win32' ? '.env.dev' : '.env');
+  const [primaryEnv, compatEnv] = applianceEnvFilePaths(dataDir, platform);
   const envFilePath = existsSync(primaryEnv) ? primaryEnv : existsSync(compatEnv) ? compatEnv : primaryEnv;
   const composePath = path.join(dataDir, 'docker-compose.prod.yml');
   const exists = existsSync(composePath) && (existsSync(primaryEnv) || existsSync(compatEnv));
@@ -172,8 +178,55 @@ export function resolveProdApplianceContext(
 }
 
 /**
+ * Native host path for a `ROOT_FOLDER_HOST` value. On Windows the desktop app writes it in Docker's
+ * form, `/c/Users/...` (Docker Desktop) or `/mnt/c/Users/...` (a WSL2 engine), which Node would
+ * resolve against the current drive (`C:\c\Users\...`), so the tunnel files beside the data dir
+ * would never be found. Mirrors `host_path_from_docker_path` in the desktop app.
+ */
+export function hostPathFromDockerPath(value: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform !== 'win32') return value;
+  const [, drive, rest = ''] = /^\/(?:mnt\/)?([a-zA-Z])(?:\/(.*))?$/.exec(value.trim().replace(/\\/g, '/')) ?? [];
+  if (!drive) return value;
+  return `${drive.toUpperCase()}:\\${rest.replace(/^\/+/, '').replace(/\//g, '\\')}`;
+}
+
+/**
+ * A `ROOT_FOLDER_HOST` value as a folder this process can write to: Docker's form turned back into
+ * the Windows path it names, and a relative value resolved against `cwd`. Windows counts
+ * `/mnt/c/Users/...` as an absolute path on the current drive, so an init script that took the env
+ * file's value as it was wrote a second copy of the data dir under `C:\mnt\c\Users\...`.
+ */
+export function hostRootFolder(value: string, platform: NodeJS.Platform = process.platform, cwd: string = process.cwd()): string {
+  const hostPath = hostPathFromDockerPath(value, platform);
+  const pathFor = platform === 'win32' ? path.win32 : path.posix;
+  return pathFor.isAbsolute(hostPath) ? hostPath : pathFor.resolve(cwd, hostPath);
+}
+
+/**
+ * The `state` folder the hardware probes write to (init-gpu-runtime, init-host-probe):
+ * CI_HUB_STATE_PATH / STATE_PATH, then ROOT_FOLDER_HOST from ENV_FILE, then from the process env,
+ * then `.internal` under the cwd. Both ROOT_FOLDER_HOST sources go through {@link hostRootFolder}.
+ */
+export function resolveStateDirForRuntime(): string {
+  const internalDir = process.env.CI_HUB_STATE_PATH || process.env.STATE_PATH;
+  if (internalDir) return path.join(internalDir, 'state');
+
+  const envFile = process.env.ENV_FILE;
+  if (envFile) {
+    const fromEnvFile = parseEnvFile(path.resolve(process.cwd(), envFile)).ROOT_FOLDER_HOST;
+    if (fromEnvFile) return path.join(hostRootFolder(fromEnvFile), 'state');
+  }
+
+  const rootFromEnv = process.env.ROOT_FOLDER_HOST;
+  if (rootFromEnv) return path.join(hostRootFolder(rootFromEnv), 'state');
+
+  return path.resolve(process.cwd(), '.internal', 'state');
+}
+
+/**
  * Resolve ROOT_FOLDER_HOST during init scripts (init-hub-data-dirs, init-docker-config).
- * Honors ENV_FILE, process.env.ROOT_FOLDER_HOST, then CI_HUB_STATE_PATH / STATE_PATH.
+ * Honors ENV_FILE, process.env.ROOT_FOLDER_HOST, then CI_HUB_STATE_PATH / STATE_PATH. The first two
+ * may be in Docker's form on Windows, so they go through {@link hostRootFolder}.
  */
 export function resolveRootFolderHostForRuntime(): string {
   const envFile = process.env.ENV_FILE || '.env.dev';
@@ -182,12 +235,12 @@ export function resolveRootFolderHostForRuntime(): string {
     const vars = parseEnvFile(envFile);
     const configured = vars.ROOT_FOLDER_HOST;
     if (configured) {
-      return path.isAbsolute(configured) ? configured : path.resolve(process.cwd(), configured);
+      return hostRootFolder(configured);
     }
   }
   const fromEnv = process.env.ROOT_FOLDER_HOST;
   if (fromEnv) {
-    return path.isAbsolute(fromEnv) ? fromEnv : path.resolve(process.cwd(), fromEnv);
+    return hostRootFolder(fromEnv);
   }
   const internal = process.env.CI_HUB_STATE_PATH || process.env.STATE_PATH || '.internal';
   return path.isAbsolute(internal) ? internal : path.resolve(process.cwd(), internal);

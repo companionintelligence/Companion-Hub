@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { planBackend, planAllBackends, INSTALLABLE_BACKENDS, ollamaManagedEnvironment } from '../lib/fleet-backends.js';
+import { DEFAULT_BACKENDS, planBackend, planAllBackends, INSTALLABLE_BACKENDS, ollamaManagedEnvironment } from '../lib/fleet-backends.js';
 import {
   CANONICAL_BIND_DROPIN,
   canonicalBindDropinContent,
@@ -249,10 +249,14 @@ describe('install scripts', () => {
 });
 
 describe('planAllBackends', () => {
-  it('covers every installable backend by default, and every plan explains itself', () => {
+  it('covers every default backend, and every plan explains itself', () => {
     const plans = planAllBackends(host({ gpus: [nvidia] }), '/data');
-    expect(plans).toHaveLength(INSTALLABLE_BACKENDS.length);
+    expect(plans.map((p) => p.backend)).toEqual([...DEFAULT_BACKENDS]);
     for (const plan of plans) expect(plan.why.length).toBeGreaterThan(10);
+  });
+
+  it('leaves out only the opt-in oMLX helper, which runs only when named', () => {
+    expect(INSTALLABLE_BACKENDS.filter((b) => !DEFAULT_BACKENDS.includes(b))).toEqual(['omlx-helper']);
   });
 
   it('honours an explicit subset', () => {

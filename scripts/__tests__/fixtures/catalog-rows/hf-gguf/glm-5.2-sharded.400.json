@@ -1,0 +1,3 @@
+{
+  "error": "This repository only contains sharded GGUF files. Ollama does not yet support pulling sharded GGUF via the registry; please download the shards and merge them locally with `ollama create` (workaround detailed at https://github.com/ollama/ollama/issues/5245), or use a repository with single-file quantizations."
+}

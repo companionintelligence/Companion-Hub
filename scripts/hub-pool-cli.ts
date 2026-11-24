@@ -11,6 +11,8 @@
  * the pool routes all declare an empty response schema in swagger.json, so the generated client types
  * them as `unknown` and there is nothing to import.
  */
+import { parseDbTimestampMs } from '../packages/backend/src/common/helpers/db-timestamp';
+import { resolvePinFor } from '../packages/backend/src/common/helpers/hub-pool.js';
 import { sanitizeForBox } from './lib/cli-ui';
 import { hubApiFetch } from './public-web-cli';
 
@@ -484,8 +486,8 @@ export interface PoolRoutingLogResponse {
 
 // --- API ---
 
-export async function fetchPoolStatus(envFileName: string): Promise<PoolStatusResponse> {
-  return hubApiFetch<PoolStatusResponse>(envFileName, '/inference/pool/status', { signal: AbortSignal.timeout(POOL_GET_TIMEOUT_MS) });
+export async function fetchPoolStatus(envFileName: string, timeoutMs = POOL_GET_TIMEOUT_MS): Promise<PoolStatusResponse> {
+  return hubApiFetch<PoolStatusResponse>(envFileName, '/inference/pool/status', { signal: AbortSignal.timeout(timeoutMs) });
 }
 
 export async function fetchPoolPeers(envFileName: string): Promise<PoolPeerRow[]> {
@@ -663,6 +665,15 @@ export async function setPoolEnabledSetting(
   });
 }
 
+/** Require every paired peer to authenticate with its pinned Ed25519 identity. */
+export async function setPoolRequireSignedPeers(envFileName: string, poolRequireSignedPeers: boolean): Promise<PoolStatusResponse['settings']> {
+  return hubApiFetch(envFileName, '/inference/pool/settings', {
+    method: 'PATCH',
+    body: JSON.stringify({ poolRequireSignedPeers }),
+    signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
+  });
+}
+
 /**
  * Set this node's prompt ceiling, or clear it with `null`. A PATCH of the one field, like the kill
  * switches above, so nothing else in the stored settings is rewritten.
@@ -685,7 +696,11 @@ export interface InferencePreferencesResponse {
   preferredBackend: string | null;
   maxNumCtx?: number | null;
   ollamaSlots?: number | null;
+  ollamaKvCacheType?: OllamaKvCacheType | null;
 }
+
+/** The daemon's `OLLAMA_KV_CACHE_TYPE` as the Hub accepts it stated (`inferenceOllamaKvCacheType`). */
+export type OllamaKvCacheType = 'f16' | 'q8_0' | 'q4_0';
 
 export async function fetchInferencePreferences(envFileName: string): Promise<InferencePreferencesResponse> {
   return hubApiFetch<InferencePreferencesResponse>(envFileName, '/inference/preferences', { signal: AbortSignal.timeout(POOL_GET_TIMEOUT_MS) });
@@ -724,6 +739,22 @@ export async function setInferenceOllamaSlots(
   });
 }
 
+/**
+ * State the KV cache this node's Ollama runs, or clear it with `null`, through the same route and for the
+ * same reasons as the slot count: it can remove the key, and it answers with the preferences as stored.
+ */
+export async function setInferenceOllamaKvCacheType(
+  envFileName: string,
+  backend: string,
+  ollamaKvCacheType: OllamaKvCacheType | null,
+): Promise<InferencePreferencesResponse> {
+  return hubApiFetch<InferencePreferencesResponse>(envFileName, '/inference/preferences', {
+    method: 'PATCH',
+    body: JSON.stringify({ backend, ollamaKvCacheType }),
+    signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
+  });
+}
+
 /** Per-peer kill switch. Reversible and symmetric: the pairing and both tokens survive. */
 export async function setPoolPeerEnabled(envFileName: string, id: string, enabled: boolean): Promise<PoolPeerRow> {
   return hubApiFetch<PoolPeerRow>(envFileName, `/inference/pool/peers/${encodeURIComponent(id)}/${enabled ? 'enable' : 'disable'}`, {
@@ -753,9 +784,10 @@ function ruleRow(widths: readonly number[]): string {
 /** `2026-09-05 10:00:01Z`. Non-ISO input is echoed sanitized rather than rendered as `Invalid Date`. */
 export function formatPoolTimestamp(value: string | null | undefined): string {
   if (!value) return '-';
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return sanitizeForBox(value);
-  return parsed
+  // The Hub sends `last_seen_at` as UTC with no zone, and `new Date` would read that in this machine's zone.
+  const parsed = parseDbTimestampMs(value);
+  if (Number.isNaN(parsed)) return sanitizeForBox(value);
+  return new Date(parsed)
     .toISOString()
     .replace('T', ' ')
     .replace(/\.\d{3}Z$/, 'Z');
@@ -1348,6 +1380,30 @@ export function formatPoolPinLines(pins: PoolStatusPin[] | undefined): string[] 
 }
 
 /**
+ * What `cihub pool unpin` can truthfully say once the Hub has answered with the pins it kept.
+ *
+ * Asks those pins the question routing asks ({@link resolvePinFor}), because removing a model pin
+ * doesn't always end the steering: a pin stored under the model's other spelling still applies and
+ * so does the pool-wide pin. `model` is absent for the pool-wide pin, which leaves model pins alone.
+ * `env` goes into the follow-up command so it reaches the Hub this one did: without it the CLI falls
+ * back to `local`.
+ */
+export function formatPoolUnpinLines(covers: string, remaining: readonly PoolStatusPin[], model?: string, env?: string): string[] {
+  const governing = model === undefined ? null : resolvePinFor(remaining, model);
+  if (!governing) {
+    return [`Routing for ${covers} is back to the ranker (least-loaded, with the local head start).`];
+  }
+  if (governing.scope === 'default') {
+    return [`Routing for ${covers} now follows the pool-wide pin.`];
+  }
+  const other = sanitizeForBox(governing.model ?? '?');
+  return [
+    `Requests for ${covers} still follow the pin saved as "${other}".`,
+    `Remove that one too with: cihub pool unpin --model ${other}${env ? ` ${env}` : ''}`,
+  ];
+}
+
+/**
  * The box `cihub pool ceiling` prints once the PATCH has answered.
  *
  * `settings` is what the Hub stored, and `status` is read after the write, so the box can tell the
@@ -1549,6 +1605,74 @@ export function formatOllamaSlotsResultLines(
   };
 }
 
+/** `8-bit` / `4-bit` / `16-bit`, for the boxes `cihub pool kv-cache` prints. */
+function kvCacheWords(type: OllamaKvCacheType | null | undefined): string {
+  return type === 'q8_0' ? '8-bit (q8_0)' : type === 'q4_0' ? '4-bit (q4_0)' : '16-bit (f16)';
+}
+
+/**
+ * The box `cihub pool kv-cache` prints. Same outcomes as the slot count's box: not supported, unchanged,
+ * not in force, cleared, set — and on a set, the daemon half the operator must match.
+ */
+export function formatOllamaKvCacheResultLines(
+  requested: OllamaKvCacheType | null,
+  before: InferencePreferencesResponse,
+  after: InferencePreferencesResponse | null,
+  written: boolean,
+): { title: string; lines: string[]; tone: 'green' | 'yellow' | 'red' | 'cyan' } {
+  if (!('ollamaKvCacheType' in before)) {
+    return {
+      title: 'KV cache setting not supported',
+      tone: 'red',
+      lines: [`${FAIL} This Hub's build predates the Ollama KV cache setting, so nothing was written.`, 'Update it first: cihub pool update'],
+    };
+  }
+  if (!written) {
+    return {
+      title: 'KV cache setting unchanged',
+      tone: 'cyan',
+      lines:
+        requested === null
+          ? ['No Ollama KV cache is stated on this node; nothing to clear.']
+          : [`The Ollama KV cache is already stated as ${kvCacheWords(requested)}; nothing was written.`],
+    };
+  }
+  const inForce = after?.ollamaKvCacheType ?? null;
+  if (after && inForce !== requested) {
+    return {
+      title: 'KV cache setting not in force',
+      tone: 'red',
+      lines: [
+        `${FAIL} Asked for ${requested ?? 'none'}, but the Hub reads back ${inForce ?? 'none'}.`,
+        'Read the Hub log around the write: cihub logs',
+      ],
+    };
+  }
+  if (requested === null) {
+    return {
+      title: 'KV cache setting cleared',
+      tone: 'yellow',
+      lines: ["This node states no Ollama KV cache again: the Hub sizes Ollama's windows for its default 16-bit cache."],
+    };
+  }
+  return {
+    title: 'KV cache setting stated',
+    tone: 'green',
+    lines: [
+      `The Hub now sizes this node's Ollama windows for a ${kvCacheWords(requested)} cache: an 8-bit cache holds about`,
+      'twice the context of 16-bit in the same memory, a 4-bit one nearly four times.',
+      '',
+      `Match it to the daemon: OLLAMA_KV_CACHE_TYPE=${requested}${requested === 'f16' ? '' : ' and OLLAMA_FLASH_ATTENTION=1'} in the Ollama service's`,
+      `environment (across the fleet: cihub fleet backends --ollama-kv-cache ${requested} with the node's other runtime flags,`,
+      '--execute). It applies to every model this Ollama serves. Stated but not set there, the Hub hands apps',
+      'windows the daemon cannot hold.',
+      ...(requested === 'q4_0' ? ['', '4-bit can change long structured outputs noticeably (Memory relationship extraction, 2026-11-10).'] : []),
+      '',
+      'Check it: cihub pool status',
+    ],
+  };
+}
+
 // --- discovery ---
 
 const DISCOVER_WIDTHS = [34, 24] as const;
@@ -1716,6 +1840,9 @@ function formatRoutingCounts(summary: {
 
 const LOG_WIDTHS = [20, 4, 20, 34, 5, 7, 8] as const;
 
+/** The routing log's name for this node. */
+const LOCAL_ROUTING_NODE = 'local';
+
 /** A request-error label in the words an app's operator can act on. An unknown label prints as itself. */
 function describeRequestErrorSignature(signature: string): string {
   const words: Record<string, string> = {
@@ -1732,12 +1859,12 @@ function describeRequestErrorSignature(signature: string): string {
 }
 
 /** A failover chain with why each node was passed over, where the Hub says; the node names alone from an older one. */
-function describeFailoverChain(entry: Pick<PoolRoutingRecord, 'failedOverFrom' | 'attempts'>): string {
+function describeFailoverChain(entry: Pick<PoolRoutingRecord, 'failedOverFrom' | 'attempts'>, nodeName: (node: string) => string): string {
   const attempts = entry.attempts ?? [];
   if (attempts.length === 0) {
-    return entry.failedOverFrom.map(sanitizeForBox).join(', ');
+    return entry.failedOverFrom.map(nodeName).join(', ');
   }
-  return attempts.map((attempt) => `${sanitizeForBox(attempt.node)} (${sanitizeForBox(attempt.reason)})`).join(', ');
+  return attempts.map((attempt) => `${nodeName(attempt.node)} (${sanitizeForBox(attempt.reason)})`).join(', ');
 }
 
 /** Where a routing-log row's affinity key came from, in the words an app operator can act on. Never the key itself. */
@@ -1793,9 +1920,12 @@ function describeContextWindow(numCtx: number | null): string {
   return numCtx === null ? 'the engine default' : `num_ctx ${numCtx}`;
 }
 
-export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[] {
+export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse, localNodeName?: string | null): string[] {
   const summary = log.summary;
   const header = [formatRoutingCounts(summary), `Last decision  ${formatPoolTimestamp(summary.lastAt)}`, ''];
+  // `local` is the log's key for this node, not a name an operator would know it by. Sanitized here
+  // because every caller prints the result.
+  const nodeName = (node: string) => sanitizeForBox(node === LOCAL_ROUTING_NODE ? (localNodeName ?? 'this Hub') : node);
 
   if (log.entries.length === 0) {
     return [
@@ -1817,12 +1947,13 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
   for (const entry of log.entries) {
     const outcome = entry.outcome === 'served' ? `${OK} served` : `${FAIL} failed`;
     const status = entry.status === null ? '' : ` ${entry.status}`;
+    const servingNode = entry.node ? nodeName(entry.node) : null;
     lines.push(
       [
         cell(formatPoolTimestamp(entry.at), LOG_WIDTHS[0]),
         cell(entry.direction === 'inbound' ? 'in' : 'out', LOG_WIDTHS[1]),
         cell(entry.model ?? '-', LOG_WIDTHS[2]),
-        cell(entry.node ?? '-', LOG_WIDTHS[3]),
+        cell(servingNode ?? '-', LOG_WIDTHS[3]),
         cell(`${entry.attempt}/${entry.candidates}`, LOG_WIDTHS[4]),
         cell(String(entry.durationMs), LOG_WIDTHS[5]),
         cell(typeof entry.totalMs === 'number' ? String(entry.totalMs) : '-', LOG_WIDTHS[6]),
@@ -1835,7 +1966,7 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
     // the node that broke. Neither is true: nobody was waiting for the answer any more.
     if (entry.clientClosed) {
       lines.push(
-        `  ↳ the app closed its connection after ${entry.durationMs} ms; ${sanitizeForBox(entry.node ?? '?')} had not answered yet — not a routing failure`,
+        `  ↳ the app closed its connection after ${entry.durationMs} ms; ${servingNode ?? '?'} had not answered yet — not a routing failure`,
       );
     }
     // Next, for the same reason: a `x failed 500` beside a node name reads as that node breaking,
@@ -1844,11 +1975,11 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
     if (requestError?.basis === 'node') {
       // The opposite verdict, so the opposite sentence: a `x failed 200` IS that node breaking.
       lines.push(
-        `  ↳ ${sanitizeForBox(entry.node ?? '?')} answered with ${describeRequestErrorSignature(requestError.signature)} — the node's fault, not the request's`,
+        `  ↳ ${servingNode ?? '?'} answered with ${describeRequestErrorSignature(requestError.signature)} — the node's fault, not the request's`,
       );
     } else if (requestError) {
-      const node = sanitizeForBox(entry.node ?? '?');
-      const agreed = requestError.basis === 'confirmed' && requestError.confirms ? `, as ${sanitizeForBox(requestError.confirms)} had` : '';
+      const node = servingNode ?? '?';
+      const agreed = requestError.basis === 'confirmed' && requestError.confirms ? `, as ${nodeName(requestError.confirms)} had` : '';
       const untried = Math.max(0, entry.candidates - entry.attempt);
       // On the last candidate there were no others to spare it: "not sent to the other 0 candidates"
       // would read as the pool stopping early, when it had asked everyone it could.
@@ -1861,13 +1992,15 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
     // Named on the row it shaped: an operator seeing everything land on one node cannot otherwise
     // tell a pin from the ranker having decided the same thing.
     if (entry.pin) {
-      lines.push(`  ↳ pinned (${entry.pin.scope === 'model' ? 'this model' : 'all models'} → ${entry.pin.targetKind})`);
+      lines.push(
+        `  ↳ pinned (${entry.pin.scope === 'model' ? 'this model' : 'all models'} → ${entry.pin.targetKind === 'local' ? nodeName(LOCAL_ROUTING_NODE) : entry.pin.targetKind})`,
+      );
     }
     // Only when the ceiling changed something: an operator reading why fzzy got nothing needs this
     // line, and a note on every request that merely stayed under a ceiling would bury it.
     const ceiling = entry.promptCeiling;
     if (ceiling && ceiling.excluded.length > 0) {
-      const nodes = ceiling.excluded.map((excluded) => `${sanitizeForBox(excluded.node)} (ceiling ${excluded.maxPromptTokens})`).join(', ');
+      const nodes = ceiling.excluded.map((excluded) => `${nodeName(excluded.node)} (ceiling ${excluded.maxPromptTokens})`).join(', ');
       lines.push(
         ceiling.overridden
           ? `  ↳ ~${ceiling.estimatedTokens}-token prompt placed anyway over the ceiling of ${nodes}: no node under its ceiling could serve it`
@@ -1877,7 +2010,7 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
     // Only when a cap changed something, for the same reason as the ceiling line above.
     const cap = entry.contextCap;
     if (cap && cap.excluded.length > 0) {
-      const nodes = cap.excluded.map((excluded) => `${sanitizeForBox(excluded.node)} (cap ${excluded.maxNumCtx})`).join(', ');
+      const nodes = cap.excluded.map((excluded) => `${nodeName(excluded.node)} (cap ${excluded.maxNumCtx})`).join(', ');
       const window = cap.source === 'request' ? `num_ctx ${cap.numCtx}` : `~${cap.numCtx}-token prompt with no num_ctx`;
       lines.push(
         cap.overridden
@@ -1893,7 +2026,7 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
       const nodes = slow
         .map(
           (estimate) =>
-            `${sanitizeForBox(estimate.node)} (~${estimate.tokensPerSec} tok/s${estimate.extrapolated && estimate.fromPromptTokens ? ` measured at ~${estimate.fromPromptTokens} tokens` : ''}, ${estimate.deadline ? '≥' : '~'}${Math.round(estimate.predictedMs / 1000)} s)`,
+            `${nodeName(estimate.node)} (~${estimate.tokensPerSec} tok/s${estimate.extrapolated && estimate.fromPromptTokens ? ` measured at ~${estimate.fromPromptTokens} tokens` : ''}, ${estimate.deadline ? '≥' : '~'}${Math.round(estimate.predictedMs / 1000)} s)`,
         )
         .join(', ');
       lines.push(
@@ -1907,7 +2040,7 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
     const unmeasured = throughput?.unmeasured ?? [];
     if (throughput && unmeasured.length > 0) {
       const nodes = unmeasured
-        .map((entry) => `${sanitizeForBox(entry.node)} (${entry.prior === 'cpu-only' ? 'unmeasured, no GPU advertised' : 'unmeasured'})`)
+        .map((entry) => `${nodeName(entry.node)} (${entry.prior === 'cpu-only' ? 'unmeasured, no GPU advertised' : 'unmeasured'})`)
         .join(', ');
       lines.push(
         `  ↳ ~${throughput.estimatedTokens}-token prompt put ${nodes} behind nodes measured to answer within ${Math.round(throughput.budgetMs / 1000)} s`,
@@ -1919,10 +2052,7 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
     if (throughput && slowerDemoted.length > 0) {
       const seconds = (ms: number) => `~${Math.round(ms / 1000)} s`;
       const moves = slowerDemoted
-        .map(
-          (entry) =>
-            `${sanitizeForBox(entry.node)} (${seconds(entry.predictedMs)}) behind ${sanitizeForBox(entry.fasterNode)} (${seconds(entry.fasterMs)})`,
-        )
+        .map((entry) => `${nodeName(entry.node)} (${seconds(entry.predictedMs)}) behind ${nodeName(entry.fasterNode)} (${seconds(entry.fasterMs)})`)
         .join(', ');
       lines.push(`  ↳ ~${throughput.estimatedTokens}-token prompt moved ${moves}: predicted much faster`);
     }
@@ -1932,7 +2062,7 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
     const slots = entry.slots;
     if (slots && slots.demoted.length > 0) {
       const nodes = slots.demoted
-        .map((demoted) => `${sanitizeForBox(demoted.node)} (${demoted.inFlight} in flight, ${demoted.slots} slot${demoted.slots === 1 ? '' : 's'})`)
+        .map((demoted) => `${nodeName(demoted.node)} (${demoted.inFlight} in flight, ${demoted.slots} slot${demoted.slots === 1 ? '' : 's'})`)
         .join(', ');
       lines.push(
         slots.overridden
@@ -1944,9 +2074,9 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
     // affinity put another node first changed nothing an operator needs to read here.
     const contention = entry.contention;
     if (contention && contention.demoted.length > 0) {
-      const describe = (demoted: PoolRoutingContention['demoted'][number]) => {
+      const formatDemoted = (demoted: PoolRoutingContention['demoted'][number]) => {
         const busy = demoted.busyWith.map((generation) => `${sanitizeForBox(generation.model)} at ${describeContextWindow(generation.numCtx)}`);
-        return `${sanitizeForBox(demoted.node)} (busy with ${busy.join(', ')}; this one at ${describeContextWindow(demoted.runsAt)})`;
+        return `${nodeName(demoted.node)} (busy with ${busy.join(', ')}; this one at ${describeContextWindow(demoted.runsAt)})`;
       };
       const placed = contention.overridden
         ? (contention.demoted.find((demoted) => demoted.node === entry.node && demoted.backend === entry.backend) ?? contention.demoted[0])
@@ -1954,17 +2084,15 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
       if (placed) {
         lines.push(
           placed.behind.length > 0
-            ? `  ↳ placed anyway on ${describe(placed)}: nothing it gave way to answered`
+            ? `  ↳ placed anyway on ${formatDemoted(placed)}: nothing it gave way to answered`
             : placed.overriddenBy === 'affinity'
-              ? `  ↳ kept ${describe(placed)} first: it holds this session's prompt prefix, which prefix affinity follows over contention`
-              : `  ↳ kept ${describe(placed)} first: every node after it was busier, or moved behind it by a line above`,
+              ? `  ↳ kept ${formatDemoted(placed)} first: it holds this session's prompt prefix, which prefix affinity follows over contention`
+              : `  ↳ kept ${formatDemoted(placed)} first: every node after it was busier, or moved behind it by a line above`,
         );
       } else {
         const moved = contention.demoted.filter((demoted) => demoted.behind.length > 0);
         if (moved.length > 0) {
-          lines.push(
-            `  ↳ moved ${moved.map((demoted) => `${describe(demoted)} behind ${demoted.behind.map(sanitizeForBox).join(', ')}`).join('; ')}`,
-          );
+          lines.push(`  ↳ moved ${moved.map((demoted) => `${formatDemoted(demoted)} behind ${demoted.behind.map(nodeName).join(', ')}`).join('; ')}`);
         }
       }
     }
@@ -1983,7 +2111,7 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
     if (affinity) {
       const underLimit = affinity.inFlight !== null && affinity.inFlight < affinity.maxInFlight;
       const qualified = affinityQualified(affinity);
-      const node = sanitizeForBox(affinity.remembered ?? '?');
+      const node = nodeName(affinity.remembered ?? '?');
       const inFlight = affinity.inFlight ?? 0;
       const undetermined = `this Hub's row does not say whether its margin qualified it (${describeAffinityLimit(affinity)}; ${describeAffinityKey(affinity)})`;
       if (affinity.outcome === 'hit') {
@@ -2006,7 +2134,7 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
     }
     // The chain, not a count: which nodes refused, and with what, is the whole point of reading this log.
     if (entry.failedOverFrom.length > 0) {
-      lines.push(`  ↳ failed over from ${describeFailoverChain(entry)}`);
+      lines.push(`  ↳ failed over from ${describeFailoverChain(entry, nodeName)}`);
     }
     // A local answer after the Hub refused the load is the one that may have overcommitted the card
     // or spilled the model into system memory; the row reads the same as any other without this.

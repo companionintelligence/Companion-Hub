@@ -162,7 +162,7 @@ export const OtpInput = ({ value, valueLength, onChange, className, autoFocus }:
           pattern="\d{1}"
           maxLength={valueLength}
           className={clsx(
-            'h-9 w-10 text-center border border-input bg-transparent rounded-md shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-all',
+            'h-9 w-10 text-center border border-input bg-transparent rounded-md shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-[color,background-color,border-color,box-shadow,opacity,transform]',
             className,
           )}
           value={digit}

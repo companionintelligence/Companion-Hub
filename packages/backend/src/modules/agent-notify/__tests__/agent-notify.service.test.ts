@@ -95,7 +95,7 @@ describe('AgentNotifyService', () => {
 
     it('should not throw when disabled', async () => {
       delete process.env.AGENT_WEBHOOK_URL;
-      await expect(service.notify('test', {}, 'low')).resolves.toBeUndefined();
+      await expect(service.notify('test', {}, 'low')).resolves.toBe(false);
     });
 
     it('should log error when webhook POST fails with network error', async () => {
@@ -112,7 +112,11 @@ describe('AgentNotifyService', () => {
 
     it('should not throw when webhook POST fails', async () => {
       vi.mocked(fetch).mockRejectedValue(new Error('Network failure'));
-      await expect(service.notify('test', {}, 'low')).resolves.toBeUndefined();
+      await expect(service.notify('test', {}, 'low')).resolves.toBe(false);
+    });
+
+    it('resolves true once an agent accepted the wake', async () => {
+      await expect(service.notify('test', {}, 'low')).resolves.toBe(true);
     });
 
     it('should debounce identical events within 30-second window', async () => {
@@ -353,6 +357,26 @@ describe('AgentNotifyService', () => {
       const urls = vi.mocked(fetch).mock.calls.map((c) => c[0]);
       expect(urls).toContain('http://localhost:18789/hooks/hub-wake');
       expect(urls).toContain('http://openclaw-ci-store:3000/hooks/hub-wake');
+    });
+
+    // The wake carries the app's secret, and the Hub is on every app's network, where another app could
+    // answer for the service's name.
+    it("sends a wake the Hub resolved itself to the service's address on the app's network, never its name", async () => {
+      const docker = { getServiceAddressOnAppNetwork: vi.fn().mockResolvedValue('10.128.15.4') };
+      vi.spyOn(service as unknown as { moduleRef: { get: (t: unknown, o: unknown) => unknown } }, 'moduleRef', 'get').mockReturnValue({
+        get: () => docker,
+      });
+      service.registerWebhook('openclaw:ci-store', 'http://openclaw-gateway:18789/hooks/wake', 'oc-secret', 'openclaw-gateway');
+      delete process.env.AGENT_WEBHOOK_URL;
+
+      await service.notify('app.crashed', {}, 'high');
+      expect(fetch).toHaveBeenCalledWith('http://10.128.15.4:18789/hooks/wake', expect.anything());
+      expect(docker.getServiceAddressOnAppNetwork).toHaveBeenCalledWith('openclaw:ci-store', 'openclaw-gateway');
+
+      vi.mocked(fetch).mockClear();
+      docker.getServiceAddressOnAppNetwork.mockResolvedValue(null);
+      await expect(service.wakeApp('openclaw:ci-store', { jobId: 'j1' })).resolves.toBe(false);
+      expect(fetch).not.toHaveBeenCalled();
     });
 
     it('R-MW-3: registered webhook uses its own token', async () => {

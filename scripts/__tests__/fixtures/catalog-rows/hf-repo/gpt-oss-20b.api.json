@@ -1,0 +1,91 @@
+{
+  "id": "openai/gpt-oss-20b",
+  "sha": "6cee5e81ee83917806bbde320786a8fb61efebee",
+  "gated": false,
+  "private": false,
+  "disabled": false,
+  "pipeline_tag": "text-generation",
+  "library_name": "transformers",
+  "lastModified": "2025-08-26T17:25:47.000Z",
+  "safetensors": {
+    "parameters": {
+      "BF16": 1804459584,
+      "U8": 19110297600
+    },
+    "total": 20914757184
+  },
+  "siblings": [
+    {
+      "rfilename": ".gitattributes",
+      "size": 1570
+    },
+    {
+      "rfilename": "LICENSE",
+      "size": 11357
+    },
+    {
+      "rfilename": "README.md",
+      "size": 7095
+    },
+    {
+      "rfilename": "USAGE_POLICY",
+      "size": 200
+    },
+    {
+      "rfilename": "chat_template.jinja",
+      "size": 16738
+    },
+    {
+      "rfilename": "config.json",
+      "size": 1806
+    },
+    {
+      "rfilename": "generation_config.json",
+      "size": 177
+    },
+    {
+      "rfilename": "metal/model.bin",
+      "size": 13750886400
+    },
+    {
+      "rfilename": "model-00000-of-00002.safetensors",
+      "size": 4792272488
+    },
+    {
+      "rfilename": "model-00001-of-00002.safetensors",
+      "size": 4798702184
+    },
+    {
+      "rfilename": "model-00002-of-00002.safetensors",
+      "size": 4170342232
+    },
+    {
+      "rfilename": "model.safetensors.index.json",
+      "size": 36355
+    },
+    {
+      "rfilename": "original/config.json",
+      "size": 376
+    },
+    {
+      "rfilename": "original/dtypes.json",
+      "size": 13082
+    },
+    {
+      "rfilename": "original/model.safetensors",
+      "size": 13761300984
+    },
+    {
+      "rfilename": "special_tokens_map.json",
+      "size": 98
+    },
+    {
+      "rfilename": "tokenizer.json",
+      "size": 27868174
+    },
+    {
+      "rfilename": "tokenizer_config.json",
+      "size": 4200
+    }
+  ]
+}

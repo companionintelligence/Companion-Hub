@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import type { KvCacheChoice } from './backends/lemonade-kv-cache.util';
 import { LoggerService } from '@/core/logger/logger.service';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
 import type { CuratedModel, HardwareProfile, HardwareTier, PullProgress } from '@ci-hub/common/types';
@@ -6,7 +7,7 @@ import { embedderRunsOnCpu } from './embedder-placement';
 import { ModelRegistryService } from './model-registry.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { MemoryManagerService } from './memory-manager.service';
-import { isCatalogModelInstalled, isServedModelForCatalog } from './model-availability.util';
+import { isCatalogModelInstalled, isPulledState, isServedModelForCatalog, trackedPullCounts } from './model-availability.util';
 import type { PullEvaluation, PullStartResult } from './pull-evaluation.types';
 import { InferenceBackendRegistry } from './backends/backend-registry';
 
@@ -94,10 +95,13 @@ export class ModelPullerService {
     const requiredMemoryMb = curated.runtime.memoryFootprintMb;
 
     const backend = this.backends.get(curated.backend);
-    const backendModels = (await backend.healthCheck().catch(() => ({ modelsLoaded: [] as string[] }))).modelsLoaded ?? [];
+    const health = await backend.healthCheck().catch(() => null);
+    const backendModels = health?.modelsLoaded ?? [];
 
-    const tracked = this.modelRegistry.getTrackedModel(catalogId);
-    const trackedPulled = tracked?.state === 'pulled' || tracked?.state === 'loaded' || tracked?.state === 'pinned';
+    const trackedPulled = trackedPullCounts(
+      this.modelRegistry.getTrackedModel(catalogId),
+      health?.running && health.healthy ? curated.backend : null,
+    );
     const alreadyInstalled =
       trackedPulled ||
       (curated.backend === 'ollama'
@@ -146,7 +150,8 @@ export class ModelPullerService {
       };
     }
 
-    if (curated.backend === 'omlx' || curated.backend === 'vllm') {
+    // oMLX downloads through its admin API (`OmlxBackend.pullModel`). vLLM has no download API.
+    if (curated.backend === 'vllm') {
       return {
         catalogId,
         alreadyInstalled: false,
@@ -300,20 +305,26 @@ export class ModelPullerService {
     return this.pullWorkerPromise;
   }
 
-  /** Wait until a queued or in-flight pull reaches a terminal tracked state. */
+  /**
+   * Wait until a queued or in-flight pull reaches a terminal tracked state.
+   *
+   * The state is read only once the pull is no longer queued or running. Until then the entry can
+   * be the one from before: a model removed with `ollama rm` is still tracked `pulled` while its new
+   * download waits in the queue, and reading that as done answered "pulled" before anything landed.
+   */
   async waitForPullCompletion(catalogId: string, timeoutMs = 600_000): Promise<void> {
     const deadline = Date.now() + timeoutMs;
 
     while (Date.now() < deadline) {
       const tracked = this.modelRegistry.getTrackedModel(catalogId);
-      if (tracked?.state === 'pulled' || tracked?.state === 'loaded' || tracked?.state === 'pinned') {
+      const pending = this.pullActiveIds.has(catalogId) || this.pullQueue.includes(catalogId);
+      if (!pending && isPulledState(tracked?.state)) {
         return;
       }
-      if (tracked?.state === 'error') {
+      if (!pending && tracked?.state === 'error') {
         throw new Error(tracked.errorMessage ?? `Pull failed for ${catalogId}`);
       }
 
-      const pending = this.pullActiveIds.has(catalogId) || this.pullQueue.includes(catalogId);
       if (!pending && !tracked) {
         const evaluation = await this.evaluatePull(catalogId);
         if (evaluation.alreadyInstalled) {
@@ -417,7 +428,7 @@ export class ModelPullerService {
    * inference router should go through `InferenceRouterService.loadTrackedModel`, which makes room
    * and sizes the window first; this only talks to the engine.
    */
-  async loadModel(catalogId: string, options?: { contextLength?: number; provisionalWindow?: boolean }): Promise<void> {
+  async loadModel(catalogId: string, options?: { contextLength?: number; provisionalWindow?: boolean; kvCacheType?: KvCacheChoice }): Promise<void> {
     const curated = this.modelRegistry.getCuratedModel(catalogId);
     if (!curated) {
       throw new Error(`Model ${catalogId} not found in catalog`);
@@ -442,6 +453,8 @@ export class ModelPullerService {
         contextLength: options?.contextLength,
         ...(options?.provisionalWindow ? { provisionalWindow: true } : {}),
         ...(onCpu && { device: 'cpu' }),
+        // The cache the router's plan sized the window for (planLoad); absent leaves the model's own.
+        ...(!embedding && options?.kvCacheType && { kvCacheType: options.kvCacheType }),
       });
       this.modelRegistry.updateModelState(catalogId, 'loaded');
       this.modelRegistry.markHubLoaded(catalogId);

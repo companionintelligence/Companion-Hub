@@ -29,13 +29,12 @@ describe('hardware-display', () => {
     expect(resolveTierBadge('high', hardware).label).toBe('APU');
   });
 
-  it('uses a visible light-mode chip for Apple Silicon systems', () => {
+  it('marks Apple Silicon systems with a neutral status dot instead of a tinted chip', () => {
     const hardware = makeHardware({ vendor: 'apple', model: 'Apple M1 Pro (Apple Silicon)' }, 16_384);
     const badge = resolveTierBadge('medium', hardware);
 
     expect(badge.label).toBe('Apple Silicon');
-    expect(badge.color).toContain('bg-slate-200');
-    expect(badge.color).toContain('border-slate-300');
+    expect(badge.dot).toBe('bg-muted-foreground');
   });
 
   it('shows shared RAM as VRAM for APUs', () => {
@@ -43,6 +42,20 @@ describe('hardware-display', () => {
     const vram = resolveVramDisplay(hardware);
     expect(vram.value).toBe('122.1 GB');
     expect(vram.sub).toBe('Shared · APU');
+  });
+
+  it("shows what an APU's GPU can address, not all of RAM, when the driver said", () => {
+    // A Ryzen AI Max+ 395 with 125780 MB of RAM; amdgpu gives the GPU 512 MiB + 107.5 GiB.
+    const vram = resolveVramDisplay(makeHardware({ vramMb: 110_592 }, 125_780));
+    expect(vram.value).toBe('108.0 GB');
+    expect(vram.sub).toBe('Shared · APU');
+  });
+
+  it('shows an NVIDIA card by its VRAM and as Unknown when the Hub could not read it', () => {
+    const card = (vramMb: number) =>
+      makeHardware({ vendor: 'nvidia', model: 'NVIDIA GeForce RTX 3080 Laptop GPU', unifiedMemory: false, vramMb, runtimeAvailable: true }, 61_654);
+    expect(resolveVramDisplay(card(8192))).toEqual({ value: '8.0 GB' });
+    expect(resolveVramDisplay(card(0))).toEqual({ value: 'Unknown' });
   });
 
   it('returns host ROCm ready notice when hostRocmKfdAvailable is true', () => {

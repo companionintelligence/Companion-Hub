@@ -87,6 +87,14 @@ struct HostVmSizingInputs {
 /// `state/hardware/docker-tuning.json` (shown in Settings → System).
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn ensure_docker_desktop_vm_resources(data_dir: &Path, platform: &str, host: HostVmSizingInputs) {
+    // Apple container has no shared VM: each container is its own VM, sized when it is created.
+    // A Docker Desktop settings file on the same Mac belongs to an engine this Hub is not using.
+    if crate::docker_engine::pinned_engine_kind(Some(data_dir))
+        == Some(crate::docker_engine::DockerEngineKind::AppleContainer)
+    {
+        return;
+    }
+
     let settings_path = match docker_desktop_settings_path() {
         // No settings file means a native engine or no Docker Desktop — nothing to tune
         Some(path) => path,

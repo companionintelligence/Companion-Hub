@@ -18,6 +18,7 @@ describe('clearClientHubState', () => {
     sessionStorage.setItem('device-registered', 'true');
     sessionStorage.setItem('device-registered-at', String(Date.now()));
     sessionStorage.setItem('ci-hub-registration-drift-choice', 'restore');
+    sessionStorage.setItem('ci-hub-stack-update-outcome', '{"state":"completed","version":"0.3.10","keptAt":1}');
     localStorage.setItem('ci-hub.portalAccountEmail', 'operator@example.com');
   });
 
@@ -32,6 +33,7 @@ describe('clearClientHubState', () => {
     expect(sessionStorage.getItem('device-registered')).toBeNull();
     expect(sessionStorage.getItem('device-registered-at')).toBeNull();
     expect(sessionStorage.getItem('ci-hub-registration-drift-choice')).toBeNull();
+    expect(sessionStorage.getItem('ci-hub-stack-update-outcome')).toBeNull();
     expect(localStorage.getItem('ci-hub.portalAccountEmail')).toBeNull();
     expect(setTauriSessionId).toHaveBeenCalledWith(null);
   });

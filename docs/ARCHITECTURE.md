@@ -113,7 +113,7 @@ The backend has ~30 NestJS modules organized into **core infrastructure** and **
 | **Tailscale** | `TailscaleService` | When the host has the Tailscale CLI and socket, manages `tailscale` commands and `tailscale serve`. Can fall back to `docker exec` into an optional sidecar named by `TAILSCALE_SIDECAR_CONTAINER` (legacy stacks used `hub-tailscale`). |
 | **Backups** | `BackupsService` | Creates, lists, restores, deletes, and uploads per-app backups. Backups are tar.gz archives of the app's data directory. Flow: set app status to `backing_up` → stop containers → archive → restart. Restore reverses the process. Respects `app.maxBackups` for automatic retention. Tracks `cihub_app_version` in backup metadata for version compatibility. |
 | **Custom Apps** | `CustomAppService` | Lets users define their own Docker Compose apps without an app store. Files are created under the reserved `_user` store slug. Generates `docker-compose.json`, `config.json`, and metadata files (description.md, logo). Validates metadata via the shared frontmatter schema from `@ci-hub/common`. |
-| **System** | `SystemService` | Reports system metrics: CPU load, memory usage (reads `/host/proc/meminfo` from the bind mount), disk usage. Retrieves TLS certificates from Traefik's ACME storage. Lists running Docker services. Powers the dashboard system info panel. |
+| **System** | `SystemService` | Reports system metrics: CPU load, memory usage (reads `/host/proc/meminfo` from the bind mount), disk usage. Lists running Docker services. Powers the dashboard system info panel. |
 | **System Update** | `SystemUpdateService` | Checks for new Hub versions (compares `CI_HUB_VERSION` against the latest available). Performs self-updates by pulling new Docker images and restarting the compose stack. |
 | **Network** | `PortAllocationRepository` | Tracks TCP/UDP port mappings in the database. Prevents port conflicts between apps. Allocates ports dynamically during install. |
 | **Inference** | `InferenceBackendRegistry`, `ModelRegistryService`, `ModelPullerService`, `InferenceRouterService`, `HardwareInspectorService` | Runs local models across four backends (Ollama, oMLX, vLLM, Lemonade), each an `InferenceBackend` adapter under `inference/backends/`. The other path is a typed decode endpoint and encode endpoint. llama.cpp, LM Studio, MTPLX, mlx-dspark, and Lucebox are not Hub backends. `InferenceBackendRegistry` is the one type-to-instance mapping — a `Record` keyed by the closed `InferenceBackendType` union, so a backend added to the union without being wired here is a build error. `HardwareInspectorService` profiles GPU/NPU/RAM into a tier that the curated model catalog filters against. |
@@ -232,6 +232,7 @@ Apps
   GET  /apps/installed                      List all installed apps
   GET  /apps/guest                          Guest-visible apps (for guest dashboard)
   GET  /apps/:urn                           Get specific installed app
+  PATCH /apps/:urn/guest-visibility         Show or hide an app on the guest dashboard
 
 App Lifecycle
   POST /app-lifecycle/:urn/install          Install and start an app
@@ -261,7 +262,8 @@ Backups
   DELETE /backups/:urn/:backupId            Delete a backup
 
 Custom Apps
-  POST /custom-apps                         Create a custom app
+  GET  /custom-apps/access                  What the session may do to a custom app
+  POST /custom-apps                         Create a custom app (owner or admin)
   PATCH /custom-apps/:urn                   Update a custom app
   DELETE /custom-apps/:urn                  Delete a custom app
 
@@ -521,7 +523,7 @@ The Hub orchestrates its infrastructure and all user-installed apps via Docker C
 
 | Service | Image | Profile | Purpose |
 |---------|-------|---------|---------|
-| `cloudflared` | `cloudflare/cloudflared:2026.2.0` | `cloudflare` | Tunnel to Cloudflare edge |
+| `cloudflared` | `cloudflare/cloudflared:2026.10.5` | `cloudflare` | Tunnel to Cloudflare edge |
 | `hub-tailscale` | `tailscale/tailscale:v1.98.3` | `private-vpn` | Tailscale sidecar ([private-vpn.md](./private-vpn.md)) |
 
 **User-installed apps** run as separate Docker Compose stacks managed by the backend's `DockerService`. Each app gets its own compose file, network, and data directory.
@@ -721,19 +723,28 @@ service, container, and Docker DNS name are also `ci-hub` (`ci-hub-queue`, `ci-h
 lookup fallbacks so already-installed apps keep resolving. Pointing the **image** at the
 retired private `ci-os-hub` GHCR package is what broke Hub 0.2.44 (#920).
 
-Two Docker networks carry different trust. `ci-hub_network` (and its retired alias
-`ci-os-hub_network`) is the app-facing one: every installed app's main container joins it to
-reach the Hub API and other apps' gateways. `ci-hub_internal` is Hub-private: Postgres and
-RabbitMQ live only there and only the `ci-hub` service joins it, so a marketplace container
-cannot reach the Hub's database or its lifecycle queue at all — by topology, not by password.
-Both also publish a host port bound to `127.0.0.1` for local tooling, never to the LAN. The
-queue additionally authenticates every message it carries (`modules/queue/message-signing.ts`),
-so even a leaked broker password does not confer Hub authority. The Hub's own connections out
-(the Portal, image registries) still leave through `ci-hub_network`: `ci-hub_internal` sorts first
-by name and would otherwise take the Hub's default route, so the compose file gives
-`ci-hub_network` `gw_priority: 1` on the Hub, as it does on Traefik and the Tailscale sidecar
-(#1763). Docker Engine older than 28 ignores `gw_priority` and routes all three by name, so the
-desktop app and `cihub up` warn when they start the stack on one.
+No app shares a Docker network with another app. Each app is on a network of its own
+(`<app>_<store>_network`), and the Hub, Traefik and the Private VPN sidecar join that network to
+reach it; two apps reach each other only over a link network the Hub makes for the pair (see
+"App networks" in [`system/backend.md`](system/backend.md#app-networks)). `ci-hub_network` (and its
+retired alias `ci-os-hub_network`) is left to the Hub's own containers: every installed app's main
+container used to join it, where any app could reach any other without the Hub login and answer
+for a name other containers looked up.
+
+`ci-hub_internal` is Hub-private: Postgres and RabbitMQ live only there and only the `ci-hub` service
+joins it, so a marketplace container cannot reach the Hub's database or its lifecycle queue at
+all — by topology, not by password. It has a fixed subnet and fixed addresses, and the Hub pins
+`ci-hub-db` and `ci-hub-queue` to them in `/etc/hosts` (`extra_hosts`): the Hub is on every app's
+network, and on a container with several networks Docker answers a name from whichever network
+claims it first, so an app with a service called `ci-hub-queue` would otherwise be handed the
+broker password. Both also publish a host port bound to `127.0.0.1` for local
+tooling, never to the LAN. The queue additionally authenticates every message it carries
+(`modules/queue/message-signing.ts`), so even a leaked broker password does not confer Hub
+authority. The Hub's own connections out (the Portal, image registries) still leave through
+`ci-hub_network`: the edge and infra networks sort first by name and would otherwise take the Hub's
+default route, so the compose file gives `ci-hub_network` `gw_priority: 1` on the Hub, as it does on
+Traefik and the Tailscale sidecar (#1763). Docker Engine older than 28 ignores `gw_priority` and
+routes all three by name, so the desktop app and `cihub up` warn when they start the stack on one.
 
 Images are pushed to **GitHub Container Registry** (ghcr.io). The package must remain
 **public**: the desktop shells out to `docker compose` with no registry credentials, so any
@@ -856,7 +867,7 @@ See [`e2e/README.md`](../e2e/README.md) for full lane documentation.
 | `RABBITMQ_HOST` | `ci-hub-queue` | RabbitMQ hostname |
 | `RABBITMQ_PORT` | `5672` | RabbitMQ port |
 | `RABBITMQ_USERNAME` | `companion` | Queue user |
-| `RABBITMQ_PASSWORD` | `admin` | Queue password |
+| `RABBITMQ_PASSWORD` | none in production; `admin` in development | Queue password. The prod compose requires it from the env file ([#884](https://github.com/companionintelligence/Companion-Hub/issues/884)). In production the Hub still starts on `admin` but logs a loud warning; that escape hatch stays until every update path, including the in-app updater, replaces `admin`, and removing it is a follow-up. |
 
 ### Networking
 
@@ -876,7 +887,7 @@ See [`e2e/README.md`](../e2e/README.md) for full lane documentation.
 | `CI_HUB_VERSION` | `0.2.27` | Hub version string |
 | `API_PORT` | `5002` (prod) / `3000` (dev) | Backend listen port |
 | `NODE_ENV` | `production` | Node.js environment |
-| `LOG_LEVEL` | `info` | Winston log level |
+| `LOG_LEVEL` | `info` | Winston log level. A Log level saved in Settings takes its place |
 | `QUEUE_TIMEOUT_IN_MINUTES` | `5` | Max time for async queue jobs |
 | `ARCHITECTURE` | auto-detected | CPU architecture (amd64/arm64) |
 
@@ -889,5 +900,4 @@ See [`e2e/README.md`](../e2e/README.md) for full lane documentation.
 | `DEMO_MODE` | `false` | Read-only demo mode |
 | `GUEST_DASHBOARD` | `false` | Allow unauthenticated dashboard access |
 | `ADVANCED_SETTINGS` | `false` | Show advanced settings in UI |
-| `ALLOW_AUTO_THEMES` | `true` | Allow automatic theme switching |
 | `DISABLE_PASSWORD_RESET` | `false` | Disable password reset flow |

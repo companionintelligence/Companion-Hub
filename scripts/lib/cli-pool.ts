@@ -11,12 +11,15 @@ import {
   approvePoolPeer,
   cancelPairingPin,
   deletePoolPin,
+  formatPoolUnpinLines,
   fetchPoolPeers,
   fetchPoolRoutingLog,
   fetchInferencePreferences,
   fetchPoolStatus,
   formatContextCapResultLines,
   formatMdnsPairRefusalLines,
+  formatOllamaKvCacheResultLines,
+  type OllamaKvCacheType,
   formatOllamaSlotsResultLines,
   formatPoolPeersLines,
   formatPoolProbeLines,
@@ -33,9 +36,11 @@ import {
   resolvePoolPeerTarget,
   runPoolDiscover,
   setInferenceContextCap,
+  setInferenceOllamaKvCacheType,
   setInferenceOllamaSlots,
   setPoolEnabledSetting,
   setPoolMaxPromptTokens,
+  setPoolRequireSignedPeers,
   setPoolPeerEnabled,
   setPoolPin,
   unpairPoolPeer,
@@ -48,7 +53,10 @@ import { decideImagePinWrite, HUB_IMAGE_VAR, readDeclaredHubImage, resolveCompos
 import { readHubApiKeySource, resolveHubApiBase } from '../public-web-cli.js';
 import { resolveEnvFromArgs, usageAndExit } from './cli-args.js';
 import { confirmDestructiveAction } from './cli-prompt.js';
-import { run, runCapture } from './cli-proc.js';
+import { run, runCapture, runScript } from './cli-proc.js';
+import { applianceEnvFilePaths } from './paths.js';
+import { ensureStrongRabbitmqPassword } from './seed-appliance.js';
+import { syncRabbitmqPasswordFromEnv } from '../sync-rabbitmq-password.js';
 import {
   buildPoolUpdateComposeArgs,
   composeFilesForPoolUpdate,
@@ -56,6 +64,7 @@ import {
   describeImageChange,
   describeImageSource,
   gatherGitUpdateFacts,
+  poolUpdateRabbitmqEnvFiles,
   resolvePoolUpdateImage,
 } from './cli-pool-update.js';
 import { BASE_COMMAND, type HubEnv } from './cli-types.js';
@@ -76,6 +85,8 @@ export const POOL_SUBCOMMANDS = [
   'log',
   'enable',
   'disable',
+  'require-signed',
+  'allow-bearer',
   'peer-enable',
   'peer-disable',
   'pin',
@@ -83,6 +94,7 @@ export const POOL_SUBCOMMANDS = [
   'ceiling',
   'context-cap',
   'slots',
+  'kv-cache',
   // Four places in this repo and two in docs/CLI.md already tell the operator to run
   // `cihub pool pairing-pin`; until now it was not a subcommand and exited as an unknown one.
   'pairing-pin',
@@ -104,12 +116,16 @@ const POOL_TARGET_SUBCOMMANDS: readonly PoolSubcommand[] = [
   'ceiling',
   'context-cap',
   'slots',
+  'kv-cache',
 ];
 
 const POOL_USAGE = `Usage: ${BASE_COMMAND} pool <${POOL_SUBCOMMANDS.join('|')}> [env]`;
 
 /** How long `pool doctor` runs before it starts narrating. Below this, the box arrives on its own. */
 const POOL_DOCTOR_PROGRESS_AFTER_MS = 3_000;
+
+/** `pool log` only wants this node's name from `/status`, which can wait on a rebuild of the local inventory. */
+const POOL_LOG_NAME_TIMEOUT_MS = 3_000;
 
 export interface ParsedPoolArgs {
   subcommand: PoolSubcommand;
@@ -230,9 +246,9 @@ export function parsePoolArgs(args: string[]): ParsedPoolArgs {
 }
 
 /**
- * Bounded, never normalized: a model id is compared verbatim and case-sensitively against the
- * engine's inventory on the Hub, so lower-casing a pin here would produce one that looks right and
- * silently never matches. Matches `MAX_PINNED_MODEL_LENGTH` on the backend.
+ * Bounded, never normalized: the Hub folds only the implicit `:latest` when it compares a model id
+ * with the engine's inventory and the rest is case-sensitive, so lower-casing a pin here would produce
+ * one that looks right and silently never matches. Matches `MAX_PINNED_MODEL_LENGTH` on the backend.
  */
 function parsePinnedModel(raw: string): string {
   const trimmed = raw.trim();
@@ -295,6 +311,13 @@ export function parseOllamaSlotsArg(raw: string | undefined): number | null | un
   if (!/^\d+$/.test(value)) return undefined;
   const slots = Number(value);
   return slots >= MIN_OLLAMA_SLOTS && slots <= MAX_OLLAMA_SLOTS ? slots : undefined;
+}
+
+/** `f16`, `q8_0`, `q4_0` or `clear` (null); anything else is undefined, a usage error. */
+export function parseOllamaKvCacheArg(raw: string | undefined): OllamaKvCacheType | null | undefined {
+  const value = raw?.trim().toLowerCase() ?? '';
+  if (value === 'clear') return null;
+  return value === 'f16' || value === 'q8_0' || value === 'q4_0' ? value : undefined;
 }
 
 /** Exactly six digits, checked here so a typo is a usage error rather than a 400 from the Hub. */
@@ -502,13 +525,26 @@ export async function runPoolCommand(args: string[]) {
     }
 
     if (parsed.subcommand === 'log') {
-      const log = await fetchPoolRoutingLog(envFile, parsed.limit);
-      printMessageBox(`Hub Pool routing log  [${env}]`, formatPoolRoutingLogLines(log), log.summary.failed > 0 ? 'yellow' : 'cyan');
+      // The name is a nicety on the NODE column, so a status that fails or runs late doesn't cost the log.
+      const [log, status] = await Promise.all([
+        fetchPoolRoutingLog(envFile, parsed.limit),
+        fetchPoolStatus(envFile, POOL_LOG_NAME_TIMEOUT_MS).catch(() => null),
+      ]);
+      printMessageBox(
+        `Hub Pool routing log  [${env}]`,
+        formatPoolRoutingLogLines(log, status?.localNode.nodeFqdn),
+        log.summary.failed > 0 ? 'yellow' : 'cyan',
+      );
       return;
     }
 
     if (parsed.subcommand === 'enable' || parsed.subcommand === 'disable') {
       await runPoolEnableCommand(ctx, parsed);
+      return;
+    }
+
+    if (parsed.subcommand === 'require-signed' || parsed.subcommand === 'allow-bearer') {
+      await runPoolPeerAuthCommand(ctx, parsed);
       return;
     }
 
@@ -529,6 +565,11 @@ export async function runPoolCommand(args: string[]) {
 
     if (parsed.subcommand === 'slots') {
       await runPoolSlotsCommand(ctx, parsed);
+      return;
+    }
+
+    if (parsed.subcommand === 'kv-cache') {
+      await runPoolKvCacheCommand(ctx, parsed);
       return;
     }
 
@@ -606,6 +647,24 @@ async function runPoolUpdateCommand(ctx: HubContext, requestedEnv: HubEnv): Prom
       ),
     );
   }
+  // Before anything reads the compose model: the prod compose requires RABBITMQ_PASSWORD from the env
+  // file, and `admin` is a credential every install shared (Companion-Hub#884). A replaced value
+  // changes the broker's RABBITMQ_DEFAULT_PASS, so the `up` below recreates the broker, and the sync
+  // after it confirms the broker takes the new password.
+  const rabbitmqReplaced = ensureStrongRabbitmqPassword(
+    poolUpdateRabbitmqEnvFiles({
+      identity,
+      envFile: ctx.envFile,
+      applianceEnvFiles: ctx.appliance && ctx.dataDir ? applianceEnvFilePaths(ctx.dataDir) : [],
+    }),
+  );
+  if (rabbitmqReplaced) {
+    lines.push(
+      cliWarn(
+        `RABBITMQ_PASSWORD was missing or the shared default 'admin' in ${pinTarget.path}; wrote one of its own, and the broker is changed to match`,
+      ),
+    );
+  }
   const { pullArgs, upArgs } = buildPoolUpdateComposeArgs(ctx.envFile, files, identity);
   printMessageBox(`Hub Pool update  [${ctx.env}]`, [...lines, '', 'Pulling the published image, then redeploying...'], 'cyan');
   // CI_HUB_IMAGE is exported even without the overlay. On an appliance the seeded compose carries
@@ -621,6 +680,9 @@ async function runPoolUpdateCommand(ctx: HubContext, requestedEnv: HubEnv): Prom
   }
   run('docker', pullArgs, envOverrides, ctx.cwd);
   run('docker', upArgs, envOverrides, ctx.cwd);
+  if (rabbitmqReplaced) {
+    await runScript('scripts/sync-rabbitmq-password.ts', () => syncRabbitmqPasswordFromEnv(pinTarget.path), envOverrides, ctx.cwd);
+  }
 
   // The env file may not carry API_PORT at all on an appliance install (the compose service
   // `environment:` block sets it) — read it off the container that just started, same precedence
@@ -773,6 +835,101 @@ async function runPoolEnableCommand(ctx: HubContext, parsed: ParsedPoolArgs) {
 }
 
 /**
+ * Roll the legacy bearer path off only after every paired peer is visibly signed.
+ *
+ * This is intentionally an explicit command rather than an automatic doctor repair: flipping the
+ * setting on one old peer cuts both directions of that pairing off. --yes is required for the
+ * state change, and the post-write GET is part of success so a Hub that silently strips the field
+ * cannot be reported as hardened.
+ */
+async function runPoolPeerAuthCommand(ctx: HubContext, parsed: ParsedPoolArgs): Promise<void> {
+  const requireSigned = parsed.subcommand === 'require-signed';
+  const status = await fetchPoolStatus(ctx.envFile);
+  const stored = status.settings.poolRequireSignedPeers;
+  if (stored === undefined) {
+    printMessageBox(
+      'Signed peer policy unavailable',
+      [
+        'This Hub predates poolRequireSignedPeers, so no setting was changed.',
+        `${BASE_COMMAND} pool ${requireSigned ? 'require-signed' : 'allow-bearer'} --yes`,
+      ],
+      'red',
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  const paired = status.peers.filter((peer) => peer.status !== 'pending');
+  const bearer = paired.filter((peer) => peer.authMode !== 'signed');
+  if (requireSigned && bearer.length > 0) {
+    printMessageBox(
+      'Signed peer rollout blocked',
+      [
+        `No setting was changed: ${bearer.length} paired peer${bearer.length === 1 ? '' : 's'} still use the legacy bearer path.`,
+        `  ${bearer.map((peer) => sanitizeForBox(peer.nodeFqdn)).join(', ')}`,
+        '',
+        'Wait for those peers to upgrade and appear as signed in cihub pool status on this Hub.',
+        `Then retry: ${BASE_COMMAND} pool require-signed --yes`,
+      ],
+      'yellow',
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  if (stored === requireSigned) {
+    printMessageBox(
+      requireSigned ? 'Signed peer policy already enabled' : 'Legacy bearer policy already allowed',
+      [
+        `poolRequireSignedPeers=${stored}`,
+        requireSigned
+          ? 'Every paired peer is required to use its pinned identity.'
+          : 'Signed peers remain supported, but legacy bearer peers are still accepted.',
+      ],
+      requireSigned ? 'green' : 'yellow',
+    );
+    return;
+  }
+
+  const confirmed = await confirmDestructiveAction(
+    requireSigned ? 'Requiring signed pool peers' : 'Allowing legacy bearer pool peers',
+    parsed.yes,
+    `${requireSigned ? 'Require' : 'Allow'} signed peer authentication on this Hub? [y/N]: `,
+    'a state change',
+  );
+  if (!confirmed) {
+    printMessageBox('Cancelled', ['Left pool peer authentication policy untouched.'], 'yellow');
+    return;
+  }
+
+  await setPoolRequireSignedPeers(ctx.envFile, requireSigned);
+  const verified = await fetchPoolStatus(ctx.envFile);
+  if (verified.settings.poolRequireSignedPeers !== requireSigned) {
+    printMessageBox(
+      'Signed peer policy not verified',
+      [
+        `The PATCH returned, but pool status still reports poolRequireSignedPeers=${String(verified.settings.poolRequireSignedPeers)}.`,
+        'No success claim was made. Inspect the Hub image and retry after it supports this setting.',
+      ],
+      'red',
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  printMessageBox(
+    requireSigned ? 'Signed peer policy enabled' : 'Legacy bearer policy allowed',
+    [
+      `Verified poolRequireSignedPeers=${requireSigned}`,
+      requireSigned
+        ? 'Every paired peer was signed before the write; future bearer-only peers are refused.'
+        : 'The legacy bearer path is available again for recovery; return to signed-only after all peers upgrade.',
+    ],
+    requireSigned ? 'green' : 'yellow',
+  );
+}
+
+/**
  * `cihub pool pin <node-fqdn|local> [--model M]` / `cihub pool unpin [--model M]`.
  *
  * A pin is a preference, not a rule — the Hub only ever moves the pinned node to the front of a
@@ -790,7 +947,7 @@ async function runPoolPinCommand(ctx: HubContext, parsed: ParsedPoolArgs) {
     printMessageBox(
       `Pin removed  [${env}]`,
       [
-        `Routing for ${covers} is back to the ranker (least-loaded, with the local head start).`,
+        ...formatPoolUnpinLines(covers, pins, parsed.model, env),
         ...(pins.length > 0 ? ['', `${pins.length} other pin(s) remain — see: ${BASE_COMMAND} pool status`] : []),
       ],
       'yellow',
@@ -989,6 +1146,39 @@ async function runPoolSlotsCommand(ctx: HubContext, parsed: ParsedPoolArgs) {
     after = await fetchInferencePreferences(envFile).catch(() => patched);
   }
   const result = formatOllamaSlotsResultLines(requested, before, after, written);
+  printMessageBox(`${result.title}  [${env}]`, result.lines, result.tone);
+  if (result.tone === 'red') process.exitCode = 1;
+}
+
+/**
+ * `cihub pool kv-cache <f16|q8_0|q4_0>|clear`: state the KV cache this node's Ollama runs
+ * (`OLLAMA_KV_CACHE_TYPE`), which its API does not expose, so the Hub sizes windows for it. The same
+ * shape as `pool slots`: confirm, read, write only when it changes, read back, and say what to match.
+ */
+async function runPoolKvCacheCommand(ctx: HubContext, parsed: ParsedPoolArgs) {
+  const { env, envFile } = ctx;
+  const requested = parseOllamaKvCacheArg(parsed.target);
+  if (requested === undefined) {
+    usageAndExit(`Usage: ${BASE_COMMAND} pool kv-cache <f16|q8_0|q4_0>|clear [env] [--yes] — the node's OLLAMA_KV_CACHE_TYPE`);
+  }
+
+  const describe = requested === null ? 'Clear the Ollama KV cache setting' : `State that Ollama runs a ${requested} KV cache`;
+  const confirmed = await confirmDestructiveAction(`${describe} on this node`, parsed.yes, `${describe} on this node? [y/N]: `, 'a state change');
+  if (!confirmed) {
+    printMessageBox('Cancelled', ['Left the KV cache setting untouched.'], 'yellow');
+    return;
+  }
+
+  const before = await fetchInferencePreferences(envFile);
+  const supported = 'ollamaKvCacheType' in before;
+  const alreadyInForce = supported && (before.ollamaKvCacheType ?? null) === requested;
+  const written = supported && !alreadyInForce;
+  let after: InferencePreferencesResponse | null = null;
+  if (written) {
+    const patched = await setInferenceOllamaKvCacheType(envFile, before.preferredBackend ?? 'ollama', requested);
+    after = await fetchInferencePreferences(envFile).catch(() => patched);
+  }
+  const result = formatOllamaKvCacheResultLines(requested, before, after, written);
   printMessageBox(`${result.title}  [${env}]`, result.lines, result.tone);
   if (result.tone === 'red') process.exitCode = 1;
 }

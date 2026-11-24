@@ -1,4 +1,5 @@
 import {
+  getCloudPolicy,
   getCloudProviders,
   getLemonadeStatus,
   getManualEndpointStatus,
@@ -12,6 +13,7 @@ import {
   getVllmStatus,
   loadModel,
   pinModel,
+  removeCloudProvider,
   rescanHardware,
   setCloudProvider,
   startPullModel,
@@ -20,7 +22,7 @@ import {
   updatePreferences,
   updateRocmInstallState,
 } from '@/api-client/sdk.gen';
-import type { CloudProviderType, InferenceBackendType, TrackedModel } from '@ci-hub/common/types';
+import type { CloudProviderStatus, CloudProviderType, InferenceBackendType, TrackedModel } from '@ci-hub/common/types';
 import type {
   CloudProviderInput,
   LemonadeStatus,
@@ -29,8 +31,18 @@ import type {
   RuntimeModelsResponse,
 } from '@/modules/onboarding/helpers/ai-setup-types';
 import { unwrapSdk, unwrapSdkOrNull } from '@/lib/sdk-unwrap';
+import { MASKED_KEY, isMaskedKey } from './masked-key';
 
 const VLLM_PROBE_API_KEY_HEADER = 'x-ci-vllm-api-key';
+const OMLX_PROBE_API_KEY_HEADER = 'x-ci-omlx-api-key';
+
+/** The probe header for a key typed but not saved. A masked field sends none, so the Hub probes with its stored key. */
+function probeKeyHeaders(header: string, apiKey: string | undefined): Record<string, string> | undefined {
+  return apiKey?.trim() && !isMaskedKey(apiKey) ? { [header]: apiKey.trim() } : undefined;
+}
+
+const vllmProbeHeaders = (apiKey: string | undefined) => probeKeyHeaders(VLLM_PROBE_API_KEY_HEADER, apiKey);
+const omlxProbeHeaders = (apiKey: string | undefined) => probeKeyHeaders(OMLX_PROBE_API_KEY_HEADER, apiKey);
 
 async function unwrap<T>(promise: Promise<{ data?: T; error?: unknown }>): Promise<T> {
   return unwrapSdk(promise);
@@ -41,12 +53,13 @@ export async function fetchInferenceOnboardingProfile(
   vllmUrl?: string,
   vllmApiKey?: string,
   omlxUrl?: string,
+  omlxApiKey?: string,
 ): Promise<HardwareProfileResponse> {
   const query: Record<string, string> = {};
   if (backend) query.backend = backend;
   if (backend === 'vllm' && vllmUrl?.trim()) query.vllmUrl = vllmUrl.trim();
   if (backend === 'omlx' && omlxUrl?.trim()) query.omlxUrl = omlxUrl.trim();
-  const headers = backend === 'vllm' && vllmApiKey?.trim() ? { [VLLM_PROBE_API_KEY_HEADER]: vllmApiKey.trim() } : undefined;
+  const headers = backend === 'vllm' ? vllmProbeHeaders(vllmApiKey) : backend === 'omlx' ? omlxProbeHeaders(omlxApiKey) : undefined;
   return unwrap(
     getOnboardingProfile({
       query: Object.keys(query).length > 0 ? query : undefined,
@@ -90,22 +103,42 @@ export async function fetchInferenceRuntimeModels(backend: InferenceBackendType)
   return unwrap(getRuntimeModels({ query: { backend } } as Parameters<typeof getRuntimeModels>[0])) as Promise<RuntimeModelsResponse>;
 }
 
+/**
+ * The providers Settings > AI lists as set up: each that holds a key and each set to another server
+ * without one. A key entered for that one goes to its server, so it is listed with the URL.
+ */
 export async function fetchConfiguredCloudProviders(): Promise<CloudProviderInput[]> {
   try {
-    const providers = (await unwrap(getCloudProviders())) as Array<{
-      provider: CloudProviderType;
-      configured: boolean;
-      enabled: boolean;
-    }>;
+    const providers = (await unwrap(getCloudProviders())) as CloudProviderStatus[];
     return providers
-      .filter((p) => p.configured)
+      .filter((p) => p.configured || p.baseUrl)
       .map((p) => ({
         provider: p.provider,
-        apiKey: '••••••••',
+        apiKey: p.configured ? MASKED_KEY : '',
         enabled: p.enabled,
+        ...(p.configured ? { stored: true } : {}),
+        ...(p.baseUrl ? { baseUrl: p.baseUrl } : {}),
       }));
   } catch {
     return [];
+  }
+}
+
+export interface CloudFallbackPolicy {
+  allowCloudFallback: boolean;
+  hasCloudFallback: boolean;
+  envFlag: string;
+}
+
+/**
+ * Whether `CI_HUB_ALLOW_CLOUD_FALLBACK=true` allows automatic failover from local engines
+ * to configured cloud providers. Returns null if older test mocks stub out the SDK helper.
+ */
+export async function fetchCloudFallbackPolicy(): Promise<CloudFallbackPolicy | null> {
+  try {
+    return await unwrapSdkOrNull<CloudFallbackPolicy>(getCloudPolicy());
+  } catch {
+    return null;
   }
 }
 
@@ -115,12 +148,13 @@ export async function rescanInferenceHardware(): Promise<void> {
 
 export async function saveInferencePreferences(body: {
   backend: InferenceBackendType;
-  model: string | null;
-  embeddingModel: string | null;
-  visionModel: string | null;
+  model?: string | null;
+  embeddingModel?: string | null;
+  visionModel?: string | null;
   vllmApiKey?: string | null;
   vllmUrl?: string | null;
   omlxUrl?: string | null;
+  omlxApiKey?: string | null;
   decodeEndpoint?: string | null;
   encodeEndpoint?: string | null;
 }): Promise<void> {
@@ -137,6 +171,7 @@ export async function saveInferencePreferences(body: {
         vllmApiKey: body.vllmApiKey,
         vllmUrl: body.vllmUrl,
         omlxUrl: body.omlxUrl,
+        omlxApiKey: body.omlxApiKey,
         decodeEndpoint: body.decodeEndpoint,
         encodeEndpoint: body.encodeEndpoint,
       },
@@ -144,16 +179,26 @@ export async function saveInferencePreferences(body: {
   );
 }
 
+/**
+ * Store oMLX's API key and change nothing else. A save names a backend, so this sends the one the Hub
+ * has (or `fallbackBackend` when it has none yet) and leaves every other field out.
+ */
+export async function saveOmlxApiKey(apiKey: string, fallbackBackend: InferenceBackendType): Promise<void> {
+  const preferences = await fetchInferencePreferences();
+  await saveInferencePreferences({ backend: preferences?.preferredBackend ?? fallbackBackend, omlxApiKey: apiKey });
+}
+
 export async function fetchVllmInstallStatus(url?: string, apiKey?: string) {
   const query = url?.trim() ? { url: url.trim() } : undefined;
-  const headers = apiKey?.trim() ? { [VLLM_PROBE_API_KEY_HEADER]: apiKey.trim() } : undefined;
+  const headers = vllmProbeHeaders(apiKey);
   return unwrap(getVllmStatus({ query, headers } as Parameters<typeof getVllmStatus>[0]));
 }
 
-/** Probe the operator's oMLX server. No API-key header. */
-export async function fetchOmlxInstallStatus(url?: string) {
+/** Probe the operator's oMLX server, with a key typed but not saved yet when there is one. */
+export async function fetchOmlxInstallStatus(url?: string, apiKey?: string) {
   const query = url?.trim() ? { url: url.trim() } : undefined;
-  return unwrap(getOmlxStatus({ query } as Parameters<typeof getOmlxStatus>[0]));
+  const headers = omlxProbeHeaders(apiKey);
+  return unwrap(getOmlxStatus({ query, headers } as Parameters<typeof getOmlxStatus>[0]));
 }
 
 export async function fetchManualEndpointStatus(url: string) {
@@ -169,14 +214,17 @@ export async function saveCloudProviderConfig(body: { provider: CloudProviderTyp
   await unwrap(setCloudProvider({ body } as Parameters<typeof setCloudProvider>[0]));
 }
 
+/** Delete the key the Hub holds for `provider`; a save cannot, since a blank key there keeps the stored one. */
+export async function removeCloudProviderConfig(provider: CloudProviderType): Promise<void> {
+  await unwrap(removeCloudProvider({ path: { provider } }));
+}
+
 /**
  * Load a model into the selected backend. A catalog id goes through the Hub's fit and window.
  * An engine id the catalog does not know is loaded by that name, keeping the window saved on the file.
  */
 export async function loadInferenceModel(modelId: string, backend: InferenceBackendType): Promise<void> {
-  const result = (await unwrap(loadModel({ body: { modelId, backend } } as Parameters<typeof loadModel>[0]))) as
-    | { success?: boolean; message?: string }
-    | undefined;
+  const result = (await unwrap(loadModel({ body: { modelId, backend } }))) as { success?: boolean; message?: string } | undefined;
   if (result?.success === false) {
     throw new Error(result.message ?? `Could not load ${modelId}`);
   }
@@ -185,16 +233,14 @@ export async function loadInferenceModel(modelId: string, backend: InferenceBack
 export async function pinInferenceModel(modelId: string): Promise<void> {
   // A refused pin (over the pin budget, or the model cannot be made to fit) is a 201 with
   // `success: false`, not an HTTP error — surface it, or callers report a pin that never happened.
-  const result = (await unwrap(pinModel({ body: { modelId } } as Parameters<typeof pinModel>[0]))) as
-    | { success?: boolean; message?: string }
-    | undefined;
+  const result = (await unwrap(pinModel({ body: { modelId } }))) as { success?: boolean; message?: string } | undefined;
   if (result?.success === false) {
     throw new Error(result.message ?? `Could not pin ${modelId}`);
   }
 }
 
 export async function unpinInferenceModel(modelId: string): Promise<void> {
-  await unwrap(unpinModel({ body: { modelId } } as Parameters<typeof unpinModel>[0]));
+  await unwrap(unpinModel({ body: { modelId } }));
 }
 
 /**
@@ -203,7 +249,7 @@ export async function unpinInferenceModel(modelId: string): Promise<void> {
  * pick up new load options: a pin of a model that is already resident reloads nothing.
  */
 export async function unloadInferenceModel(modelId: string, backend?: InferenceBackendType): Promise<void> {
-  await unwrap(unloadModel({ body: { modelId, ...(backend ? { backend } : {}) } } as Parameters<typeof unloadModel>[0]));
+  await unwrap(unloadModel({ body: { modelId, ...(backend ? { backend } : {}) } }));
 }
 
 export async function fetchOllamaInstallStatus() {

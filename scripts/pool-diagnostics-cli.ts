@@ -31,6 +31,7 @@ import { CONTEXT_CAP_FLEET_COMMAND, type PoolPeerProbeFailure, showContextCap, s
 import { BIND_MOUNT_DIRS } from './lib/bind-mounts';
 import { cliFail, cliOk, colorize, dim, sanitizeForBox, STEP_ICONS, type Tone } from './lib/cli-ui';
 import { allowedEnvs, type HubEnv } from './lib/cli-types';
+import { readContainerOutput } from './lib/docker-exec-output';
 import { resolveHubContext } from './lib/hub-context';
 import { resolveProdApplianceContext } from './lib/paths';
 import { readHubApiKey } from './public-web-cli';
@@ -2252,13 +2253,14 @@ function dnsProbeScript(hosts: string[]): string {
 export function probeDnsFromContainer(hosts: string[]): DnsProbeResult[] | null {
   const container = resolveHubContainerName();
   if (!container) return null;
-  const result = spawnSync('docker', ['exec', container, 'node', '-e', dnsProbeScript(hosts)], {
-    encoding: 'utf8',
-    timeout: DNS_PROBE_TIMEOUT_MS * Math.max(hosts.length, 1) + 10_000,
+  // The probe always prints its JSON, so an empty answer is one `docker exec` lost, which the reader
+  // then copies out of the container instead (see docker-exec-output.ts).
+  const result = readContainerOutput(container, ['node', '-e', dnsProbeScript(hosts)], {
+    timeoutMs: DNS_PROBE_TIMEOUT_MS * Math.max(hosts.length, 1) + 10_000,
   });
   if (result.status !== 0) return null;
   try {
-    const parsed = JSON.parse((result.stdout ?? '').trim()) as DnsProbeResult[];
+    const parsed = JSON.parse(result.stdout) as DnsProbeResult[];
     return Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
@@ -2415,7 +2417,7 @@ export function checkBackendDns(specs: BackendUrlSpec[], results: DnsProbeResult
       `Each blocked lookup is spent inside the ${CAPABILITIES_PROBE_TIMEOUT_MS}ms capabilities budget (D1). Two of them is the whole budget.`,
       'Fix both halves:',
       '  1. Point the variable at a real address, or at a closed port so it fails instantly',
-      '     e.g. MTPLX_URL=http://127.0.0.1:1  (a refusal is instant; an unresolvable name is not)',
+      '     e.g. OMLX_URL=http://127.0.0.1:1  (a refusal is instant; an unresolvable name is not)',
       '  2. Bound the container resolver, on the `hub` service in docker-compose.prod.yml:',
       ...DNS_ATTEMPTS_REMEDIATION.map((line) => `       ${line}`),
       '     This repo’s docker-compose.prod.yml already has both; appliance installs seeded before it do not.',

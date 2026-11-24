@@ -15,7 +15,7 @@ import { CloudFallbackService } from '../cloud-fallback.service';
 import { OllamaInstallerService } from '../ollama-installer.service';
 import { RocmInstallerService } from '../rocm-installer.service';
 import { AppCredentialsService } from '../app-credentials.service';
-import type { HardwareProfile, InferenceStatus } from '@ci-hub/common/types';
+import type { HardwareProfile, InferenceStatus, TrackedModel } from '@ci-hub/common/types';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { InferenceBackendRegistry } from '../backends/backend-registry';
 import { ModelResidencyService } from '../model-residency.service';
@@ -172,6 +172,63 @@ describe('InferenceController — onboarding-profile', () => {
     expect(result.installedCatalogIds).toEqual(['phi-4-mini']);
   });
 
+  it('does not recommend vLLM when Docker lists the runtime but the NVIDIA driver does not answer', async () => {
+    hardwareInspector.getProfile.mockResolvedValue({
+      ...fakeProfile,
+      gpu: { ...fakeProfile.gpu, vendor: 'nvidia', runtimeAvailable: true, hostNvidiaAvailable: false, driverVersion: '' },
+    });
+    modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
+    modelRegistry.getModelsForTier.mockReturnValue([]);
+    memoryManager.calculateBudget.mockResolvedValue(fakeStatus.memoryBudget);
+    router.getStatus.mockResolvedValue(fakeStatus);
+
+    const result = await controller.getOnboardingProfile({ backend: 'ollama' });
+
+    expect(result.backends.recommended).toBe('ollama');
+  });
+
+  // Settings > AI seeds its ticked models from this list. A model removed with `ollama rm` stayed
+  // ticked while the registry remembered pulling it, and a Save then downloaded it again.
+  it('leaves out a model the registry still lists as pulled once Ollama no longer has it', async () => {
+    hardwareInspector.getProfile.mockResolvedValue(fakeProfile);
+    modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
+    modelRegistry.getModelsForTier.mockReturnValue([]);
+    memoryManager.calculateBudget.mockResolvedValue(fakeStatus.memoryBudget);
+    router.getStatus.mockResolvedValue(fakeStatus);
+    ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
+    modelRegistry.getTrackedModel.mockReturnValue({
+      catalogId: 'phi-4-mini',
+      backend: 'ollama',
+      backendModelId: 'phi4-mini',
+      state: 'pulled',
+    } as TrackedModel);
+
+    const result = await controller.getOnboardingProfile({ backend: 'ollama' });
+
+    expect(result.installedCatalogIds).toEqual([]);
+  });
+
+  it('says how many models each engine has, so setup can start on one that already has some', async () => {
+    hardwareInspector.getProfile.mockResolvedValue(fakeProfile);
+    modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
+    modelRegistry.getModelsForTier.mockReturnValue([]);
+    memoryManager.calculateBudget.mockResolvedValue(fakeStatus.memoryBudget);
+    router.getStatus.mockResolvedValue({
+      ...fakeStatus,
+      backends: [
+        { type: 'ollama', running: true, healthy: true, url: 'http://localhost:11434', modelsLoaded: 4 },
+        { type: 'vllm', running: false, healthy: false, url: 'http://localhost:8000', modelsLoaded: 0 },
+      ],
+    });
+
+    const result = await controller.getOnboardingProfile({ backend: 'ollama' });
+
+    expect(result.backends.available).toEqual([
+      { type: 'ollama', running: true, healthy: true, modelsLoaded: 4 },
+      { type: 'vllm', running: false, healthy: false, modelsLoaded: 0 },
+    ]);
+  });
+
   it('maps vLLM served models and Ollama embeddings when backend=vllm', async () => {
     hardwareInspector.getProfile.mockResolvedValue(fakeProfile);
     modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
@@ -191,23 +248,30 @@ describe('InferenceController — onboarding-profile', () => {
     expect(result.installedCatalogIds).toEqual(expect.arrayContaining(['qwen-vllm', 'nomic-embed-text']));
   });
 
-  it('maps oMLX served models when backend=omlx', async () => {
+  // oMLX does not list the catalog's `mlx-community/<name>` (oMLX 0.7.3.dev1, measured on /v1/models): a model
+  // directory is listed by its own name, the Hugging Face cache by `<org>--<name>`.
+  it.each([
+    ['a model directory', 'Qwen3-8B-4bit'],
+    ['the Hugging Face cache', 'mlx-community--Qwen3-8B-4bit'],
+  ])('maps oMLX served models when backend=omlx, listed from %s', async (_layout, listed) => {
     hardwareInspector.getProfile.mockResolvedValue(fakeProfile);
     modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
     modelRegistry.getModelsForTier.mockReturnValue([]);
     memoryManager.calculateBudget.mockResolvedValue(fakeStatus.memoryBudget);
     router.getStatus.mockResolvedValue(fakeStatus);
     ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['nomic-embed-text:latest'] });
-    omlxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['mlx-community/Qwen3-8B-4bit'] });
+    omlxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [listed] });
     modelRegistry.getCatalog.mockReturnValue([
       { id: 'phi-4-mini', backendModelId: 'phi4-mini', backend: 'ollama', modality: 'llm' },
       { id: 'nomic-embed-text', backendModelId: 'nomic-embed-text', backend: 'ollama', modality: 'embedding' },
       { id: 'qwen3-8b-mlx', backendModelId: 'mlx-community/Qwen3-8B-4bit', backend: 'omlx', modality: 'llm' },
+      { id: 'qwen3-8b-8bit-mlx', backendModelId: 'mlx-community/Qwen3-8B-8bit', backend: 'omlx', modality: 'llm' },
     ] as any);
 
     const result = await controller.getOnboardingProfile({ backend: 'omlx' });
 
     expect(result.installedCatalogIds).toEqual(expect.arrayContaining(['qwen3-8b-mlx']));
+    expect(result.installedCatalogIds).not.toContain('qwen3-8b-8bit-mlx');
   });
 
   it('maps Lemonade models served through its Hub-managed API when backend=lemonade', async () => {

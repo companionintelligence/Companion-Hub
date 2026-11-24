@@ -24,6 +24,7 @@ function looksStuck(): boolean {
   if (document.getElementById(OVERLAY_ID)) return false;
   if (appHasPainted()) return false;
   const main = document.getElementById('root');
+  // biome-ignore lint/performance/useDomNodeTextContent: detect whether the rendered app is visibly stuck.
   const text = (main?.innerText || '').trim();
   const firstLine = text.split('\n')[0] ?? '';
   if (!text || /^(loading|connecting)/i.test(firstLine)) return true;

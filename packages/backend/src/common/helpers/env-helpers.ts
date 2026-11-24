@@ -23,7 +23,6 @@ import {
   DEFAULT_DEMO_MODE,
   DEFAULT_DISABLE_PASSWORD_RESET,
   DEFAULT_GUEST_DASHBOARD,
-  DEFAULT_ALLOW_AUTO_THEMES,
   DEFAULT_ALLOW_ERROR_MONITORING,
   DEFAULT_PERSIST_TRAEFIK_CONFIG,
   DEFAULT_QUEUE_TIMEOUT_IN_MINUTES,
@@ -31,7 +30,6 @@ import {
   DEFAULT_ADVANCED_SETTINGS,
   DEFAULT_LOG_LEVEL,
   DEFAULT_EXPERIMENTAL_INSECURE_COOKIE,
-  DEFAULT_THEME_BASE,
   DEFAULT_THEME_COLOR,
   DEFAULT_LOCAL_DOMAIN,
 } from '../constants';
@@ -49,7 +47,7 @@ const generateSeed = async (log: StateFileLog) => {
   if (!fs.existsSync(seedFilePath)) {
     const randomBytes = crypto.randomBytes(32);
     const seed = randomBytes.toString('hex');
-    await fs.promises.writeFile(seedFilePath, seed, { mode: PRIVATE_STATE_FILE_MODE });
+    await fs.promises.writeFile(seedFilePath, seed, { mode: PRIVATE_STATE_FILE_MODE }).catch(rethrowDataFileDenied(seedFilePath));
     return;
   }
   await restrictStateFileMode(seedFilePath, log);
@@ -190,7 +188,7 @@ function boolStr(val: boolean | undefined): string | undefined {
  * and deliberately not the `resolveHubPoolEnabled` shape either. Those exist so a box
  * owner's `.env` cannot be undone from the dashboard, and both are disable-only:
  * `HUB_POOL_USER_DISABLED=true` switches pooling off and nothing switches it back on.
- * `ALLOW_ERROR_MONITORING` is two-valued and defaults to `'true'`, so env-first would let a
+ * `ALLOW_ERROR_MONITORING` is two-valued and defaults to `'false'`, so env-first would let a
  * `true` inherited from a compose file, a stale shell, or an older build's
  * `state/.env.resolved` override a user who explicitly opted out — an environment variable
  * forcing consent ON, which is the one direction a privacy control must never move.
@@ -240,6 +238,11 @@ export function resolveHubDomain(sources: {
  * Resolves the RabbitMQ password without silently using the development default in
  * production. Production requires an explicit value; an explicit `admin` remains
  * compatible but returns a migration warning.
+ *
+ * The `admin` escape hatch stays until every update path, including the in-app updater,
+ * replaces `admin` (Companion-Hub#884): a Hub released before that updates itself through a
+ * compose that still falls back to `admin`, so refusing it here would crash-loop unattended
+ * nodes. Removing the hatch, and failing closed on `admin`, is a follow-up.
  */
 export function resolveRabbitmqPassword(envMap: Map<string, string>): { password: string; warning?: string } {
   const isProduction = process.env.NODE_ENV === 'production';
@@ -251,7 +254,8 @@ export function resolveRabbitmqPassword(envMap: Map<string, string>): { password
         password: explicit,
         warning:
           "RABBITMQ_PASSWORD is set to the weak default 'admin' in production. Set a strong, unique RABBITMQ_PASSWORD " +
-          '(and match RABBITMQ_DEFAULT_PASS on the broker) — the default is a known credential.',
+          '(and match RABBITMQ_DEFAULT_PASS on the broker) — the default is a known credential. `cihub up`, `cihub pool update` ' +
+          'and the desktop app replace it; a later release will refuse to start on it.',
       };
     }
     return { password: explicit };
@@ -454,6 +458,22 @@ function settingsJsonPermissionError(settingsFilePath: string, cause: unknown): 
 }
 
 /**
+ * Names the file and the ownership repair for a boot-time file the Hub cannot access, in place of the
+ * bare errno. Any other error passes through unchanged.
+ */
+function rethrowDataFileDenied(filePath: string): (error: unknown) => never {
+  return (error: unknown): never => {
+    if (isFsErrorWithCode(error, 'EACCES')) {
+      throw new Error(
+        `Cannot read or write ${filePath}: permission denied. This usually means bind-mounted Hub data was written by a prior container running as a different user. Stop the Hub, fix ownership on the host data directory (for example: chown -R "$(id -u):$(id -g)" "$ROOT_FOLDER_HOST"), and start it again.`,
+        { cause: error },
+      );
+    }
+    throw error;
+  };
+}
+
+/**
  * Ensures settings.json exists, is readable and writable by the Hub process, and is readable by
  * nobody else.
  *
@@ -473,6 +493,11 @@ async function prepareSettingsJson(settingsFilePath: string): Promise<void> {
   const createEmpty = async () => {
     await fs.promises.writeFile(settingsFilePath, '{}', { encoding: 'utf8', mode: PRIVATE_STATE_FILE_MODE });
   };
+  // After the permission repair above, a second refusal gets the same explanation as every other one.
+  const createEmptyAfterRepair = () =>
+    createEmpty().catch((error: unknown) => {
+      throw settingsJsonPermissionError(settingsFilePath, error);
+    });
 
   if (!fs.existsSync(settingsFilePath)) {
     try {
@@ -483,7 +508,7 @@ async function prepareSettingsJson(settingsFilePath: string): Promise<void> {
         throw error;
       }
       await retrySettingsJsonPermissions(settingsFilePath, stateDir);
-      await createEmpty();
+      await createEmptyAfterRepair();
       return;
     }
   }
@@ -493,7 +518,7 @@ async function prepareSettingsJson(settingsFilePath: string): Promise<void> {
   } catch (error) {
     await retrySettingsJsonPermissions(settingsFilePath, stateDir);
     if (!fs.existsSync(settingsFilePath)) {
-      await createEmpty();
+      await createEmptyAfterRepair();
       return;
     }
     try {
@@ -504,22 +529,88 @@ async function prepareSettingsJson(settingsFilePath: string): Promise<void> {
   }
 }
 
-/** Writes settings.json with permission recovery for stale root-owned bind mounts. */
+/**
+ * Writes settings.json with permission recovery for stale root-owned bind mounts.
+ *
+ * The content goes to a file of its own beside settings.json, which is then renamed over it, so a
+ * reader, a crash or a full disk finds the old file or the new one and never part of either. Writing
+ * in place truncated the file first, and two such writes that overlapped could both truncate it
+ * before either wrote. When the shorter one landed last, the end of the longer one stayed behind it,
+ * and the next boot could not parse the file. Callers that read the file, merge and write it back
+ * still have to take turns: see `mergeSettingsToDisk`.
+ */
 export async function writeSettingsJsonFile(settingsFilePath: string, content: string, log?: StateFileLog): Promise<void> {
   await ensureSettingsJsonReady(settingsFilePath, log);
 
   try {
-    await fs.promises.writeFile(settingsFilePath, content, { encoding: 'utf8', mode: PRIVATE_STATE_FILE_MODE });
+    await replaceSettingsJson(settingsFilePath, content);
   } catch (error) {
     if (!isFsErrorWithCode(error, 'EACCES')) {
       throw error;
     }
     await retrySettingsJsonPermissions(settingsFilePath, path.dirname(settingsFilePath));
     try {
-      await fs.promises.writeFile(settingsFilePath, content, { encoding: 'utf8', mode: PRIVATE_STATE_FILE_MODE });
+      await replaceSettingsJson(settingsFilePath, content);
     } catch (retryError) {
       throw settingsJsonPermissionError(settingsFilePath, retryError);
     }
+  }
+}
+
+/** Numbers this process's settings.json writes, so two writes never share a temporary file. */
+let settingsJsonWrites = 0;
+
+/**
+ * Deletes what this module leaves beside settings.json: the `.corrupt-<time>` copies a boot keeps of
+ * a file it could not parse (readSettingsJsonAtBoot), and a `.<pid>-<n>.tmp` file a crash left between
+ * its write and its rename (replaceSettingsJson). Both hold the same credentials as settings.json, so
+ * a factory reset that empties settings.json removes them too. Call it only while no settings.json
+ * write is running, or it can take that write's temporary file.
+ */
+export async function removeSettingsJsonCopies(settingsFilePath: string): Promise<void> {
+  const dir = path.dirname(settingsFilePath);
+  const prefix = `${path.basename(settingsFilePath)}.`;
+  const isCopy = (entry: string) =>
+    entry.startsWith(prefix) && (entry.startsWith(`${prefix}corrupt-`) || /^\d+-\d+\.tmp$/.test(entry.slice(prefix.length)));
+  const copies = (await fs.promises.readdir(dir)).filter(isCopy);
+  // Every copy gets its try before a failure is reported.
+  const failed = (await Promise.allSettled(copies.map((entry) => fs.promises.rm(path.join(dir, entry), { force: true })))).find(
+    (result) => result.status === 'rejected',
+  );
+  if (failed) {
+    throw failed.reason;
+  }
+}
+
+async function replaceSettingsJson(settingsFilePath: string, content: string): Promise<void> {
+  const temporary = `${settingsFilePath}.${process.pid}-${++settingsJsonWrites}.tmp`;
+  try {
+    await fs.promises.writeFile(temporary, content, { encoding: 'utf8', mode: PRIVATE_STATE_FILE_MODE });
+    await flushToDisk(temporary);
+    await fs.promises.rename(temporary, settingsFilePath);
+  } catch (error) {
+    // It holds the same credentials as settings.json.
+    await fs.promises.unlink(temporary).catch(() => undefined);
+    throw error;
+  }
+}
+
+/**
+ * fsync before the rename. Without it, a power cut or a killed VM (`wsl --shutdown`) can keep the
+ * rename and lose the bytes on a filesystem that does not flush on rename by itself, which leaves an
+ * empty settings.json for the next boot to replace with empty settings.
+ */
+async function flushToDisk(filePath: string): Promise<void> {
+  const handle = await fs.promises.open(filePath, 'r+');
+  try {
+    await handle.sync();
+  } catch (error) {
+    // Some mounts cannot fsync at all. The rename still keeps a crashed process from tearing the file.
+    if (!['EINVAL', 'ENOTSUP', 'ENOSYS'].some((code) => isFsErrorWithCode(error, code))) {
+      throw error;
+    }
+  } finally {
+    await handle.close();
   }
 }
 
@@ -573,6 +664,87 @@ export async function writeResolvedEnvFile(targetPath: string, content: string, 
   }
 }
 
+/** What Windows editors and PowerShell 5 put in front of UTF-8 text. JSON.parse rejects it. */
+const BYTE_ORDER_MARK = String.fromCharCode(0xfeff);
+
+/**
+ * settings.json for the boot, which must not crash-loop on a file that does not parse.
+ *
+ * A byte order mark in front of the JSON is dropped, and the file written back without it, because
+ * every later read parses the raw text too. Any other file that does not parse is kept beside it as
+ * `settings.json.corrupt-<time>` and then replaced. When it opens with a complete JSON object, that
+ * object replaces it: overlapping saves in older builds left the last save whole at the start of the
+ * file and the end of a longer one after it. Anything else is replaced with empty settings, which is
+ * also how ConfigurationService reads a file it cannot parse. When the copy or the replacement cannot
+ * be written, this boot goes on with what was recovered and the file stays as it is.
+ */
+async function readSettingsJsonAtBoot(settingsFilePath: string, log: LoggerService): Promise<unknown> {
+  const raw = await fs.promises.readFile(settingsFilePath, 'utf-8');
+  const text = raw.startsWith(BYTE_ORDER_MARK) ? raw.slice(BYTE_ORDER_MARK.length) : raw;
+  let parseError: unknown;
+  try {
+    const settings: unknown = JSON.parse(text);
+    if (text !== raw) {
+      await writeSettingsJsonFile(settingsFilePath, text, log).then(
+        () => log.warn(`Removed a byte order mark from the start of ${settingsFilePath}.`),
+        (error: unknown) => log.warn(`${settingsFilePath} starts with a byte order mark, and it could not be removed (${fsErrorCode(error)}).`),
+      );
+    }
+    return settings;
+  } catch (error) {
+    parseError = error;
+  }
+
+  const lastSave = leadingJsonObject(text, parseError);
+  const recovered: Record<string, unknown> = { ...lastSave };
+  // Error reporting fails closed on a file it cannot parse (telemetry-consent.ts). The recovered file
+  // must not turn it back on for a user whose opt-out is in the part that was lost.
+  if (typeof recovered.allowErrorMonitoring !== 'boolean' && /"allowErrorMonitoring"\s*:\s*false\b/.test(text)) {
+    recovered.allowErrorMonitoring = false;
+  }
+  // The position only: the file holds credentials, and V8's message quotes the text around it.
+  const position = parseError instanceof SyntaxError ? /at position \d+/.exec(parseError.message)?.[0] : undefined;
+  const problem = `${settingsFilePath} was not valid JSON${position ? ` (${position})` : ''}`;
+  const startedFrom = lastSave ? 'the complete settings object at its start' : 'empty settings';
+
+  const keptAs = `${settingsFilePath}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+  try {
+    await fs.promises.writeFile(keptAs, raw, { encoding: 'utf8', mode: PRIVATE_STATE_FILE_MODE });
+  } catch (error) {
+    await fs.promises.unlink(keptAs).catch(() => undefined);
+    // Replacing the file without a copy would lose the only record of its credentials.
+    log.error(`${problem}. Could not keep a copy of it (${fsErrorCode(error)}), so left it in place and started this boot from ${startedFrom}.`);
+    return recovered;
+  }
+  try {
+    await writeSettingsJsonFile(settingsFilePath, JSON.stringify(recovered, null, 2), log);
+  } catch (error) {
+    log.error(
+      `${problem}. Kept it as ${path.basename(keptAs)}, could not replace it (${fsErrorCode(error)}), and started this boot from ${startedFrom}.`,
+    );
+    return recovered;
+  }
+  log.error(`${problem}. Kept it as ${path.basename(keptAs)} and started from ${startedFrom}.`);
+  return recovered;
+}
+
+/**
+ * The JSON object `text` opens with, when V8 found something after it ("Unexpected non-whitespace
+ * character after JSON at position 1229"). Null for any other parse error.
+ */
+function leadingJsonObject(text: string, error: unknown): Record<string, unknown> | null {
+  const end = error instanceof SyntaxError ? /after JSON at position (\d+)/.exec(error.message)?.[1] : undefined;
+  if (end === undefined) {
+    return null;
+  }
+  try {
+    const value: unknown = JSON.parse(text.slice(0, Number(end)));
+    return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Applies resolved environment without replacing runtime or .env.local values. */
 function applyEnvMapToProcess(envMap: Map<string, string>) {
   for (const [key, value] of envMap.entries()) {
@@ -602,7 +774,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   // Preserve the source environment; resolved values are written to state/.env.resolved.
   let envFile = '';
   if (fs.existsSync(envFilePath)) {
-    envFile = await fs.promises.readFile(envFilePath, 'utf-8');
+    envFile = await fs.promises.readFile(envFilePath, 'utf-8').catch(rethrowDataFileDenied(envFilePath));
   }
 
   const envMap: Map<string, string> = envUtils.envStringToMap(envFile);
@@ -612,13 +784,12 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
 
   await ensureSettingsJsonReady(settingsFilePath, logger);
 
-  const settingsFile = await fs.promises.readFile(settingsFilePath, 'utf-8');
-
   // One unusable field must not abort the boot. This function runs before Nest exists (main.ts
   // calls it first), so a throw here is a crash loop with no UI to fix it from and no route to the
   // file that caused it — and every field it feeds already has an environment value or a default
-  // behind it. Drop what cannot be read, name it in the log, and carry on with the rest.
-  const settings = parsePersistedSettings(JSON.parse(settingsFile));
+  // behind it. Drop what cannot be read, name it in the log, and carry on with the rest. A file that
+  // is not JSON at all is set aside the same way, by readSettingsJsonAtBoot.
+  const settings = parsePersistedSettings(await readSettingsJsonAtBoot(settingsFilePath, logger));
 
   if (settings.unreadable) {
     logger.warn(
@@ -762,10 +933,6 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
     'GUEST_DASHBOARD',
     resolve('GUEST_DASHBOARD', { envMap, settingsVal: boolStr(settingsData.guestDashboard), fallback: DEFAULT_GUEST_DASHBOARD }),
   );
-  envMap.set(
-    'ALLOW_AUTO_THEMES',
-    resolve('ALLOW_AUTO_THEMES', { envMap, settingsVal: boolStr(settingsData.allowAutoThemes), fallback: DEFAULT_ALLOW_AUTO_THEMES }),
-  );
   // Not `resolve()`'s settingsVal slot: that slot is env-first, and this one key must not be.
   const errorMonitoringEnv = resolve('ALLOW_ERROR_MONITORING', { envMap, fallback: DEFAULT_ALLOW_ERROR_MONITORING });
   envMap.set(
@@ -796,7 +963,24 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
     'ADVANCED_SETTINGS',
     resolve('ADVANCED_SETTINGS', { envMap, settingsVal: boolStr(settingsData.advancedSettings), fallback: DEFAULT_ADVANCED_SETTINGS }),
   );
-  envMap.set('LOG_LEVEL', resolve('LOG_LEVEL', { envMap, settingsVal: settingsData.logLevel, fallback: DEFAULT_LOG_LEVEL }));
+  // The Log level saved in Settings first, then the environment. The compose files always set
+  // LOG_LEVEL (info unless the env file says otherwise) and CI-OS writes LOG_LEVEL=info into its env
+  // file, so in resolve()'s env-first order a saved level never applied. As for TZ, process.env gets
+  // it too: ConfigurationService and the Hub's logger read it there, where the compose value stays.
+  const envLogLevel = resolve('LOG_LEVEL', { envMap, fallback: DEFAULT_LOG_LEVEL });
+  const logLevel = settingsData.logLevel ?? envLogLevel;
+  // The Settings page sends Log level with every save, so on a server where it was saved once, an
+  // operator's LOG_LEVEL in the env file does nothing. Say why in the boot log, which this logger
+  // still writes at the environment's level. A LOG_LEVEL of info is left out: the compose files set
+  // that when nobody chose a level, and an operator who picked warn in Settings never set it.
+  if (envLogLevel !== DEFAULT_LOG_LEVEL && envLogLevel !== logLevel) {
+    logger.warn(
+      `LOG_LEVEL=${envLogLevel} from the environment is ignored because Settings has Log level ${logLevel}. ` +
+        'Change Log level in Settings, or remove logLevel from state/settings.json and restart the Hub.',
+    );
+  }
+  envMap.set('LOG_LEVEL', logLevel);
+  process.env.LOG_LEVEL = logLevel;
   envMap.set(
     'EXPERIMENTAL_INSECURE_COOKIE',
     resolve('EXPERIMENTAL_INSECURE_COOKIE', {
@@ -806,7 +990,6 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
     }),
   );
 
-  envMap.set('THEME_BASE', resolve('THEME_BASE', { envMap, settingsVal: settingsData.themeBase, fallback: DEFAULT_THEME_BASE }));
   envMap.set('THEME_COLOR', resolve('THEME_COLOR', { envMap, settingsVal: settingsData.themeColor, fallback: DEFAULT_THEME_COLOR }));
 
   // Prefer mounted data because Docker Compose can retain stale host-shell values.

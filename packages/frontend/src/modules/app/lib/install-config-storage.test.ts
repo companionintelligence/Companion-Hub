@@ -95,13 +95,13 @@ describe('installConfigFilename', () => {
 describe('export / import round-trip', () => {
   it('round-trips non-secret values through serialize + parse', () => {
     const json = serializeInstallConfig('nextcloud', VALUES, FORM_FIELDS);
-    const result = parseInstallConfigJson(json, FORM_FIELDS);
+    const result = parseInstallConfigJson(json, FORM_FIELDS, 'nextcloud');
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('expected ok result');
 
-    expect(result.values).toMatchObject({ USERNAME: 'admin', ENABLE_FEATURE: true });
-    expect(result.recognizedKeys.sort()).toEqual(['ENABLE_FEATURE', 'USERNAME']);
+    expect(result.values).toMatchObject({ USERNAME: 'admin', ENABLE_FEATURE: true, port: '8080' });
+    expect(result.recognizedKeys.sort()).toEqual(['ENABLE_FEATURE', 'USERNAME', 'port']);
   });
 
   it('never includes password-type fields in the exported payload', () => {
@@ -121,25 +121,26 @@ describe('export / import round-trip', () => {
   });
 
   it('reports keys that do not match the current app form_fields instead of applying them', () => {
+    // Another app's port and exposure mode describe that app, so they are reported, not applied.
     const foreignConfigJson = JSON.stringify({
       schemaVersion: 1,
       appId: 'some-other-app',
       exportedAt: new Date().toISOString(),
-      values: { USERNAME: 'carried-over', SOME_OTHER_APPS_FIELD: 'nope', port: '9999' },
+      values: { USERNAME: 'carried-over', SOME_OTHER_APPS_FIELD: 'nope', port: '9999', exposureMode: 'cloudflare' },
     });
 
-    const result = parseInstallConfigJson(foreignConfigJson, FORM_FIELDS);
+    const result = parseInstallConfigJson(foreignConfigJson, FORM_FIELDS, 'nextcloud');
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('expected ok result');
 
     expect(result.values).toEqual({ USERNAME: 'carried-over' });
     expect(result.recognizedKeys).toEqual(['USERNAME']);
-    expect(result.unrecognizedKeys.sort()).toEqual(['SOME_OTHER_APPS_FIELD', 'port']);
+    expect(result.unrecognizedKeys.sort()).toEqual(['SOME_OTHER_APPS_FIELD', 'exposureMode', 'port']);
   });
 
   it('returns an error result for malformed JSON instead of throwing', () => {
-    const result = parseInstallConfigJson('{ not valid json', FORM_FIELDS);
+    const result = parseInstallConfigJson('{ not valid json', FORM_FIELDS, 'nextcloud');
 
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected error result');
@@ -147,11 +148,148 @@ describe('export / import round-trip', () => {
   });
 
   it('returns an error result for a JSON value that is not an object', () => {
-    const result = parseInstallConfigJson('[1,2,3]', FORM_FIELDS);
+    const result = parseInstallConfigJson('[1,2,3]', FORM_FIELDS, 'nextcloud');
 
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected error result');
     expect(result.error).toBe('INVALID_SHAPE');
+  });
+});
+
+/** The access settings every exposable app's dialog has, besides its own form_fields. */
+const HUB_SETTINGS = {
+  exposureMode: 'local',
+  localSubdomain: 'chef',
+  publicDomain: 'example.org',
+  enableAuth: false,
+  exposedLocal: false,
+  openPort: true,
+  port: '8090',
+};
+
+describe('access settings in an exported config', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('round-trips exposure mode, subdomain, public domain, sign-in, local exposure, open port and port', () => {
+    const json = serializeInstallConfig('cyberchef', { ...VALUES, ...HUB_SETTINGS }, FORM_FIELDS);
+    const result = parseInstallConfigJson(json, FORM_FIELDS, 'cyberchef');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok result');
+    expect(result.values).toMatchObject(HUB_SETTINGS);
+    expect(result.unrecognizedKeys).toEqual([]);
+  });
+
+  it('imports everything it just exported, whatever else the dialog held', () => {
+    // What getValues() holds with Advanced Mode on, a custom domain picked and a reinstall's guard.
+    const dialogValues = {
+      ...VALUES,
+      ...HUB_SETTINGS,
+      customDomainExpected: 'shop.example.org',
+      customDomain: 'shop.example.org',
+      customDomainTakeover: true,
+      autoRestartOnDomainChange: true,
+      isVisibleOnGuestDashboard: true,
+      maxBackups: 3,
+      cpuLimit: '1.5',
+    };
+
+    const result = parseInstallConfigJson(serializeInstallConfig('cyberchef', dialogValues, FORM_FIELDS), FORM_FIELDS, 'cyberchef');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok result');
+    expect(result.unrecognizedKeys).toEqual([]);
+  });
+
+  it('ignores an access setting whose value the dialog could not hold', () => {
+    // An exposure mode the importer does not know would otherwise fall back to Public Web on submit.
+    const handEdited = JSON.stringify({
+      schemaVersion: 1,
+      appId: 'cyberchef',
+      exportedAt: new Date().toISOString(),
+      values: { exposureMode: 'Local', enableAuth: 'false', openPort: 1, port: { number: 8090 }, localSubdomain: 42, exposedLocal: true },
+    });
+
+    const result = parseInstallConfigJson(handEdited, FORM_FIELDS, 'cyberchef');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok result');
+    expect(result.values).toEqual({ exposedLocal: true });
+    expect(result.unrecognizedKeys.sort()).toEqual(['enableAuth', 'exposureMode', 'localSubdomain', 'openPort', 'port']);
+  });
+
+  it('applies access settings only from a file that names this app', () => {
+    const bareFile = JSON.stringify({ USERNAME: 'admin', exposureMode: 'cloudflare', enableAuth: false });
+
+    const result = parseInstallConfigJson(bareFile, FORM_FIELDS, 'cyberchef');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok result');
+    expect(result.values).toEqual({ USERNAME: 'admin' });
+    expect(result.unrecognizedKeys.sort()).toEqual(['enableAuth', 'exposureMode']);
+  });
+
+  it('keeps customDomainExpected out of the exported file', () => {
+    const exported = buildInstallConfigExport('cyberchef', { ...VALUES, customDomainExpected: 'shop.example.org' }, FORM_FIELDS);
+
+    expect(exported.values).not.toHaveProperty('customDomainExpected');
+  });
+
+  it('never applies customDomainExpected or customDomainTakeover from a file, and does not call them foreign', () => {
+    // A file exported before this fix carries the guard and the takeover answer.
+    const olderExport = JSON.stringify({
+      schemaVersion: 1,
+      appId: 'cyberchef',
+      exportedAt: new Date().toISOString(),
+      values: { USERNAME: 'admin', customDomainExpected: 'shop.example.org', customDomainTakeover: true },
+    });
+
+    const result = parseInstallConfigJson(olderExport, FORM_FIELDS, 'cyberchef');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok result');
+    expect(result.values).toEqual({ USERNAME: 'admin' });
+    expect(result.unrecognizedKeys).toEqual([]);
+  });
+
+  it('never applies a generated credential from a file', () => {
+    // Export never writes DB_PASSWORD, so only a hand-edited file holds one. On Edit Settings it
+    // would replace the password the app's database was created with.
+    const handEdited = JSON.stringify({ schemaVersion: 1, appId: 'cyberchef', values: { USERNAME: 'admin', DB_PASSWORD: 'from-a-file' } });
+
+    const result = parseInstallConfigJson(handEdited, FORM_FIELDS, 'cyberchef');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok result');
+    expect(result.values).toEqual({ USERNAME: 'admin' });
+    expect(result.unrecognizedKeys).toEqual(['DB_PASSWORD']);
+  });
+
+  it('keeps customDomainExpected and customDomainTakeover out of the recently used list', () => {
+    const stored = recordLastUsedConfig('cyberchef', { ...VALUES, customDomainExpected: '', customDomainTakeover: true }, FORM_FIELDS);
+
+    expect(stored[0]?.values).not.toHaveProperty('customDomainExpected');
+    expect(stored[0]?.values).not.toHaveProperty('customDomainTakeover');
+    const raw = localStorage.getItem('ci-hub:last-install-configs:cyberchef');
+    expect(raw).not.toContain('customDomainExpected');
+    expect(raw).not.toContain('customDomainTakeover');
+  });
+
+  it('drops customDomainExpected and customDomainTakeover from a recently used entry saved before this fix', () => {
+    localStorage.setItem(
+      'ci-hub:last-install-configs:cyberchef',
+      JSON.stringify([
+        {
+          id: 'older',
+          savedAt: '2026-10-01T10:00:00.000Z',
+          values: { USERNAME: 'admin', customDomainExpected: 'shop.example.org', customDomainTakeover: true },
+        },
+      ]),
+    );
+
+    expect(readLastUsedConfigs('cyberchef')[0]?.values).toEqual({ USERNAME: 'admin' });
   });
 });
 

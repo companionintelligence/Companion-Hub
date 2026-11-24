@@ -1,0 +1,8 @@
+name: Fixture missing permissions
+on:
+  workflow_dispatch:
+jobs:
+  noop:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok

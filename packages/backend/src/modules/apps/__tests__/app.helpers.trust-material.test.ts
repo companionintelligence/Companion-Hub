@@ -12,6 +12,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { type MockProxy, mock } from 'vitest-mock-extended';
 import { AppFilesManager } from '../app-files-manager';
 import { AppHelpers, hubTrustMaterialScopes } from '../app.helpers';
+import { AppsRepository } from '../apps.repository';
 
 /**
  * Trust-material provisioning matrix (CI-Engineering#74): which apps receive the managed
@@ -24,6 +25,7 @@ describe('AppHelpers trust material (#74)', () => {
   let config: MockProxy<ConfigurationService>;
   let envUtils: MockProxy<EnvUtils>;
   let apiKeys: MockProxy<ApiKeyService>;
+  let appsRepository: MockProxy<AppsRepository>;
   let envMap: Map<string, string>;
 
   const officialConsumerUrn: AppUrn = createAppUrn('importer', 'ci-marketplace');
@@ -54,6 +56,8 @@ describe('AppHelpers trust material (#74)', () => {
     config = moduleRef.get(ConfigurationService);
     envUtils = moduleRef.get(EnvUtils);
     apiKeys = moduleRef.get(ApiKeyService);
+    appsRepository = moduleRef.get(AppsRepository);
+    appsRepository.getAppMcpAccess.mockResolvedValue(null);
     const filesystem = moduleRef.get<MockProxy<FilesystemService>>(FilesystemService);
     const registrationService = moduleRef.get<MockProxy<RegistrationService>>(RegistrationService);
 
@@ -116,6 +120,7 @@ describe('AppHelpers trust material (#74)', () => {
   });
 
   it('mcp_client + memory (Hermes-style): ONE key with both scopes, same raw value under both env names', async () => {
+    appsRepository.getAppMcpAccess.mockResolvedValue('write');
     await run(officialConsumerUrn, { mcp_client: true, wake_endpoint: '/hooks/wake', sse_events: false, ...memoryConsumer } as never);
 
     expect(apiKeys.provisionManagedKey).toHaveBeenCalledTimes(1);
@@ -125,13 +130,23 @@ describe('AppHelpers trust material (#74)', () => {
     expect(envMap.get('HUB_MCP_URL')).toBe('http://ci-hub:3000/api/mcp');
   });
 
-  it("mcp_client-only app (any store) keeps today's behavior: ['mcp'] scope, no HUB_APP_KEY, no forward-auth secret", async () => {
+  it("a granted mcp_client-only app (any store): ['mcp'] scope, no HUB_APP_KEY, no forward-auth secret", async () => {
+    appsRepository.getAppMcpAccess.mockResolvedValue('write');
     await run(thirdPartyUrn, { mcp_client: true, wake_endpoint: '/hooks/wake', sse_events: false } as never);
 
     expect(apiKeys.provisionManagedKey).toHaveBeenCalledWith(expect.objectContaining({ scopes: ['mcp'] }));
     expect(envMap.get('HUB_MCP_API_KEY')).toBe('minted-managed-key');
     expect(envMap.has('HUB_APP_KEY')).toBe(false);
     expect(envMap.has('CI_HUB_FORWARD_AUTH_SECRET')).toBe(false);
+  });
+
+  it("SECURITY: Hermes-style app nobody granted MCP access keeps only its 'app' scope", async () => {
+    await run(officialConsumerUrn, { mcp_client: true, ...memoryConsumer } as never);
+
+    expect(apiKeys.provisionManagedKey).toHaveBeenCalledWith(expect.objectContaining({ scopes: ['app'] }));
+    expect(envMap.get('HUB_APP_KEY')).toBe('minted-managed-key');
+    expect(envMap.has('HUB_MCP_API_KEY')).toBe(false);
+    expect(envMap.has('HUB_MCP_URL')).toBe(false);
   });
 
   it('preserves an existing per-app forward-auth secret across env regeneration (no churn)', async () => {
@@ -223,17 +238,22 @@ describe('hubTrustMaterialScopes', () => {
   const memory = { memory: { url_env: 'CI_SERVER_URL', token_env: 'CI_SERVER_TOKEN' } };
 
   it("grants 'app' only to an official-store consumer, and nothing to the same manifest from a third-party store", () => {
-    expect(hubTrustMaterialScopes(info(createAppUrn('importer', 'ci-marketplace'), memory))).toEqual(['app']);
-    expect(hubTrustMaterialScopes(info(createAppUrn('importer', 'sketchy-store'), memory))).toEqual([]);
+    expect(hubTrustMaterialScopes(info(createAppUrn('importer', 'ci-marketplace'), memory), null)).toEqual(['app']);
+    expect(hubTrustMaterialScopes(info(createAppUrn('importer', 'sketchy-store'), memory), null)).toEqual([]);
   });
 
-  it("grants 'mcp' from ANY store (mcp_client is not provenance-gated) and both when both apply", () => {
-    expect(hubTrustMaterialScopes(info(createAppUrn('agent', 'sketchy-store'), { mcp_client: true }))).toEqual(['mcp']);
-    expect(hubTrustMaterialScopes(info(createAppUrn('hermes', 'ci-marketplace'), { mcp_client: true, ...memory }))).toEqual(['mcp', 'app']);
+  it("grants 'mcp' from any store once a person granted it, and both when both apply", () => {
+    expect(hubTrustMaterialScopes(info(createAppUrn('agent', 'sketchy-store'), { mcp_client: true }), 'read')).toEqual(['mcp']);
+    expect(hubTrustMaterialScopes(info(createAppUrn('hermes', 'ci-marketplace'), { mcp_client: true, ...memory }), 'write')).toEqual(['mcp', 'app']);
+  });
+
+  it.each([null, undefined, 'none', 'nonsense'])("SECURITY: grants no 'mcp' for the answer %s, official store or not", (access) => {
+    expect(hubTrustMaterialScopes(info(createAppUrn('agent', 'sketchy-store'), { mcp_client: true }), access)).toEqual([]);
+    expect(hubTrustMaterialScopes(info(createAppUrn('hermes', 'ci-marketplace'), { mcp_client: true, ...memory }), access)).toEqual(['app']);
   });
 
   it('grants nothing to a plain app and never throws on a malformed URN', () => {
-    expect(hubTrustMaterialScopes(info(createAppUrn('plain', 'ci-marketplace'), undefined))).toEqual([]);
-    expect(hubTrustMaterialScopes(info('not-a-urn', memory))).toEqual([]);
+    expect(hubTrustMaterialScopes(info(createAppUrn('plain', 'ci-marketplace'), undefined), 'write')).toEqual([]);
+    expect(hubTrustMaterialScopes(info('not-a-urn', memory), null)).toEqual([]);
   });
 });

@@ -45,13 +45,15 @@ curl -s http://127.0.0.1:11434/api/tags
 
 ## 3. Hub onboarding / settings
 
-1. Choose **vLLM** as the inference backend. It is always selectable — the live endpoint probe on the setup card is the gate, not the local GPU. (Hardware still drives which backend is *recommended*: NVIDIA + container GPU runtime recommends vLLM.)
+1. Choose **vLLM** as the inference backend. It is always selectable, because the live endpoint probe on the setup card is the gate, not the local GPU. (NVIDIA with a container GPU runtime makes vLLM the *recommended* backend. In a browser tab, setup starts on Ollama instead when vLLM does not answer and Ollama does. In the desktop app on Windows, which can't install vLLM, it starts on Ollama whenever vLLM does not answer.)
 2. Complete the **vLLM setup** card — Hub probes `host.docker.internal:8000/v1/models` by default, or the custom **endpoint URL** you enter.
 3. Optionally enter your **vLLM API key** (must match `--api-key` on the host).
 4. Complete the **Ollama embeddings** card — recommended but does not block Continue when vLLM is ready.
 5. Select vLLM chat models (opens Hugging Face if not yet served) and Ollama embedding models. After loading a model in vLLM, **Re-check** refreshes both the status banner and the installed-model list.
 
 Hub persists `inferenceBackend: "vllm"` and optional `inferenceVllmApiKey` / `inferenceVllmUrl` to `state/settings.json`.
+
+Settings > AI shows a saved key as `••••••••`, and saving with that field untouched keeps it. The saved key is sent only to the URL it was saved with. If you change the URL, enter the key again for the new server; a save without one deletes the old key.
 
 ## 4. Env injected into ci-memory
 

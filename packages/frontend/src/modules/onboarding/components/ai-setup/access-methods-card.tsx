@@ -53,7 +53,7 @@ export const AccessMethodsCard = ({
           <Globe className={cn('mt-0.5 h-5 w-5 shrink-0', webSelected ? 'text-primary' : 'text-muted-foreground')} />
           <span className="min-w-0 flex-1">
             <span className="flex flex-wrap items-center gap-2">
-              <span className="text-base font-semibold">
+              <span className="text-base font-medium">
                 <LabelWithHint label={t('ONBOARDING_ACCESS_WEB_TITLE')} hint={t(ONBOARDING_REMOTE_WEB_HINT)} hintId="onboarding-access-web" />
               </span>
               <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary">
@@ -85,7 +85,7 @@ export const AccessMethodsCard = ({
             />
             <Shield className={cn('mt-0.5 h-5 w-5 shrink-0', vpnSelected ? 'text-primary' : 'text-muted-foreground')} />
             <span className="min-w-0 flex-1">
-              <span className="text-base font-semibold">
+              <span className="text-base font-medium">
                 <LabelWithHint label={t('ONBOARDING_ACCESS_VPN_TITLE')} hint={t(ONBOARDING_REMOTE_VPN_HINT)} hintId="onboarding-access-vpn" />
               </span>
               {vpnSelected && !tailscaleAvailable && (

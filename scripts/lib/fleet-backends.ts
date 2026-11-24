@@ -57,9 +57,28 @@ import {
   type LlamacppSpec,
 } from './fleet-llamacpp.js';
 import { classifyProbeFirewallOutput, HUB_PROBE_PORTS, probeFirewallApplyShell } from './fleet-probe-firewall.js';
+import {
+  classifyOmlxHelperOutput,
+  OMLX_HELPER_HTTP_PORT,
+  OMLX_HELPER_IMAGE,
+  OMLX_HELPER_OWNER,
+  omlxHelperGate,
+  omlxHelperInstallScript,
+  resolveOmlxHelperVersion,
+} from './fleet-omlx-helper.js';
 
-export const INSTALLABLE_BACKENDS = ['ollama', 'omlx', 'vllm', 'lemonade'] as const;
+export const INSTALLABLE_BACKENDS = ['ollama', 'omlx', 'vllm', 'lemonade', 'omlx-helper'] as const;
 export type InstallableBackend = (typeof INSTALLABLE_BACKENDS)[number];
+
+/**
+ * Planned only when `--backends` names them. oMLX's CUDA helper serves nothing the Hub routes to,
+ * pulls a 2.3 GB image, and opens three ports on every interface for a Mac to pair with, so a plain
+ * `fleet backends --execute` must not start it on every NVIDIA node it reaches.
+ */
+const OPT_IN_BACKENDS: ReadonlySet<InstallableBackend> = new Set(['omlx-helper']);
+
+/** What `fleet backends` plans when `--backends` is not given. */
+export const DEFAULT_BACKENDS: readonly InstallableBackend[] = INSTALLABLE_BACKENDS.filter((b) => !OPT_IN_BACKENDS.has(b));
 
 export interface BackendPlan {
   backend: InstallableBackend;
@@ -92,6 +111,8 @@ export interface BackendPlanOptions {
   ollamaBind?: OllamaBindMode;
   /** Overrides {@link OLLAMA_PINNED_VERSION} for this run. Validated by `resolveOllamaVersion`. */
   ollamaVersion?: string;
+  /** Overrides the oMLX CUDA helper's pinned tag for this run. Validated by `resolveOmlxHelperVersion`. */
+  omlxHelperVersion?: string;
   /**
    * What `llamacpp` should serve, decided per node before planning (the default model is the node's
    * own Hub's answer, which takes a round trip). Absent when the backend was not named: llama-server
@@ -139,6 +160,7 @@ const PORTS: Record<InstallableBackend, number> = {
   lemonade: 13305,
   omlx: 8000,
   vllm: 8002,
+  'omlx-helper': OMLX_HELPER_HTTP_PORT,
 };
 
 /**
@@ -294,6 +316,9 @@ export function planBackend(backend: InstallableBackend, facts: HostFacts, dataD
   const port = PORTS[backend];
   const bind = opts.ollamaBind ?? DEFAULT_OLLAMA_BIND;
 
+  // The helper's listener is fingerprinted, so it does not take the port-only adoption below.
+  if (backend === 'omlx-helper') return planOmlxHelper(facts, opts.omlxHelperVersion);
+
   // Its listener is fingerprinted and its own unit converged, neither of which the port-only
   // adoption below can express.
   // Adoption first, where the evidence actually supports it. Cheap, and makes re-running safe.
@@ -372,6 +397,44 @@ export function planBackend(backend: InstallableBackend, facts: HostFacts, dataD
   }
 }
 
+/**
+ * oMLX's CUDA helper on an NVIDIA node (see `fleet-omlx-helper.ts`). Adopted when :8850 answers as
+ * the helper, whatever its version — `backends` adopts a running Ollama the same way — and skipped
+ * when anything else holds the port.
+ */
+function planOmlxHelper(facts: HostFacts, versionOverride?: string): BackendPlan {
+  const backend = 'omlx-helper';
+  const port = OMLX_HELPER_HTTP_PORT;
+  const version = resolveOmlxHelperVersion(versionOverride);
+  if (facts.engineOwners?.[port] === OMLX_HELPER_OWNER) {
+    const running = facts.omlxHelperVersion;
+    const pin = running && running !== version ? `; ${version} is the pin, and only a fresh container gets it` : '';
+    return {
+      backend,
+      action: 'adopt',
+      why: `${OMLX_HELPER_OWNER} ${running ?? '(version unread)'} already answers on :${port} — adopted, nothing pulled${pin}`,
+      port,
+    };
+  }
+  if (facts.enginesListening.includes(port)) {
+    return {
+      backend,
+      action: 'skip',
+      why: `port :${port} is in use by something that does not answer as ${OMLX_HELPER_OWNER}, and the helper needs it`,
+      port,
+    };
+  }
+  const gate = omlxHelperGate(facts);
+  if (!gate.ok) return { backend, action: 'skip', why: gate.why, port };
+  return {
+    backend,
+    action: 'install',
+    why: `${gate.gpu} — pulling ${OMLX_HELPER_IMAGE}:${version} and starting it on the host network, where the Mac's oMLX can find and pair with it (:8850–8852 on every interface; its pairing is plain HTTP, so only on a network you trust)`,
+    script: omlxHelperInstallScript(version),
+    port,
+  };
+}
+
 /** The spec a llamacpp plan renders from, once the node's facts and the run's flags are known. */
 export function llamacppSpecFor(facts: HostFacts, opts: LlamacppPlanOptions & { model: string }): LlamacppSpec {
   return {
@@ -389,7 +452,7 @@ export function planAllBackends(
   only?: readonly InstallableBackend[],
   opts: BackendPlanOptions = {},
 ): BackendPlan[] {
-  const wanted = only?.length ? only : INSTALLABLE_BACKENDS;
+  const wanted = only?.length ? only : DEFAULT_BACKENDS;
   return wanted.map((backend) => planBackend(backend, facts, dataDir, opts));
 }
 
@@ -442,7 +505,7 @@ export async function executeBackendPlan(target: SshTarget, plan: BackendPlan, t
 
   // Heredoc rather than an argv string: these scripts contain quotes, `$`, and their own heredocs,
   // and shell-escaping them into a one-liner is how a script silently becomes a different script.
-  const marker = `CIHUB_${plan.backend.toUpperCase()}_EOF`;
+  const marker = `CIHUB_${plan.backend.toUpperCase().replace(/[^A-Z0-9]/g, '_')}_EOF`;
   const runner = plan.needsSudo ? 'sudo -n bash' : 'bash';
   const command = `${runner} <<'${marker}'\n${plan.script}\n${marker}`;
 
@@ -492,6 +555,16 @@ export async function executeBackendPlan(target: SshTarget, plan: BackendPlan, t
         ms,
       };
     }
+  }
+  if (plan.backend === 'omlx-helper') {
+    // Markers, like the bind step: a refusal is a fact about the node (another container owns the
+    // name, the toolkit is missing) and is reported as skipped so a fleet run continues.
+    const applied = classifyOmlxHelperOutput(result.out, result.err);
+    if (applied.outcome === 'installed' || applied.outcome === 'adopted')
+      return { backend: plan.backend, outcome: applied.outcome, why: applied.why, ms };
+    if (applied.outcome === 'refused') return { backend: plan.backend, outcome: 'skipped', why: applied.why, ms };
+    if (applied.outcome === 'failed') return { backend: plan.backend, outcome: 'failed', why: applied.why, detail: applied.detail, ms };
+    // Incomplete: fall through to the exit-code diagnosis below.
   }
   if (plan.backend === 'llamacpp' && plan.llamacpp) {
     // Markers, like Ollama's bind: "unchanged" is an outcome of its own (nothing restarted, reported

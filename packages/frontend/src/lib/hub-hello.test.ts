@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { isStackUpdatePending, markStackUpdatePending, subscribeStackUpdate } from './desktop-stack-session';
+import {
+  clearKeptStackUpdateOutcome,
+  isStackUpdatePending,
+  markStackUpdatePending,
+  readKeptStackUpdateOutcome,
+  subscribeStackUpdate,
+} from './desktop-stack-session';
 import { STACK_UPDATE_NOT_CONFIRMED_AFTER_MS, applyHubHello, decideHubHello } from './hub-hello';
 
 const NOW = 1_700_000_000_000;
@@ -173,6 +179,28 @@ describe('applyHubHello', () => {
     unsubscribe();
   });
 
+  it('keeps the outcome for after the reload that a stale bundle needs', () => {
+    markStackUpdatePending('0.2.71', NOW - 30_000);
+    let keptWhenReloading: unknown;
+    const effects = { invalidateVersion: vi.fn(), reload: vi.fn(() => (keptWhenReloading = readKeptStackUpdateOutcome())) };
+
+    applyHubHello('0.2.72', { bundleVersion: '0.2.71', sameOriginBundle: true, now: NOW }, effects);
+
+    expect(keptWhenReloading).toEqual({ state: 'completed', version: '0.2.72' });
+  });
+
+  it('keeps the outcome for the reload even when a panel on screen heard it and cleared the copy', () => {
+    markStackUpdatePending('0.2.71', NOW - 30_000);
+    const unsubscribe = subscribeStackUpdate(() => clearKeptStackUpdateOutcome());
+    let keptWhenReloading: unknown;
+    const effects = { invalidateVersion: vi.fn(), reload: vi.fn(() => (keptWhenReloading = readKeptStackUpdateOutcome())) };
+
+    applyHubHello('0.2.72', { bundleVersion: '0.2.71', sameOriginBundle: true, now: NOW }, effects);
+    unsubscribe();
+
+    expect(keptWhenReloading).toEqual({ state: 'completed', version: '0.2.72' });
+  });
+
   it('does not reload a cross-origin desktop bundle when its update completes', () => {
     markStackUpdatePending('0.2.71', NOW - 30_000);
     const effects = { invalidateVersion: vi.fn(), reload: vi.fn() };
@@ -180,6 +208,26 @@ describe('applyHubHello', () => {
     expect(isStackUpdatePending()).toBe(false);
     expect(effects.invalidateVersion).toHaveBeenCalledTimes(1);
     expect(effects.reload).not.toHaveBeenCalled();
+  });
+
+  it('keeps the outcome when no reload follows, for a panel that was not on screen to hear it', () => {
+    // A page reloaded onto the new Hub already has the new bundle, so nothing reloads it again.
+    markStackUpdatePending('0.2.71', NOW - 30_000);
+    const effects = { invalidateVersion: vi.fn(), reload: vi.fn() };
+
+    applyHubHello('0.2.72', { bundleVersion: '0.2.72', sameOriginBundle: true, now: NOW }, effects);
+
+    expect(effects.reload).not.toHaveBeenCalled();
+    expect(readKeptStackUpdateOutcome()).toEqual({ state: 'completed', version: '0.2.72' });
+  });
+
+  it('keeps a not-confirmed outcome for the same reason', () => {
+    markStackUpdatePending('0.2.71', NOW - 11 * 60 * 1000);
+    const effects = { invalidateVersion: vi.fn(), reload: vi.fn() };
+
+    applyHubHello('0.2.71', { bundleVersion: '0.2.71', sameOriginBundle: true, now: NOW }, effects);
+
+    expect(readKeptStackUpdateOutcome()).toEqual({ state: 'not_confirmed', version: '0.2.71' });
   });
 
   it('leaves a fresh pending marker alone when the old container answers', () => {

@@ -32,10 +32,10 @@ when Layer 1 and product behavior disagree.
 
 | Score | Meaning |
 |-------|---------|
-| `pass` | Ready (healthcheck `healthy` **or** HTTP `< 500`) **and** a screenshot rendered **and** the backend is healthy |
-| `warn` | Ready, but no screenshot **or** the backend is **degraded** — frontend serves while a backend service is down/restarting (the "login broken" case). The failing service + a log excerpt are in `notes` |
+| `pass` | Ready (healthcheck `healthy` **or** HTTP `< 500`/TCP probe) and the backend is healthy; GUI apps also need a screenshot |
+| `warn` | A GUI app is ready but has no screenshot, or the backend is **degraded** — frontend serves while a backend service is down/restarting (the "login broken" case). The failing service + a log excerpt are in `notes` |
 | `fail` | Never became ready, or the main container exited / restart-looped |
-| `skip` | Not an HTTP app — `no_gui` MCP/CLI, VM image (`dockurr/*`), GPU image (`rocm`/`cuda`/`amd-strix`), private `ghcr.io/companionintelligence/*`, or a dead/auth-failed image. Skips count as completed, they are **not** failures |
+| `skip` | No supported probe in this lane: a no-GUI service without a declared main-service port, a UDP-only service, a silent TCP protocol without a supported probe, a VM image (`dockurr/*`), a GPU image (`rocm`/`cuda`/`amd-strix`), a private `ghcr.io/companionintelligence/*` image, or a dead/auth-failed image. No-GUI MCP apps use the stdio protocol lane. Skips count as completed, they are **not** failures |
 
 `warn` with a backend-degraded note is the most important signal — it is exactly the
 "frontend up, backend down" bug that a naive HTTP-200 check hides.
@@ -47,7 +47,7 @@ window on an app that already crashed. `qa-stream` instead waits on:
 
 1. the container's own **Docker healthcheck** reporting `healthy` (authoritative when present);
 2. **HTTP** `/` `< 500`; or
-3. **fast-fail** — the main container `exited`/`dead` or restart-looped (report `backend exited after Ns` + logs, don't wait).
+3. **fast-fail** — the main container `exited`/`dead` (it is not restarted: `restart: "no"`, or a clean exit under `on-failure`) or restart-looped (more than 10 restarts under a policy that never gives up; report `backend exited after Ns` + logs, don't wait).
 
 Ceiling: **300s single-service / 600s multi-service**, override with `QA_READY_TIMEOUT_MS`.
 The result records `readyVia` (`healthcheck` | `http <code>`) and `startupMs`.
@@ -69,6 +69,16 @@ The result records `readyVia` (`healthcheck` | `http <code>`) and `startupMs`.
   (`scripts/heal-hub-bind-mounts.ts`).
 - **Prepull + registry cache** on lab hardware and a 900s pull timeout to kill cold-pull
   flakiness on heavy images.
+- **The Hub's restart policy.** Each service runs under its manifest `restart` value
+  (`no` | `always` | `unless-stopped` | `on-failure`), and under `unless-stopped` when it declares
+  none, as the Hub's compose builder does: `docker run --restart` for a single-service app,
+  `restart:` per service for a compose stack. An app that exits 0 once on purpose and relies on
+  the restart (lidarr-deemix, hoppscotch) is scored on what it does afterwards. Teardown
+  force-removes the containers, since a restart policy brings back one that is only stopped.
+- **Host-port bind races are retried.** The published host port is reserved up front; if the
+  real bind then loses it to another app (`address already in use` / `failed to bind host port` /
+  `port is already allocated`, most likely at `QA_CONCURRENCY` above 1) the start is retried with a fresh reservation, at most
+  twice (`bindRetries` on the result). Any other start failure is scored on the first try.
 
 ## Reusable environment issues
 

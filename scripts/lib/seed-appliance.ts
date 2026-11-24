@@ -15,11 +15,13 @@ import { BUNDLED_HUB_COMPOSE } from './bundled-hub-assets.generated.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { stdin as input, stdout as output } from 'node:process';
+import { parseEnvFile, upsertEnvVar } from '../env-file.js';
 import { dockerBindMountPath } from '../heal-hub-bind-mounts';
 import { packageVersion } from './cli-compose-env.js';
 import { BASE_COMMAND } from './cli-types.js';
 import { classifyCliInstall, isVersionTag, normalizeVersion, parseImageTag } from './cli-version-skew.js';
 import { compareCihubVersions } from './fleet-cihub-binary.js';
+import { applianceEnvFilePaths } from './paths.js';
 
 export const HUB_COMPOSE_FILENAME = 'docker-compose.prod.yml';
 export const HUB_STACK_IMAGE_REPO = 'ghcr.io/companionintelligence/ci-hub';
@@ -720,6 +722,33 @@ export function renderApplianceEnvContent(input: {
   ].join('\n');
 }
 
+/** The broker password every install shared until Companion-Hub#884; the Hub warns on it in production. */
+const WEAK_RABBITMQ_PASSWORD = 'admin';
+
+/**
+ * Give an existing install's env files a broker password of their own before compose reads them.
+ *
+ * The prod compose requires RABBITMQ_PASSWORD from the env file and `admin` is a credential every
+ * install shared, so a file that has no value or still has `admin` is given one: the strong value another
+ * of these files already has, so the two stay the same, or else 32 random bytes in hex, as the seed
+ * and the desktop app (runtime_env.rs) generate. A strong value is never replaced, and a file that is
+ * not there is not created. The broker is changed to match afterwards by sync-rabbitmq-password.
+ * Returns whether any file changed.
+ */
+export function ensureStrongRabbitmqPassword(envFiles: string[]): boolean {
+  const present = envFiles.filter((file) => existsSync(file));
+  const isStrong = (value: string | undefined): value is string => Boolean(value) && value !== WEAK_RABBITMQ_PASSWORD;
+  const current = present.map((file) => parseEnvFile(file).RABBITMQ_PASSWORD?.trim());
+  const password = current.find(isStrong) ?? randomBytes(32).toString('hex');
+  let changed = false;
+  present.forEach((file, index) => {
+    if (isStrong(current[index])) return;
+    upsertEnvVar(file, 'RABBITMQ_PASSWORD', password);
+    changed = true;
+  });
+  return changed;
+}
+
 export function seedApplianceInstall(options: SeedApplianceOptions): SeedApplianceResult {
   const dataDir = path.resolve(options.dataDir);
   const execPath = options.execPath ?? process.execPath;
@@ -776,10 +805,7 @@ export function seedApplianceInstall(options: SeedApplianceOptions): SeedApplian
     ciCloudUrl: portal.url,
   });
 
-  const primaryName = process.platform === 'win32' ? '.env' : '.env.dev';
-  const compatName = process.platform === 'win32' ? '.env.dev' : '.env';
-  const envFilePath = path.join(dataDir, primaryName);
-  const compatPath = path.join(dataDir, compatName);
+  const [envFilePath, compatPath] = applianceEnvFilePaths(dataDir);
   writeFileSync(envFilePath, envContent, { encoding: 'utf8', mode: 0o600 });
   writeFileSync(compatPath, envContent, { encoding: 'utf8', mode: 0o600 });
 

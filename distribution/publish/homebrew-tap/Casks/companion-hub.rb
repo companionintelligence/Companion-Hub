@@ -2,21 +2,30 @@
 # Published via: https://github.com/companionintelligence/homebrew-tap
 
 cask "companion-hub" do
-  version "0.3.4"
+  version "0.3.14"
 
   on_intel do
-    url "https://github.com/companionintelligence/CI-Hub/releases/download/v#{version}/Companion.Hub_#{version}_x64.dmg"
-    sha256 "6c653c6210aabd48938a1d4421b5e8e9f1edb4f39094da1776a05c89e6511c70"
+    url "https://dl.ci.computer/v#{version}/macos/intel/Companion%20Hub_#{version}_x64.dmg"
+    sha256 "56a1539f996f108cbb6a4ec80f2024d6cd7c9c099a8dafc4fc7154dab3a58a0a"
   end
 
   on_arm do
-    url "https://github.com/companionintelligence/CI-Hub/releases/download/v#{version}/Companion.Hub_#{version}_aarch64.dmg"
-    sha256 "635bf92db6ae1b03784e997b47687f2bb91b630cc8d0142d91d78dad709e2c84"
+    url "https://dl.ci.computer/v#{version}/macos/arm/Companion%20Hub_#{version}_aarch64.dmg"
+    sha256 "d07ec5350a9966042bcf78b6ebb378ead42452685ebe70c00701feb81e8b6edb"
   end
 
   name "Companion Hub"
   desc "Self-hosted app platform and local AI hub from Companion Intelligence"
   homepage "https://ci.computer/hub"
+
+  # latest.json is {"version":"v0.3.13","date":"..."}. It only moves to a version once that
+  # release has an installer for every platform, so a version seen here is fully published.
+  livecheck do
+    url "https://dl.ci.computer/latest.json"
+    strategy :json do |json|
+      json["version"]&.delete_prefix("v")
+    end
+  end
 
   app "Companion Hub.app"
 

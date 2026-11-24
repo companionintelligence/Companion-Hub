@@ -310,6 +310,14 @@ export class PortalCatalogService {
     return (this.cache?.length ?? 0) > 0;
   }
 
+  /**
+   * The slug of every app in the catalog answer held in memory, deprecated and unavailable ones
+   * included, without fetching: none when no answer is held.
+   */
+  heldCatalogSlugs(): string[] {
+    return this.rawCache ? [...this.rawCache.keys()] : [];
+  }
+
   async getCatalogEntries(force = false): Promise<PortalCatalogEntry[]> {
     if (!force && this.cache) {
       // Past its TTL, answer with the catalog in hand and refresh behind it: a slow Portal must

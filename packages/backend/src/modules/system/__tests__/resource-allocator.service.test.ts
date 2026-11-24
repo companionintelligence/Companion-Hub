@@ -65,6 +65,27 @@ describe('ResourceAllocatorService', () => {
     expect(limits).toEqual({});
   });
 
+  // Compose generation leaves out what an engine below 25 refuses, so it needs the version even
+  // when the engine reports no CPU or memory figures.
+  it.each([
+    ['0 CPUs', { NCPU: 0, MemTotal: gb(16), ServerVersion: '24.0.9' }],
+    ['0 memory', { NCPU: 8, MemTotal: 0, ServerVersion: '24.0.9' }],
+  ])('keeps the engine version when Docker reports %s', async (_label, info) => {
+    await setup();
+    docker.info.mockResolvedValue(info);
+
+    expect(await service.getDockerCapacity()).toBeNull();
+    expect(await service.getDockerServerVersion()).toBe('24.0.9');
+    expect(docker.info).toHaveBeenCalledOnce();
+  });
+
+  it('reads no engine version when the Docker daemon is unreachable', async () => {
+    await setup();
+    docker.info.mockRejectedValue(new Error('connect ENOENT /var/run/docker.sock'));
+
+    expect(await service.getDockerServerVersion()).toBeUndefined();
+  });
+
   it('caches docker info between calls', async () => {
     await setup();
 

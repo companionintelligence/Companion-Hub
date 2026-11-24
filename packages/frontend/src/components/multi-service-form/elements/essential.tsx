@@ -4,6 +4,7 @@ import type { z } from 'zod';
 import type { FieldErrors, UseFormRegister } from 'react-hook-form';
 import { HintMarker } from '@/components/ui/field-hint/field-hint';
 import { useTranslation } from 'react-i18next';
+import { plainPortAsNumber } from './plain-port-as-number';
 
 type Props = {
   register: UseFormRegister<z.infer<typeof dynamicComposeSchema>>;
@@ -42,7 +43,7 @@ export const EssentialConfig = ({ register, errors, serviceIndex }: Props) => {
       </div>
       <div>
         <Input
-          {...register(`services.${serviceIndex}.internalPort`)}
+          {...register(`services.${serviceIndex}.internalPort`, { setValueAs: plainPortAsNumber })}
           error={t(errors?.services?.[serviceIndex]?.internalPort?.message as string)}
           label={
             <>

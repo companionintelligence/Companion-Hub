@@ -1,6 +1,7 @@
 import { MODULE_METADATA } from '@nestjs/common/constants';
 import { describe, expect, it } from 'vitest';
 import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
+import { LocalAiBackend } from '../backends/localai.backend';
 import { OmlxBackend } from '../backends/omlx.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
 import { OllamaBackend } from '../backends/ollama.backend';
@@ -21,6 +22,7 @@ const BACKEND_CLASSES = [
   ['vllm', VllmBackend],
   ['lemonade', LemonadeBackend],
   ['omlx', OmlxBackend],
+  ['localai', LocalAiBackend],
 ] as const;
 
 const providersOf = (module: unknown): unknown[] => (Reflect.getMetadata(MODULE_METADATA.PROVIDERS, module as never) as unknown[]) ?? [];

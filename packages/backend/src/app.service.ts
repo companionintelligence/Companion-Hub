@@ -1,14 +1,18 @@
-import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Inject, Injectable, type OnApplicationShutdown } from '@nestjs/common';
-import { APP_DATA_DIR, DATA_DIR, HUB_MANAGED_LABEL, HUB_STACK_REGISTRY_REPO } from './common/constants';
+import { isPortExposeApp } from '@ci-hub/common/schemas';
+import type { AppUrn } from '@ci-hub/common/types';
+import { APP_DATA_DIR, appUrnFromLabels, DATA_DIR, HUB_MANAGED_LABEL, HUB_STACK_REGISTRY_REPO } from './common/constants';
+import { TranslatableError } from './common/error/translatable-error';
+import { createAppUrn } from './common/helpers/app-helpers';
 import { redactSecretsForLog } from './common/helpers/log-privacy';
 import { fillHubContainerName } from './common/helpers/traefik-hub-address';
 import { withTimeout } from './common/helpers/with-timeout';
+import { detectHubContainer } from './modules/inference/backends/host-url.util';
 import { CacheService, ONE_DAY_IN_SECONDS } from './core/cache/cache.service';
 import { resolveHubBuildInfo } from './core/build-info/hub-build-info';
-import { ConfigurationService } from './core/config/configuration.service';
+import { ConfigurationService, newHubLocalKey } from './core/config/configuration.service';
 import { DatabaseService } from './core/database/database.service';
 import { FilesystemService } from './core/filesystem/filesystem.service';
 import { LoggerService } from './core/logger/logger.service';
@@ -18,13 +22,28 @@ import { MarketplaceService } from './modules/marketplace/marketplace.service';
 import { RepoEventsQueue } from './modules/queue/entities/repo-events';
 import { SystemEventsQueue } from './modules/queue/entities/system-events';
 import { DOCKERODE } from './modules/docker/docker.module';
+import { listContainersMatchingAnyLabelSets, managedAppLabelSets } from './modules/docker/hub-container-query';
 import Dockerode from 'dockerode';
 import { RegistryService } from './utils/registry/registry.service';
 import { PortManagerService } from './modules/network/port-manager.service';
+import { pruneIdleManagedNetworks } from './modules/network/prune-idle-managed-networks';
 import { AppsRepository } from './modules/apps/apps.repository';
 import { APP_SESSION_KEY_PREFIX, SESSION_KEY_PREFIX } from './modules/auth/session.manager';
 import { fillEdgeHopAddresses } from './modules/network/edge-hops';
 import { TRAEFIK_CONTAINER_NAME } from './modules/network/network-constants';
+
+/** How long the boot waits for Docker to list the app containers before it skips the recreate. */
+const BOOT_CONTAINER_LIST_TIMEOUT_MS = 15_000;
+
+/**
+ * How long a boot start the queue refused waits for the queue before it is tried once more. RabbitMQ
+ * has answered several minutes after the Hub booted.
+ */
+const BOOT_START_QUEUE_WAIT_MS = 10 * 60_000;
+const BOOT_START_QUEUE_POLL_MS = 2_000;
+
+/** How long the boot waits on each Docker call that starts Traefik after its ACME store was recreated. */
+const BOOT_TRAEFIK_START_TIMEOUT_MS = 15_000;
 
 @Injectable()
 export class AppService implements OnApplicationShutdown {
@@ -39,7 +58,7 @@ export class AppService implements OnApplicationShutdown {
       return;
     }
     try {
-      await this.configuration.setFileOnlySettings({ hubLocalKey: randomBytes(32).toString('hex') });
+      await this.configuration.setFileOnlySettings({ hubLocalKey: newHubLocalKey() });
       this.logger.info('Minted the host-local key into state/settings.json');
     } catch (error) {
       // Boot goes on: `cihub` on the box reports a missing key with the paths it checked.
@@ -113,13 +132,17 @@ export class AppService implements OnApplicationShutdown {
       // Hub owns only what it created; networks it did not label (including app
       // networks written before the label existed) are left to the orphan reconcile
       // job, which checks stopped containers too.
-      void Promise.race([
-        this.docker.pruneNetworks({ filters: { label: [`${HUB_MANAGED_LABEL}=true`] } }),
-        new Promise<never>((_, reject) => {
-          setTimeout(() => reject(new Error('Docker network prune timed out after 15s')), 15_000);
-        }),
-      ])
-        .then(() => this.logger.info('Docker networks pruned'))
+      //
+      // And not Docker's prune even for the Hub's own networks: Stop Hub keeps every app
+      // container stopped to start it again, so their networks have only stopped users
+      // when the Hub boots (#2313). pruneIdleManagedNetworks counts stopped containers.
+      void withTimeout(pruneIdleManagedNetworks(this.docker, HUB_MANAGED_LABEL), 15_000, 'Docker network prune timed out after 15s')
+        .then(({ removed, failed }) => {
+          this.logger.info(removed.length > 0 ? `Docker networks pruned: ${removed.join(', ')}` : 'Docker networks pruned');
+          for (const { networkName, message } of failed) {
+            this.logger.warn(`Docker network prune could not remove ${networkName}: ${message}`);
+          }
+        })
         .catch((error) => {
           if (this.isDockerBootstrapPermissionIssue(error)) {
             this.logger.warn(
@@ -185,10 +208,6 @@ export class AppService implements OnApplicationShutdown {
         this.repoQueue.publishRepeatable({ command: 'update_all' }, '*/15 * * * *');
         this.logger.info('Repo update job scheduled');
       }
-      this.logger.info('Setting up repeatable app status sync job...');
-      this.systemEventsQueue.publishRepeatable({ command: 'sync_app_statuses' }, '*/5 * * * *');
-      this.logger.info('App status sync job scheduled');
-
       this.logger.info('Setting up repeatable orphan network reconcile job...');
       this.systemEventsQueue.publishRepeatable({ command: 'reconcile_orphan_networks' }, '*/30 * * * *');
       this.logger.info('Orphan network reconcile job scheduled');
@@ -213,7 +232,15 @@ export class AppService implements OnApplicationShutdown {
         this.logger.info('Restarting running apps...');
         await this.appLifecycleService.restartRunningApps();
         this.logger.info('Finished restarting running apps');
+      } else if (__prod__) {
+        await this.startRunningAppsWithoutContainers();
       }
+
+      // Only now, so the first sync finds an app started above `starting`, not `running` with no
+      // containers, which it reports as a crash.
+      this.logger.info('Setting up repeatable app status sync job...');
+      this.systemEventsQueue.publishRepeatable({ command: 'sync_app_statuses' }, '*/5 * * * *');
+      this.logger.info('App status sync job scheduled');
 
       this.logger.info('Bootstrap completed successfully');
     } catch (e) {
@@ -309,6 +336,9 @@ export class AppService implements OnApplicationShutdown {
       path.join(dataDir, 'state', 'traefik', 'tls'),
     ]);
 
+    // Before traefik.yml, whose rewrite can restart Traefik: that restart fails too while the store is missing.
+    const acmeStorage = await this.ensureTraefikAcmeStorage(dataDir);
+
     // Copy Traefik config files from assets to shared location
     try {
       this.logger.info('Copying Traefik config files...');
@@ -345,7 +375,12 @@ export class AppService implements OnApplicationShutdown {
       // container has started, well before bootstrap reaches here. Without this, a change here (the
       // edge hops' `trustedIPs`, say) waited for Traefik's next restart for some other reason.
       if (staticConfig === 'replaced') {
-        await this.restartTraefikForStaticConfig();
+        if (acmeStorage === 'missing') {
+          // A restart would stop a Traefik that is serving and then fail to start it without the store.
+          this.logger.warn('traefik.yml changed, but Traefik is not restarted: it could not start again without its ACME store');
+        } else {
+          await this.restartTraefikForStaticConfig();
+        }
       }
 
       // Copy dynamic config
@@ -358,6 +393,11 @@ export class AppService implements OnApplicationShutdown {
       );
     } catch (error) {
       this.logger.warn(`Failed to copy Traefik config files: ${error instanceof Error ? error.message : error}. Traefik may not start correctly.`);
+    }
+
+    // After the config files, so a Traefik started here reads the ones this boot wrote.
+    if (acmeStorage === 'created') {
+      await this.startTraefikAfterAcmeStorageRepair();
     }
 
     // Create media folders (with timeout to prevent hanging)
@@ -471,6 +511,85 @@ export class AppService implements OnApplicationShutdown {
   }
 
   /**
+   * The compose file mounts Traefik's ACME store as a file with `create_host_path: false`, so Traefik
+   * cannot start while it is missing. `cihub up` and the desktop app create it before they start the
+   * stack, but a Hub started any other way never put it back. A data dir that lost it kept working
+   * only until Traefik next restarted (CI-Hub#2055).
+   *
+   * A directory at that path is left alone. A Traefik container that ran with one has a directory at its
+   * mount point. Docker will not bind a file onto it ("Are you trying to mount a directory onto a file"),
+   * so swapping in a file here would keep that container from starting at all. `missing` means the store
+   * could not be created.
+   */
+  private async ensureTraefikAcmeStorage(dataDir: string): Promise<'present' | 'created' | 'directory' | 'missing'> {
+    const acmeStorage = path.join(dataDir, 'state', 'traefik', 'acme_storage.json');
+
+    if (await this.filesystem.isFile(acmeStorage)) {
+      return 'present';
+    }
+
+    if (await this.filesystem.isDirectory(acmeStorage)) {
+      this.logger.warn(
+        `Traefik's ACME store is a directory, so Traefik cannot get certificates: ${acmeStorage}. ` +
+          `To fix it, run docker rm -f ${TRAEFIK_CONTAINER_NAME}, delete the directory, then run cihub up or relaunch the desktop app`,
+      );
+      return 'directory';
+    }
+
+    // Traefik drops its ACME resolver when the store's group or others have any access ("too open, please use 600").
+    const result = await this.filesystem.createFileIfMissing(acmeStorage, '{}', 0o600);
+    if (result === 'exists') {
+      return 'present';
+    }
+    if (result === 'failed') {
+      this.logger.warn(`Failed to create Traefik's ACME store at ${acmeStorage}. Traefik cannot start until it exists.`);
+      return 'missing';
+    }
+    this.logger.warn(`Traefik's ACME store was missing; created an empty one at ${acmeStorage}`);
+    return 'created';
+  }
+
+  /**
+   * Starts a Traefik that is down after the Hub had to recreate its ACME store. Docker does not retry a
+   * container whose bind mount was missing, restart policy or not, so after a reboot it stays exited
+   * until something starts it. A Traefik in any other state is left alone. A failure does not stop
+   * the boot. Each Docker call is bounded because the Hub does not listen until the boot is done.
+   */
+  private async startTraefikAfterAcmeStorageRepair(): Promise<void> {
+    // A backend run from source on the host has no Traefik of its own: one named `traefik` belongs to an installed Hub.
+    if (!detectHubContainer()) {
+      this.logger.debug('Not starting Traefik: this backend does not run in the Hub container');
+      return;
+    }
+    const seconds = BOOT_TRAEFIK_START_TIMEOUT_MS / 1000;
+    try {
+      const traefik = this.docker.getContainer(TRAEFIK_CONTAINER_NAME);
+      const info = await withTimeout(traefik.inspect(), BOOT_TRAEFIK_START_TIMEOUT_MS, `Docker did not inspect Traefik within ${seconds}s`);
+      const status = info?.State?.Status;
+      if (status !== 'exited' && status !== 'created') {
+        return;
+      }
+      this.logger.info(`Starting Traefik (${status}), which could not start while its ACME store was missing`);
+      await withTimeout(traefik.start(), BOOT_TRAEFIK_START_TIMEOUT_MS, `Docker did not start Traefik within ${seconds}s`);
+    } catch (error) {
+      const statusCode = (error as { statusCode?: number } | undefined)?.statusCode;
+      if (statusCode === 404) {
+        this.logger.debug('No Traefik container to start after recreating its ACME store');
+        return;
+      }
+      // Compose or Docker started it between the inspect and this start.
+      if (statusCode === 304) {
+        this.logger.debug('Traefik was already started');
+        return;
+      }
+      this.logger.warn(
+        `Could not start Traefik after recreating its ACME store: ${error instanceof Error ? error.message : String(error)}. ` +
+          `Start it with: docker start ${TRAEFIK_CONTAINER_NAME}`,
+      );
+    }
+  }
+
+  /**
    * Validate that critical data directories exist and are writable.
    * Creates missing directories and logs warnings for potential data loss.
    */
@@ -541,6 +660,11 @@ export class AppService implements OnApplicationShutdown {
   /**
    * Backfill port allocations for apps that were installed before the port manager existed.
    * Scans all installed apps and creates port_allocation records for any that are missing.
+   *
+   * Corrects the main allocation of an app whose row names another port, too. A save and a reinstall
+   * left the table behind until they learned to keep it in step, so such records exist on Hubs today.
+   * An exposed port's save still does. The row is what the app publishes. A port another app holds
+   * stays as it is: a start refused on it moves the app (`moveMainPortOffHostConflict`).
    */
   private async migrateExistingPortAllocations() {
     try {
@@ -553,6 +677,9 @@ export class AppService implements OnApplicationShutdown {
         const appUrn = `${installedApp.appName}:${installedApp.appStoreSlug}` as import('@ci-hub/common/types').AppUrn;
         try {
           await this.portManager.migrateExistingApp(appUrn, installedApp.port, installedApp.port);
+          if (!(await this.portManager.setMainPort(appUrn, installedApp.port))) {
+            this.logger.warn(`Port ${installedApp.port} of ${appUrn} is already allocated, so its main allocation stays as it was`);
+          }
           migrated++;
         } catch (err) {
           this.logger.warn(`Failed to migrate port allocation for ${appUrn}: ${err}`);
@@ -565,5 +692,100 @@ export class AppService implements OnApplicationShutdown {
     } catch (err) {
       this.logger.warn(`Port allocation migration failed (non-fatal): ${err}`);
     }
+  }
+
+  /**
+   * Starts each app whose row says `running` but that has no container at all, on a boot that keeps
+   * the version and so skips `restartRunningApps`. Uninstalling the desktop app with its data kept
+   * removes every app container and leaves the cache, so after a reinstall of the same version those
+   * apps stayed down and the first status sync reported each one as a crash.
+   *
+   * A stopped app stays stopped. So does an app with any container left, running or not: the
+   * desktop's Stop Hub leaves exited containers, and the status sync reads what they say. A start the
+   * queue refuses because it is not up yet is tried once more when it is. A start that fails
+   * otherwise, or again, settles the app as `stopped`, so the next boot does not try it again.
+   */
+  private async startRunningAppsWithoutContainers() {
+    let containers: Dockerode.ContainerInfo[];
+    let running: Awaited<ReturnType<AppsRepository['getApps']>>;
+    try {
+      running = (await this.appsRepository.getApps()).filter((app) => app.status === 'running' && !isPortExposeApp(app.config));
+      if (running.length === 0) return;
+      // Bounded like the network prune above: the boot waits on this before it listens, and a
+      // dockerode call that hangs on Desktop would keep /api/health/live down.
+      containers = await withTimeout(
+        listContainersMatchingAnyLabelSets(this.docker, managedAppLabelSets()),
+        BOOT_CONTAINER_LIST_TIMEOUT_MS,
+        `Docker did not list the app containers within ${BOOT_CONTAINER_LIST_TIMEOUT_MS / 1000}s`,
+      );
+    } catch (error) {
+      this.logger.warn(`Could not look for running apps without containers: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+
+    const withContainers = new Set(containers.map((container) => appUrnFromLabels(container.Labels)));
+    const refused: Array<{ id: number; appUrn: AppUrn }> = [];
+    for (const app of running) {
+      const appUrn = createAppUrn(app.appName, app.appStoreSlug);
+      if (withContainers.has(appUrn)) continue;
+
+      this.logger.warn(`App ${appUrn} is marked running but has no containers; starting it so compose creates them again`);
+      try {
+        // Not left `running`: a start the queue never took puts back the status it read, and the
+        // status sync reports a `running` app with no containers as a crash.
+        if (!(await this.appsRepository.updateAppByIdIfStatus(app.id, 'running', { status: 'starting' }))) continue;
+        await this.startAppAtBoot(appUrn);
+      } catch (error) {
+        if (error instanceof TranslatableError && error.message === 'APP_ERROR_QUEUE_UNAVAILABLE') {
+          refused.push({ id: app.id, appUrn });
+          continue;
+        }
+        await this.markBootStartFailed(app.id, appUrn, error);
+      }
+    }
+
+    if (refused.length > 0) {
+      void this.startRefusedAppsOnceQueueIsUp(refused);
+    }
+  }
+
+  /**
+   * Tries each boot start the queue refused once more, as soon as the queue is up, or after
+   * BOOT_START_QUEUE_WAIT_MS. The apps stay `starting` meanwhile. The status sync runs on the same
+   * connection, so it cannot read them before the queue is up.
+   */
+  private async startRefusedAppsOnceQueueIsUp(apps: Array<{ id: number; appUrn: AppUrn }>) {
+    this.logger.info(`Waiting for the queue to start ${apps.map(({ appUrn }) => appUrn).join(', ')}`);
+    // Every queue shares one connection, so the system queue is up when the app queue is.
+    let waited = 0;
+    while (waited < BOOT_START_QUEUE_WAIT_MS && this.systemEventsQueue.unavailableReason() !== undefined) {
+      await new Promise((resolve) => setTimeout(resolve, BOOT_START_QUEUE_POLL_MS));
+      waited += BOOT_START_QUEUE_POLL_MS;
+    }
+
+    for (const { id, appUrn } of apps) {
+      try {
+        await this.startAppAtBoot(appUrn);
+      } catch (error) {
+        await this.markBootStartFailed(id, appUrn, error);
+      }
+    }
+  }
+
+  private async startAppAtBoot(appUrn: AppUrn) {
+    await this.appLifecycleService.startApp({
+      appUrn,
+      skipPull: true,
+      onlyRecreateChanged: true,
+      actor: { kind: 'system', reason: 'bootstrap-recreate' },
+    });
+  }
+
+  private async markBootStartFailed(appId: number, appUrn: AppUrn, error: unknown) {
+    this.logger.error(`Could not start ${appUrn}; it stays stopped: ${error instanceof Error ? error.message : String(error)}`);
+    await this.appsRepository.updateAppByIdIfStatus(appId, 'starting', { status: 'stopped' }).catch((updateError: unknown) => {
+      this.logger.warn(`Could not mark ${appUrn} stopped: ${updateError instanceof Error ? updateError.message : String(updateError)}`);
+      return false;
+    });
   }
 }

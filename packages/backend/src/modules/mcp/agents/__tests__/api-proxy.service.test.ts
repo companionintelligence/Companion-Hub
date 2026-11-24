@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { ApiProxyService } from '../../agents/api-proxy.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { DockerService } from '@/modules/docker/docker.service';
+import { EnvUtils } from '@/modules/env/env.utils';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import {
@@ -23,6 +25,10 @@ const mockFetch = vi.fn();
 describe('ApiProxyService', () => {
   let service: ApiProxyService;
   let lifecycle: MockProxy<AppLifecycleService>;
+  let appFilesManager: MockProxy<AppFilesManager>;
+  let docker: { getServiceAddressOnAppNetwork: ReturnType<typeof vi.fn> };
+  /** What the app's own app.env holds; the only place a `token_env` is read from. */
+  const setAppEnv = (content: string) => appFilesManager.getAppEnv.mockResolvedValue({ path: 'app.env', content });
 
   beforeEach(async () => {
     vi.stubGlobal('fetch', mockFetch);
@@ -30,13 +36,24 @@ describe('ApiProxyService', () => {
     lifecycle = mock<AppLifecycleService>();
     // The real actor decision, so the proxy is exercised against the gate it asks in production.
     lifecycle.assertActorMay.mockImplementation(lifecycleActorGate());
+    appFilesManager = mock<AppFilesManager>();
+    setAppEnv('');
+
+    // The app's main service, and its address on the app's own network: the proxy sends there.
+    appFilesManager.getDockerComposeJson.mockResolvedValue({
+      path: '/apps/x/docker-compose.json',
+      content: { schemaVersion: 2, services: [{ name: 'web', image: 'app:latest', isMain: true }] },
+    } as never);
+    docker = { getServiceAddressOnAppNetwork: vi.fn().mockResolvedValue('10.128.20.5') };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ApiProxyService,
-        { provide: AppFilesManager, useValue: mock<AppFilesManager>() },
+        { provide: AppFilesManager, useValue: appFilesManager },
+        { provide: EnvUtils, useValue: new EnvUtils() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
         { provide: AppLifecycleService, useValue: lifecycle },
+        { provide: DockerService, useValue: docker },
       ],
     }).compile();
 
@@ -88,8 +105,8 @@ describe('ApiProxyService', () => {
   });
 
   describe('S-AOA-2.2: inject auth credentials', () => {
-    it('should inject bearer token from env', async () => {
-      process.env.TEST_TOKEN = 'secret123';
+    it('should inject bearer token from the app’s own app.env', async () => {
+      setAppEnv('TEST_TOKEN=secret123');
       mockFetch.mockResolvedValue(new Response('ok', { status: 200 }));
 
       await service.proxyOpenApiCall(TEST_URN, { method: 'get', path: '/api/test' }, {}, GRANTED_ACTOR, { type: 'bearer', token_env: 'TEST_TOKEN' });
@@ -102,8 +119,25 @@ describe('ApiProxyService', () => {
           }),
         }),
       );
+    });
 
-      delete process.env.TEST_TOKEN;
+    it('never sends a Hub secret a manifest names as its token_env', async () => {
+      process.env.JWT_SECRET = 'hub-signing-key';
+      mockFetch.mockResolvedValue(new Response('ok', { status: 200 }));
+
+      try {
+        await service.proxyOpenApiCall(TEST_URN, { method: 'get', path: '/api/test' }, {}, GRANTED_ACTOR, {
+          type: 'bearer',
+          token_env: 'JWT_SECRET',
+        });
+      } finally {
+        delete process.env.JWT_SECRET;
+      }
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const headers = (mockFetch.mock.calls[0]?.[1] as RequestInit | undefined)?.headers as Record<string, string>;
+      expect(headers).not.toHaveProperty('Authorization');
+      expect(JSON.stringify(mockFetch.mock.calls)).not.toContain('hub-signing-key');
     });
   });
 
@@ -291,7 +325,19 @@ describe('ApiProxyService', () => {
       ).resolves.toEqual({
         content: [{ type: 'text', text: 'ok' }],
       });
-      expect(mockFetch).toHaveBeenCalledWith(expect.stringContaining('/api/x?y=1'), expect.anything());
+      expect(mockFetch).toHaveBeenCalledWith('http://10.128.20.5/api/x?y=1', expect.anything());
+      expect(docker.getServiceAddressOnAppNetwork).toHaveBeenCalledWith('nextcloud:ci-marketplace', 'web');
+    });
+
+    // The Hub is on every app's network, where another app could answer for a name.
+    it("sends nothing when the app's main service has no address on the app's network", async () => {
+      docker.getServiceAddressOnAppNetwork.mockResolvedValue(null);
+
+      const result = await service.proxyRequest('nextcloud:ci-marketplace' as AppUrn, { method: 'GET', path: '/api/x', actor: GRANTED_ACTOR });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0]?.text).toContain('no running main service');
+      expect(mockFetch).not.toHaveBeenCalled();
     });
   });
 
@@ -352,15 +398,11 @@ describe('ApiProxyService', () => {
     });
 
     it('is run once the caller is admitted, and its credential sent', async () => {
-      process.env.TEST_TOKEN = 'secret123';
+      setAppEnv('TEST_TOKEN=secret123');
       mockFetch.mockResolvedValue(new Response('ok', { status: 200 }));
       const auth = vi.fn(async () => ({ type: 'bearer' as const, token_env: 'TEST_TOKEN' }));
 
-      try {
-        await service.proxyRequest(TEST_URN, { method: 'GET', path: '/api/users', auth, actor: GRANTED_ACTOR });
-      } finally {
-        delete process.env.TEST_TOKEN;
-      }
+      await service.proxyRequest(TEST_URN, { method: 'GET', path: '/api/users', auth, actor: GRANTED_ACTOR });
 
       expect(auth).toHaveBeenCalledTimes(1);
       expect(mockFetch).toHaveBeenCalledWith(

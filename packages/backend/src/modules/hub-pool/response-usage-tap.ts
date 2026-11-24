@@ -143,6 +143,11 @@ export interface PromptRead {
  *     `usage.prompt_tokens_details.cached_tokens` the reused part — Ollama's `/v1` (the same probe:
  *     7,619 then 7,619 with 7,618 cached), and vLLM or llama-server when they report details. Without
  *     the details `prompt_tokens` is only the prompt's size.
+ *
+ * A frame with both a `timings` that has no `cache_n` and the OpenAI details is read by the details.
+ * That is Ollama's usage chunk in the OpenAI shape (`ollama-native-chat.ts`): its `timings.prompt_n`
+ * is `prompt_eval_count`, the whole prompt, so read as llama.cpp's processed count it timed a warm
+ * turn as a cold read of every token.
  */
 export function extractPromptReadFromParsedJson(value: unknown): PromptRead | null {
   if (!isRecord(value)) {
@@ -155,12 +160,19 @@ export function extractPromptReadFromParsedJson(value: unknown): PromptRead | nu
       return { evaluated: Math.max(0, total - cached), cached };
     }
   }
+  const details = openAiPromptRead(value);
   if (isRecord(value.timings)) {
     const evaluated = toCountOrNull(value.timings.prompt_n);
-    if (evaluated !== null) {
-      return { evaluated, cached: toCountOrNull(value.timings.cache_n) };
+    const cached = toCountOrNull(value.timings.cache_n);
+    if (evaluated !== null && (cached !== null || details === null)) {
+      return { evaluated, cached };
     }
   }
+  return details;
+}
+
+/** The read and reused counts from OpenAI's `usage.prompt_tokens_details`, or `null` without both. */
+function openAiPromptRead(value: Record<string, unknown>): PromptRead | null {
   if (isRecord(value.usage) && isRecord(value.usage.prompt_tokens_details)) {
     const total = toCountOrNull(value.usage.prompt_tokens);
     const cached = toCountOrNull(value.usage.prompt_tokens_details.cached_tokens);

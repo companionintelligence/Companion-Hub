@@ -17,26 +17,31 @@ import { Input } from '@/components/ui/Input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select';
 import { Switch } from '@/components/ui/Switch';
 import { HintText } from '@/components/ui/field-hint/field-hint';
+import { isI18nKey } from '@/lib/format-api-error';
 import { useDemoMode } from '@/lib/hooks/use-demo-mode';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
 import { cn } from '@/lib/utils';
-import { isRefused, outputFault, settledOutcome } from '@/modules/system/pool-node-series';
+import { isRefused, LOCAL_NODE_KEY, outputFault, settledOutcome } from '@/modules/system/pool-node-series';
+import { TranslatableError } from '@/types/error.types';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowRightLeft, ChevronRight, Network } from 'lucide-react';
+import { ArrowRightLeft, ChevronRight, Network, RefreshCw } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
+import { asLegacyTranslate, type LegacyTranslate } from '@/lib/i18n/legacy-translate';
 import {
   Detail,
   DetailGrid,
+  Hint,
   KpiTable,
   LoadingCard,
+  RowMark,
   SectionHeader,
-  StatChip,
-  StatChipRow,
+  Stat,
+  StatRow,
   StatusBadge,
   StatusDot,
+  SubSection,
   TableEmpty,
   Td,
   Th,
@@ -54,6 +59,7 @@ import {
   type PoolSettings,
   type PoolStatus,
   isUnverifiedCandidate,
+  isServablePeer,
   mergePoolModels,
   peerLabel,
 } from '../helpers/hub-pool-shared';
@@ -98,19 +104,33 @@ interface PoolRoutingLog {
 
 /** How many routing decisions to render. The buffer holds 200; an operator reads the recent ones. */
 const ROUTING_LOG_LIMIT = 25;
-/** Above this the matrix is collapsed on first paint — 12 rows is ~340px, the scroll cap. */
-const MODEL_TABLE_OPEN_MAX = 12;
 /** Past six columns the matrix stops being readable at this card width, so it degrades to a node list. */
 const MODEL_MATRIX_MAX_NODES = 6;
+/** Hubs listed before "Show all": a fleet tailnet answers with sixteen, and each row is a Pair button. */
+const DISCOVERABLE_VISIBLE = 5;
 
 const MIN_LOCAL_AFFINITY = 0;
 const MAX_LOCAL_AFFINITY = 20;
 const MIN_HEALTH_POLL_SECONDS = 10;
 const MAX_HEALTH_POLL_SECONDS = 300;
 
-type Translate = (key: string, options?: Record<string, unknown>) => string;
+type Translate = LegacyTranslate;
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+/** Keys that only say that something failed. The card's own message for the action says more. */
+const GENERIC_ERROR_KEYS = new Set(['INTERNAL_SERVER_ERROR', 'COMMON_AN_ERROR_OCCURRED']);
+
+/**
+ * The Hub's own reason for a failed pool action, when it sent one the page can translate. The
+ * response interceptor in `root.tsx` turns every non-2xx into a `TranslatableError`; its message is a
+ * key when the backend threw one (a refused PIN, a peer that declined) and raw English otherwise,
+ * which stays off the screen as it does in `formatApiError`.
+ */
+const poolErrorReason = (error: unknown): { key: string; params?: Record<string, string> } | null =>
+  error instanceof TranslatableError && isI18nKey(error.message) && !GENERIC_ERROR_KEYS.has(error.message)
+    ? { key: error.message, params: error.intlParams }
+    : null;
 
 const PeerStatusBadge = ({
   status,
@@ -226,29 +246,6 @@ const RoutingResult = ({ entry, t }: { entry: PoolRoutingRecord; t: Translate })
   return <span title={entry.reason ?? undefined}>{t('HUB_POOL_ROUTING_FAILED_LABEL')}</span>;
 };
 
-/**
- * Sub-heading for each block of the section.
- *
- * `help` is a TOOLTIP on the heading, not a paragraph under it. Eight blocks each carried
- * a 25-to-47-word explanation, which together were most of the page's height and pushed
- * the peer table — the thing an operator opens this section to read — below the fold.
- * The strings are unchanged and one hover away; the dotted underline advertises that.
- */
-const Block = ({ title, help, children }: { title: string; help?: string; children: ReactNode }) => (
-  <div className="space-y-2 border-t pt-3">
-    <h3 className="text-[10px] font-bold uppercase tracking-[0.06em] text-muted-foreground">
-      {help ? (
-        <HintText id={`hub-pool-block-${title}`} hint={help} className="cursor-help underline decoration-dotted underline-offset-2">
-          {title}
-        </HintText>
-      ) : (
-        title
-      )}
-    </h3>
-    {children}
-  </div>
-);
-
 const backendSummary = (backends: PoolBackendCapability[], t: Translate): string =>
   backends
     .map((backend) =>
@@ -316,14 +313,31 @@ export const HubPoolSection = () => {
     void queryClient.invalidateQueries({ queryKey: getPoolRoutingLogQueryKey() });
   };
 
+  /* Every action reports a failure the same way: the card's message for what was tried, and under it
+     the Hub's reason when it gave one. */
+  const toastPoolError = (fallbackKey: string) => (error: unknown) => {
+    const reason = poolErrorReason(error);
+    if (reason) {
+      toast.error(t(fallbackKey), { description: t(reason.key, reason.params ?? {}) });
+    } else {
+      toast.error(t(fallbackKey));
+    }
+  };
+
+  /* Every call below passes `throwOnError`. Without it the generated client RESOLVES on a non-2xx,
+     with `{ error }`, so react-query would run `onSuccess` and show the success toast for an action
+     that failed. The generated `*Mutation()` helpers, like the one Save uses here, set it themselves.
+     Each re-reads pool state in `onSettled`, failure included: a 404 or 409 usually means the row
+     moved under the card (approved elsewhere, expired, paired from the other Hub), and the
+     discovery list never polls, so a stale row would keep offering the action that just failed. */
   const settingsMutation = useMutation({
     ...updatePoolSettingsMutation(),
     onSuccess: () => {
       setDraft(null);
       toast.success(t('HUB_POOL_SETTINGS_SAVED'));
-      invalidatePool();
     },
-    onError: () => toast.error(t('HUB_POOL_SETTINGS_ERROR')),
+    onError: toastPoolError('HUB_POOL_SETTINGS_ERROR'),
+    onSettled: invalidatePool,
   });
 
   /* The pin being composed: `''` as the model means the pool-wide default pin, and `'local'` as the
@@ -338,22 +352,24 @@ export const HubPoolSection = () => {
           ...(pin.model ? { model: pin.model } : {}),
           ...(pin.node === 'local' ? { targetKind: 'local' } : { targetKind: 'peer', targetPeerId: pin.node }),
         } as never,
+        throwOnError: true,
       }),
     onSuccess: () => {
       setPinDraft({ model: '', node: 'local' });
       toast.success(t('HUB_POOL_PINS_SAVED'));
-      invalidatePool();
     },
-    onError: () => toast.error(t('HUB_POOL_PINS_ERROR')),
+    onError: toastPoolError('HUB_POOL_PINS_ERROR'),
+    onSettled: invalidatePool,
   });
 
   const unpinMutation = useMutation({
-    mutationFn: (pin: PoolPin) => deletePoolPin({ query: { scope: pin.scope, ...(pin.model ? { model: pin.model } : {}) } as never }),
+    mutationFn: (pin: PoolPin) =>
+      deletePoolPin({ query: { scope: pin.scope, ...(pin.model ? { model: pin.model } : {}) } as never, throwOnError: true }),
     onSuccess: () => {
       toast.success(t('HUB_POOL_PINS_REMOVED'));
-      invalidatePool();
     },
-    onError: () => toast.error(t('HUB_POOL_PINS_ERROR')),
+    onError: toastPoolError('HUB_POOL_PINS_ERROR'),
+    onSettled: invalidatePool,
   });
 
   /* The PIN an operator read off the OTHER Hub's screen. Optional: without one this is the
@@ -361,15 +377,17 @@ export const HubPoolSection = () => {
      A partial PIN is not a blank one — sending the request without it would pair as if they
      had not typed anything. */
   const [pairingPinInput, setPairingPinInput] = useState('');
+  const [showAllDiscoverable, setShowAllDiscoverable] = useState(false);
   const [pairingPinError, setPairingPinError] = useState(false);
   const pairMutation = useMutation({
-    mutationFn: (nodeFqdn: string) => pairPeer({ body: { nodeFqdn, ...(pairingPinInput ? { pin: pairingPinInput } : {}) } as never }),
+    mutationFn: (nodeFqdn: string) =>
+      pairPeer({ body: { nodeFqdn, ...(pairingPinInput ? { pin: pairingPinInput } : {}) } as never, throwOnError: true }),
     onSuccess: () => {
       toast.success(t('HUB_POOL_PAIR_SUCCESS'));
       setPairingPinInput('');
-      invalidatePool();
     },
-    onError: () => toast.error(t('HUB_POOL_PAIR_ERROR')),
+    onError: toastPoolError('HUB_POOL_PAIR_ERROR'),
+    onSettled: invalidatePool,
   });
   const requestPair = (nodeFqdn: string) => {
     if (pairingPinInput.length > 0 && !/^\d{6}$/.test(pairingPinInput)) {
@@ -381,31 +399,31 @@ export const HubPoolSection = () => {
   };
 
   const approveMutation = useMutation({
-    mutationFn: (id: string) => approvePeer({ path: { id } }),
+    mutationFn: (id: string) => approvePeer({ path: { id }, throwOnError: true }),
     onSuccess: () => {
       toast.success(t('HUB_POOL_APPROVE_SUCCESS'));
-      invalidatePool();
     },
-    onError: () => toast.error(t('HUB_POOL_APPROVE_ERROR')),
+    onError: toastPoolError('HUB_POOL_APPROVE_ERROR'),
+    onSettled: invalidatePool,
   });
 
   const rejectMutation = useMutation({
-    mutationFn: (id: string) => rejectPeer({ path: { id } }),
+    mutationFn: (id: string) => rejectPeer({ path: { id }, throwOnError: true }),
     onSuccess: () => {
       toast.success(t('HUB_POOL_REJECT_SUCCESS'));
-      invalidatePool();
     },
-    onError: () => toast.error(t('HUB_POOL_REJECT_ERROR')),
+    onError: toastPoolError('HUB_POOL_REJECT_ERROR'),
+    onSettled: invalidatePool,
   });
 
   const removeMutation = useMutation({
-    mutationFn: (id: string) => removePeer({ path: { id } }),
+    mutationFn: (id: string) => removePeer({ path: { id }, throwOnError: true }),
     onSuccess: () => {
       setUnpairTarget(null);
       toast.success(t('HUB_POOL_UNPAIR_SUCCESS'));
-      invalidatePool();
     },
-    onError: () => toast.error(t('HUB_POOL_UNPAIR_ERROR')),
+    onError: toastPoolError('HUB_POOL_UNPAIR_ERROR'),
+    onSettled: invalidatePool,
   });
 
   /* The two new directional switches. Sent through the generated client's low-level `patch` rather
@@ -415,12 +433,12 @@ export const HubPoolSection = () => {
      codegen has run. */
   const directionMutation = useMutation({
     mutationFn: (body: { poolOutboundEnabled?: boolean; poolInboundEnabled?: boolean }) =>
-      client.patch({ url: '/api/inference/pool/settings', body }),
+      client.patch({ url: '/api/inference/pool/settings', body, throwOnError: true }),
     onSuccess: () => {
       toast.success(t('HUB_POOL_SETTINGS_SAVED'));
-      invalidatePool();
     },
-    onError: () => toast.error(t('HUB_POOL_SETTINGS_ERROR')),
+    onError: toastPoolError('HUB_POOL_SETTINGS_ERROR'),
+    onSettled: invalidatePool,
   });
 
   /* The two per-peer verbs. Called through the generated client's low-level `post` rather than a
@@ -429,12 +447,12 @@ export const HubPoolSection = () => {
      them once codegen has run — the URL is the contract either way. */
   const peerEnabledMutation = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
-      client.post({ url: `/api/inference/pool/peers/${encodeURIComponent(id)}/${enabled ? 'enable' : 'disable'}` }),
+      client.post({ url: `/api/inference/pool/peers/${encodeURIComponent(id)}/${enabled ? 'enable' : 'disable'}`, throwOnError: true }),
     onSuccess: (_data, variables) => {
       toast.success(variables.enabled ? t('HUB_POOL_PEER_ENABLED') : t('HUB_POOL_PEER_DISABLED'));
-      invalidatePool();
     },
-    onError: () => toast.error(t('HUB_POOL_PEER_TOGGLE_ERROR')),
+    onError: toastPoolError('HUB_POOL_PEER_TOGGLE_ERROR'),
+    onSettled: invalidatePool,
   });
 
   /* Pairing PIN. Through the generated client's low-level verbs for the same reason as the two
@@ -448,24 +466,24 @@ export const HubPoolSection = () => {
   // before Generate PIN returned.
   const mintedPinSeenLive = useRef(false);
   const mintPinMutation = useMutation({
-    mutationFn: () => client.post({ url: '/api/inference/pool/pairing-pin' }),
+    mutationFn: () => client.post({ url: '/api/inference/pool/pairing-pin', throwOnError: true }),
     onSuccess: (response) => {
       // Cast rather than a generic: the low-level client types every response as `unknown` until
       // swagger.json and the api-client are regenerated. `hub-pool.controller.ts` is the contract.
       const minted = response.data as { pin?: string; expiresAt?: string } | undefined;
       mintedPinSeenLive.current = false;
       setMintedPin(minted?.pin ? { pin: minted.pin, expiresAt: minted.expiresAt ?? '' } : null);
-      invalidatePool();
     },
-    onError: () => toast.error(t('HUB_POOL_PIN_MINT_ERROR')),
+    onError: toastPoolError('HUB_POOL_PIN_MINT_ERROR'),
+    onSettled: invalidatePool,
   });
   const cancelPinMutation = useMutation({
-    mutationFn: () => client.delete({ url: '/api/inference/pool/pairing-pin' }),
+    mutationFn: () => client.delete({ url: '/api/inference/pool/pairing-pin', throwOnError: true }),
     onSuccess: () => {
       setMintedPin(null);
-      invalidatePool();
     },
-    onError: () => toast.error(t('HUB_POOL_PIN_CANCEL_ERROR')),
+    onError: toastPoolError('HUB_POOL_PIN_CANCEL_ERROR'),
+    onSettled: invalidatePool,
   });
 
   useEffect(() => {
@@ -503,12 +521,12 @@ export const HubPoolSection = () => {
   /* Same DELETE as Unpair, split out only so the toasts match what the operator did: cancelling
      an unanswered outbound request is not the same event as tearing down a live pairing. */
   const cancelRequestMutation = useMutation({
-    mutationFn: (id: string) => removePeer({ path: { id } }),
+    mutationFn: (id: string) => removePeer({ path: { id }, throwOnError: true }),
     onSuccess: () => {
       toast.success(t('HUB_POOL_CANCEL_REQUEST_SUCCESS'));
-      invalidatePool();
     },
-    onError: () => toast.error(t('HUB_POOL_CANCEL_REQUEST_ERROR')),
+    onError: toastPoolError('HUB_POOL_CANCEL_REQUEST_ERROR'),
+    onSettled: invalidatePool,
   });
 
   if (statusPending) {
@@ -539,6 +557,7 @@ export const HubPoolSection = () => {
   const outboundEnvLocked = !envLocked && status.directions.outbound.disabledBy === 'env';
   const inboundEnvLocked = !envLocked && status.directions.inbound.disabledBy === 'env';
   const localLabel = t('HUB_POOL_LOCAL_NODE_LABEL');
+  const routingNodeName = (node: string) => (node === LOCAL_NODE_KEY ? localLabel : node);
   const models = mergePoolModels(status, localLabel);
   /* Column order is the order the ranker considers: this Hub first, then peers by name.
      Derived from the PEER list rather than from `models`, so a connected peer holding
@@ -546,7 +565,7 @@ export const HubPoolSection = () => {
   const poolNodes = [
     localLabel,
     ...status.peers
-      .filter((peer) => peer.status === 'connected')
+      .filter(isServablePeer)
       .map((peer) => peerLabel(peer))
       .sort((a, b) => a.localeCompare(b)),
   ];
@@ -589,7 +608,7 @@ export const HubPoolSection = () => {
 
   const pairingWaiting = pendingInbound.length > 0 || pendingOutbound.length > 0;
   const pendingBlock = (
-    <Block title={t('HUB_POOL_PENDING_TITLE')} help={t('HUB_POOL_PENDING_HELP')}>
+    <SubSection title={t('HUB_POOL_PENDING_TITLE')} help={t('HUB_POOL_PENDING_HELP')} helpId="hub-pool-pending">
       {!pendingInbound.length && !pendingOutbound.length ? (
         <p className="text-sm text-muted-foreground">{t('HUB_POOL_PENDING_EMPTY')}</p>
       ) : (
@@ -608,7 +627,7 @@ export const HubPoolSection = () => {
                         against the one shown on that Hub's own screen before approving. Absent means
                         the request carried no PIN — i.e. an unauthenticated claim of a name, which is
                         exactly the case the PIN exists to close. */}
-                <span className="block break-all font-mono text-[11px] text-muted-foreground sm:truncate" data-testid="hub-pool-pending-fingerprint">
+                <span className="block break-all font-mono text-xs text-muted-foreground sm:truncate" data-testid="hub-pool-pending-fingerprint">
                   {peer.peerKeyFingerprint
                     ? t('HUB_POOL_PEER_FINGERPRINT', { fingerprint: peer.peerKeyFingerprint })
                     : t('HUB_POOL_PEER_FINGERPRINT_UNVERIFIED')}
@@ -665,7 +684,7 @@ export const HubPoolSection = () => {
           ))}
         </ul>
       )}
-    </Block>
+    </SubSection>
   );
 
   return (
@@ -673,14 +692,23 @@ export const HubPoolSection = () => {
       <SectionHeader
         icon={Network}
         title={t('HUB_POOL_SECTION_TITLE')}
+        description={t('HUB_POOL_SECTION_DESC')}
         badge={
           <StatusBadge
             connected={status.routingActive}
             label={status.routingActive ? t('HUB_POOL_STATE_ROUTING') : status.enabled ? t('HUB_POOL_STATE_LOCAL_ONLY') : t('HUB_POOL_STATE_OFF')}
           />
         }
+        actions={
+          /* With peers already paired the big callout is gone, but the guide is still the easy way to add the next Hub. */
+          paired.length > 0 && !envLocked ? (
+            <Button type="button" size="sm" variant="outline" disabled={demoMode} onClick={openGuideAtScan} data-testid="pool-setup-add-hubs">
+              {t('HUB_POOL_SETUP_ADD_HUBS')}
+            </Button>
+          ) : null
+        }
       />
-      <CardContent className="space-y-4">
+      <CardContent className="space-y-5">
         {/* Shown while nothing is paired. A pending-only pool counts too: the guide reopens on its Approve step, which is the next move for it. */}
         {paired.length === 0 && !envLocked ? (
           <PoolSetupCallout
@@ -690,14 +718,6 @@ export const HubPoolSection = () => {
             }}
             disabled={demoMode}
           />
-        ) : null}
-        {/* With peers already paired the big callout is gone, but the guide is still the easy way to add the next Hub. */}
-        {paired.length > 0 && !envLocked ? (
-          <div className="flex justify-end">
-            <Button type="button" size="sm" variant="outline" disabled={demoMode} onClick={openGuideAtScan} data-testid="pool-setup-add-hubs">
-              {t('HUB_POOL_SETUP_ADD_HUBS')}
-            </Button>
-          </div>
         ) : null}
         {pairingWaiting ? pendingBlock : null}
         {/* ── State at a glance ───────────────────────────────────────── */}
@@ -714,7 +734,7 @@ export const HubPoolSection = () => {
             <p
               data-testid="hub-pool-state"
               data-reason={status.reason}
-              className="rounded-md border border-border/70 bg-muted/30 px-2.5 py-2 text-xs text-muted-foreground"
+              className="rounded-md border border-border/70 bg-muted/30 px-3 py-2.5 text-sm text-muted-foreground"
             >
               {reasonCopy[status.reason]}
             </p>
@@ -733,25 +753,25 @@ export const HubPoolSection = () => {
               row each in the paired-Hubs table below, and rendering them twice both duplicated
               the badge text and made the number row longer than the thing it summarises. These
               are the facts that appear nowhere else on the page. */}
-          <StatChipRow>
-            <StatChip value={status.peerCounts.connected} label={t('HUB_POOL_FIELD_PEERS')} tone={status.peerCounts.connected > 0 ? 'ok' : 'muted'} />
-            <StatChip value={status.routing.served} label={t('HUB_POOL_ROUTING_SERVED')} tone={status.routing.served > 0 ? 'ok' : 'muted'} />
-            <StatChip value={status.routing.failed} label={t('HUB_POOL_ROUTING_FAILED')} tone={status.routing.failed > 0 ? 'bad' : 'muted'} />
-            <StatChip
+          <StatRow>
+            <Stat value={status.peerCounts.connected} label={t('HUB_POOL_FIELD_PEERS')} tone={status.peerCounts.connected > 0 ? 'ok' : 'muted'} />
+            <Stat value={status.routing.served} label={t('HUB_POOL_ROUTING_SERVED')} tone={status.routing.served > 0 ? 'ok' : 'muted'} />
+            <Stat value={status.routing.failed} label={t('HUB_POOL_ROUTING_FAILED')} tone={status.routing.failed > 0 ? 'bad' : 'muted'} />
+            <Stat
               value={status.localNode.inFlightRequests}
               label={t('HUB_POOL_FIELD_QUEUE')}
               hint={t('HUB_POOL_QUEUE_HINT')}
               hintId="hub-pool-queue"
             />
-            <StatChip value={status.localNode.hardwareTier ?? t('COMMON_UNKNOWN')} label={t('HUB_POOL_FIELD_HARDWARE')} tone="muted" />
-          </StatChipRow>
+            <Stat value={status.localNode.hardwareTier ?? t('COMMON_UNKNOWN')} label={t('HUB_POOL_FIELD_HARDWARE')} />
+          </StatRow>
 
           <DetailGrid>
-            <Detail label={t('HUB_POOL_FIELD_NODE')} value={status.localNode.nodeFqdn ?? t('COMMON_UNKNOWN')} />
-            <Detail label={t('HUB_POOL_FIELD_TAILNET')} value={status.localNode.tailnet ?? t('COMMON_UNKNOWN')} />
+            <Detail label={t('HUB_POOL_FIELD_NODE')} value={status.localNode.nodeFqdn ?? t('COMMON_UNKNOWN')} mono />
+            <Detail label={t('HUB_POOL_FIELD_TAILNET')} value={status.localNode.tailnet ?? t('COMMON_UNKNOWN')} mono />
             <Detail
               label={t('HUB_POOL_FIELD_LOCAL_BACKENDS')}
-              value={status.localNode.backends.length ? backendSummary(status.localNode.backends, t) : t('HUB_POOL_NO_BACKENDS')}
+              value={status.localNode.backends.length ? backendSummary(status.localNode.backends, asLegacyTranslate(t)) : t('HUB_POOL_NO_BACKENDS')}
             />
           </DetailGrid>
 
@@ -767,17 +787,15 @@ export const HubPoolSection = () => {
         </div>
 
         {/* ── Controls ────────────────────────────────────────────────── */}
-        <Block title={t('HUB_POOL_CONTROLS_TITLE')}>
+        <SubSection title={t('HUB_POOL_CONTROLS_TITLE')}>
           {/*
-            One wrapping row, not a stack with an indented sub-stack. The indent drew
-            "these two are halves of the master", which the disabled state already
-            enforces — both halves disable when the master is off — so the vertical
-            hierarchy was 196px spent restating a rule the controls apply themselves.
-            Env-lock notices stay visible: they name a file to edit, which a tooltip
-            would hide from anyone who does not know to hover.
+            One switch per line with its "?" beside the label, as on the Settings tab. No
+            indent for the two directions: both disable when the master is off, which says
+            the same thing. Env-lock notices stay visible: they name a file to edit, which a
+            tooltip would hide from anyone who does not know to hover.
           */}
-          <div className="space-y-3">
-            <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+          <div className="space-y-4">
+            <div className="space-y-3">
               <div className="space-y-1">
                 <Switch
                   name="hubPoolEnabled"
@@ -786,16 +804,13 @@ export const HubPoolSection = () => {
                   disabled={demoMode || envLocked || settingsMutation.isPending}
                   onCheckedChange={(checked: boolean) => settingsMutation.mutate({ body: { poolEnabled: checked } })}
                   label={
-                    <HintText
-                      id="hub-pool-toggle"
-                      hint={t('HUB_POOL_TOGGLE_HELP')}
-                      className="cursor-help underline decoration-dotted underline-offset-2"
-                    >
+                    <>
                       {t('HUB_POOL_TOGGLE_LABEL')}
-                    </HintText>
+                      <Hint id="hub-pool-toggle" hint={t('HUB_POOL_TOGGLE_HELP')} />
+                    </>
                   }
                 />
-                {envLocked ? <p className="text-[10px] text-warning">{t('HUB_POOL_TOGGLE_ENV_LOCKED')}</p> : null}
+                {envLocked ? <p className="text-xs text-warning">{t('HUB_POOL_TOGGLE_ENV_LOCKED')}</p> : null}
               </div>
 
               {/* Each renders the PERSISTED value, like the master, so an env override shows
@@ -808,16 +823,13 @@ export const HubPoolSection = () => {
                   disabled={demoMode || envLocked || outboundEnvLocked || !status.settings.poolEnabled || directionMutation.isPending}
                   onCheckedChange={(checked: boolean) => directionMutation.mutate({ poolOutboundEnabled: checked })}
                   label={
-                    <HintText
-                      id="hub-pool-outbound"
-                      hint={t('HUB_POOL_OUTBOUND_HELP')}
-                      className="cursor-help underline decoration-dotted underline-offset-2"
-                    >
+                    <>
                       {t('HUB_POOL_OUTBOUND_LABEL')}
-                    </HintText>
+                      <Hint id="hub-pool-outbound" hint={t('HUB_POOL_OUTBOUND_HELP')} />
+                    </>
                   }
                 />
-                {outboundEnvLocked ? <p className="text-[10px] text-warning">{t('HUB_POOL_OUTBOUND_ENV_LOCKED')}</p> : null}
+                {outboundEnvLocked ? <p className="text-xs text-warning">{t('HUB_POOL_OUTBOUND_ENV_LOCKED')}</p> : null}
               </div>
 
               <div className="space-y-1">
@@ -828,16 +840,13 @@ export const HubPoolSection = () => {
                   disabled={demoMode || envLocked || inboundEnvLocked || !status.settings.poolEnabled || directionMutation.isPending}
                   onCheckedChange={(checked: boolean) => directionMutation.mutate({ poolInboundEnabled: checked })}
                   label={
-                    <HintText
-                      id="hub-pool-inbound"
-                      hint={t('HUB_POOL_INBOUND_HELP')}
-                      className="cursor-help underline decoration-dotted underline-offset-2"
-                    >
+                    <>
                       {t('HUB_POOL_INBOUND_LABEL')}
-                    </HintText>
+                      <Hint id="hub-pool-inbound" hint={t('HUB_POOL_INBOUND_HELP')} />
+                    </>
                   }
                 />
-                {inboundEnvLocked ? <p className="text-[10px] text-warning">{t('HUB_POOL_INBOUND_ENV_LOCKED')}</p> : null}
+                {inboundEnvLocked ? <p className="text-xs text-warning">{t('HUB_POOL_INBOUND_ENV_LOCKED')}</p> : null}
               </div>
 
               {/* Opt-in, and only in force while pooling is on — so it disables with the master,
@@ -851,22 +860,19 @@ export const HubPoolSection = () => {
                   disabled={demoMode || envLocked || !status.settings.poolEnabled || settingsMutation.isPending}
                   onCheckedChange={(checked: boolean) => settingsMutation.mutate({ body: { poolMdnsEnabled: checked } })}
                   label={
-                    <HintText
-                      id="hub-pool-mdns"
-                      hint={t('HUB_POOL_MDNS_HELP')}
-                      className="cursor-help underline decoration-dotted underline-offset-2"
-                    >
+                    <>
                       {t('HUB_POOL_MDNS_LABEL')}
-                    </HintText>
+                      <Hint id="hub-pool-mdns" hint={t('HUB_POOL_MDNS_HELP')} />
+                    </>
                   }
                 />
               </div>
             </div>
 
-            {/* The two tuning numbers sit on the switch row's line rather than in a grid of
-                their own: they are small, always both present, and never wrap apart. */}
-            <div className="flex flex-wrap items-end gap-3">
-              <div className="w-32">
+            {/* Two columns wide enough for their labels: at w-32 "Local affinity (queued
+                requests)" broke over three lines and pushed its field below its neighbour's. */}
+            <div className="grid max-w-xl gap-4 sm:grid-cols-2">
+              <div>
                 <Input
                   type="number"
                   min={MIN_LOCAL_AFFINITY}
@@ -874,13 +880,10 @@ export const HubPoolSection = () => {
                   name="hubPoolLocalAffinity"
                   data-testid="hub-pool-affinity-input"
                   label={
-                    <HintText
-                      id="hub-pool-affinity"
-                      hint={t('HUB_POOL_AFFINITY_HELP')}
-                      className="cursor-help underline decoration-dotted underline-offset-2"
-                    >
+                    <>
                       {t('HUB_POOL_AFFINITY_LABEL')}
-                    </HintText>
+                      <Hint id="hub-pool-affinity" hint={t('HUB_POOL_AFFINITY_HELP')} />
+                    </>
                   }
                   disabled={demoMode || settingsMutation.isPending}
                   value={form.poolLocalAffinity}
@@ -891,7 +894,7 @@ export const HubPoolSection = () => {
                 />
               </div>
 
-              <div className="w-32">
+              <div>
                 <Input
                   type="number"
                   min={MIN_HEALTH_POLL_SECONDS}
@@ -899,13 +902,10 @@ export const HubPoolSection = () => {
                   name="hubPoolHealthPollSeconds"
                   data-testid="hub-pool-poll-input"
                   label={
-                    <HintText
-                      id="hub-pool-poll"
-                      hint={t('HUB_POOL_POLL_HELP')}
-                      className="cursor-help underline decoration-dotted underline-offset-2"
-                    >
+                    <>
                       {t('HUB_POOL_POLL_LABEL')}
-                    </HintText>
+                      <Hint id="hub-pool-poll" hint={t('HUB_POOL_POLL_HELP')} />
+                    </>
                   }
                   disabled={demoMode || settingsMutation.isPending}
                   value={form.poolHealthPollSeconds}
@@ -921,7 +921,7 @@ export const HubPoolSection = () => {
                 its margin is silently inert while the limit is 0 (beta-max, 2026-09-29, accepted a
                 margin of 3 at limit 0 and routed exactly as before), so the state is stated here.
                 Nothing renders at the defaults, where both are 0. */}
-            <PrefixAffinityNote settings={status.settings} t={t} />
+            <PrefixAffinityNote settings={status.settings} t={asLegacyTranslate(t)} />
 
             <Button
               type="button"
@@ -934,11 +934,11 @@ export const HubPoolSection = () => {
               {t('HUB_POOL_SAVE_BUTTON')}
             </Button>
           </div>
-        </Block>
+        </SubSection>
 
         {/* ── Routing pins ────────────────────────────────────────────── */}
         {/* Directly under Controls, because a pin overrides the local-affinity knob above it. */}
-        <Block title={t('HUB_POOL_PINS_TITLE')} help={t('HUB_POOL_PINS_HELP')}>
+        <SubSection title={t('HUB_POOL_PINS_TITLE')} help={t('HUB_POOL_PINS_HELP')} helpId="hub-pool-pins">
           <div className="space-y-3">
             {pins.length ? (
               <ul className="space-y-2">
@@ -1028,7 +1028,7 @@ export const HubPoolSection = () => {
               </Button>
             </div>
           </div>
-        </Block>
+        </SubSection>
 
         {/* ── The pool ────────────────────────────────────────────────── */}
         {/*
@@ -1045,15 +1045,17 @@ export const HubPoolSection = () => {
           precondition for `poolRequireSignedPeers` — turning that on while a peer has not
           upgraded takes the pairing down in both directions.
         */}
-        <Block title={t('HUB_POOL_CONNECTED_TITLE')} help={t('HUB_POOL_CONNECTED_HELP')}>
+        <SubSection title={t('HUB_POOL_CONNECTED_TITLE')} help={t('HUB_POOL_CONNECTED_HELP')} helpId="hub-pool-connected">
           {paired.length ? (
             <KpiTable
               head={
                 <>
                   <Th>{t('HUB_POOL_PEER_COL_NODE')}</Th>
                   <Th>{t('HUB_POOL_FIELD_HARDWARE')}</Th>
+                  <Th align="right">{t('HUB_POOL_FIELD_MODELS')}</Th>
                   <Th align="right">{t('HUB_POOL_FIELD_QUEUE')}</Th>
                   <Th>{t('HUB_POOL_FIELD_BACKENDS')}</Th>
+                  <Th align="right">{t('HUB_POOL_FIELD_FAILED_CHECKS')}</Th>
                   <Th align="right">{t('HUB_POOL_FIELD_LAST_SEEN')}</Th>
                   <Th align="right">{t('HUB_POOL_PEER_COL_ACTIONS')}</Th>
                 </>
@@ -1065,30 +1067,27 @@ export const HubPoolSection = () => {
                     <div className="flex flex-col gap-0.5">
                       <span className="flex flex-wrap items-center gap-1.5">
                         <span className="break-all font-medium sm:truncate">{peerLabel(peer)}</span>
-                        <PeerStatusBadge status={peer.status} enabled={peer.enabled} probeFailureKind={peer.probeFailure?.kind} t={t} />
+                        <PeerStatusBadge
+                          status={peer.status}
+                          enabled={peer.enabled}
+                          probeFailureKind={peer.probeFailure?.kind}
+                          t={asLegacyTranslate(t)}
+                        />
                         {peer.enabled && peer.lastCapabilities?.acceptingWork === false ? (
-                          <span
-                            data-testid="hub-pool-peer-not-accepting"
-                            title={t('HUB_POOL_PEER_NOT_ACCEPTING')}
-                            className="shrink-0 rounded-sm border border-border px-1 text-[9px] uppercase tracking-wide text-muted-foreground"
-                          >
+                          <RowMark testId="hub-pool-peer-not-accepting" title={t('HUB_POOL_PEER_NOT_ACCEPTING')}>
                             {t('HUB_POOL_PEER_NOT_ACCEPTING_MARK')}
-                          </span>
+                          </RowMark>
                         ) : null}
                         {peer.status !== 'pending' && peer.authMode !== 'signed' ? (
-                          <span
-                            data-testid="hub-pool-peer-bearer"
-                            title={t('HUB_POOL_PEER_BEARER_HELP')}
-                            className="shrink-0 rounded-sm border border-border px-1 text-[9px] uppercase tracking-wide text-muted-foreground"
-                          >
+                          <RowMark testId="hub-pool-peer-bearer" title={t('HUB_POOL_PEER_BEARER_HELP')}>
                             {t('HUB_POOL_PEER_BEARER')}
-                          </span>
+                          </RowMark>
                         ) : null}
                       </span>
                       {/* The FQDN is the identity the token was issued to; the label is only a label.
                           When there is no display name, the line above already is the address. */}
                       {peer.displayName && peer.displayName !== peer.nodeFqdn ? (
-                        <span className="break-all font-mono text-[10px] text-muted-foreground sm:truncate" title={peer.nodeFqdn}>
+                        <span className="break-all font-mono text-xs text-muted-foreground sm:truncate" title={peer.nodeFqdn}>
                           {peer.nodeFqdn}
                         </span>
                       ) : null}
@@ -1098,26 +1097,37 @@ export const HubPoolSection = () => {
                         // already worded with the exact cihub commands, not a generic hint.
                         <span
                           data-testid="hub-pool-peer-needs-repair-hint"
-                          className={cn('text-[10px]', peer.probeFailure.kind === 'identity_changed' ? 'text-destructive' : 'text-muted-foreground')}
+                          className={cn('text-xs', peer.probeFailure.kind === 'identity_changed' ? 'text-destructive' : 'text-muted-foreground')}
                         >
                           {peer.probeFailure.action}
                         </span>
-                      ) : peer.status === 'unreachable' ? (
-                        <span data-testid="hub-pool-unreachable-hint" className="text-[10px] text-muted-foreground">
+                      ) : peer.status === 'unreachable' && peer.enabled ? (
+                        <span data-testid="hub-pool-unreachable-hint" className="text-xs text-muted-foreground">
                           {t('HUB_POOL_UNREACHABLE_HINT', { failures: peer.consecutiveFailures })}
                         </span>
                       ) : null}
                     </div>
                   </Td>
                   <Td className="text-muted-foreground">{peer.lastCapabilities?.hardwareTier ?? t('COMMON_UNKNOWN')}</Td>
+                  {/* Models on the peer's healthy engines, as its last capability report counted them; unknown until it has reported. */}
+                  <Td align="right" className="tabular-nums">
+                    {peer.lastCapabilities
+                      ? peer.lastCapabilities.backends.reduce((sum, backend) => (backend.healthy ? sum + backend.modelsLoaded.length : sum), 0)
+                      : t('COMMON_UNKNOWN')}
+                  </Td>
                   {/* Dash, not 0, when the probe has not landed: an idle peer and an unread
                       counter are different facts that send an operator to different places. */}
                   <Td align="right">{typeof peer.inFlightRequests === 'number' ? String(peer.inFlightRequests) : t('COMMON_UNKNOWN')}</Td>
                   <Td
                     className="max-w-[200px] truncate text-muted-foreground"
-                    title={peer.lastCapabilities?.backends.length ? backendSummary(peer.lastCapabilities.backends, t) : undefined}
+                    title={peer.lastCapabilities?.backends.length ? backendSummary(peer.lastCapabilities.backends, asLegacyTranslate(t)) : undefined}
                   >
-                    {peer.lastCapabilities?.backends.length ? backendSummary(peer.lastCapabilities.backends, t) : t('COMMON_UNKNOWN')}
+                    {peer.lastCapabilities?.backends.length
+                      ? backendSummary(peer.lastCapabilities.backends, asLegacyTranslate(t))
+                      : t('COMMON_UNKNOWN')}
+                  </Td>
+                  <Td align="right" className={cn('tabular-nums', (peer.consecutiveFailures ?? 0) > 0 && 'text-destructive')}>
+                    {typeof peer.consecutiveFailures === 'number' ? String(peer.consecutiveFailures) : t('COMMON_UNKNOWN')}
                   </Td>
                   <Td align="right" className="whitespace-nowrap text-muted-foreground">
                     {peer.lastSeenAt ? formatHubDateTime(peer.lastSeenAt) : t('HUB_POOL_NEVER_SEEN')}
@@ -1155,7 +1165,7 @@ export const HubPoolSection = () => {
           ) : (
             <p className="text-sm text-muted-foreground">{t('HUB_POOL_CONNECTED_EMPTY')}</p>
           )}
-        </Block>
+        </SubSection>
 
         {/* ── What the pool can serve ─────────────────────────────────── */}
         {/*
@@ -1166,12 +1176,16 @@ export const HubPoolSection = () => {
           the fact that predicts an outage: when that node goes, those models go with it.
           Nodes as columns makes it readable straight down, and the row cost drops to ~25px.
         */}
-        <Block title={t('HUB_POOL_MODELS_TITLE')} help={t('HUB_POOL_MODELS_HELP')}>
+        <SubSection title={t('HUB_POOL_MODELS_TITLE')} help={t('HUB_POOL_MODELS_HELP')} helpId="hub-pool-models">
           {models.length ? (
-            <details className="group" open={models.length <= MODEL_TABLE_OPEN_MAX}>
-              <summary className="flex cursor-pointer list-none items-center gap-2 text-[11px] text-muted-foreground [&::-webkit-details-marker]:hidden">
-                <ChevronRight className="h-3 w-3 shrink-0 transition-transform group-open:rotate-90" />
-                {t('HUB_POOL_MODELS_COUNT', { models: models.length, nodes: poolNodes.length })}
+            <details className="group" open>
+              <summary className="flex w-fit cursor-pointer list-none items-center gap-2 rounded-md text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+                <ChevronRight className="h-4 w-4 shrink-0 transition-transform group-open:rotate-90" />
+                {/* Two plural forms, so a one-node pool doesn't read "1 nodes". */}
+                {t('HUB_POOL_MODELS_COUNT', {
+                  models: t('HUB_POOL_MODELS_COUNT_MODELS', { count: models.length }),
+                  nodes: t('HUB_POOL_MODELS_COUNT_NODES', { count: poolNodes.length }),
+                })}
                 {/* Stated on the collapsed summary too — it is the reason to open it. */}
                 {soleSourced > 0 ? <span className="text-warning">{t('HUB_POOL_MODELS_SOLE_SOURCED', { count: soleSourced })}</span> : null}
               </summary>
@@ -1180,13 +1194,12 @@ export const HubPoolSection = () => {
                   type="search"
                   name="hubPoolModelFilter"
                   data-testid="hub-pool-model-filter"
-                  className="h-7 text-xs"
+                  className="max-w-sm"
                   placeholder={t('HUB_POOL_MODELS_FILTER')}
                   value={modelFilter}
                   onChange={(event) => setModelFilter(event.target.value)}
                 />
                 <KpiTable
-                  className="max-h-[340px] overflow-y-auto"
                   head={
                     <>
                       <Th>{t('HUB_POOL_MODELS_COL_MODEL')}</Th>
@@ -1248,7 +1261,7 @@ export const HubPoolSection = () => {
           ) : (
             <p className="text-sm text-muted-foreground">{t('HUB_POOL_MODELS_EMPTY')}</p>
           )}
-        </Block>
+        </SubSection>
 
         {/* ── Recent routing ──────────────────────────────────────────── */}
         {/*
@@ -1262,10 +1275,10 @@ export const HubPoolSection = () => {
           request touched three nodes. They are markers with titles rather than lines, so
           they cost nothing on the rows that do not have them — which is almost all of them.
         */}
-        <Block title={t('HUB_POOL_ROUTING_TITLE')} help={t('HUB_POOL_ROUTING_HELP')}>
+        <SubSection title={t('HUB_POOL_ROUTING_TITLE')} help={t('HUB_POOL_ROUTING_HELP')} helpId="hub-pool-routing">
           {routingLog?.entries.length ? (
             <div className="space-y-2">
-              <p className="text-[11px] text-muted-foreground">
+              <p className="text-xs text-muted-foreground">
                 {t('HUB_POOL_ROUTING_SUMMARY', {
                   served: routingLog.summary.served,
                   failed: routingLog.summary.failed,
@@ -1273,12 +1286,13 @@ export const HubPoolSection = () => {
                 })}
               </p>
               <KpiTable
-                className="max-h-[220px] overflow-y-auto"
                 head={
                   <>
                     <Th>{t('HUB_POOL_ROUTING_COL_WHEN')}</Th>
                     <Th>{t('HUB_POOL_ROUTING_COL_NODE')}</Th>
                     <Th>{t('HUB_POOL_ROUTING_COL_MODEL')}</Th>
+                    <Th>{t('HUB_POOL_ROUTING_COL_ENGINE')}</Th>
+                    <Th align="right">{t('HUB_POOL_ROUTING_COL_CANDIDATES')}</Th>
                     <Th align="right">{t('HUB_POOL_ROUTING_COL_RESULT')}</Th>
                   </>
                 }
@@ -1300,7 +1314,7 @@ export const HubPoolSection = () => {
                       ...(entry.failedOverFrom.length ? { failedover: entry.failedOverFrom.join(',') } : {}),
                     }}
                   >
-                    <Td className="whitespace-nowrap text-muted-foreground">{new Date(entry.at).toLocaleTimeString()}</Td>
+                    <Td className="whitespace-nowrap tabular-nums text-muted-foreground">{formatHubDateTime(entry.at)}</Td>
                     <Td className="max-w-[180px]">
                       <span className="flex items-center gap-1.5">
                         <ArrowRightLeft
@@ -1309,45 +1323,49 @@ export const HubPoolSection = () => {
                         />
                         <span className="truncate">
                           {entry.direction === 'outbound'
-                            ? t('HUB_POOL_ROUTING_OUTBOUND', { node: entry.node ?? t('HUB_POOL_ROUTING_NO_NODE') })
+                            ? entry.node === LOCAL_NODE_KEY
+                              ? t(settledOutcome(entry) === 'served' ? 'HUB_POOL_ROUTING_LOCAL_SERVED' : 'HUB_POOL_ROUTING_LOCAL_SENT')
+                              : t('HUB_POOL_ROUTING_OUTBOUND', { node: entry.node ?? t('HUB_POOL_ROUTING_NO_NODE') })
                             : t('HUB_POOL_ROUTING_INBOUND', { node: entry.node ?? t('HUB_POOL_ROUTING_NO_NODE') })}
                         </span>
                         {/* Named on the row it shaped: an operator seeing everything land on one
                             node cannot otherwise tell a pin from the ranker deciding the same. */}
                         {entry.pin ? (
-                          <span
-                            data-testid="hub-pool-routing-pinned"
-                            title={t('HUB_POOL_ROUTING_PINNED')}
-                            className="shrink-0 rounded-sm border border-border px-1 text-[9px] uppercase tracking-wide text-muted-foreground"
-                          >
+                          <RowMark testId="hub-pool-routing-pinned" title={t('HUB_POOL_ROUTING_PINNED')}>
                             {t('HUB_POOL_ROUTING_PIN_MARK')}
-                          </span>
+                          </RowMark>
                         ) : null}
                         {/* One entry per request, so a failover is a chain here, not a run of rows. */}
                         {entry.failedOverFrom.length ? (
-                          <span
-                            data-testid="hub-pool-routing-failover"
+                          <RowMark
+                            testId="hub-pool-routing-failover"
+                            tone="warn"
                             title={t('HUB_POOL_ROUTING_FAILOVER', {
                               // With what each answered, where the Hub says: which nodes refused is half of it, why is the rest.
                               nodes: entry.attempts?.length
-                                ? entry.attempts.map((attempt) => `${attempt.node} (${attempt.reason})`).join(' → ')
-                                : entry.failedOverFrom.join(' → '),
+                                ? entry.attempts.map((attempt) => `${routingNodeName(attempt.node)} (${attempt.reason})`).join(' → ')
+                                : entry.failedOverFrom.map(routingNodeName).join(' → '),
                             })}
-                            className="shrink-0 rounded-sm border border-warning/40 px-1 text-[9px] uppercase tracking-wide text-warning"
                           >
                             {t('HUB_POOL_ROUTING_FAILOVER_MARK', { count: entry.failedOverFrom.length })}
-                          </span>
+                          </RowMark>
                         ) : null}
                       </span>
                     </Td>
                     <Td className="max-w-[160px] truncate font-mono text-muted-foreground" title={entry.model ?? entry.path}>
                       {entry.model ?? entry.path}
                     </Td>
+                    <Td className="max-w-[120px] truncate font-mono text-muted-foreground" title={entry.backend ?? undefined}>
+                      {entry.backend ?? '—'}
+                    </Td>
+                    <Td align="right" className="tabular-nums text-muted-foreground">
+                      {entry.candidates > 0 ? entry.candidates : '—'}
+                    </Td>
                     <Td
                       align="right"
                       className={cn('whitespace-nowrap', settledOutcome(entry) === 'failed' ? 'font-medium text-warning' : 'text-muted-foreground')}
                     >
-                      <RoutingResult entry={entry} t={t} />
+                      <RoutingResult entry={entry} t={asLegacyTranslate(t)} />
                     </Td>
                   </Tr>
                 ))}
@@ -1356,10 +1374,10 @@ export const HubPoolSection = () => {
           ) : (
             <p className="text-sm text-muted-foreground">{t('HUB_POOL_ROUTING_EMPTY')}</p>
           )}
-        </Block>
+        </SubSection>
 
         {/* ── Pairing PIN and this node's identity ────────────────────── */}
-        <Block title={t('HUB_POOL_PIN_TITLE')} help={t('HUB_POOL_PIN_HELP')}>
+        <SubSection title={t('HUB_POOL_PIN_TITLE')} help={t('HUB_POOL_PIN_HELP')} helpId="hub-pool-pin">
           <div className="space-y-3">
             {status.localNode.identity?.identityError ? (
               /* Surfaced exactly the way `capabilitiesError` is: identity bootstrap degrades and
@@ -1369,7 +1387,7 @@ export const HubPoolSection = () => {
                 {t('HUB_POOL_IDENTITY_ERROR', { error: status.localNode.identity.identityError })}
               </p>
             ) : (
-              <p className="font-mono text-xs text-muted-foreground" data-testid="hub-pool-local-fingerprint">
+              <p className="font-mono text-[13px] text-muted-foreground" data-testid="hub-pool-local-fingerprint">
                 {t('HUB_POOL_LOCAL_FINGERPRINT', { fingerprint: status.localNode.identity?.publicKeyFingerprint ?? '—' })}
               </p>
             )}
@@ -1380,7 +1398,7 @@ export const HubPoolSection = () => {
                     are held in this component's state, never re-fetched. A reload loses them, which
                     is correct — the operator mints a new one. */}
                 <span>
-                  <span className="block font-mono text-2xl tracking-[0.3em]" data-testid="hub-pool-minted-pin">
+                  <span className="block font-mono text-2xl" data-testid="hub-pool-minted-pin">
                     {mintedPin.pin}
                   </span>
                   {mintedPin.expiresAt ? (
@@ -1395,7 +1413,7 @@ export const HubPoolSection = () => {
               </div>
             ) : (
               <div className="flex items-center justify-between gap-3">
-                <span className="text-xs text-muted-foreground" data-testid="hub-pool-pin-state">
+                <span className="text-sm text-muted-foreground" data-testid="hub-pool-pin-state">
                   {status.pairingPin?.active && status.pairingPin.expiresAt && new Date(status.pairingPin.expiresAt).getTime() > Date.now() ? (
                     <>
                       {t('HUB_POOL_PIN_ACTIVE_ELSEWHERE')}{' '}
@@ -1410,6 +1428,7 @@ export const HubPoolSection = () => {
                 <Button
                   type="button"
                   size="sm"
+                  variant="outline"
                   data-testid="hub-pool-mint-pin-btn"
                   disabled={demoMode}
                   loading={mintPinMutation.isPending}
@@ -1420,34 +1439,43 @@ export const HubPoolSection = () => {
               </div>
             )}
           </div>
-        </Block>
+        </SubSection>
 
         {/* ── Discovery and pairing ───────────────────────────────────── */}
-        <Block title={t('HUB_POOL_DISCOVERABLE_TITLE')} help={t('HUB_POOL_DISCOVERABLE_HELP')}>
-          <div className="flex flex-wrap items-center gap-2">
-            {/* Not disabled while it runs: that would drop keyboard focus, and `cancelRefetch: false` keeps a second press
-                from restarting a scan that probes every device on the tailnet. */}
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              data-testid="hub-pool-rescan-btn"
-              aria-busy={scanningDiscoverable || undefined}
-              onClick={() => void rescanDiscoverable({ cancelRefetch: false })}
-            >
-              {t('HUB_POOL_SETUP_FIND_RESCAN')}
-            </Button>
-            {/* The callout above covers a pool with nothing paired. Once a Hub is paired it is gone, so this is how the
-                guide stays reachable for the second, third and fourth Hub. */}
-            {paired.length > 0 && !envLocked ? (
-              <Button type="button" size="sm" variant="outline" data-testid="hub-pool-add-hub-btn" disabled={demoMode} onClick={openGuideAtScan}>
-                {t('HUB_POOL_SETUP_SUCCESS_ADD')}
+        <SubSection
+          title={t('HUB_POOL_DISCOVERABLE_TITLE')}
+          help={t('HUB_POOL_DISCOVERABLE_HELP')}
+          helpId="hub-pool-discoverable"
+          actions={
+            <>
+              {/* Not disabled while it runs: that would drop keyboard focus, and `cancelRefetch: false` keeps a second press
+                  from restarting a scan that probes every device on the tailnet. */}
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                data-testid="hub-pool-rescan-btn"
+                aria-busy={scanningDiscoverable || undefined}
+                onClick={() => void rescanDiscoverable({ cancelRefetch: false })}
+              >
+                <RefreshCw className={cn('mr-1.5 h-3.5 w-3.5', scanningDiscoverable && 'animate-spin')} aria-hidden="true" />
+                {t('HUB_POOL_SETUP_FIND_RESCAN')}
               </Button>
-            ) : null}
-          </div>
+              {/* The callout above covers a pool with nothing paired. Once a Hub is paired it is gone, so this is how the
+                  guide stays reachable for the second, third and fourth Hub. */}
+              {paired.length > 0 && !envLocked ? (
+                <Button type="button" size="sm" variant="outline" data-testid="hub-pool-add-hub-btn" disabled={demoMode} onClick={openGuideAtScan}>
+                  {t('HUB_POOL_SETUP_SUCCESS_ADD')}
+                </Button>
+              ) : null}
+            </>
+          }
+        >
           {/* The digits from the other Hub's screen. Same block as Pair: a short PIN used to be
               dropped on the way out, and the field lived under Generate PIN instead of here. */}
           <Input
+            className="max-w-xs"
+            name="hubPoolPairingPin"
             value={pairingPinInput}
             inputMode="numeric"
             autoComplete="off"
@@ -1471,75 +1499,83 @@ export const HubPoolSection = () => {
               It is the one hint the status response can honestly offer, and nothing more. */}
           {status.tailscaleAdminApiConfigured || discoverable?.length ? (
             discoverable?.length ? (
-              <ul className="space-y-2">
-                {discoverable.map((device) =>
-                  // Keyed on the FQDN, not the Tailscale device id: the FQDN is unique across this
-                  // list by construction, and it is the value the Pair button posts.
-                  isUnverifiedCandidate(device) ? (
-                    // No Pair button, by design: nothing on this row was attested by anyone.
-                    <li
-                      key={device.nodeFqdn}
-                      data-testid="hub-pool-discoverable-unverified"
-                      className="flex items-center justify-between gap-3 rounded-md border border-dashed px-3 py-2"
-                    >
-                      <span className="min-w-0">
-                        <span className="block break-all font-mono text-xs sm:truncate">{device.hostname}</span>
-                        {device.address ? (
-                          <span className="block break-all font-mono text-[11px] text-muted-foreground">{device.address}</span>
-                        ) : null}
-                      </span>
-                      <HintText
-                        id={`hub-pool-unverified-${device.nodeFqdn}`}
-                        hint={t('HUB_POOL_DISCOVERABLE_UNVERIFIED_HELP')}
-                        className="shrink-0 cursor-help text-xs text-warning underline decoration-dotted underline-offset-2"
+              <div className="space-y-2">
+                {/* One list with rules between rows, not a bordered box per Hub: a fleet tailnet
+                    answers with sixteen, which was a screen of identical Pair buttons. */}
+                <ul className="divide-y divide-border rounded-md border border-border">
+                  {(showAllDiscoverable ? discoverable : discoverable.slice(0, DISCOVERABLE_VISIBLE)).map((device) =>
+                    // Keyed on the FQDN, not the Tailscale device id: the FQDN is unique across this
+                    // list by construction, and it is the value the Pair button posts.
+                    isUnverifiedCandidate(device) ? (
+                      // No Pair button, by design: nothing on this row was attested by anyone.
+                      <li
+                        key={device.nodeFqdn}
+                        data-testid="hub-pool-discoverable-unverified"
+                        className="flex items-center justify-between gap-3 bg-muted/10 px-3 py-2"
                       >
-                        {t('HUB_POOL_DISCOVERABLE_UNVERIFIED')}
-                      </HintText>
-                    </li>
-                  ) : (
-                    <li key={device.nodeFqdn} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
-                      <span className="min-w-0 break-all font-mono text-xs sm:truncate" title={device.nodeFqdn}>
-                        {device.hostname}
-                      </span>
-                      <Button
-                        type="button"
-                        size="sm"
-                        disabled={demoMode || pairMutation.isPending}
-                        loading={pairMutation.isPending && pairMutation.variables === device.nodeFqdn}
-                        onClick={() => requestPair(device.nodeFqdn)}
-                      >
-                        {pairMutation.isPending && pairMutation.variables === device.nodeFqdn ? t('HUB_POOL_PAIRING') : t('HUB_POOL_PAIR_BUTTON')}
-                      </Button>
-                    </li>
-                  ),
-                )}
-              </ul>
+                        <span className="min-w-0">
+                          <span className="block break-all font-mono text-[13px] sm:truncate">{device.hostname}</span>
+                          {device.address ? <span className="block break-all font-mono text-xs text-muted-foreground">{device.address}</span> : null}
+                        </span>
+                        <HintText
+                          id={`hub-pool-unverified-${device.nodeFqdn}`}
+                          hint={t('HUB_POOL_DISCOVERABLE_UNVERIFIED_HELP')}
+                          className="shrink-0 cursor-help text-xs text-warning underline decoration-dotted underline-offset-2"
+                        >
+                          {t('HUB_POOL_DISCOVERABLE_UNVERIFIED')}
+                        </HintText>
+                      </li>
+                    ) : (
+                      <li key={device.nodeFqdn} className="flex items-center justify-between gap-3 px-3 py-1.5">
+                        <span className="min-w-0 break-all font-mono text-[13px] sm:truncate" title={device.nodeFqdn}>
+                          {device.hostname}
+                        </span>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={demoMode || pairMutation.isPending}
+                          loading={pairMutation.isPending && pairMutation.variables === device.nodeFqdn}
+                          onClick={() => requestPair(device.nodeFqdn)}
+                        >
+                          {pairMutation.isPending && pairMutation.variables === device.nodeFqdn ? t('HUB_POOL_PAIRING') : t('HUB_POOL_PAIR_BUTTON')}
+                        </Button>
+                      </li>
+                    ),
+                  )}
+                </ul>
+                {discoverable.length > DISCOVERABLE_VISIBLE ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="link"
+                    className="h-auto px-0"
+                    data-testid="hub-pool-discoverable-toggle"
+                    aria-expanded={showAllDiscoverable}
+                    onClick={() => setShowAllDiscoverable((shown) => !shown)}
+                  >
+                    {showAllDiscoverable
+                      ? t('HUB_POOL_DISCOVERABLE_SHOW_FEWER')
+                      : t('HUB_POOL_DISCOVERABLE_SHOW_ALL', { count: discoverable.length })}
+                  </Button>
+                ) : null}
+              </div>
             ) : (
-              <p className="py-2 text-center text-xs italic text-muted-foreground">
-                <HintText
-                  id="hub-pool-discoverable-empty"
-                  hint={t('HUB_POOL_DISCOVERABLE_EMPTY')}
-                  className="cursor-help underline decoration-dotted underline-offset-2"
-                >
-                  {t('HUB_POOL_DISCOVERABLE_EMPTY_SHORT')}
-                </HintText>
+              <p className="text-sm text-muted-foreground">
+                {t('HUB_POOL_DISCOVERABLE_EMPTY_SHORT')}
+                <Hint id="hub-pool-discoverable-empty" hint={t('HUB_POOL_DISCOVERABLE_EMPTY')} />
               </p>
             )
           ) : (
             <p
               data-testid="hub-pool-discovery-unconfigured"
-              className="rounded-md border border-border/70 bg-muted/30 px-2.5 py-2 text-xs text-muted-foreground"
+              className="rounded-md border border-border/70 bg-muted/30 px-3 py-2.5 text-sm text-muted-foreground"
             >
-              <HintText
-                id="hub-pool-discovery-unconfigured-hint"
-                hint={t('HUB_POOL_DISCOVERY_UNCONFIGURED')}
-                className="cursor-help underline decoration-dotted underline-offset-2"
-              >
-                {t('HUB_POOL_DISCOVERY_UNCONFIGURED_SHORT')}
-              </HintText>
+              {t('HUB_POOL_DISCOVERY_UNCONFIGURED_SHORT')}
+              <Hint id="hub-pool-discovery-unconfigured-hint" hint={t('HUB_POOL_DISCOVERY_UNCONFIGURED')} />
             </p>
           )}
-        </Block>
+        </SubSection>
 
         {pairingWaiting ? null : pendingBlock}
       </CardContent>

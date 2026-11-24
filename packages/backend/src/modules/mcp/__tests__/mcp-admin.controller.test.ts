@@ -17,11 +17,30 @@ describe('McpAdminController — the tool runner names the signed-in person (CI-
 
     await new McpAdminController(admin, whois).callTool('hub_update_app_config', { arguments: { appUrn: 'immich:ci-marketplace' } } as never, req);
 
-    expect(admin.callTool).toHaveBeenCalledWith('hub_update_app_config', { appUrn: 'immich:ci-marketplace' }, false, expect.any(Function));
+    expect(admin.callTool).toHaveBeenCalledWith(
+      'hub_update_app_config',
+      { appUrn: 'immich:ci-marketplace' },
+      false,
+      expect.any(Function),
+      expect.any(Function),
+    );
 
     const actorFor = admin.callTool.mock.calls[0]?.[3];
 
     expect(actorFor?.('configure')).toEqual(actor);
     expect(whois.lifecycleActor).toHaveBeenCalledWith(req, 'configure');
+  });
+
+  it('asks whether THIS request may manage the Hub before a Hub-wide tool runs', async () => {
+    const admin = mock<McpAdminService>();
+    const whois = mock<MarketplaceWhoIsService>();
+    const req = { hubPrincipal: 'session', user: { id: 7 } } as unknown as Request;
+    admin.callTool.mockResolvedValue({ ok: true, result: null });
+    whois.assertSessionMayManageHub.mockResolvedValue(undefined);
+
+    await new McpAdminController(admin, whois).callTool('hub_pull_model', { arguments: { modelId: 'phi-4-mini' } } as never, req);
+    await admin.callTool.mock.calls[0]?.[4]?.();
+
+    expect(whois.assertSessionMayManageHub).toHaveBeenCalledWith(req);
   });
 });

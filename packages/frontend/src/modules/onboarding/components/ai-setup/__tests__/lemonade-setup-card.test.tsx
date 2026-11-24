@@ -1,4 +1,7 @@
+import { readFileSync, readdirSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import i18next from 'i18next';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LemonadeStatus } from '@/modules/onboarding/helpers/ai-setup-types';
 import { LemonadeSetupCard } from '../lemonade-setup-card';
@@ -141,6 +144,22 @@ describe('LemonadeSetupCard', () => {
     );
 
     expect(screen.getByTestId('lemonade-downloaded-count')).toHaveTextContent('2 models downloaded');
+
+    rerender(
+      <LemonadeSetupCard
+        status={{
+          ready: true,
+          running: true,
+          endpointUrl: 'http://host.docker.internal:13305',
+          loadedModels: ['Qwen3-0.6B-GGUF'],
+          residentModels: [],
+        }}
+        checking={false}
+        onRecheck={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('lemonade-downloaded-count')).toHaveTextContent(/^1 model downloaded$/);
   });
 
   it('names the resident chat model when the embedder is listed first', () => {
@@ -243,5 +262,47 @@ describe('LemonadeSetupCard', () => {
       expect(await screen.findByText(/press Ctrl\+C/)).toBeInTheDocument();
       expect(window.getSelection()?.toString()).toBe(screen.getByTestId('lemonade-firewall-commands').textContent);
     });
+  });
+});
+
+describe('downloaded count wording', () => {
+  // i18n-provider stores every fetched language as { ...en, ...fetched }. A file without its own forms
+  // takes English's, so a language with one plural form (Japanese: `_other` for every count) showed
+  // "1 models downloaded". Each file needs every form its counts reach, from 1 up: the card shows none for 0.
+  const TRANSLATIONS = resolve(__dirname, '../../../../../../../common/i18n/translations');
+  const load = (file: string) => JSON.parse(readFileSync(join(TRANSLATIONS, file), 'utf8')) as Record<string, string>;
+  const en = load('en.json');
+  const KEY = 'ONBOARDING_LEMONADE_DOWNLOADED_COUNT';
+  const counts = Array.from({ length: 200 }, (_, i) => i + 1);
+
+  const translate = async (file: string) => {
+    const lng = file.replace(/\.json$/, '');
+    const i18n = i18next.createInstance();
+    await i18n.init({ lng, fallbackLng: 'en', resources: { en: { translation: en }, [lng]: { translation: { ...en, ...load(file) } } } });
+    return (count: number) => i18n.t(KEY, { count });
+  };
+
+  it.each(readdirSync(TRANSLATIONS).filter((file) => file.endsWith('.json')))('%s has its own form for each count', async (file) => {
+    const fetched = load(file);
+    const rules = new Intl.PluralRules(file.replace(/\.json$/, ''));
+    const t = await translate(file);
+
+    for (const count of counts) {
+      const form = fetched[`${KEY}_${rules.select(count)}`];
+      expect(form, `${file} has no ${KEY}_${rules.select(count)} for ${count}`).toBeDefined();
+      expect(t(count)).toBe(form?.replace('{{count}}', String(count)));
+    }
+  });
+
+  it.each([
+    ['en.json', 1, '1 model downloaded'],
+    ['en.json', 2, '2 models downloaded'],
+    ['en-US.json', 1, '1 model downloaded'],
+    ['es-ES.json', 1, '1 modelo descargado'],
+    ['ja-JP.json', 1, '1 個のモデルをダウンロード済み'],
+    ['ru-RU.json', 21, '21 скачанная модель'],
+    ['ru-RU.json', 5, '5 скачанных моделей'],
+  ])('%s says %i as "%s"', async (file, count, text) => {
+    expect((await translate(file))(count)).toBe(text);
   });
 });

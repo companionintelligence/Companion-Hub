@@ -5,10 +5,12 @@ import { ChangePasswordForm } from '../components/change-password-form/change-pa
 import { ChangeUsernameForm } from '../components/change-username-form/change-username-form';
 import { OtpForm } from '../components/otp-form/otp-form';
 import { ApiKeysContainer } from './api-keys';
+import { DidLinksCard } from '../components/did-links-card';
 import { OperatorsList } from '../components/operators-list/operators-list';
 
-export const SecurityContainer = (props: { totpEnabled: boolean; username?: string }) => {
-  const { totpEnabled, username } = props;
+/** `manageHub`: whether this person may manage the Hub's API keys, an owner's or admin's (`useHubAccess`). */
+export const SecurityContainer = (props: { totpEnabled: boolean; username?: string; manageHub?: boolean }) => {
+  const { totpEnabled, username, manageHub = true } = props;
   const { t } = useTranslation();
 
   return (
@@ -58,8 +60,10 @@ export const SecurityContainer = (props: { totpEnabled: boolean; username?: stri
 
       <OperatorsList />
 
+      <DidLinksCard />
+
       {/* Hub-wide API keys (agents + apps). Renders its own Card; moved here from the MCP tab. */}
-      <ApiKeysContainer />
+      {manageHub && <ApiKeysContainer />}
     </div>
   );
 };

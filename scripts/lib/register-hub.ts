@@ -152,8 +152,17 @@ export async function fetchRegistrationStatus(apiBase: string): Promise<Registra
   return (await res.json()) as RegistrationStatusResponse;
 }
 
-export async function fetchDeviceId(apiBase: string): Promise<DeviceIdResponse> {
-  const res = await fetch(`${apiBase}/api/registration/device-id`, { signal: AbortSignal.timeout(10_000) });
+/** The host-local key as a bearer header: the Hub pairs only for a caller that proves it has the machine. */
+function hostLocalAuth(deviceKey: string | undefined): Record<string, string> {
+  return deviceKey ? { Authorization: `Bearer ${deviceKey}` } : {};
+}
+
+/**
+ * `deviceKey` (the host-local key) gets the Portal link back: without it, or the setup code, an
+ * unpaired Hub withholds the link, since it carries the secret a callback pairs the Hub with.
+ */
+export async function fetchDeviceId(apiBase: string, deviceKey?: string): Promise<DeviceIdResponse> {
+  const res = await fetch(`${apiBase}/api/registration/device-id`, { headers: hostLocalAuth(deviceKey), signal: AbortSignal.timeout(10_000) });
   if (!res.ok) {
     throw new Error(`Device ID lookup failed (${res.status})`);
   }
@@ -168,10 +177,10 @@ export async function fetchStateDrift(apiBase: string): Promise<RegistrationStat
   return (await res.json()) as RegistrationStateDrift;
 }
 
-export async function prepareFreshSetup(apiBase: string): Promise<PrepareFreshResponse> {
+export async function prepareFreshSetup(apiBase: string, deviceKey?: string): Promise<PrepareFreshResponse> {
   const res = await fetch(`${apiBase}/api/registration/prepare-fresh`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...hostLocalAuth(deviceKey) },
     signal: AbortSignal.timeout(30_000),
   });
   const data = (await res.json()) as PrepareFreshResponse;
@@ -183,9 +192,9 @@ export async function prepareFreshSetup(apiBase: string): Promise<PrepareFreshRe
 
 /**
  * `deviceKey` is the host-local device key from `state/settings.json`, when this machine has one.
- * A first pairing needs no credential, but the Hub re-pairs an already registered Hub (a key Portal
- * rejects, a lost tunnel token) only for an authenticated caller, and this is how `cihub register`
- * on the Hub itself is one.
+ * The Hub pairs, first time or again, only for a caller that proves it has the machine (this key, or
+ * the setup code `cihub setup-code` prints) or someone who may manage a registered Hub. An address
+ * proves nothing: an installed app reaches the published port from the same gateway as the host.
  */
 export async function submitPairingCode(
   apiBase: string,
@@ -195,7 +204,7 @@ export async function submitPairingCode(
 ): Promise<PairResponse> {
   const res = await fetch(`${apiBase}/api/registration/pair`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...(deviceKey ? { Authorization: `Bearer ${deviceKey}` } : {}) },
+    headers: { 'Content-Type': 'application/json', ...hostLocalAuth(deviceKey) },
     body: JSON.stringify({ pairing_code: normalizePairingCode(pairingCode), ...(confirmMove ? { confirm_move: true } : {}) }),
     signal: AbortSignal.timeout(PAIR_REQUEST_TIMEOUT_MS),
   });

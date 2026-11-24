@@ -18,10 +18,13 @@ import {
 } from '@nestjs/common';
 import { ApiResponse } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
+import type { ReadStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppStoreService } from '../app-stores/app-store.service';
 import { AuthGuard } from '../auth/auth.guard';
+import { storeMediaHeaders } from './store-media-headers';
+import { HubManagerGuard } from '../auth/hub-manager.guard';
 import { RegistrationGuard } from '../registration/registration.guard';
 import { parseByteRange } from './app-media.helpers';
 import {
@@ -100,6 +103,7 @@ export class MarketplaceController {
     return AppListingDto.parse({ info, iconUrl }, { reportOnly: true });
   }
 
+  // Public, as an <img> sends no session: a store's file on the Hub's own address, see storeMediaHeaders.
   @Get('apps/:urn/image')
   async getImage(@Param('urn') urn: string, @Res() res: Response, @Req() req: Request) {
     const appUrn = castAppUrn(urn);
@@ -113,7 +117,7 @@ export class MarketplaceController {
     if (req.headers['if-none-match'] === etag) {
       res.set({
         'Cache-Control': 'public, max-age=0, stale-while-revalidate=86400, stale-if-error=86400',
-        'Content-Type': contentType || 'image/jpeg',
+        ...storeMediaHeaders(contentType, 'image/jpeg'),
         ETag: etag,
       });
       return res.status(304).end();
@@ -121,7 +125,7 @@ export class MarketplaceController {
 
     res.set({
       'Cache-Control': 'public, max-age=0, stale-while-revalidate=86400, stale-if-error=86400',
-      'Content-Type': contentType || 'image/jpeg',
+      ...storeMediaHeaders(contentType, 'image/jpeg'),
       ETag: etag,
     });
 
@@ -159,7 +163,7 @@ export class MarketplaceController {
     if (req.headers['if-none-match'] === etag) {
       res.set({
         'Cache-Control': 'public, max-age=0, stale-while-revalidate=86400, stale-if-error=86400',
-        'Content-Type': contentType || 'image/jpeg',
+        ...storeMediaHeaders(contentType, 'image/jpeg'),
         ETag: etag,
       });
       return res.status(304).end();
@@ -167,7 +171,7 @@ export class MarketplaceController {
 
     res.set({
       'Cache-Control': 'public, max-age=0, stale-while-revalidate=86400, stale-if-error=86400',
-      'Content-Type': contentType || 'image/jpeg',
+      ...storeMediaHeaders(contentType, 'image/jpeg'),
       ETag: etag,
     });
 
@@ -188,7 +192,8 @@ export class MarketplaceController {
     const headers: Record<string, string> = {
       'Accept-Ranges': 'bytes',
       'Cache-Control': 'public, max-age=0, stale-while-revalidate=86400, stale-if-error=86400',
-      'Content-Type': contentType || 'video/mp4',
+      // A store's file on the Hub's own address: see storeMediaHeaders.
+      ...storeMediaHeaders(contentType, 'video/mp4'),
     };
     if (etag) {
       headers.ETag = etag;
@@ -214,14 +219,22 @@ export class MarketplaceController {
     const start = range ? range.start : 0;
     const end = range ? range.end : size - 1;
 
+    // Before the headers: a 500 sent with this file's Content-Length leaves the client waiting for bytes that never come.
+    let stream: ReadStream;
+
+    try {
+      stream = await this.marketplaceService.createDemoVideoStream(file, start, end);
+    } catch (error) {
+      this.logger.warn(`Demo video could not be opened for ${urn}: ${error instanceof Error ? error.message : String(error)}`);
+      return res.status(500).end();
+    }
+
     res.set({
       ...headers,
       'Content-Length': String(end - start + 1),
       ...(range ? { 'Content-Range': `bytes ${start}-${end}/${size}` } : {}),
     });
     res.status(range ? 206 : 200);
-
-    const stream = this.marketplaceService.createDemoVideoStream(file, start, end);
 
     try {
       await pipeline(stream, res);
@@ -240,7 +253,7 @@ export class MarketplaceController {
   }
 
   @Post('pull')
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @ApiResponse({ type: PullDto })
   async pullAppStores() {
     const res = await this.appStoreService.pullRepositories();
@@ -250,7 +263,7 @@ export class MarketplaceController {
   }
 
   @Post('create')
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @ApiResponse({ type: AppStoreDto })
   async createAppStore(@Body() body: CreateAppStoreBodyDto) {
     const appStore = await this.appStoreService.createAppStore(body);
@@ -278,7 +291,7 @@ export class MarketplaceController {
   }
 
   @Patch(':id')
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @ApiResponse({ type: UpdateAppStoreDto })
   async updateAppStore(@Param('id') id: string, @Body() body: UpdateAppStoreBodyDto) {
     await this.appStoreService.updateAppStore(id, body);
@@ -288,7 +301,7 @@ export class MarketplaceController {
   }
 
   @Delete(':id')
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   async deleteAppStore(@Param('id') id: string) {
     await this.appStoreService.deleteAppStore(id);
     await this.marketplaceService.initialize();

@@ -1,9 +1,11 @@
 import axios from 'axios';
-import { Injectable, type OnModuleInit } from '@nestjs/common';
+import { BadRequestException, Injectable, type OnModuleInit } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { CloudProviderConfig, CloudProviderType } from '@ci-hub/common/types';
 import { buildCloudProviderEnv } from './cloud-provider-env';
+import { isSameServer, serverIdentity } from './engine-credential-scope';
+import { isMaskedApiKey } from './inference.dto';
 import { BUDGET_SETTINGS_HINT, postStreamUnderHeaderDeadline } from './upstream-stream';
 import { COMPLETION_TIMEOUT_MS, firstByteBudgetMs, forwardBudgetMs } from '@/modules/hub-pool/hub-pool-budget';
 
@@ -43,16 +45,34 @@ export function speaksOpenAiCompletions(provider: CloudProviderType): boolean {
 }
 
 /**
+ * Automatic cloud fallback runs only when CI_HUB_ALLOW_CLOUD_FALLBACK is `true`. Any other value, or none, keeps
+ * prompts on the appliance when local inference is down.
+ */
+export function isCloudFallbackAllowed(): boolean {
+  return process.env.CI_HUB_ALLOW_CLOUD_FALLBACK === 'true';
+}
+
+/**
+ * A base URL as the log may show it: origin and path, so a missing or extra `/v1` stays visible. A user
+ * name, password, query string or fragment in a base URL can hold a secret, so they are left out.
+ */
+function loggableBaseUrl(url: string | undefined): string {
+  if (!serverIdentity(url)) return 'not an http(s) URL';
+  const parsed = new URL((url ?? '').trim());
+  return `${parsed.origin}${parsed.pathname}`;
+}
+
+/**
  * Cloud provider key store.
  *
- * The Hub no longer proxies inference requests, so this service no longer makes
- * any HTTP calls. It persists the operator's cloud-provider configuration
- * (base URL / API key / default model) to settings.json and hands those
- * credentials to AI apps, which then call the cloud API directly.
+ * It persists the operator's cloud-provider configuration (base URL / API key / default model) to
+ * settings.json. It makes HTTP calls to the cloud APIs, but forwards requests only while
+ * CI_HUB_ALLOW_CLOUD_FALLBACK is true. It also hands those credentials to AI apps through `toAppEnv`.
  */
 @Injectable()
 export class CloudFallbackService implements OnModuleInit {
   private providers = new Map<CloudProviderType, CloudProviderConfig>();
+  private persistChain: Promise<unknown> = Promise.resolve();
 
   constructor(
     private readonly logger: LoggerService,
@@ -85,22 +105,65 @@ export class CloudFallbackService implements OnModuleInit {
    * point a cloud key/model at the wrong endpoint (the Ollama fallback URL).
    *
    * An omitted / blank `apiKey` keeps the previously stored key so a Settings save of a masked
-   * field (`••••`) can toggle `enabled` without wiping the secret.
+   * field (`••••`) can toggle `enabled` without wiping the secret. It keeps it only on the server
+   * the key was saved for: see {@link storedKeyKept}.
+   *
+   * Resolves once the provider is in settings.json, and rejects when it could not be saved. The
+   * Settings > AI tab sends its next save as soon as this answers, and a write still running then
+   * overlapped that save. A provider that could not be saved is taken back out of memory, so apps
+   * are not handed a key the request reported as not saved.
    */
-  setProvider(config: CloudProviderConfig): void {
+  async setProvider(config: CloudProviderConfig): Promise<void> {
+    // Neither the POST nor the MCP tool checks the body at runtime. Every entry written has to pass the
+    // settings.json schema: `parsePersistedSettings` drops `inferenceCloudProviders` whole for one that fails.
+    if (typeof config.provider !== 'string' || !Object.hasOwn(CLOUD_BASE_URLS, config.provider)) {
+      throw new BadRequestException(`provider must be one of ${Object.keys(CLOUD_BASE_URLS).join(', ')}`);
+    }
+    for (const field of ['apiKey', 'baseUrl', 'defaultModel'] as const) {
+      const value: unknown = config[field];
+      if (value != null && typeof value !== 'string') {
+        throw new BadRequestException(`${field} must be a string`);
+      }
+    }
+    const enabled: unknown = config.enabled;
+    if (enabled != null && typeof enabled !== 'boolean') {
+      throw new BadRequestException('enabled must be a boolean');
+    }
     const existing = this.providers.get(config.provider);
+    // A blank base URL leaves the stored one in place, as a blank key does.
+    const baseUrl = config.baseUrl?.trim() || undefined;
     const resolved = this.resolveConfig({
       ...existing,
       ...config,
-      apiKey: config.apiKey?.trim() || existing?.apiKey,
-      baseUrl: config.baseUrl || existing?.baseUrl,
+      // A blank key, or the mask Settings > AI shows for a stored one, stands for the stored key.
+      apiKey: (isMaskedApiKey(config.apiKey) ? undefined : config.apiKey?.trim()) || this.storedKeyKept(existing, baseUrl),
+      baseUrl: baseUrl || existing?.baseUrl,
       defaultModel: config.defaultModel || existing?.defaultModel || this.getDefaultModel(config.provider),
+      // The spread above copies an omitted `enabled` as undefined, which settings.json cannot hold.
+      enabled: config.enabled ?? existing?.enabled ?? false,
     });
+    const droppedKey = !!existing?.apiKey && !resolved.apiKey;
     this.providers.set(resolved.provider, resolved);
-    this.logger.info(`[CloudFallback] Configured provider: ${resolved.provider} (enabled: ${resolved.enabled}, baseUrl: ${resolved.baseUrl})`);
-    void this.persist().catch((error) => {
-      this.logger.error(`[CloudFallback] Failed to persist ${resolved.provider}`, error);
-    });
+    try {
+      await this.persist();
+    } catch (error) {
+      // Unless a later call has replaced it in the meantime.
+      if (this.providers.get(resolved.provider) === resolved) {
+        if (existing) {
+          this.providers.set(resolved.provider, existing);
+        } else {
+          this.providers.delete(resolved.provider);
+        }
+      }
+      throw error;
+    }
+    this.logger.info(
+      `[CloudFallback] Configured provider: ${resolved.provider} (enabled: ${resolved.enabled}, baseUrl: ${loggableBaseUrl(resolved.baseUrl)})`,
+    );
+    if (droppedKey) {
+      // The save still answers success, so this line is where an operator learns why the provider stopped.
+      this.logger.warn(`[CloudFallback] Dropped the stored ${resolved.provider} key: the save moved it to another server, which needs its own key`);
+    }
   }
 
   /** Get a provider config */
@@ -111,6 +174,38 @@ export class CloudFallbackService implements OnModuleInit {
   /** List all configured providers */
   listProviders(): CloudProviderConfig[] {
     return Array.from(this.providers.values());
+  }
+
+  /**
+   * Forget a provider and its key, in memory and in settings.json. {@link setProvider} cannot: it
+   * keeps the stored key when `apiKey` is blank. Resolves false when nothing was stored for it.
+   */
+  async removeProvider(provider: CloudProviderType): Promise<boolean> {
+    const removed = this.providers.get(provider);
+    if (!removed) {
+      return false;
+    }
+    this.providers.delete(provider);
+    try {
+      await this.persist();
+    } catch (error) {
+      // settings.json still holds the key, so memory keeps it too: otherwise a retry finds nothing to
+      // remove and the key comes back with the next restart.
+      if (!this.providers.has(provider)) this.providers.set(provider, removed);
+      throw error;
+    }
+    this.logger.info(`[CloudFallback] Removed provider: ${provider}`);
+    return true;
+  }
+
+  /**
+   * Forget every provider and its key, in memory only. For a factory reset, which has just emptied
+   * settings.json: until a restart, apps were still handed the old keys, and the next provider saved
+   * wrote them all back to the file.
+   */
+  forgetProviders(): void {
+    this.providers.clear();
+    this.logger.info('[CloudFallback] Forgot every cloud provider: settings.json was reset');
   }
 
   /** Get enabled providers */
@@ -128,8 +223,13 @@ export class CloudFallbackService implements OnModuleInit {
     return buildCloudProviderEnv(this.getEnabledProviders());
   }
 
-  /** Find which provider can serve a model */
+  /**
+   * Find which provider can serve a model. It fails closed: unless CI_HUB_ALLOW_CLOUD_FALLBACK is true,
+   * it returns undefined for every model, including the prefix matches (gpt-, o1, o3, o4, claude-, gemini-)
+   * and the configured defaultModel. With the flag true, an unrecognised model goes to the first enabled provider.
+   */
   resolveProvider(model: string): CloudProviderConfig | undefined {
+    if (!isCloudFallbackAllowed()) return undefined;
     // Check model prefix patterns
     if (model.startsWith('gpt-') || model.startsWith('o1') || model.startsWith('o3') || model.startsWith('o4')) {
       return this.getEnabledProvider('openai');
@@ -141,8 +241,13 @@ export class CloudFallbackService implements OnModuleInit {
       return this.getEnabledProvider('google');
     }
 
-    // Fall back to first enabled provider
-    return this.getEnabledProviders()[0];
+    const explicitDefaultMatch = this.getEnabledProviders().find((p) => p.defaultModel === model);
+    if (explicitDefaultMatch) {
+      return explicitDefaultMatch;
+    }
+
+    // Only fall back to an arbitrary enabled provider for unrecognised model names when cloud fallback is explicitly allowed
+    return isCloudFallbackAllowed() ? this.getEnabledProviders()[0] : undefined;
   }
 
   /**
@@ -374,6 +479,18 @@ export class CloudFallbackService implements OnModuleInit {
     return provider?.enabled && provider?.apiKey ? provider : undefined;
   }
 
+  /**
+   * The stored key a save without one keeps. A key belongs to the server it was saved for, so a save
+   * that moves the provider to another server drops it. The provider then reads as not configured
+   * until a key is entered for the new URL. This is the rule the vLLM key follows
+   * (`InferenceController.vllmApiKeyToSave`), with servers compared by {@link isSameServer}.
+   */
+  private storedKeyKept(existing: CloudProviderConfig | undefined, baseUrl: string | undefined): string | undefined {
+    if (!existing?.apiKey || !baseUrl) return existing?.apiKey;
+    // Where requests go now. `resolveConfig` filled in the provider's default when none was saved.
+    return isSameServer(baseUrl, existing.baseUrl) ? existing.apiKey : undefined;
+  }
+
   private resolveConfig(config: CloudProviderConfig): CloudProviderConfig {
     return {
       ...config,
@@ -382,7 +499,15 @@ export class CloudFallbackService implements OnModuleInit {
     };
   }
 
-  private async persist(): Promise<void> {
-    await this.configuration.setInferenceCloudProviders(this.listProviders());
+  /**
+   * Write the providers to settings.json, one write at a time and each with the list as it is when
+   * the write starts. Calls can overlap (a save, then a removal), and a write that lands after a
+   * later one would put the removed key back on disk. Ordering them here keeps the last write the
+   * newest list whether or not settings.json writes are also queued elsewhere.
+   */
+  private persist(): Promise<void> {
+    const write = this.persistChain.then(() => this.configuration.setInferenceCloudProviders(this.listProviders()));
+    this.persistChain = write.catch(() => undefined);
+    return write.then(() => undefined);
   }
 }

@@ -408,8 +408,8 @@ beta$ cihub pool log --limit 5 <env>
 **and** beta records the matching inbound row. The header is the per-request answer and the one an
 app can read; the log is the operator's history of it. The response body alone is not evidence — the
 same model on either node produces the same shape.
-**FAIL** `X-Hub-Pool-Served-By: local` (and `NODE local` in the log) means core somehow has the model —
-recheck 1.4. No `X-Hub-Pool-*` headers at all means core is on a build that predates them. A 502
+**FAIL** `X-Hub-Pool-Served-By: local` (and `NODE <core-node>` in the log) means core somehow has the model.
+Recheck 1.4. No `X-Hub-Pool-*` headers at all means core is on a build that predates them. A 502
 (`No pool node currently has model …`) means beta's cached capabilities do not list it: check
 `cihub pool peers` on core for `<model-beta>` under "Models on each peer", and wait a poll interval.
 
@@ -422,11 +422,11 @@ core$ curl -si $HUB/v1/chat/completions \
 core$ cihub pool log --limit 5 <env>
 ```
 
-**Expected** — `X-Hub-Pool-Served-By: local` on the response, and `NODE local`, `ATT 1/2` in the log
+**Expected** `X-Hub-Pool-Served-By: local` on the response and `NODE <core-node>`, `ATT 1/2` in the log
 (two candidates were ranked; the local one won). The header says `local`, not core's own MagicDNS
-name, by design.
+name, by design. The log prints that name.
 
-**PASS** `X-Hub-Pool-Served-By: local` and `NODE local` with `ATT 1/2`. `ATT 1/2` is the meaningful
+**PASS** `X-Hub-Pool-Served-By: local` and `NODE <core-node>` with `ATT 1/2`. `ATT 1/2` is the meaningful
 half: it proves beta *was* a candidate and lost on rank rather than being invisible.
 **FAIL** `ATT 1/1` means beta was never a candidate — its cached capabilities are missing or stale
 (`cihub pool peers` on core). `NODE <beta-node>` on an idle core means the affinity handicap is not being
@@ -454,7 +454,7 @@ core$ cihub pool log --limit 5 <env>
 **Expected** — the second request is still served locally: one queued request is exactly the head start
 `poolLocalAffinity=1` grants, so it ties, and local wins the tie.
 
-**PASS** `NODE local` for the second request.
+**PASS** `NODE <core-node>` for the second request.
 **FAIL** `NODE <beta-node>` at a queue depth of 1 means the handicap is off by one — the setting says work
 should stay local until a peer is *more* than one request emptier.
 
@@ -492,7 +492,7 @@ core$ cihub pool log --limit 5 <env>
 **PASS**, precisely: `cihub pool status` on core showed `In flight 2` before the third request, and the
 newest `DIR out` entry in core's log names `NODE <beta-node>` with `ATT 1/2` and `✓ served`, and beta's
 own log carries the matching `DIR in` row from `<core-node>`.
-**FAIL** the third request shows `NODE local`. That is the headline defect: a saturated node queueing
+**FAIL** the third request shows `NODE <core-node>`. That is the headline defect: a saturated node queueing
 behind itself while a paired peer sits idle. Before filing it, confirm from `cihub pool status` that core
 really read `In flight 2` — two requests that finished early make the test vacuous — and that beta's
 `QUEUE` column reads `0` or `-`.
@@ -514,7 +514,7 @@ core$ cihub pool log --limit 12 <env>
 **Expected** — the first one or two land locally, then work starts alternating as each forward raises
 beta's counted depth and each completion lowers core's.
 
-**PASS** at least two of the six show `NODE <beta-node>`, and at least one shows `NODE local`. A split is
+**PASS** at least two of the six show `NODE <beta-node>` and at least one shows `NODE <core-node>`. A split is
 what the ranking should produce; all-six-on-one-node in either direction is the failure.
 **FAIL** all six local (no handoff under load) or all six remote (the affinity handicap is not applied).
 
@@ -538,8 +538,8 @@ core$ cihub pool log --limit 5 <env>
 engine is down), so it may be ranked first and then fail; the log records **one** entry with
 `↳ failed over from <beta-node>` rather than two entries.
 
-**PASS** HTTP 200, and either `NODE local ATT 1/2` (beta ranked second and was never tried) or
-`NODE local ATT 2/2` with the `↳ failed over from` line.
+**PASS** HTTP 200 and either `NODE <core-node> ATT 1/2` (beta ranked second and was never tried) or
+`NODE <core-node> ATT 2/2` with the `↳ failed over from` line.
 **FAIL** a 502 reaching the client. A dead engine on one node must never fail a request the other node
 could serve.
 
@@ -821,6 +821,29 @@ without holding its token must still fail.
 **PASS** all three print `401`, and core's routing log gains no `DIR in` row.
 **FAIL** anything other than 401. Being on the tailnet must not by itself grant use of a peer-facing
 route; only a device this Hub has explicitly paired with can.
+
+### 9.3 A tailnet device needs a key, when the Hub is set to ask for one
+
+Only meaningful with `HUB_INFERENCE_TAILNET_AUTH=require-key` in the Hub's environment (restart the Hub
+after setting it). Without it the tailnet is inside the appliance by design and the first command
+returns 200. Mint a key first with `cihub api-key create --scope inference`.
+
+```bash
+$ curl -s -o /dev/null -w '%{http_code}\n' https://<core-node>/api/inference/pool/v1/models
+$ curl -s -o /dev/null -w '%{http_code}\n' https://<core-node>/api/inference/pool/v1/models \
+  -H 'Authorization: Bearer <inference-key>'
+core$ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:5002/api/inference/pool/v1/models
+```
+
+**Expected** with the setting on: `401`, `200`, `200`. The refusal body names the tailnet
+(`"code":"missing_api_key"`, message "…requires an API key from callers on the tailnet…") and the log line
+says `origin=tailnet-address`. The third is a call from the node itself, which stays inside.
+
+**PASS** `401`, `200`, `200`; and the pool still routes (`cihub pool log` keeps gaining rows from a paired
+peer, whose traffic is signed and never touches this guard).
+**FAIL** the first returns 200 (the proxy did not see the tailnet client: check that `tailscale serve`
+forwards `X-Forwarded-For`, or that the caller's tailnet address is the request's source) or the third
+returns 401 (a container or local caller was counted as tailnet).
 
 ---
 

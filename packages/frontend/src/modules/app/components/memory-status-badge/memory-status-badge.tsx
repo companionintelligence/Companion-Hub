@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils';
-import { CheckCircle2, Download, Loader2, PowerOff, Unplug } from 'lucide-react';
+import { CheckCircle2, Download, Loader2, PowerOff, Unplug, Users } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useMemoryConnection } from '../../helpers/use-memory-connection';
 
@@ -14,10 +14,14 @@ import { useMemoryConnection } from '../../helpers/use-memory-connection';
  * prerequisite for running the app, so the copy stays factual rather than
  * instructing. The Connect/Disconnect action lives in the header action row (see
  * AppActions); this is status only.
+ *
+ * A connected app whose Companion Memory is stopped reads "offline", not "connected": the app keeps
+ * its key, but it can't reach its memory until Memory runs again (#2315). The tooltip says the
+ * connection is kept.
  */
 export function MemoryStatusBadge({ appUrn }: { appUrn: string }) {
   const { t } = useTranslation();
-  const { applicable, connected, memoryInstalled, providerStatus } = useMemoryConnection(appUrn);
+  const { applicable, connected, connectedByOther, memoryInstalled, providerStatus } = useMemoryConnection(appUrn);
 
   if (!applicable) {
     return null;
@@ -26,16 +30,39 @@ export function MemoryStatusBadge({ appUrn }: { appUrn: string }) {
   const pill = 'inline-flex shrink-0 items-center rounded-full border px-2 py-1 text-[11px] font-medium';
   const mutedPill = 'border-border/70 bg-muted/30 text-muted-foreground';
 
-  // A live connection outranks a merely-down provider: the app holds a valid key,
-  // so a momentarily starting/offline ci-memory shouldn't downgrade it to "not
-  // connected". But require the provider to still exist — if ci-memory was
-  // uninstalled (absent) the connection is dead, so fall through to "not installed"
-  // rather than showing a green "connected" pill for a provider that is gone.
+  // A stopped ci-memory reads "offline" whether or not the app is connected: a connected app keeps
+  // its key but can't reach its memory (#2315), so only the tooltip differs. The backend reports
+  // offline only for an installed provider, so this never hides "not installed".
+  if (providerStatus === 'offline') {
+    const keepsConnection = connected || connectedByOther;
+    return (
+      <span className={cn(pill, mutedPill)} title={t(keepsConnection ? 'MEMORY_CONNECT_CONNECTED_OFFLINE_DESC' : 'MEMORY_CONNECT_OFFLINE_DESC')}>
+        <PowerOff className="mr-1 h-3.5 w-3.5" />
+        {t('MEMORY_CONNECT_BADGE_OFFLINE')}
+      </span>
+    );
+  }
+
+  // A live connection outranks a provider that is only starting again: the app holds its key, so a
+  // restarting ci-memory doesn't downgrade it to "not connected". Require the provider to still
+  // exist: if ci-memory was uninstalled (absent) the connection is dead, so fall through to "not
+  // installed" rather than showing a green "connected" pill for a provider that is gone.
   if (connected && memoryInstalled) {
     return (
       <span className={cn(pill, 'border-success/30 bg-success/10 text-success')}>
         <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
         {t('MEMORY_CONNECT_BADGE_CONNECTED')}
+      </span>
+    );
+  }
+
+  // Another person on this Hub connected the app, so it has memory, just not this person's. "Not
+  // connected" here would hide that a Connect replaces their connection.
+  if (connectedByOther && memoryInstalled) {
+    return (
+      <span className={cn(pill, 'border-success/30 bg-success/10 text-success')} title={t('MEMORY_CONNECT_CONNECTED_BY_OTHER_DESC')}>
+        <Users className="mr-1 h-3.5 w-3.5" />
+        {t('MEMORY_CONNECT_BADGE_CONNECTED_BY_OTHER')}
       </span>
     );
   }
@@ -55,15 +82,6 @@ export function MemoryStatusBadge({ appUrn }: { appUrn: string }) {
       <span className={cn(pill, mutedPill)} title={t('MEMORY_CONNECT_STARTING_DESC')}>
         <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
         {t('MEMORY_CONNECT_BADGE_STARTING')}
-      </span>
-    );
-  }
-
-  if (providerStatus === 'offline') {
-    return (
-      <span className={cn(pill, mutedPill)} title={t('MEMORY_CONNECT_OFFLINE_DESC')}>
-        <PowerOff className="mr-1 h-3.5 w-3.5" />
-        {t('MEMORY_CONNECT_BADGE_OFFLINE')}
       </span>
     );
   }

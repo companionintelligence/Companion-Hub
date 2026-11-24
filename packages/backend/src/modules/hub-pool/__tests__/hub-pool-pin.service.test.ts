@@ -103,8 +103,42 @@ describe('resolvePinFor', () => {
     expect(resolvePinFor([defaultPin, modelPin], 'other:1b')).toBe(defaultPin);
   });
 
-  it('compares the model verbatim, because candidate matching does', () => {
+  it('treats a case variant as a different model, because candidate matching does', () => {
     expect(resolvePinFor([modelPin], 'Llama3.2:3B')).toBeNull();
+  });
+
+  it.each([
+    ['nomic-embed-text', 'nomic-embed-text'],
+    ['nomic-embed-text', 'nomic-embed-text:latest'],
+    ['nomic-embed-text:latest', 'nomic-embed-text'],
+    ['nomic-embed-text:latest', 'nomic-embed-text:latest'],
+    ['hf.co/org/repo', 'hf.co/org/repo:latest'],
+  ])('applies a pin on %s to a request for %s', (pinned, requested) => {
+    const saved = pin({ scope: 'model', model: pinned, targetKind: 'peer', peerId: 'peer-a' });
+
+    expect(resolvePinFor([defaultPin, saved], requested)).toBe(saved);
+  });
+
+  it.each([
+    ['gemma3:270m', 'gemma3:1b'],
+    ['gemma3:270m', 'gemma3'],
+    ['gemma3:270m', 'gemma3:latest'],
+    ['gemma3', 'gemma3:270m'],
+    ['gemma3:latest', 'gemma3:270m'],
+  ])('does not apply a pin on %s to a request for %s', (pinned, requested) => {
+    expect(resolvePinFor([pin({ scope: 'model', model: pinned, targetKind: 'peer', peerId: 'peer-a' })], requested)).toBeNull();
+  });
+
+  it('falls back to the default pin when the only model pin is on another tag', () => {
+    expect(resolvePinFor([defaultPin, pin({ scope: 'model', model: 'gemma3:270m' })], 'gemma3:1b')).toBe(defaultPin);
+  });
+
+  it('keeps each spelling on its own pin when both were saved', () => {
+    const onBare = pin({ scope: 'model', model: 'nomic-embed-text', targetKind: 'peer', peerId: 'peer-a' });
+    const onLatest = pin({ scope: 'model', model: 'nomic-embed-text:latest', targetKind: 'peer', peerId: 'peer-b' });
+
+    expect(resolvePinFor([onBare, onLatest], 'nomic-embed-text:latest')).toBe(onLatest);
+    expect(resolvePinFor([onLatest, onBare], 'nomic-embed-text')).toBe(onBare);
   });
 });
 
@@ -125,6 +159,60 @@ describe('upsertPoolPin / removePoolPin', () => {
     expect(removePoolPin([defaultPin, modelPin], 'model', 'a:1b')).toEqual([defaultPin]);
     expect(removePoolPin([defaultPin, modelPin], 'default')).toEqual([modelPin]);
     expect(removePoolPin([defaultPin, modelPin], 'model', 'not-pinned')).toEqual([defaultPin, modelPin]);
+  });
+
+  it('removes every copy of the addressed pin, so none keeps steering after a removal', () => {
+    expect(removePoolPin([defaultPin, pin(), modelPin], 'default')).toEqual([modelPin]);
+    expect(removePoolPin([defaultPin, modelPin, pin({ scope: 'model', model: 'a:1b' })], 'model', 'a:1b')).toEqual([defaultPin]);
+  });
+
+  describe('the two spellings of :latest', () => {
+    const onBare = pin({ scope: 'model', model: 'nomic-embed-text', targetKind: 'peer', peerId: 'peer-a' });
+    const onLatest = pin({ scope: 'model', model: 'nomic-embed-text:latest', targetKind: 'peer', peerId: 'peer-b' });
+
+    it.each([
+      ['nomic-embed-text:latest', onBare],
+      ['nomic-embed-text', onLatest],
+    ])('saving %s replaces the pin saved under the other spelling, in place', (spelling, stored) => {
+      const saved = pin({ scope: 'model', model: spelling });
+
+      expect(upsertPoolPin([defaultPin, stored, modelPin], saved)).toEqual([defaultPin, saved, modelPin]);
+    });
+
+    it('saving updates only the pin spelled the same when both spellings are stored', () => {
+      const saved = pin({ scope: 'model', model: 'nomic-embed-text:latest' });
+
+      expect(upsertPoolPin([onBare, onLatest], saved)).toEqual([onBare, saved]);
+    });
+
+    it.each([
+      ['nomic-embed-text:latest', onBare],
+      ['nomic-embed-text', onLatest],
+    ])('removing %s removes the pin saved under the other spelling', (spelling, stored) => {
+      expect(removePoolPin([defaultPin, stored], 'model', spelling)).toEqual([defaultPin]);
+    });
+
+    it('removing takes only the pin spelled the same when both spellings are stored', () => {
+      expect(removePoolPin([onBare, onLatest], 'model', 'nomic-embed-text')).toEqual([onLatest]);
+      expect(removePoolPin([onBare, onLatest], 'model', 'nomic-embed-text:latest')).toEqual([onBare]);
+    });
+
+    it.each([
+      ['gemma3:270m', 'gemma3:1b'],
+      ['gemma3:270m', 'gemma3'],
+      ['gemma3', 'gemma3:270m'],
+    ])('a pin on %s is neither replaced nor removed by %s', (stored, named) => {
+      const existing = pin({ scope: 'model', model: stored });
+      const other = pin({ scope: 'model', model: named });
+
+      expect(upsertPoolPin([existing], other)).toEqual([existing, other]);
+      expect(removePoolPin([existing], 'model', named)).toEqual([existing]);
+    });
+
+    it('leaves the default pin out of it and a model pin out of the default', () => {
+      expect(removePoolPin([defaultPin, onBare], 'default')).toEqual([onBare]);
+      expect(upsertPoolPin([onBare], defaultPin)).toEqual([onBare, defaultPin]);
+    });
   });
 });
 
@@ -216,6 +304,25 @@ describe('resolveStatusPins', () => {
     expect(resolveStatusPins([pin({ scope: 'model', model: 'llama3.2:3b' })], [], localBackends)).toEqual([
       { scope: 'model', model: 'llama3.2:3b', targetKind: 'local', mode: 'prefer', nodeFqdn: null, targetAvailable: true },
     ]);
+  });
+
+  it('reports a pin on the bare name as available when the engine lists the model under :latest', () => {
+    const backends = [{ type: 'ollama' as const, healthy: true, modelsLoaded: ['nomic-embed-text:latest'] }];
+
+    expect(resolveStatusPins([pin({ scope: 'model', model: 'nomic-embed-text' })], [], backends)[0]?.targetAvailable).toBe(true);
+  });
+
+  it('reports a pin on :latest as available when the node lists the bare name', () => {
+    const backends = [{ type: 'ollama' as const, healthy: true, modelsLoaded: ['nomic-embed-text'] }];
+
+    expect(resolveStatusPins([pin({ scope: 'model', model: 'nomic-embed-text:latest' })], [], backends)[0]?.targetAvailable).toBe(true);
+  });
+
+  it('reports a pin on one tag as unavailable when the node holds only another tag', () => {
+    const backends = [{ type: 'ollama' as const, healthy: true, modelsLoaded: ['gemma3:270m'] }];
+
+    expect(resolveStatusPins([pin({ scope: 'model', model: 'gemma3:1b' })], [], backends)[0]?.targetAvailable).toBe(false);
+    expect(resolveStatusPins([pin({ scope: 'model', model: 'gemma3' })], [], backends)[0]?.targetAvailable).toBe(false);
   });
 
   it('reports a local pin for a model this node does not have as unavailable', () => {
@@ -316,6 +423,25 @@ describe('HubPoolPinService', () => {
 
     await expect(service.upsert({ scope: 'model', model: 'one-too-many', targetKind: 'local' })).rejects.toBeInstanceOf(BadRequestException);
     await expect(service.upsert({ scope: 'model', model: 'model-0', targetKind: 'local' })).resolves.toHaveLength(MAX_POOL_PINS);
+  });
+
+  it('replaces the pin under the other spelling at the cap instead of refusing a new one', async () => {
+    stored = [
+      pin({ scope: 'model', model: 'nomic-embed-text' }),
+      ...Array.from({ length: MAX_POOL_PINS - 1 }, (_unused, index) => pin({ scope: 'model', model: `model-${index}` })),
+    ];
+
+    const pins = await service.upsert({ scope: 'model', model: 'nomic-embed-text:latest', targetKind: 'local' });
+
+    expect(pins).toHaveLength(MAX_POOL_PINS);
+    expect(pins[0]?.model).toBe('nomic-embed-text:latest');
+  });
+
+  it('removes and saves settings when the pin is stored under the other spelling', async () => {
+    stored = [pin({ scope: 'model', model: 'nomic-embed-text:latest' })];
+
+    expect(await service.remove('model', 'nomic-embed-text')).toEqual([]);
+    expect(configuration.setHubPoolPreferences).toHaveBeenCalledWith({ poolPins: [] });
   });
 
   it('does not rewrite settings.json when removing a pin that is not there', async () => {

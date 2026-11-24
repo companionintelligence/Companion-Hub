@@ -12,6 +12,8 @@ const fixtures = vi.hoisted(() => ({
   tailscaleStatus: { installed: false, connected: false, ip: null, hostname: null, backendState: null } as Record<string, unknown>,
   tailscaleFails: false,
   cloudflareFails: false,
+  tunnelEnabled: true,
+  hardware: { gpu: { containerHostKind: 'docker-desktop' } } as Record<string, unknown>,
 }));
 
 vi.mock('react-i18next', () => {
@@ -44,7 +46,9 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
     queryKey: ['cf'],
     queryFn: async () => {
       if (fixtures.cloudflareFails) throw new Error('tunnel status failed');
-      return { tunnelEnabled: true, tunnelId: 'fe950a10-8659', message: 'Tunnel is managed by CI-Cloud.' };
+      return fixtures.tunnelEnabled
+        ? { tunnelEnabled: true, tunnelId: 'fe950a10-8659', message: 'Tunnel is managed by CI-Cloud.' }
+        : { tunnelEnabled: false, tunnelId: null, message: 'Tunnel is managed by CI-Cloud.' };
     },
   }),
   getStatus3QueryKey: () => ['ts'],
@@ -65,6 +69,7 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
     queryFn: async () => ({ entries: [], summary: { recorded: 0, capacity: 200, served: 0, failed: 0, failovers: 0, lastAt: null } }),
   }),
   updatePoolSettingsMutation: () => ({ mutationFn: vi.fn() }),
+  getHardwareOptions: () => ({ queryKey: ['hardware'], queryFn: async () => fixtures.hardware }),
 }));
 
 const renderContainer = () => {
@@ -105,6 +110,8 @@ describe('NetworkSettingsContainer', () => {
     fixtures.tailscaleStatus = { installed: false, connected: false, ip: null, hostname: null, backendState: null };
     fixtures.tailscaleFails = false;
     fixtures.cloudflareFails = false;
+    fixtures.tunnelEnabled = true;
+    fixtures.hardware = { gpu: { containerHostKind: 'docker-desktop' } };
   });
 
   it('renders both cards with status badges and the tunnel id', async () => {
@@ -118,6 +125,21 @@ describe('NetworkSettingsContainer', () => {
     expect(screen.getByText('SETTINGS_NETWORK_ACTIVE')).toBeTruthy();
     expect(screen.getByText('fe950a10-8659')).toBeTruthy();
     expect(screen.getByText('SETTINGS_NETWORK_TAILSCALE_NOT_INSTALLED_DESC')).toBeTruthy();
+  });
+
+  it('says a live session cannot run Tailscale, in place of the compose advice', async () => {
+    const tauriWindow = window as Window & { __TAURI_INTERNALS__?: { invoke: (command: string) => Promise<unknown> } };
+    tauriWindow.__TAURI_INTERNALS__ = {
+      invoke: vi.fn().mockResolvedValue({ live: true, ollamaBlocked: true, tailscaleBlocked: true }),
+    };
+    try {
+      renderContainer();
+
+      expect(await screen.findByText('SETTINGS_NETWORK_TAILSCALE_LIVE_SESSION')).toBeTruthy();
+      expect(screen.queryByText('SETTINGS_NETWORK_TAILSCALE_NOT_INSTALLED_DESC')).toBeNull();
+    } finally {
+      delete tauriWindow.__TAURI_INTERNALS__;
+    }
   });
 
   it('shows an error and a retry when the VPN status cannot be loaded, not Inactive', async () => {
@@ -135,6 +157,24 @@ describe('NetworkSettingsContainer', () => {
 
     await waitFor(() => expect(within(screen.getByTestId('private-vpn-card')).getByText('SETTINGS_NETWORK_INACTIVE')).toBeTruthy());
     expect(within(screen.getByTestId('private-vpn-card')).queryByTestId('tailscale-status-error')).toBeNull();
+  });
+
+  it("says what to do when there is no tunnel, and never shows the status route's fixed message", async () => {
+    fixtures.tunnelEnabled = false;
+    renderContainer();
+
+    const card = await screen.findByTestId('cloudflare-tunnel-card');
+    await waitFor(() => expect(within(card).getByTestId('cloudflare-tunnel-none').textContent).toBe('SETTINGS_NETWORK_CLOUDFLARE_NONE'));
+    expect(within(card).getByText('SETTINGS_NETWORK_INACTIVE')).toBeTruthy();
+    expect(within(card).queryByText('Tunnel is managed by CI-Cloud.')).toBeNull();
+  });
+
+  it('shows no "no tunnel" line while the tunnel is up', async () => {
+    renderContainer();
+
+    const card = await screen.findByTestId('cloudflare-tunnel-card');
+    await waitFor(() => expect(within(card).getByText('fe950a10-8659')).toBeTruthy());
+    expect(within(card).queryByTestId('cloudflare-tunnel-none')).toBeNull();
   });
 
   it('shows an error and a retry when the tunnel status cannot be loaded, not Inactive', async () => {
@@ -238,6 +278,27 @@ describe('NetworkSettingsContainer', () => {
 
       await screen.findByTestId('private-vpn-card');
       expect(screen.queryByTestId('tailscale-serve-refused')).toBeNull();
+    });
+  });
+
+  describe('when the Hub runs on the Docker engine inside WSL (CI-Hub#1933)', () => {
+    it('says other devices on the network cannot open the Hub', async () => {
+      // WSL forwards the Hub's ports to this PC's loopback address only, and nothing said so.
+      fixtures.hardware = { gpu: { containerHostKind: 'wsl-engine' } };
+
+      renderContainer();
+
+      const card = await screen.findByTestId('local-network-card');
+      expect(card).toHaveTextContent('SETTINGS_NETWORK_LOCAL_TITLE');
+      expect(card).toHaveTextContent('SETTINGS_NETWORK_LOCAL_THIS_PC_ONLY');
+      expect(card).toHaveTextContent('SETTINGS_NETWORK_LOCAL_WSL_ENGINE_DESC');
+    });
+
+    it('says nothing about it on another engine', async () => {
+      renderContainer();
+
+      await screen.findByTestId('cloudflare-tunnel-card');
+      await waitFor(() => expect(screen.queryByTestId('local-network-card')).toBeNull());
     });
   });
 });

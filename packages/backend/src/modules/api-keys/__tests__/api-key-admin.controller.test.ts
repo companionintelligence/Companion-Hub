@@ -13,14 +13,14 @@ const portalPush = { hubPrincipal: 'portal-device', user: { id: 1 } } as unknown
 
 describe('ApiKeyAdminController', () => {
   let admin: MockProxy<ApiKeyAdminService>;
-  let whois: { isOrgManager: ReturnType<typeof vi.fn> };
+  let whois: { isOrgManager: ReturnType<typeof vi.fn>; isClaimingOperator: ReturnType<typeof vi.fn> };
   let moduleRef: MockProxy<ModuleRef>;
   let logger: MockProxy<LoggerService>;
   let controller: ApiKeyAdminController;
 
   beforeEach(() => {
     admin = mock<ApiKeyAdminService>();
-    whois = { isOrgManager: vi.fn(async () => false) };
+    whois = { isOrgManager: vi.fn(async () => false), isClaimingOperator: vi.fn(async () => false) };
     moduleRef = mock<ModuleRef>();
     moduleRef.get.mockImplementation(((token: unknown) => (token === MarketplaceWhoIsService ? whois : undefined)) as never);
     logger = mock<LoggerService>();
@@ -47,14 +47,26 @@ describe('ApiKeyAdminController', () => {
   /*
    * The list is a database read. Who may give full capability asks the Portal,
    * so it has its own route: a slow or unreachable Portal must not hold the list.
+   * WhoIs is handed to the list only to read the role the Hub stored for each
+   * key's creator (`storedHubManageVerdictFor`), which asks the Portal nothing.
    */
   describe('the key list', () => {
     it('lists keys without asking the Portal anything', async () => {
       admin.listKeys.mockResolvedValue([]);
 
       await expect(controller.listKeys()).resolves.toEqual({ keys: [] });
-      expect(moduleRef.get).not.toHaveBeenCalled();
+      expect(admin.listKeys).toHaveBeenCalledWith(whois);
       expect(whois.isOrgManager).not.toHaveBeenCalled();
+    });
+
+    it('still lists keys when WhoIs cannot be resolved', async () => {
+      moduleRef.get.mockImplementation(() => {
+        throw new Error('not provided');
+      });
+      admin.listKeys.mockResolvedValue([]);
+
+      await expect(controller.listKeys()).resolves.toEqual({ keys: [] });
+      expect(admin.listKeys).toHaveBeenCalledWith(null);
     });
   });
 
@@ -109,6 +121,20 @@ describe('ApiKeyAdminController', () => {
       await controller.updateKey(3, { capability: 'full' } as never, session());
 
       expect(whois.isOrgManager).toHaveBeenCalledWith(7);
+      expect(admin.setKeyCapability).toHaveBeenCalledWith(3, 'full');
+    });
+
+    // The person who set the Hub up keeps full rights on it, as HubManagerGuard lets them through.
+    it('lets the operator who claimed the Hub create and raise a full key, whatever their role', async () => {
+      whois.isClaimingOperator.mockResolvedValue(true);
+
+      await controller.createKey({ name: 'n8n', capability: 'full', scope: 'mcp' } as never, session());
+      await controller.updateKey(3, { capability: 'full' } as never, session());
+      await expect(controller.grantableCapabilities(session())).resolves.toEqual({ canGrantFull: true });
+
+      expect(whois.isClaimingOperator).toHaveBeenCalledWith(7);
+      expect(whois.isOrgManager).not.toHaveBeenCalled();
+      expect(admin.createKey).toHaveBeenCalledWith('n8n', 'full', 7, 'mcp');
       expect(admin.setKeyCapability).toHaveBeenCalledWith(3, 'full');
     });
 

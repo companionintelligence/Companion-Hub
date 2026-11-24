@@ -42,6 +42,40 @@ describe('syncTauriWindowBackground', () => {
     expect(currentWindow?.setBackgroundColor).toHaveBeenCalledWith(SHELL_BACKGROUND.light);
   });
 
+  it('hands the shell color to the Android system-bar bridge when the app provides one', async () => {
+    const setBackgroundColor = vi.fn();
+    const host = window as Window & { CiHubSystemBars?: { setBackgroundColor(color: string): void } };
+    host.CiHubSystemBars = { setBackgroundColor };
+    document.documentElement.classList.add('dark');
+    const { syncTauriWindowBackground, SHELL_BACKGROUND } = await import('./tauri-window-theme');
+
+    try {
+      await syncTauriWindowBackground();
+    } finally {
+      delete host.CiHubSystemBars;
+    }
+
+    expect(setBackgroundColor).toHaveBeenCalledWith(SHELL_BACKGROUND.dark);
+  });
+
+  it('paints the Android system bars with the background the page is showing, not the theme class', async () => {
+    const setBackgroundColor = vi.fn();
+    const host = window as Window & { CiHubSystemBars?: { setBackgroundColor(color: string): void } };
+    host.CiHubSystemBars = { setBackgroundColor };
+    document.documentElement.classList.add('dark');
+    document.documentElement.style.backgroundColor = 'rgb(243, 250, 247)';
+    const { syncTauriWindowBackground } = await import('./tauri-window-theme');
+
+    try {
+      await syncTauriWindowBackground();
+    } finally {
+      delete host.CiHubSystemBars;
+      document.documentElement.style.backgroundColor = '';
+    }
+
+    expect(setBackgroundColor).toHaveBeenCalledWith('#f3faf7');
+  });
+
   it('swallows permission errors instead of rejecting', async () => {
     (window as Window & { __TAURI_INTERNALS__?: object }).__TAURI_INTERNALS__ = {};
     getCurrentWindow.mockReturnValue({

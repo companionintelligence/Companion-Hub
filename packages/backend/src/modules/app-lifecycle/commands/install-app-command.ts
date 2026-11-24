@@ -1,24 +1,34 @@
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { SSEService } from '@/core/sse/sse.service';
+import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { AppsRepository } from '@/modules/apps/apps.repository';
+import { getEffectiveExposureMode } from '@/modules/apps/app-exposure.helpers';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
 import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
 import { DockerService } from '@/modules/docker/docker.service';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
+import { AppVolumeArchiveService } from '@/modules/docker/app-volume-archive.service';
 import { EnvUtils } from '@/modules/env/env.utils';
+import { FilesystemService } from '@/core/filesystem/filesystem.service';
+import { ImageSizeService } from '@/modules/marketplace/image-size.service';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { PortManagerService } from '@/modules/network/port-manager.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@ci-hub/common/types';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
-import { resolveBrowserHost } from '@/common/helpers/browser-host';
+import { withTimeout } from '@/common/helpers/with-timeout';
 import { AppLifecycleCommand, type CommandExecutionContext } from './command';
+import type { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
 import { AppLifecycleError, type AppCommandResult } from './app-lifecycle-errors';
+import { hostPortMoveOf } from './main-host-port';
+import { pullAppImagesRecorded, uniqueServiceImages } from './pull-app-images';
+import { describeLeftovers, removeAppDataWithPrivilegedFallback } from './remove-app-data';
 import { isAbortError, throwIfAborted } from '@/common/abort';
-import { parseComposeJson } from '@ci-hub/common/schemas';
+import { type AppSecurityGrants, type HostPortMove, parseComposeJson } from '@ci-hub/common/schemas';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
+import { securityGrantsFor } from '@/modules/apps/security-grants';
 import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
 import { McpProbeService } from '@/modules/mcp/mcp-probe.service';
 import { buildComposePortRequests, buildMainPortRequest, type PortRequestInput } from '../planning/port-requests';
@@ -29,10 +39,15 @@ const DOWNLOAD_PROGRESS_START = 60;
 const DOWNLOAD_PROGRESS_END = 99;
 const DOWNLOAD_PROGRESS_MAX_DURING_PULL = 98;
 const DOWNLOAD_PROGRESS_EMIT_INTERVAL_MS = 250;
+/**
+ * The bar moves in whole percents, so a large download can sit on one for minutes. The size
+ * under it still moves, but no more often than this.
+ */
+const DOWNLOAD_SIZE_EMIT_INTERVAL_MS = 2_000;
 
-export function extractComposeImages(composeContent: unknown): string[] {
-  const { services } = parseComposeJson(composeContent);
-  return [...new Set(services.map((service) => service.image?.trim()).filter((image): image is string => Boolean(image)))];
+export function extractComposeImages(composeContent: unknown, grants?: AppSecurityGrants): string[] {
+  const { services } = parseComposeJson(composeContent, grants);
+  return uniqueServiceImages(services);
 }
 
 export function mapPullProgressToInstallProgress(completedBytes: number, totalBytes: number): number {
@@ -61,6 +76,15 @@ async function getOpenclawFallbackEntrypoint(): Promise<string> {
   }
 }
 
+/** What the app already had on this Hub before an install wrote anything. A cancel leaves it there. */
+type EarlierAppData = { files: boolean; volumes: boolean };
+
+/** Both checks are local calls. A Docker engine or a disk that stops answering must not hold up the install queue. */
+const EARLIER_DATA_CHECK_TIMEOUT_MS = 15_000;
+
+/** A revoke is one local database write. A database that does not answer must not hold up the teardown. */
+const KEY_REVOKE_TIMEOUT_MS = 15_000;
+
 export class InstallAppCommand extends AppLifecycleCommand {
   public async execute(appUrn: AppUrn, form: AppEventFormInput, ctx?: CommandExecutionContext): Promise<AppCommandResult> {
     const logger = this.moduleRef.get(LoggerService, { strict: false });
@@ -72,17 +96,30 @@ export class InstallAppCommand extends AppLifecycleCommand {
     const envUtils = this.moduleRef.get(EnvUtils, { strict: false });
     const sseService = this.moduleRef.get(SSEService, { strict: false });
     const appsRepository = this.moduleRef.get(AppsRepository, { strict: false });
-
-    const emitProgress = async (progress: number) => {
-      if (ctx?.updateProgress) {
-        await ctx.updateProgress(progress).catch(() => null);
+    // Only for the download's size under the progress bar: an install never fails for want of it.
+    const imageSizeService = (() => {
+      try {
+        return this.moduleRef.get(ImageSizeService, { strict: false });
+      } catch {
+        return undefined;
       }
+    })();
+
+    // The job's last recorded percent. A tick that only moves the download size leaves it alone.
+    let jobProgress: number | undefined;
+    const emitProgress = async (progress: number, download?: { downloadedBytes: number; totalBytes: number }) => {
+      // Sent before the writes below: the pull's ticks are not awaited, and a tick that waited on
+      // a write could reach the page after a later one, or after the install's last event.
       if (sseService) {
         // No `appUrn` third argument: that publishes to the `app:<urn>` topic, which
         // nothing subscribes to (`sse.controller.ts` opens `getTopicObservable('app')`
         // with no urn), so every install-progress tick was dropped before it reached
         // the progress bar in `app-sse-cache.ts`.
-        sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'installing', progress });
+        sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'installing', progress, ...download });
+      }
+      if (ctx?.updateProgress && progress !== jobProgress) {
+        jobProgress = progress;
+        await ctx.updateProgress(progress).catch(() => null);
       }
       if (appsRepository) {
         const app = await appsRepository.getAppByUrn(appUrn);
@@ -99,17 +136,21 @@ export class InstallAppCommand extends AppLifecycleCommand {
         throw new Error(`Invalid marketplace compose payload for ${appUrn}`);
       }
       composeToInstallContent = composeToInstall.content;
-      parseComposeJson(composeToInstallContent);
+      parseComposeJson(composeToInstallContent, securityGrantsFor(appUrn));
     } catch (err) {
       logger.error(`Error parsing docker-compose.yml for app ${appUrn} from marketplace repository. Are you running the latest version of CI Hub?`);
       return this.handleAppError(err, appUrn, 'update_error');
     }
 
+    const refusedHostPorts = new Set<number>();
+    // Read before this install writes anything: what is there now is data it must not take with it on a cancel.
+    const earlierData = await this.readEarlierData(appUrn);
+
     try {
       ctx?.setPhase('preparing');
       await this.assertMarketplaceEntitlement(appUrn, 'install');
       await this.assertPlanConfigAndArchitecture(appUrn, form);
-      const appImages = extractComposeImages(composeToInstallContent);
+      const appImages = extractComposeImages(composeToInstallContent, securityGrantsFor(appUrn));
       await emitProgress(5);
       if (process.getuid && process.getgid) {
         logger.info(`Installing app ${appUrn} as User ID: ${process.getuid()}, Group ID: ${process.getgid()}`);
@@ -152,7 +193,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
           const composeJson = await appFilesManager.getDockerComposeJson(appUrn);
           if (composeJson.content) {
             try {
-              portRequests.push(...buildComposePortRequests(composeJson.content));
+              portRequests.push(...buildComposePortRequests(composeJson.content, securityGrantsFor(appUrn)));
             } catch (parseErr) {
               logger.warn(`Failed to parse compose for extra ports: ${parseErr}`);
             }
@@ -164,28 +205,9 @@ export class InstallAppCommand extends AppLifecycleCommand {
               `Allocated ${allocations.length} port(s) for ${appUrn}: ${allocations.map((a) => `${a.hostPort}:${a.containerPort}/${a.protocol} [${a.label}]`).join(', ')}`,
             );
 
-            // Update APP_PORT in the env file with the allocated main port
             const mainAlloc = allocations.find((a) => a.label === 'main');
             if (mainAlloc) {
-              const appEnvData = await appFilesManager.getAppEnv(appUrn);
-              const envMap = envUtils.envStringToMap(appEnvData.content);
-              envMap.set('APP_PORT', String(mainAlloc.hostPort));
-
-              // Keep URL/origin vars aligned with generateEnvFile (browser host, not bind address).
-              const bindHost = envMap.get('APP_HOSTNAME') || _config.getConfig().internalIp;
-              const browserHost = resolveBrowserHost(bindHost);
-              const internalAuthority = `${browserHost}:${mainAlloc.hostPort}`;
-              envMap.set('APP_INTERNAL_AUTHORITY', internalAuthority);
-              if (envMap.get('APP_EXPOSED') !== 'true') {
-                envMap.set('APP_HOST', browserHost);
-                envMap.set('APP_DOMAIN', internalAuthority);
-                envMap.set('APP_URL', `http://${internalAuthority}`);
-              }
-
-              // Also update form.port so ensureAppDir uses the right port
-              form.port = mainAlloc.hostPort;
-
-              await appFilesManager.writeAppEnv(appUrn, envUtils.envMapToString(envMap));
+              await this.applyMainHostPort(appUrn, form, mainAlloc);
             }
           }
         }
@@ -195,7 +217,9 @@ export class InstallAppCommand extends AppLifecycleCommand {
 
       // Ensure app directory exists before we try to use APP_DATA_DIR
       await emitProgress(30);
-      await this.ensureAppDir(appUrn, form);
+      // Not the volume folders yet: one made for a file a volume mounts (`data/config.yml`) would stop
+      // copyDataDir below from copying the store's data folder. They are made after it (#2198).
+      await this.ensureAppDir(appUrn, form, { createVolumeDirs: false });
 
       // Copy data dir
       await emitProgress(35);
@@ -241,10 +265,13 @@ export class InstallAppCommand extends AppLifecycleCommand {
       //   ci-entrypoint.sh — the actual Hub inference auto-config script
       // Ensure both exist even if copyDataDir was skipped or the app payload was incomplete.
       if (appName === 'openclaw') {
+        const filesystem = this.moduleRef.get(FilesystemService, { strict: false });
         const { appInstalledDir } = appFilesManager.getAppPaths(appUrn);
         const appRepoDir = path.join(directories.dataDir, 'repos', appStoreId, 'apps', appName);
         const targetDir = path.join(containerAppDataPath, 'data');
-        await fs.promises.mkdir(targetDir, { recursive: true });
+        if (!(await filesystem.createDirectory(targetDir))) {
+          throw new Error(`Could not create ${targetDir} for the OpenClaw start scripts`);
+        }
 
         // Helper: copy a file from the installed app payload to the data volume,
         // falling back to the provided content string if the source is absent.
@@ -253,26 +280,26 @@ export class InstallAppCommand extends AppLifecycleCommand {
           const candidateSources = [path.join(appInstalledDir, 'data', filename), path.join(appRepoDir, 'data', filename)];
           let restoredFromSource = false;
           for (const sourcePath of candidateSources) {
-            try {
-              await fs.promises.access(sourcePath);
-              await fs.promises.copyFile(sourcePath, targetPath);
+            // A regular file only. These folders hold what a store's author shipped and what the app's
+            // container wrote. The filesystem service keeps every step inside them.
+            if (!(await filesystem.isFile(sourcePath))) {
+              continue;
+            }
+            if (await filesystem.copyFile(sourcePath, targetPath)) {
               restoredFromSource = true;
               logger.info(`[OpenClaw] Restored ${filename} from ${sourcePath}`);
               break;
-            } catch (err) {
-              if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-                logger.warn(
-                  `[OpenClaw] Unexpected error restoring ${filename} from ${sourcePath}: ${
-                    err instanceof Error ? err.message : String(err)
-                  }. Trying next source.`,
-                );
-              }
             }
+            logger.warn(`[OpenClaw] Could not restore ${filename} from ${sourcePath}. Trying next source.`);
           }
-          if (restoredFromSource) {
-            await fs.promises.chmod(targetPath, 0o755);
-          } else {
-            await fs.promises.writeFile(targetPath, fallbackContent, { mode: 0o755 });
+          // The container's entrypoint: without it the install would report success and the app never start.
+          if (!restoredFromSource && !(await filesystem.writeTextFile(targetPath, fallbackContent))) {
+            throw new Error(`Could not write the OpenClaw start script ${targetPath}`);
+          }
+          if (!(await filesystem.makeExecutable(targetPath))) {
+            throw new Error(`Could not make the OpenClaw start script ${targetPath} executable`);
+          }
+          if (!restoredFromSource) {
             logger.warn(fallbackWarning);
           }
         };
@@ -308,41 +335,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
       // so containers don't crash on first start due to root-owned mount dirs
       // (affects code-server, file-browser, forgejo, graylog, passbolt, vaultwarden)
       try {
-        // Parse compose to find all host volume paths and pre-create them
-        const preComposeJson = await appFilesManager.getDockerComposeJson(appUrn);
-        if (preComposeJson.content) {
-          try {
-            const { services: preServices } = parseComposeJson(preComposeJson.content);
-            const { appStoreId: preStoreId, appName: preName } = extractAppUrn(appUrn);
-            const preContainerAppDataPath = path.join(_config.getConfig().directories.appDataDir, preStoreId, preName);
-            for (const svc of preServices) {
-              if (svc.volumes) {
-                for (const vol of svc.volumes) {
-                  // Named volumes carry no host path to pre-create.
-                  if (typeof vol === 'object' && typeof vol.hostPath === 'string') {
-                    // Replace ${APP_DATA_DIR} with container path
-                    const hostPath = (vol.hostPath as string).replace(/\$\{APP_DATA_DIR\}/g, preContainerAppDataPath);
-                    if (hostPath.startsWith(preContainerAppDataPath)) {
-                      await fs.promises.mkdir(hostPath, { recursive: true }).catch(() => {
-                        /* ignore mkdir errors */
-                      });
-                      // A `private: true` mount is the app's own root-written directory (Memory's
-                      // secrets); it starts, and stays, unreadable to other local accounts. The
-                      // permissions sweep below prunes it — see setAppDataDirPermissions.
-                      if (vol.private === true && process.platform !== 'win32') {
-                        await fs.promises.chmod(hostPath, 0o700).catch(() => {
-                          /* a mount that rejects chmod is the drvfs case handled elsewhere */
-                        });
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          } catch (parseErr) {
-            logger.debug(`[AppDiag] Could not pre-create volume dirs: ${parseErr}`);
-          }
-        }
+        await appFilesManager.createVolumeHostDirs(appUrn);
         await appFilesManager.setAppDataDirPermissions(appUrn);
         logger.info(`[AppDiag] Pre-created volume dirs and set permissions for ${appUrn}`);
       } catch (permErr) {
@@ -383,30 +376,48 @@ export class InstallAppCommand extends AppLifecycleCommand {
       if (appImages.length > 0) {
         let lastPullProgress = DOWNLOAD_PROGRESS_START;
         let lastPullProgressAt = 0;
+        let lastPullBytes = 0;
+        let sizeShown = false;
         dockerService.pullImages
-          ? await dockerService.pullImages(appImages, {
-              forcePull,
-              signal: ctx?.signal,
-              onProgress: ({ completedBytes, totalBytes, completedImages, totalImages }) => {
-                const nextProgress =
-                  totalBytes > 0
-                    ? mapPullProgressToInstallProgress(completedBytes, totalBytes)
-                    : totalImages > 0
-                      ? mapPullProgressToInstallProgress(completedImages, totalImages)
-                      : DOWNLOAD_PROGRESS_START;
-                const now = Date.now();
-                if (
-                  nextProgress > lastPullProgress &&
-                  (nextProgress - lastPullProgress >= 2 ||
-                    now - lastPullProgressAt >= DOWNLOAD_PROGRESS_EMIT_INTERVAL_MS ||
-                    nextProgress >= DOWNLOAD_PROGRESS_MAX_DURING_PULL)
-                ) {
-                  lastPullProgress = nextProgress;
-                  lastPullProgressAt = now;
-                  void emitProgress(nextProgress);
-                }
-              },
-            })
+          ? await pullAppImagesRecorded(
+              { docker: dockerService, files: appFilesManager, logger },
+              appUrn,
+              appImages,
+              () =>
+                dockerService.pullImages(appImages, {
+                  forcePull,
+                  signal: ctx?.signal,
+                  layerSizes: (image, signal) => imageSizeService?.getImageLayerSizes?.(image, { signal }) ?? Promise.resolve(null),
+                  onProgress: ({ completedBytes, totalBytes, totalBytesKnown, completedImages, totalImages }) => {
+                    // The size under the bar and the bar itself wait for a final total. "3.0 MB / 3.7 MB" for a
+                    // 26 MB download was a total still growing (CI-Hub#2177). A first layer of 405 bytes, done at
+                    // once, put the bar at 98. Until then the page says only "Downloading" and the bar counts images.
+                    const sizeKnown = totalBytes > 0 && totalBytesKnown !== false;
+                    const nextProgress = sizeKnown
+                      ? mapPullProgressToInstallProgress(completedBytes, totalBytes)
+                      : totalImages > 0
+                        ? mapPullProgressToInstallProgress(completedImages, totalImages)
+                        : DOWNLOAD_PROGRESS_START;
+                    const now = Date.now();
+                    const percentRose =
+                      nextProgress > lastPullProgress &&
+                      (nextProgress - lastPullProgress >= 2 ||
+                        now - lastPullProgressAt >= DOWNLOAD_PROGRESS_EMIT_INTERVAL_MS ||
+                        nextProgress >= DOWNLOAD_PROGRESS_MAX_DURING_PULL);
+                    const sizeMoved = completedBytes !== lastPullBytes && now - lastPullProgressAt >= DOWNLOAD_SIZE_EMIT_INTERVAL_MS;
+                    const sizeAppeared = sizeKnown && !sizeShown;
+                    if (percentRose || sizeMoved || sizeAppeared) {
+                      // The bar never goes back.
+                      lastPullProgress = Math.max(lastPullProgress, nextProgress);
+                      lastPullProgressAt = now;
+                      lastPullBytes = completedBytes;
+                      sizeShown = sizeKnown;
+                      void emitProgress(lastPullProgress, sizeKnown ? { downloadedBytes: completedBytes, totalBytes } : undefined);
+                    }
+                  },
+                }),
+              { forced: forcePull },
+            )
           : logger.warn(`Docker pull progress tracking is unavailable for ${appUrn}; falling back to compose up progress`);
       }
 
@@ -416,7 +427,9 @@ export class InstallAppCommand extends AppLifecycleCommand {
       throwIfAborted(ctx?.signal);
 
       await emitProgress(99);
-      await this.composeAppWithNetworkRecovery(appUrn, form, 'up --detach --force-recreate --remove-orphans', 3, ctx?.signal);
+      await this.composeUpRecordingPulls(appUrn, form, 'up --detach --force-recreate --remove-orphans', 3, ctx?.signal, {
+        recoverHostPortConflict: (error) => this.moveMainPortOffConflict(appUrn, form, error, refusedHostPorts),
+      });
       await appFilesManager.setAppDataDirPermissions(appUrn);
 
       // Honor a cancel that landed while `compose up` was running but still completed: install is a
@@ -427,16 +440,36 @@ export class InstallAppCommand extends AppLifecycleCommand {
       // refused beyond this phase (see AppLifecycleService.cancelOperation).
       ctx?.setPhase('finalizing');
 
-      const containerVerification = await dockerService.waitForManagedAppContainersReady(appUrn);
-      if (!containerVerification.ok) {
-        logger.error(
-          `[AppDiag] Post-install container verification failed for ${appUrn}: ${containerVerification.message}${
-            containerVerification.errorDetail ? `\n${containerVerification.errorDetail}` : ''
-          }`,
-        );
-        throw new AppLifecycleError(containerVerification.message, {
-          detail: containerVerification.errorDetail ?? containerVerification.message,
-        });
+      const notUp = await this.appCameUpError(appUrn);
+
+      // Regenerate Traefik file-based config after app is installed and started. Also when a service
+      // failed, since the other containers stay up and the status sync moves the app to `running` once
+      // they all settle. The check above was the wait for the containers to start.
+      if (getEffectiveExposureMode(form) !== 'local') {
+        const traefikConfigService = this.moduleRef.get(TraefikConfigService, { strict: false });
+        if (traefikConfigService) {
+          logger.debug(`Regenerating Traefik config for newly installed exposed app ${appUrn}`);
+          await traefikConfigService.regenerateTraefikConfig(0);
+        }
+      }
+
+      // Register the agent wake webhook for MCP-client apps (R-HOOK-1). Also when a service failed: an
+      // app the status sync brings to `running` goes through nothing else that would register it.
+      //
+      // The target is resolved by AgentNotifyService from what is on disk. Install and the startup
+      // rehydration call the same code, so they cannot drift apart.
+      try {
+        const agentNotifyService = this.moduleRef.get(AgentNotifyService, { strict: false });
+        const target = await agentNotifyService?.resolveWebhookTarget(appUrn);
+        if (target) {
+          agentNotifyService.registerWebhook(appUrn, target.url, target.token, target.service);
+        }
+      } catch (hookErr) {
+        logger.warn(`Failed to register agent webhook for ${appUrn}: ${hookErr}`);
+      }
+
+      if (notUp) {
+        throw notUp;
       }
 
       // Supplemental health check for slow-fail crashes after the initial verification.
@@ -448,15 +481,16 @@ export class InstallAppCommand extends AppLifecycleCommand {
           }
           const diagResults = await dockerReadFacade.diagnoseAppContainers(appUrn);
           if (diagResults.unhealthy.length > 0) {
-            const errorSummary = diagResults.unhealthy.map((c) => `${c.name} (${c.state}): ${c.logs}`).join('\n');
-            logger.warn(`[AppDiag] App ${appUrn} has unhealthy containers:\n${errorSummary}`);
+            const errorSummary = diagResults.unhealthy.map((c) => `${c.name} (${c.state})`).join('\n');
+            const localDetails = diagResults.unhealthy.map((c) => `${c.name} (${c.state}): ${c.logs}`).join('\n');
+            logger.warn(`[AppDiag] App ${appUrn} has unhealthy containers:\n${localDetails}`);
 
             const errorReportingService = this.moduleRef.get(ErrorReportingService, { strict: false });
             errorReportingService?.reportAppFailure({
               appUrn,
               phase: 'post_start',
               message: errorSummary,
-              containers: diagResults.unhealthy,
+              containers: diagResults.unhealthy.map(({ name, state }) => ({ name, state })),
             });
           } else {
             logger.info(`[AppDiag] All containers healthy for ${appUrn}`);
@@ -469,33 +503,9 @@ export class InstallAppCommand extends AppLifecycleCommand {
       // Cloudflare public DNS/tunnel sync runs in AppLifecycleService.syncExposure()
       // once the install completes and the app is marked running — not here.
 
-      // Regenerate Traefik file-based config after app is installed and started
-      const effectiveExposure = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
-      if (effectiveExposure !== 'local' && !form.skipRun) {
-        const traefikConfigService = this.moduleRef.get(TraefikConfigService, { strict: false });
-        if (traefikConfigService) {
-          logger.debug(`Regenerating Traefik config for newly installed exposed app ${appUrn}`);
-          // Wait longer for container to fully start and network to be attached
-          await traefikConfigService.regenerateTraefikConfig(5000); // Wait 5s for container to fully start
-        }
-      }
-
-      // Register the agent wake webhook for MCP-client apps (R-HOOK-1).
-      //
-      // The target is resolved by AgentNotifyService from what is on disk, so install and
-      // the startup rehydration cannot drift apart — they call the same code.
-      try {
-        const agentNotifyService = this.moduleRef.get(AgentNotifyService, { strict: false });
-        const target = await agentNotifyService?.resolveWebhookTarget(appUrn);
-        if (target) {
-          agentNotifyService.registerWebhook(appUrn, target.url, target.token);
-        }
-      } catch (hookErr) {
-        logger.warn(`Failed to register agent webhook for ${appUrn}: ${hookErr}`);
-      }
-
       await emitProgress(99);
-      await this.markInstallSucceeded(appUrn, sseService, appsRepository, logger);
+      const movedHostPort = hostPortMoveOf(form, refusedHostPorts);
+      await this.markInstallSucceeded(appUrn, sseService, appsRepository, logger, movedHostPort);
 
       try {
         const mcpProbe = this.moduleRef.get(McpProbeService, { strict: false });
@@ -504,15 +514,15 @@ export class InstallAppCommand extends AppLifecycleCommand {
         logger.debug(`MCP post-install probe not scheduled for ${appUrn}: ${probeErr}`);
       }
 
-      return { success: true, message: `App ${appUrn} installed successfully` };
+      return { success: true, message: `App ${appUrn} installed successfully`, movedHostPort };
     } catch (err) {
       // A user-requested cancel: tear down whatever was partially created and report a cancellation
       // (not a failure). The service finalizes the cancel (deletes the record + emits install_cancelled).
       if (isAbortError(err)) {
-        const message = await this.compensateInstallCancel(appUrn);
-        return { success: false, cancelled: true, message };
+        return { success: false, cancelled: true, ...(await this.compensateInstallCancel(appUrn, earlierData, ctx?.deadline)) };
       }
-      return this.handleAppError(err, appUrn, 'install');
+      // The row, config and app.env stay on a port the run moved to, whatever failed after the move.
+      return { ...(await this.handleAppError(err, appUrn, 'install')), movedHostPort: hostPortMoveOf(form, refusedHostPorts) };
     }
   }
 
@@ -564,21 +574,69 @@ export class InstallAppCommand extends AppLifecycleCommand {
   }
 
   /**
-   * Best-effort cleanup after an install is cancelled mid-flight: tears down containers, the app's own
-   * volumes, project networks, port allocations, the agent webhook, and the app/data directories so no
-   * orphaned resources are left behind. Pulled images are intentionally kept (faster re-install, and so
-   * we never force-remove an image another installed app might share). Every step is individually
-   * guarded and idempotent; the compose-down runs WITHOUT the (now-aborted) signal so cleanup completes.
-   * Does NOT delete the DB record — the service owns that (see AppLifecycleService.handleCancelledResult).
-   *
-   * @returns A human-readable summary message for the cancellation result.
+   * What the app already had on this Hub before this install wrote anything: the data folder and named volumes an
+   * uninstall with Delete all data off keeps. A folder left by an install that failed looks the same and counts too.
+   * A check that fails or doesn't answer in time counts as data being there: a cancel then keeps something it could
+   * have removed instead of removing what it had to keep.
    */
-  private async compensateInstallCancel(appUrn: AppUrn): Promise<string> {
+  private async readEarlierData(appUrn: AppUrn): Promise<EarlierAppData> {
+    const logger = this.moduleRef.get(LoggerService, { strict: false });
+    const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
+    const present = async (what: string, check: () => Promise<boolean>): Promise<boolean> => {
+      try {
+        return await withTimeout(check(), EARLIER_DATA_CHECK_TIMEOUT_MS, 'no answer in time');
+      } catch (err) {
+        logger.warn(`Could not check ${appUrn} for ${what} from before this install, so a cancel will keep them: ${err}`);
+        return true;
+      }
+    };
+
+    const [files, volumes] = await Promise.all([
+      present('app data', () => appFilesManager.hasAppData(appUrn)),
+      present('named volumes', () => this.moduleRef.get(AppVolumeArchiveService, { strict: false }).hasProjectVolumes(appUrn)),
+    ]);
+
+    return { files, volumes };
+  }
+
+  /**
+   * Best-effort cleanup after an install is cancelled mid-flight: revokes the managed key, tears down containers,
+   * project networks, port allocations, the agent webhook and the app directory. The app's data and volumes go too unless they
+   * were there before this install. Pulled images are intentionally kept: a re-install is faster and we never
+   * force-remove an image another installed app might share. Every step is individually guarded and
+   * idempotent; the compose-down runs WITHOUT the (now-aborted) signal so cleanup completes. The DB record
+   * stays for the service to delete (see AppLifecycleService.handleCancelledResult).
+   *
+   * @param earlier What the app had before this install. Kept data is left exactly as it is, along with
+   * anything this install added to it: the Hub cannot tell a file this install wrote from one kept
+   * by an uninstall. A later install starts from the same place a completed one would.
+   * @param deadline The command's time limit. The root helper keeps to what is left of it.
+   * @returns A human-readable summary for the cancellation result. When something could not be removed (the app's
+   * folder, its data, or the containers and volumes a failed Compose teardown left, or a managed key that could not be
+   * revoked), also the warning the page shows, with the data's location on the host when the data is what stayed.
+   */
+  private async compensateInstallCancel(
+    appUrn: AppUrn,
+    earlier: EarlierAppData,
+    deadline?: AppCommandDeadline,
+  ): Promise<{ message: string; warningCode?: string; warningDetail?: string }> {
     const logger = this.moduleRef.get(LoggerService, { strict: false });
     const dockerService = this.moduleRef.get(DockerService, { strict: false });
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
 
     logger.info(`[install-cancel] compensating cancelled install for ${appUrn}`);
+
+    // The install issues the app's managed key before the killable phase, so a cancel can find one already issued.
+    // It goes first: the teardown below can fail or run out of time, and a key that outlives the cancel would stay
+    // valid after the app that owns it is gone. Uninstall revokes the same key. A revoke that throws or does not
+    // answer in time is recorded, and the teardown carries on without it.
+    let keyRevoked = true;
+    try {
+      await withTimeout(this.moduleRef.get(ApiKeyService, { strict: false }).revokeManagedByApp(appUrn), KEY_REVOKE_TIMEOUT_MS, 'no answer in time');
+    } catch (err) {
+      keyRevoked = false;
+      logger.warn(`[install-cancel] revoking the managed key of ${appUrn} failed (continuing): ${err}`);
+    }
 
     // Release allocated ports.
     try {
@@ -593,13 +651,27 @@ export class InstallAppCommand extends AppLifecycleCommand {
       logger.warn(`[install-cancel] failed to release ports for ${appUrn}: ${err}`);
     }
 
-    // Tear down whatever was partially created. `--rmi local` only removes locally-built images and
-    // `-v` removes the app's own anonymous volumes — pulled images are intentionally kept (faster
-    // re-install, and we never force-remove an image another installed app might share). This mirrors
-    // the ticket's cleanup intent for install cancel.
+    // Without `-v` below, the anonymous volumes of this install's containers would stay behind with nothing to
+    // remove them. `rm -v` takes those and no named ones. It has to run first: `down` removes the containers
+    // that say which volumes are theirs. A failed step can leave containers or volumes behind, so it is recorded
+    // and the cancel does not report a clean-up.
+    let teardownFailed = false;
+    if (earlier.volumes) {
+      try {
+        await dockerService.composeApp(appUrn, 'rm --force --stop -v');
+      } catch (err) {
+        teardownFailed = true;
+        logger.warn(`[install-cancel] removing the containers' anonymous volumes failed for ${appUrn} (continuing): ${err}`);
+      }
+    }
+
+    // Tear down whatever was partially created. `--rmi local` only removes locally-built images, so pulled
+    // images stay. `-v` removes the app's named volumes as well as its anonymous ones, so it goes only when
+    // there were no named volumes before this install. Otherwise it would delete what an uninstall kept.
     try {
-      await dockerService.composeApp(appUrn, 'down --remove-orphans -v --rmi local');
+      await dockerService.composeApp(appUrn, earlier.volumes ? 'down --remove-orphans --rmi local' : 'down --remove-orphans -v --rmi local');
     } catch (err) {
+      teardownFailed = true;
       logger.warn(`[install-cancel] compose down failed for ${appUrn} (continuing): ${err}`);
     }
 
@@ -614,11 +686,54 @@ export class InstallAppCommand extends AppLifecycleCommand {
       // AgentNotifyService may be unavailable; ignore.
     }
 
-    await appFilesManager.deleteAppFolder(appUrn).catch((err) => logger.warn(`[install-cancel] deleteAppFolder failed for ${appUrn}: ${err}`));
-    await appFilesManager.deleteAppDataDir(appUrn).catch((err) => logger.warn(`[install-cancel] deleteAppDataDir failed for ${appUrn}: ${err}`));
+    const folderRemoved = await appFilesManager.deleteAppFolder(appUrn).catch((err) => {
+      logger.warn(`[install-cancel] deleteAppFolder failed for ${appUrn}: ${err}`);
+      return false;
+    });
+    // A folder that already held files was there before this install: an uninstall kept it, or a failed attempt left
+    // it. The Hub can't tell what this install wrote into it from what was there, so none of it is removed. Only a
+    // folder this install started empty goes to the Hub's delete and then the root helper, for files a container
+    // wrote as another user.
+    let data: { removed: boolean; hostPath?: string } = { removed: true };
+    if (earlier.files) {
+      logger.info(`[install-cancel] leaving the data folder of ${appUrn}: it held data from before this install`);
+    } else {
+      data = await removeAppDataWithPrivilegedFallback(appFilesManager, dockerService, logger, appUrn, deadline).catch((err) => {
+        logger.warn(`[install-cancel] removing the app data failed for ${appUrn}: ${err}`);
+        return { removed: false };
+      });
+    }
+
+    // Named in every warning below: data kept from before the install is still there, and a key that could not be
+    // revoked may stay valid whatever else went wrong.
+    const kept = earlier.files || earlier.volumes ? '; data from before this install was left in place' : '';
+    const keyNote = keyRevoked ? '' : '; its managed key could not be revoked and may stay valid';
+
+    if (!folderRemoved || !data.removed || teardownFailed) {
+      const leftover = describeLeftovers(folderRemoved, data.removed, teardownFailed);
+      logger.warn(
+        `[install-cancel] the ${leftover} of ${appUrn} could not be fully removed; a remnant may remain${data.hostPath ? ` at ${data.hostPath}` : ''}`,
+      );
+      return {
+        message: `Install of ${appUrn} was cancelled, but its ${leftover} could not be fully removed and may leave a remnant behind${kept}${keyNote}`,
+        // The page shows one warning. A key that stayed valid gets its own code, so it is not lost behind this one.
+        warningCode: keyRevoked ? 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT' : 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT_KEY_REMAINS',
+        ...(data.hostPath ? { warningDetail: data.hostPath } : {}),
+      };
+    }
+
+    if (!keyRevoked) {
+      return {
+        message: `Install of ${appUrn} was cancelled, but its managed key could not be revoked and may stay valid${kept}`,
+        warningCode: 'APP_INSTALL_CANCELLED_KEY_REMAINS',
+      };
+    }
 
     logger.info(`[install-cancel] compensation complete for ${appUrn}`);
-    return `Install of ${appUrn} was cancelled and cleaned up`;
+    if (earlier.files || earlier.volumes) {
+      return { message: `Install of ${appUrn} was cancelled; data from before this install was left in place` };
+    }
+    return { message: `Install of ${appUrn} was cancelled and cleaned up` };
   }
 
   private async markInstallSucceeded(
@@ -626,6 +741,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
     sseService: SSEService | undefined,
     appsRepository: AppsRepository | undefined,
     logger: LoggerService,
+    movedHostPort: HostPortMove | undefined,
   ): Promise<void> {
     if (!appsRepository) return;
 
@@ -640,6 +756,6 @@ export class InstallAppCommand extends AppLifecycleCommand {
     }
 
     await appsRepository.updateAppById(app.id, { status: 'running' });
-    sseService?.emit('app', { event: 'install_success', appUrn, appStatus: 'running' });
+    sseService?.emit('app', { event: 'install_success', appUrn, appStatus: 'running', movedHostPort });
   }
 }

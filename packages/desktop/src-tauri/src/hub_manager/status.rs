@@ -1,21 +1,46 @@
 //! Service state derivation, startup progress and hub status.
 
+use super::quiet_watch::{run_until_quiet, WatchedRun};
 use super::*;
 use chrono::{DateTime, Datelike, Utc};
 use std::collections::HashMap;
 
-fn list_local_images() -> std::collections::HashSet<String> {
-    let output = docker_command()
-        .args(["image", "ls", "--format", "{{.Repository}}:{{.Tag}}"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-        .unwrap_or_default();
+const IMAGE_LIST_ARGS: [&str; 4] = ["image", "ls", "--format", "{{.Repository}}:{{.Tag}}"];
+/// How long Docker gets to list its images once a pull has hung. It normally answers at once.
+const HUNG_IMAGE_LIST_LIMIT: Duration = Duration::from_secs(30);
 
+fn parse_image_list(output: &str) -> std::collections::HashSet<String> {
     output
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.ends_with(":<none>"))
         .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn list_local_images() -> std::collections::HashSet<String> {
+    let output = docker_command()
+        .args(IMAGE_LIST_ARGS)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+
+    parse_image_list(&output)
+}
+
+/// The images a start still has to download, of those the Hub can't start without. Asked after a
+/// hung pull, when Docker may have stopped answering altogether. Every image then counts as missing.
+pub(crate) fn missing_startup_images() -> Vec<String> {
+    let mut command = docker_command();
+    command.args(IMAGE_LIST_ARGS);
+    let listing = match run_until_quiet(command, HUNG_IMAGE_LIST_LIMIT) {
+        Ok(WatchedRun::Finished { stdout, .. }) => stdout,
+        Ok(WatchedRun::WentQuiet { .. }) | Err(_) => String::new(),
+    };
+    let local_images = parse_image_list(&listing);
+    required_startup_images()
+        .into_iter()
+        .filter(|image| !local_images.contains(image.as_str()))
         .collect()
 }
 
@@ -326,6 +351,37 @@ pub(crate) fn startup_service_definitions(
     (core, optional)
 }
 
+/// The required services that are missing or stopped beside a Hub container that is up, by label.
+///
+/// A launch that finds the Hub up leaves the stack alone, so it has to look for these itself: a
+/// Traefik that lost port 80 to another program at boot stays down while the Hub answers.
+pub fn stopped_core_services() -> Vec<&'static str> {
+    let (core, _) = startup_service_definitions(false);
+    let mut names: Vec<&str> = core.iter().map(|(container, _, _)| *container).collect();
+    names.extend([LEGACY_HUB_CONTAINER, LEGACY_HUB_QUEUE]);
+    stopped_core_services_in(&inspect_containers(&names))
+}
+
+/// [`stopped_core_services`] for what `docker inspect` found. A `restarting` container counts as
+/// up, because Docker is already bringing it back.
+pub(crate) fn stopped_core_services_in(
+    containers: &HashMap<String, ContainerInspect>,
+) -> Vec<&'static str> {
+    // No Hub container in the answer means the inspect failed, which says nothing about the rest.
+    if service_inspect(containers, HUB_CONTAINER).is_none() {
+        return Vec::new();
+    }
+    let (core, _) = startup_service_definitions(false);
+    core.into_iter()
+        .filter(|(container, _, _)| *container != HUB_CONTAINER)
+        .filter(|(container, _, _)| {
+            service_inspect(containers, container)
+                .is_none_or(|found| matches!(found.status.as_str(), "created" | "exited" | "dead"))
+        })
+        .map(|(_, label, _)| label)
+        .collect()
+}
+
 /// True when the host Ollama API responds on localhost (same target the Hub backend uses).
 fn probe_host_ollama() -> bool {
     {
@@ -405,6 +461,12 @@ pub fn get_startup_progress() -> StartupProgress {
     let start_error = read_start_failed(&data_dir);
     let docker_access = check_docker_access();
     let docker_available = matches!(docker_access.state, DockerAccessState::Available);
+    #[cfg(target_os = "windows")]
+    if docker_available {
+        refresh_update_listener_host_after_revive(&data_dir);
+    } else {
+        revive_wsl_engine(&data_dir);
+    }
     let ctx = CoreServiceContext {
         start_in_progress,
         start_began_at: start_began_at(),
@@ -540,6 +602,7 @@ pub fn get_startup_progress() -> StartupProgress {
         start_error,
         hub_api_live: docker_available && probe_hub_api_live(),
         docker_access,
+        docker_engine: hub_docker_engine(&data_dir).map(|engine| engine.kind.as_str().to_string()),
     }
 }
 
@@ -551,11 +614,15 @@ pub fn get_hub_status() -> HubStatus {
         return HubStatus::Starting;
     }
 
+    let data_dir = get_hub_data_dir();
+
     if !is_docker_available() {
+        #[cfg(target_os = "windows")]
+        revive_wsl_engine(&data_dir);
         return HubStatus::DockerNotAvailable;
     }
-
-    let data_dir = get_hub_data_dir();
+    #[cfg(target_os = "windows")]
+    refresh_update_listener_host_after_revive(&data_dir);
 
     // Check the Hub container (canonical name first, then the legacy alias).
     let hub_name = hub_container_name();
@@ -574,13 +641,16 @@ pub fn get_hub_status() -> HubStatus {
 
     match (state, health) {
         ("running", "healthy") => {
-            // Recovered after a prior failed start — drop the sticky failure marker.
+            // Recovered after a prior failed start — drop the sticky failure marker and the
+            // automatic-retry budget with it.
             clear_start_failed(&data_dir);
+            reset_start_retry_budget(&data_dir);
             HubStatus::Running
         }
         ("running", _) => {
             if probe_hub_api_live() {
                 clear_start_failed(&data_dir);
+                reset_start_retry_budget(&data_dir);
                 HubStatus::Running
             } else {
                 HubStatus::Starting
@@ -626,7 +696,9 @@ pub fn get_hub_status() -> HubStatus {
                 }
             }
         }
-        ("created", _) | ("exited", _) => {
+        // A dead container is not running and cannot be restarted in place, so it reads as
+        // stopped. Left to the fallthrough, it showed "Starting" and the watchdog never acted.
+        ("created", _) | ("exited", _) | ("dead", _) => {
             if let Some(message) = read_start_failed(&data_dir) {
                 HubStatus::Error { message }
             } else {

@@ -49,26 +49,31 @@ export class EnvUtils {
   };
 
   /**
-   *  This function generates a random string of the provided length by using the SHA-256 hash algorithm.
-   *  It takes the provided name and a seed value, concatenates them, and uses them as input for the hash algorithm.
-   *  It then returns a substring of the resulting hash of the provided length.
+   * The value of an app's `random` form field: HMAC-SHA256 keyed with the Hub's seed over the
+   * app's URN and the variable name, cut to `length` hex characters (or `length` bytes, base64).
    *
-   *  @param {string} name - A name used as input for the hash algorithm.
-   *  @param {number} length - The desired length of the random string.
+   * The app's URN is part of the input so that two apps never get the same value. It used to be
+   * `sha256(name + seed)`, so every app with a `DB_PASSWORD` field had the same password, and an
+   * app reading its own could log in to another app's database. The URN's store segment is set by
+   * the Hub at install, so an app from another store cannot take the same URN. The value is still
+   * deterministic per app, which keeps a reinstall's value stable; a value already in the app's
+   * `app.env` is kept as it is (see `AppHelpers.generateEnvFile`), so existing installs keep theirs.
+   *
+   * @param appUrn - The installed app's URN (`<appName>:<appStoreSlug>`).
+   * @param name - The env variable the field writes.
+   * @param length - Hex characters, or bytes before base64 encoding (at most 64 / 32).
    */
-  public createRandomString = (name: string, length: number, encoding: RandomFieldEncoding = 'hex') => {
+  public createRandomString = (appUrn: string, name: string, length: number, encoding: RandomFieldEncoding = 'hex') => {
     const seed = this.getSeed();
-    const hash = crypto.createHash('sha256');
-
-    hash.update(name + seed.toString());
+    // NUL separators: neither a URN nor a variable name contains one, so no two (urn, name) pairs
+    // give the same input.
+    const hmac = crypto.createHmac('sha256', seed).update(`app-random-field\0${appUrn}\0${name}`);
 
     if (encoding === 'base64') {
-      // Generate the hash and slice the buffer to get the exact number of bytes
-      const randomBytes = hash.digest().slice(0, length);
-      return randomBytes.toString('base64');
+      return hmac.digest().subarray(0, length).toString('base64');
     }
 
-    return hash.digest('hex').substring(0, length);
+    return hmac.digest('hex').substring(0, length);
   };
 
   /**

@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { LoggerModule } from '@/core/logger/logger.module';
+import { PortalModule } from '@/core/portal/portal.module';
 import { AppsModule } from '../apps/apps.module';
 import { CloudflareModule } from '../cloudflare/cloudflare.module';
 import { ApiKeyModule } from '../api-keys/api-key.module';
@@ -24,7 +25,17 @@ import { PendingConnectStore } from './pending-connect.store';
  * via ModuleRef in MemoryConnectService to avoid a static cycle with app-lifecycle.
  */
 @Module({
-  imports: [MemoryConnectionModule, AppsModule, CloudflareModule, ApiKeyModule, RegistrationModule, UserModule, EnvModule, LoggerModule],
+  imports: [
+    MemoryConnectionModule,
+    AppsModule,
+    CloudflareModule,
+    ApiKeyModule,
+    RegistrationModule,
+    UserModule,
+    EnvModule,
+    LoggerModule,
+    PortalModule,
+  ],
   controllers: [MemoryConnectController],
   providers: [MemoryProviderResolver, MemoryExchangeClient, PendingConnectStore, MemoryConnectService, ManagedAppKeyGuard],
   exports: [MemoryConnectService],

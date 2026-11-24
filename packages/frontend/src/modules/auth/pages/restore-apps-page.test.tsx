@@ -1,9 +1,10 @@
 import { act, render, screen, userEvent, waitFor } from '@/tests/test-utils';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import RestoreAppsPage from './restore-apps-page';
 import { sdkFail, sdkOk } from '@/tests/sdk-mock-helpers';
 
-const { executeRehydrate, getRehydrateStatus, navigate } = vi.hoisted(() => ({
+const { acknowledgeRestore, executeRehydrate, getRehydrateStatus, navigate } = vi.hoisted(() => ({
+  acknowledgeRestore: vi.fn(),
   executeRehydrate: vi.fn(),
   getRehydrateStatus: vi.fn(),
   navigate: vi.fn(),
@@ -19,6 +20,7 @@ vi.mock('react-router', async () => {
 });
 
 vi.mock('@/api-client/sdk.gen', () => ({
+  acknowledgeRestore,
   executeRehydrate,
   getRehydrateStatus,
 }));
@@ -57,7 +59,9 @@ vi.mock('sonner', () => ({
 describe('RestoreAppsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    sessionStorage.clear();
     sessionStorage.setItem('ci-hub-registration-drift-choice', 'restore');
+    acknowledgeRestore.mockResolvedValue(sdkOk({ success: true }));
   });
 
   it('auto-triggers rehydrate and renders progress UI', async () => {
@@ -224,6 +228,227 @@ describe('RestoreAppsPage', () => {
       await userEvent.click(await screen.findByRole('button', { name: 'Continue to dashboard' }));
 
       await waitFor(() => expect(navigate).toHaveBeenCalledWith('/home', { replace: true }));
+      expect(sessionStorage.getItem('ci-hub-registration-drift-choice')).toBeNull();
+    });
+  });
+
+  /*
+   * The Hub restores the device's apps right after pairing, with nobody signed in. The person who signs
+   * in next, from any browser, sees what came back and what did not, once, instead of the setup wizard.
+   */
+  describe('after the Hub restored on its own', () => {
+    const summary = {
+      completedAt: '2026-10-21T10:45:00.000Z',
+      restored: [
+        { name: 'Excalidraw', urn: 'excalidraw:ci-marketplace', status: 'running', usesAi: false },
+        { name: 'OpenClaw', urn: 'ci-openclaw:ci-marketplace', status: 'running', usesAi: true },
+      ],
+      notRestored: [
+        {
+          name: 'Kimai',
+          urn: 'kimai:ci-marketplace',
+          reason: 'APP_INSTALL_FORM_ERROR_INVALID',
+          code: 'failed',
+          params: { fields: 'Admin Password' },
+        },
+      ],
+      aiModelChosen: false,
+    };
+
+    beforeEach(() => {
+      // Signed in from a browser that never chose "Restore existing device".
+      sessionStorage.clear();
+      getRehydrateStatus.mockResolvedValue(sdkOk({ completed: true, restoreIntent: false, checking: false, noticePending: true, summary }));
+    });
+
+    it('shows what was restored and why an app was not, without restoring again', async () => {
+      await act(async () => {
+        render(<RestoreAppsPage />);
+      });
+
+      expect(await screen.findByText('Your apps are back on this Hub')).toBeInTheDocument();
+      expect(screen.getByText('Excalidraw')).toBeInTheDocument();
+      const notRestored = screen.getByTestId('restore-summary-not-restored');
+      expect(notRestored).toHaveTextContent('Kimai');
+      expect(notRestored).toHaveTextContent(
+        "It needs settings your CI Account doesn't keep: Admin Password. Install it from the App Store to fill them in.",
+      );
+      expect(executeRehydrate).not.toHaveBeenCalled();
+      expect(navigate).not.toHaveBeenCalled();
+    });
+
+    it('does not call an app restored when its install failed after the restore queued it', async () => {
+      const failedEverywhere = {
+        ...summary,
+        restored: summary.restored.map((app) => ({ ...app, status: 'install_failed' })),
+      };
+      getRehydrateStatus.mockResolvedValue(
+        sdkOk({ completed: true, restoreIntent: false, checking: false, noticePending: true, summary: failedEverywhere }),
+      );
+
+      await act(async () => {
+        render(<RestoreAppsPage />);
+      });
+
+      expect(await screen.findByText('Your apps could not be restored')).toBeInTheDocument();
+      const notRestored = screen.getByTestId('restore-summary-not-restored');
+      expect(notRestored).toHaveTextContent('Excalidraw');
+      expect(notRestored).toHaveTextContent('Its install failed after the restore started it.');
+      // OpenClaw is not running on any model, so the note about its model would be wrong.
+      expect(screen.queryByText(/No AI model is chosen on this Hub yet/)).not.toBeInTheDocument();
+    });
+
+    it('records that the restore was seen, then opens the Hub', async () => {
+      await act(async () => {
+        render(<RestoreAppsPage />);
+      });
+
+      await userEvent.click(await screen.findByTestId('restore-summary-continue'));
+
+      await waitFor(() => expect(navigate).toHaveBeenCalledWith('/home', { replace: true }));
+      expect(acknowledgeRestore).toHaveBeenCalled();
+    });
+
+    it('still lets the person leave when the Hub cannot record that the restore was seen', async () => {
+      acknowledgeRestore.mockResolvedValue(sdkFail(500));
+
+      await act(async () => {
+        render(<RestoreAppsPage />);
+      });
+
+      await userEvent.click(await screen.findByTestId('restore-summary-continue'));
+
+      await waitFor(() => expect(navigate).toHaveBeenCalledWith('/home', { replace: true }));
+      // Named by the restore it saw, so the next pairing's restore is still shown in this tab.
+      expect(sessionStorage.getItem('ci-hub-restore-notice-seen')).toBe(summary.completedAt);
+    });
+
+    it('opens the App Store page of an app that was not restored, where its settings can be filled in', async () => {
+      await act(async () => {
+        render(<RestoreAppsPage />);
+      });
+
+      await userEvent.click(await screen.findByRole('button', { name: 'Open in App Store' }));
+
+      await waitFor(() => expect(navigate).toHaveBeenCalledWith('/store/ci-marketplace/kimai', { replace: true }));
+      expect(acknowledgeRestore).toHaveBeenCalled();
+    });
+
+    it("says restored AI apps use the setup wizard's default until a model is chosen", async () => {
+      await act(async () => {
+        render(<RestoreAppsPage />);
+      });
+
+      expect(
+        await screen.findByText(
+          'No AI model is chosen on this Hub yet, so OpenClaw uses the model the setup wizard marks Default for this computer.',
+        ),
+      ).toBeInTheDocument();
+      await userEvent.click(screen.getByRole('button', { name: 'Choose a model' }));
+      await waitFor(() => expect(navigate).toHaveBeenCalledWith('/settings?tab=ai', { replace: true }));
+    });
+
+    it('shows the summary once a restore it joined has finished', async () => {
+      const underWay = sdkOk({ completed: false, restoreIntent: true, checking: false, noticePending: true });
+      // Asked by the page's gate, then by the page.
+      getRehydrateStatus
+        .mockResolvedValueOnce(underWay)
+        .mockResolvedValueOnce(underWay)
+        .mockResolvedValue(sdkOk({ completed: true, restoreIntent: true, checking: false, noticePending: true, summary }));
+      executeRehydrate.mockResolvedValue(
+        sdkOk({
+          success: true,
+          message: 'Queued 2 install(s) and 0 start(s) from Portal',
+          plan: { portalAppCount: 3, items: [] },
+          queued: ['excalidraw:ci-marketplace'],
+          started: [],
+          skipped: [],
+        }),
+      );
+
+      await act(async () => {
+        render(<RestoreAppsPage />);
+      });
+
+      expect(await screen.findByText('Your apps are back on this Hub')).toBeInTheDocument();
+      expect(executeRehydrate).toHaveBeenCalledTimes(1);
+      expect(navigate).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('right after pairing, while the Hub asks which apps the device had', () => {
+    beforeEach(() => {
+      sessionStorage.clear();
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('waits for the answer, then restores', async () => {
+      getRehydrateStatus
+        .mockResolvedValueOnce(sdkOk({ completed: false, restoreIntent: false, checking: true, noticePending: false }))
+        .mockResolvedValueOnce(sdkOk({ completed: false, restoreIntent: false, checking: true, noticePending: false }))
+        .mockResolvedValue(sdkOk({ completed: false, restoreIntent: true, checking: false, noticePending: true }));
+      executeRehydrate.mockResolvedValue(
+        sdkOk({
+          success: true,
+          message: 'Queued 1 install(s)',
+          plan: { portalAppCount: 1, items: [] },
+          queued: ['excalidraw:ci-marketplace'],
+          started: [],
+          skipped: [],
+        }),
+      );
+
+      await act(async () => {
+        render(<RestoreAppsPage />);
+      });
+
+      expect(await screen.findByText('Looking for your apps')).toBeInTheDocument();
+      expect(executeRehydrate).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_100);
+      });
+
+      await waitFor(() => expect(executeRehydrate).toHaveBeenCalledWith({ body: { source: 'restore' } }));
+    });
+
+    it('goes on to the Hub and its setup when there is nothing to restore', async () => {
+      getRehydrateStatus
+        .mockResolvedValueOnce(sdkOk({ completed: false, restoreIntent: false, checking: true, noticePending: false }))
+        .mockResolvedValueOnce(sdkOk({ completed: false, restoreIntent: false, checking: true, noticePending: false }))
+        .mockResolvedValue(sdkOk({ completed: false, restoreIntent: false, checking: false, noticePending: false }));
+
+      await act(async () => {
+        render(<RestoreAppsPage />);
+      });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_100);
+      });
+
+      await waitFor(() => expect(navigate).toHaveBeenCalledWith('/home', { replace: true }));
+      expect(executeRehydrate).not.toHaveBeenCalled();
+    });
+
+    it('offers to go on to setup when the answer is slow', async () => {
+      // Kept, the choice sent this tab from Home back to this page once setup was done.
+      sessionStorage.setItem('ci-hub-registration-drift-choice', 'restore');
+      getRehydrateStatus.mockResolvedValue(sdkOk({ completed: false, restoreIntent: false, checking: true, noticePending: false }));
+
+      await act(async () => {
+        render(<RestoreAppsPage />);
+      });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(22_100);
+      });
+
+      await userEvent.click(await screen.findByRole('button', { name: 'Continue to setup' }));
+      expect(navigate).toHaveBeenCalledWith('/onboarding', { replace: true });
       expect(sessionStorage.getItem('ci-hub-registration-drift-choice')).toBeNull();
     });
   });

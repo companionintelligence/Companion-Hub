@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { type BindMountRef, findNestedBindMounts } from './bind-mount-nesting.js';
+import { collectTraefikLabelIssues } from './traefik-labels.js';
 import { dynamicComposeSchemaV1 } from './utils/converters/v1.js';
 
 const DENIED_CUSTOM_APP_HOST_PATHS = [
@@ -27,6 +29,10 @@ const DENIED_CUSTOM_APP_HOST_PATHS = [
   '/sbin',
   '/lib',
   '/lib64',
+  // Snap-packaged Docker keeps its data-root here (`/var/snap/docker/common/var-lib-docker`), and
+  // `/snap` holds every snap's read-only image.
+  '/snap',
+  '/var/snap',
 ];
 
 /** Docker's own constraint on volume names (see `docker volume create`). */
@@ -108,7 +114,22 @@ function normalizeCustomAppHostPath(hostPath: string): string {
  */
 const ALLOWED_CUSTOM_APP_HOST_PATHS = new Set(['/etc/localtime', '/etc/timezone']);
 
-function isDeniedCustomAppHostPath(hostPath: string): boolean {
+/**
+ * Whether a host bind leaves the app sandbox.
+ *
+ * Two rules, picked by who wrote the compose (`grants.hostBindAuthor`):
+ *
+ * - `listing` — a store manifest, from any store. It may bind its own `${APP_DATA_DIR}` subtree,
+ *   the timezone files, and whatever its audited grant names; nothing else. A reject-list cannot be
+ *   complete for this author: `/home`, `/data`, `/opt` and the Hub's own folder were all open under
+ *   it, and every one of them holds another app's data or the operator's keys. No store listing
+ *   needs more (the marketplace binds nothing else outside its grants).
+ * - `operator` (the default) — a custom app, or a per-app override, written by someone on this Hub
+ *   to point an app at their own files (`/mnt/media`, `~/Music`). The reject-list applies, plus the
+ *   Hub's own folders (`grants.protectedHostPaths`), the home folders themselves and any hidden
+ *   folder (`.ssh`, `.config`, `.docker`), which is where a home directory keeps its keys.
+ */
+function isDeniedCustomAppHostPath(hostPath: string, grants?: AppSecurityGrants): boolean {
   // Unresolvable first: a path we cannot canonicalize is one we cannot clear.
   if (hasUnresolvableHostPathSyntax(hostPath)) {
     return true;
@@ -120,30 +141,80 @@ function isDeniedCustomAppHostPath(hostPath: string): boolean {
     return false;
   }
 
+  // The app's own data folder is always its own to bind, hidden subfolders included.
+  if (normalized === APP_DATA_DIR_PLACEHOLDER || normalized.startsWith(`${APP_DATA_DIR_PLACEHOLDER}/`)) {
+    return false;
+  }
+
+  if (grants?.hostBindAuthor === 'listing') {
+    return true;
+  }
+
   // A denied path is denied by its ANCESTORS too. `/var/lib/docker` is on the list, so binding
   // `/var/lib` — or `/var` — hands over the same data under a path the equality and prefix tests
   // never see. The third clause denies any directory that contains a denied path.
-  return DENIED_CUSTOM_APP_HOST_PATHS.some(
-    (denied) => normalized === denied || normalized.startsWith(`${denied}/`) || denied.startsWith(`${normalized}/`),
-  );
+  const denied = [...DENIED_CUSTOM_APP_HOST_PATHS, ...(grants?.protectedHostPaths ?? []).map(normalizeCustomAppHostPath)];
+  if (denied.some((root) => normalized === root || normalized.startsWith(`${root}/`) || root.startsWith(`${normalized}/`))) {
+    return true;
+  }
+
+  return isPrivateHomeLocation(normalized);
 }
 
-function assertCustomAppServiceSecurity(service: { privileged?: boolean; volumes?: { hostPath?: string }[] }, ctx: z.RefinementCtx) {
-  if (service.privileged === true) {
-    ctx.addIssue({
-      code: 'custom',
-      message: 'CUSTOM_APP_ERROR_PRIVILEGED_NOT_ALLOWED',
-      path: ['privileged'],
-    });
+/**
+ * A home folder itself (`/home/<user>`, `/Users/<user>`, or their parent) or anything under a hidden
+ * folder. Binding `/home/kyle` hands over `~/.ssh/authorized_keys` and `~/.bashrc`, a host login for
+ * a user who is usually in the `docker` group; `/home/kyle/Music` is the bind people mean.
+ */
+function isPrivateHomeLocation(normalized: string): boolean {
+  const segments = normalized.split('/').filter(Boolean);
+  if (segments.some((segment) => segment.startsWith('.'))) {
+    return true;
   }
+  return (segments[0] === 'home' || segments[0] === 'Users') && segments.length <= 2;
+}
+
+/**
+ * Label keys the Hub writes on every app container to know whose it is: `ci-hub.appurn`,
+ * `ci-hub.managed` and the `ci-os-hub.*` names an older Hub wrote. An app's `extraLabels` must not
+ * set them. A container labelled with another app's URN is taken for that app's container by every
+ * lookup that goes by label: status, the Traefik route, the runtime monitor's probe.
+ */
+const RESERVED_HUB_LABEL_PREFIXES = ['ci-hub.', 'ci-os-hub.'];
+
+export function isReservedHubLabel(key: string): boolean {
+  const lower = key.toLowerCase();
+  return RESERVED_HUB_LABEL_PREFIXES.some((prefix) => lower.startsWith(prefix));
+}
+
+type SecurityIssue = { message: string; path: PropertyKey[]; params?: Record<string, unknown> };
+
+function assertCustomAppServiceSecurity(
+  service: { privileged?: boolean; volumes?: { hostPath?: string }[]; extraLabels?: Record<string, unknown> },
+  report: (issue: SecurityIssue) => void,
+  grants?: AppSecurityGrants,
+) {
+  // The same grants the install sink consults, so an app's parse and its install agree on what it may
+  // use. Without grants this is the strict rule: nothing privileged, and no denied host path.
+  if (service.privileged === true && !grants?.privileged) {
+    report({ message: 'CUSTOM_APP_ERROR_PRIVILEGED_NOT_ALLOWED', path: ['privileged'] });
+  }
+  for (const key of Object.keys(service.extraLabels ?? {})) {
+    if (isReservedHubLabel(key)) {
+      report({ message: 'CUSTOM_APP_ERROR_LABEL_RESERVED', path: ['extraLabels', key], params: { label: key } });
+    }
+  }
+  for (const issue of collectTraefikLabelIssues(service.extraLabels)) {
+    report({ message: issue.message, path: ['extraLabels', issue.label], params: issue.params });
+  }
+  const grantedPaths = new Set((grants?.hostPaths ?? []).map(normalizeCustomAppHostPath));
   for (const [index, volume] of (service.volumes ?? []).entries()) {
     // Named volumes are docker-managed and expose no host path, so they cannot escape the sandbox.
-    if (volume.hostPath !== undefined && isDeniedCustomAppHostPath(volume.hostPath)) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'CUSTOM_APP_ERROR_HOST_PATH_DENIED',
-        path: ['volumes', index, 'hostPath'],
-      });
+    if (volume.hostPath === undefined || grantedPaths.has(normalizeCustomAppHostPath(volume.hostPath))) {
+      continue;
+    }
+    if (isDeniedCustomAppHostPath(volume.hostPath, grants)) {
+      report({ message: 'CUSTOM_APP_ERROR_HOST_PATH_DENIED', path: ['volumes', index, 'hostPath'] });
     }
   }
 }
@@ -163,6 +234,16 @@ export interface AppSecurityGrants {
   pidHost?: boolean;
   /** Denied host paths this app is explicitly permitted to bind. */
   hostPaths?: string[];
+  /**
+   * Who wrote this compose, which decides the host-bind rule (`isDeniedCustomAppHostPath`):
+   * `listing` (a store manifest) binds only its own data folder; `operator` (a custom app or a
+   * per-app override, the default) is held to the reject-list. Not a grant — it travels here because
+   * this is the per-app sandbox context every check already receives. Set by the backend's
+   * `securityGrantsFor` from install provenance, never read from a manifest.
+   */
+  hostBindAuthor?: 'listing' | 'operator';
+  /** This Hub's own host folders (data root, install folder, app data), denied with their ancestors. */
+  protectedHostPaths?: readonly string[];
   /** Linux capabilities beyond the safe set this app may add. */
   capAdd?: string[];
   /** Host devices this app may pass through, as the host half of `devices`. */
@@ -338,6 +419,16 @@ function normalizeSecurityOpt(opt: string): string {
 const CONFINEMENT_DISABLING_SECURITY_OPTS = [/^apparmor=unconfined$/, /^systempaths=unconfined$/, /^seccomp=/, /^label=/];
 
 /**
+ * Whether a value holds a `$`, which Compose reads as an expansion (`${X:-default}`, `$X`) or, doubled,
+ * as a literal `$`. A check that compares text cannot clear a value Compose rewrites after it: the
+ * allow-lists here refuse such a value already, as it matches nothing they allow, but a deny-list
+ * waves it through. No manifest needs an expansion in a setting that is checked against one.
+ */
+function holdsExpansion(value: string): boolean {
+  return value.includes('$');
+}
+
+/**
  * Whether `networkMode` is one of the modes the compose spec defines.
  *
  * Anything else is not rejected by Compose: it is passed to the Engine as `NetworkMode`, and the
@@ -379,7 +470,7 @@ const DENIED_DEVICE_PATTERNS = [
   /^\/dev\/(mem|kmem|port|root)$/i,
 ];
 
-function isDeniedDeviceHostPath(hostHalf: string): boolean {
+function isDeniedDeviceHostPath(hostHalf: string, grants?: AppSecurityGrants): boolean {
   if (hasUnresolvableHostPathSyntax(hostHalf)) {
     return true;
   }
@@ -392,7 +483,7 @@ function isDeniedDeviceHostPath(hostHalf: string): boolean {
 
   // Anything OUTSIDE `/dev` is an ordinary host path and is held to the ordinary
   // reject-list: `devices` must not become a second way to mount `/etc`.
-  return !normalized.startsWith('/dev/') && isDeniedCustomAppHostPath(hostHalf);
+  return !normalized.startsWith('/dev/') && isDeniedCustomAppHostPath(hostHalf, grants);
 }
 
 /**
@@ -419,7 +510,10 @@ export function collectServiceSecurityViolations(service: SecurityCheckedService
   if (service.networkMode && !isKnownNetworkMode(service.networkMode)) {
     violations.push({ path: ['networkMode'], message: 'CUSTOM_APP_ERROR_NETWORK_MODE_NOT_ALLOWED', hostPath: service.networkMode });
   }
-  if ((service.pid === 'host' || service.pid?.startsWith('container:')) && !grants?.pidHost) {
+  // A `$` is refused outright, grant or not: `pid` is compared as text here and Compose expands it
+  // afterwards, so `${P:-host}` passed as "not host" and joined the host's PID namespace.
+  const pid = service.pid?.trim().toLowerCase();
+  if (pid !== undefined && (holdsExpansion(pid) || ((pid === 'host' || pid.startsWith('container:')) && !grants?.pidHost))) {
     violations.push({ path: ['pid'], message: 'CUSTOM_APP_ERROR_PID_HOST_NOT_ALLOWED' });
   }
 
@@ -451,6 +545,14 @@ export function collectServiceSecurityViolations(service: SecurityCheckedService
     for (const [index, opt] of (service.securityOpt ?? []).entries()) {
       const normalized = normalizeSecurityOpt(opt);
 
+      // Matched as text, expanded by Compose afterwards: `${A:-apparmor=unconfined}` is no confinement
+      // option the patterns know, and becomes one at up time. A grant names a literal, so it never
+      // covers an expansion.
+      if (holdsExpansion(opt)) {
+        violations.push({ path: ['securityOpt', index], message: 'CUSTOM_APP_ERROR_SECURITY_OPT_NOT_ALLOWED', hostPath: opt });
+        continue;
+      }
+
       if (!CONFINEMENT_DISABLING_SECURITY_OPTS.some((pattern) => pattern.test(normalized)) || grantedSecurityOpts.has(normalized)) {
         continue;
       }
@@ -468,7 +570,7 @@ export function collectServiceSecurityViolations(service: SecurityCheckedService
         continue;
       }
 
-      if (isDeniedDeviceHostPath(hostHalf)) {
+      if (isDeniedDeviceHostPath(hostHalf, grants)) {
         violations.push({ path: ['devices', index], message: 'CUSTOM_APP_ERROR_DEVICE_NOT_ALLOWED', hostPath: device });
       }
     }
@@ -494,7 +596,7 @@ export function collectServiceSecurityViolations(service: SecurityCheckedService
     if (grantedPaths.has(normalizeCustomAppHostPath(volume.hostPath))) {
       continue;
     }
-    if (isDeniedCustomAppHostPath(volume.hostPath)) {
+    if (isDeniedCustomAppHostPath(volume.hostPath, grants)) {
       violations.push({ path: ['volumes', index, 'hostPath'], message: 'CUSTOM_APP_ERROR_HOST_PATH_DENIED', hostPath: volume.hostPath });
     }
   }
@@ -623,7 +725,12 @@ const serviceSchemaV2Object = z.object({
     .array(
       z.object({
         key: z.string('CUSTOM_APP_ERROR_ENV_KEY_REQUIRED').min(1, 'CUSTOM_APP_ERROR_ENV_KEY_MIN_LENGTH'),
-        value: z.string('CUSTOM_APP_ERROR_ENV_VALUE_REQUIRED').min(1, 'CUSTOM_APP_ERROR_ENV_VALUE_MIN_LENGTH').or(z.number()).or(z.boolean()),
+        // A missing value fails all three branches with one issue each. The form's resolver takes the
+        // first on a tie. Everything else reads the union's own message, so both carry the words for it.
+        value: z.union(
+          [z.string('CUSTOM_APP_ERROR_ENV_VALUE_REQUIRED').min(1, 'CUSTOM_APP_ERROR_ENV_VALUE_MIN_LENGTH'), z.number(), z.boolean()],
+          'CUSTOM_APP_ERROR_ENV_VALUE_REQUIRED',
+        ),
       }),
     )
     .optional(),
@@ -713,11 +820,44 @@ const serviceSchemaV2Object = z.object({
     .optional()
     .or(z.array(z.string('CUSTOM_APP_ERROR_DNS_INVALID')).optional()),
   platform: z.string().optional(),
+  /**
+   * OCI container runtime (e.g. `runc`, `kata`, `kata-qemu`, `kata-clh`, `kata-fc`, `kata-cc`).
+   * Used for microVM isolation via Kata Containers and hardware memory encryption / attestation
+   * via Confidential Containers (CoCo) for runtime DRM and IP protection.
+   */
+  runtime: z
+    .string()
+    .regex(/^[a-zA-Z0-9_.-]+$/, 'CUSTOM_APP_ERROR_RUNTIME_INVALID')
+    .optional(),
 });
 
-export const serviceSchema = serviceSchemaV2Object.superRefine((service, ctx) => {
-  assertCustomAppServiceSecurity(service, ctx);
-});
+/**
+ * Known container runtimes for Kata Containers microVM isolation and Confidential Containers (CoCo).
+ * - Kata Containers: https://katacontainers.io
+ * - Confidential Containers: https://confidentialcontainers.org/docs/architecture/design-overview/
+ */
+export const CONFIDENTIAL_CONTAINER_RUNTIMES = [
+  'kata',
+  'kata-qemu',
+  'kata-clh',
+  'kata-fc',
+  'kata-cc',
+  'kata-qemu-sev',
+  'kata-qemu-snp',
+  'kata-qemu-tdx',
+] as const;
+
+export function isConfidentialRuntime(runtime?: string): boolean {
+  if (!runtime) return false;
+  return (CONFIDENTIAL_CONTAINER_RUNTIMES as readonly string[]).includes(runtime) || runtime.startsWith('kata');
+}
+
+const serviceSchemaFor = (grants?: AppSecurityGrants) =>
+  serviceSchemaV2Object.superRefine((service, ctx) => {
+    assertCustomAppServiceSecurity(service, (issue) => ctx.addIssue({ code: 'custom', ...issue }), grants);
+  });
+
+export const serviceSchema = serviceSchemaFor();
 
 /**
  * Unrefined object form of the dynamic compose schema.
@@ -728,23 +868,31 @@ export const serviceSchema = serviceSchemaV2Object.superRefine((service, ctx) =>
  * of the shape must derive it from this object and re-apply
  * `assertComposeOverrideSecurity` themselves — see `dynamicComposeFormSchema`.
  */
-export const dynamicComposeObject = z.object({
-  schemaVersion: z.literal(2),
-  services: serviceSchema.array().min(1, 'CUSTOM_APP_ERROR_SERVICES_MIN_LENGTH'),
-  overrides: z
-    .array(
-      z.object({
-        architecture: z.enum(['arm64', 'amd64'], 'CUSTOM_APP_ERROR_ARCHITECTURE_INVALID').optional(),
-        services: serviceSchemaV2Object.partial().array(),
-      }),
-    )
-    .optional(),
-});
+const dynamicComposeObjectFor = (grants?: AppSecurityGrants) =>
+  z.object({
+    schemaVersion: z.literal(2),
+    services: serviceSchemaFor(grants).array().min(1, 'CUSTOM_APP_ERROR_SERVICES_MIN_LENGTH'),
+    overrides: z
+      .array(
+        z.object({
+          architecture: z.enum(['arm64', 'amd64'], 'CUSTOM_APP_ERROR_ARCHITECTURE_INVALID').optional(),
+          services: serviceSchemaV2Object.partial().array(),
+        }),
+      )
+      .optional(),
+  });
 
-const assertComposeOverrideSecurity = (compose: { overrides?: { services: unknown[] }[] }, ctx: z.RefinementCtx) => {
-  for (const override of compose.overrides ?? []) {
-    for (const service of override.services) {
-      assertCustomAppServiceSecurity(service as Parameters<typeof assertCustomAppServiceSecurity>[0], ctx);
+export const dynamicComposeObject = dynamicComposeObjectFor();
+
+const assertComposeOverrideSecurity = (compose: { overrides?: { services: unknown[] }[] }, ctx: z.RefinementCtx, grants?: AppSecurityGrants) => {
+  // Each issue's path leads to the override service that broke the rule, so the editor can name it.
+  for (const [overrideIndex, override] of (compose.overrides ?? []).entries()) {
+    for (const [serviceIndex, service] of override.services.entries()) {
+      assertCustomAppServiceSecurity(
+        service as Parameters<typeof assertCustomAppServiceSecurity>[0],
+        (issue) => ctx.addIssue({ code: 'custom', ...issue, path: ['overrides', overrideIndex, 'services', serviceIndex, ...issue.path] }),
+        grants,
+      );
     }
   }
 };
@@ -757,7 +905,145 @@ export const dynamicComposeSchema = dynamicComposeObject.superRefine(assertCompo
  */
 export const dynamicComposeFormSchema = dynamicComposeObject.omit({ schemaVersion: true }).superRefine(assertComposeOverrideSecurity);
 
+const reportKey = (path: PropertyKey[], message: string) => JSON.stringify([path, message]);
+
+/**
+ * What the schema itself already reports for this service, as path-and-message keys: its own security
+ * check, with no grants as a custom app holds none, and the volume name's field rule.
+ */
+const reportsTheSchemaAlreadyMade = (service: SecurityCheckedService): Set<string> => {
+  const keys = new Set<string>();
+  assertCustomAppServiceSecurity(service, (issue) => keys.add(reportKey(issue.path, issue.message)));
+  for (const [index, volume] of (service.volumes ?? []).entries()) {
+    if (volume.volumeName !== undefined && !DOCKER_VOLUME_NAME_PATTERN.test(volume.volumeName)) {
+      keys.add(reportKey(['volumes', index, 'volumeName'], 'CUSTOM_APP_ERROR_VOLUME_NAME_INVALID'));
+    }
+  }
+  return keys;
+};
+
+/**
+ * The violations saving reports for a service. One is dropped only when the schema already reported the
+ * same message at the same path, so a rule added to `collectServiceSecurityViolations` is refused on save
+ * without touching this, even on a field the schema also checks. Exported for its tests.
+ */
+export const saveViolationsFor = (
+  service: SecurityCheckedService,
+  violations: ServiceSecurityViolation[] = collectServiceSecurityViolations(service),
+): ServiceSecurityViolation[] => {
+  const already = reportsTheSchemaAlreadyMade(service);
+  return violations.filter((violation) => !already.has(reportKey(violation.path, violation.message)));
+};
+
+/**
+ * Refuses, when a custom app is saved, what the compose builder would refuse when it starts. A custom
+ * app holds no grants, so this is the answer Start gives, only sooner. It's held to every override,
+ * including one Start wouldn't apply on this Hub's architecture.
+ *
+ * Save only, on purpose. `parseInstalledComposeJson` and the edit page read composes with the schemas
+ * above, so an app saved before this rule still lists and still opens. The setting can be removed there.
+ */
+const assertComposeInsideSandbox = (
+  compose: { services: SecurityCheckedService[]; overrides?: { services: SecurityCheckedService[] }[] },
+  ctx: z.RefinementCtx,
+) => {
+  const refuse = (service: SecurityCheckedService, at: PropertyKey[]) => {
+    for (const violation of saveViolationsFor(service)) {
+      ctx.addIssue({ code: 'custom', message: violation.message, path: [...at, ...violation.path] });
+    }
+  };
+  for (const [index, service] of compose.services.entries()) {
+    refuse(service, ['services', index]);
+  }
+  for (const [overrideIndex, override] of (compose.overrides ?? []).entries()) {
+    for (const [index, service] of override.services.entries()) {
+      refuse(service, ['overrides', overrideIndex, 'services', index]);
+    }
+  }
+  // One folder inside another the app can write to (see bind-mount-nesting.ts). The services as they
+  // stand, and with each architecture's override's volumes added, since Start may apply either.
+  // The parsed services carry `name` and `readOnly`; SecurityCheckedService only names what the
+  // per-service check reads.
+  const base = compose.services as readonly MountingService[];
+  refuseNestedBindMounts(base, ['services'], ctx);
+  for (const [overrideIndex, override] of (compose.overrides ?? []).entries()) {
+    refuseNestedBindMounts(
+      [...base, ...(override.services as readonly MountingService[])],
+      ['overrides', overrideIndex, 'services'],
+      ctx,
+      base.length,
+    );
+  }
+};
+
+type MountedVolume = { hostPath?: string; readOnly?: boolean };
+type MountingService = { name?: string; volumes?: MountedVolume[] };
+
+/** Each bind mount of these services, with where it sits in the list (`[serviceIndex, volumeIndex]`). */
+const bindMountsAt = (services: readonly MountingService[]) => {
+  const mounts: (BindMountRef & { at: [number, number] })[] = [];
+  for (const [serviceIndex, service] of services.entries()) {
+    for (const [volumeIndex, volume] of (service.volumes ?? []).entries()) {
+      if (volume.hostPath !== undefined) {
+        mounts.push({
+          service: service.name ?? `#${serviceIndex}`,
+          source: volume.hostPath,
+          readOnly: volume.readOnly === true,
+          at: [serviceIndex, volumeIndex],
+        });
+      }
+    }
+  }
+  return mounts;
+};
+
+/**
+ * Reports the inner mount of each nested pair. `firstReported` skips services before that index (an
+ * override's check runs over the base services too, which the base check already reported on).
+ */
+const refuseNestedBindMounts = (services: readonly MountingService[], at: PropertyKey[], ctx: z.RefinementCtx, firstReported = 0) => {
+  const reported = new Set<string>();
+  for (const { inner } of findNestedBindMounts(bindMountsAt(services))) {
+    const [serviceIndex, volumeIndex] = (inner as ReturnType<typeof bindMountsAt>[number]).at;
+    const key = `${serviceIndex}.${volumeIndex}`;
+    if (serviceIndex < firstReported || reported.has(key)) {
+      continue;
+    }
+    reported.add(key);
+    ctx.addIssue({
+      code: 'custom',
+      message: 'CUSTOM_APP_ERROR_HOST_PATH_NESTED',
+      path: [...at, serviceIndex - firstReported, 'volumes', volumeIndex, 'hostPath'],
+    });
+  }
+};
+
+/** What `POST` and `PATCH /custom-apps` accept. Use `dynamicComposeSchema` to read a compose already on the Hub. */
+export const customAppComposeSchema = dynamicComposeSchema.superRefine(assertComposeInsideSandbox);
+
+/** `customAppComposeSchema` for the custom-app form, which supplies `schemaVersion` itself on submit. */
+export const customAppComposeFormSchema = dynamicComposeFormSchema.superRefine(assertComposeInsideSandbox);
+
 export const dynamicComposeUnion = z.discriminatedUnion('schemaVersion', [dynamicComposeSchemaV1, dynamicComposeSchema]);
+
+const grantedUnions = new WeakMap<AppSecurityGrants, typeof dynamicComposeUnion>();
+
+/**
+ * `dynamicComposeUnion` with one app's sandbox grants applied. Without grants it is the strict union
+ * itself. The grants are the ones the install sink consults, so an app the allowlist permits parses
+ * the way it installs. Cached per grants object, so a parse does not rebuild the schema each time.
+ */
+export const dynamicComposeUnionFor = (grants?: AppSecurityGrants): typeof dynamicComposeUnion => {
+  if (!grants) return dynamicComposeUnion;
+
+  let union = grantedUnions.get(grants);
+  if (!union) {
+    const schema = dynamicComposeObjectFor(grants).superRefine((compose, ctx) => assertComposeOverrideSecurity(compose, ctx, grants));
+    union = z.discriminatedUnion('schemaVersion', [dynamicComposeSchemaV1, schema]);
+    grantedUnions.set(grants, union);
+  }
+  return union;
+};
 
 export type DynamicCompose = z.output<typeof dynamicComposeSchema>;
 export type DependsOn = z.output<typeof serviceSchema.shape.dependsOn>;

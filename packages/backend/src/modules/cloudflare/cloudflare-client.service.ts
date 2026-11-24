@@ -7,15 +7,17 @@ import { DockerService } from '../docker/docker.service';
 import { DeviceRegistrationRepository } from '../registration/device-registration.repository';
 import type { AvailableCustomDomain, AvailableDomain, AvailableDomainsResponse, TunnelCustomDomain } from '@ci-hub/common/types';
 import { parseAvailableCustomDomains, parseTunnelCustomDomains } from '@ci-hub/common/types';
+import type { PORT_EXPOSE_KIND } from '@ci-hub/common/schemas';
 import axios, { AxiosInstance, type AxiosResponse } from 'axios';
 import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
 import * as path from 'node:path';
+import { TranslatableError } from '@/common/error/translatable-error';
 import { writeHealableTextFile } from '@/common/helpers/bind-mount-helpers';
 import { describeNetworkError } from '@/common/helpers/network-error';
 import { buildPortalAxiosConfig, readPortalInternalUrlOverride, withPortalAxiosHeaders } from '@/common/helpers/portal-url';
 import { PortalClientService } from '@/core/portal/portal-client.service';
-import { type DnsAvailability, readDnsAvailability } from './dns-availability';
+import { type PortalDnsAvailability, readDnsAvailability } from './dns-availability';
 
 /** How long `getDeviceApplications` waits for the Portal before it counts as no answer. */
 const DEVICE_APPLICATIONS_TIMEOUT_MS = 15_000;
@@ -97,6 +99,14 @@ export interface AppInfo {
    * routes follow desktop port remapping.
    */
   hubListenPort?: number;
+  /**
+   * Marks an app made with "Expose a port", with the port on this machine it
+   * forwards to. `localPort` is Traefik's port for every app, so without these
+   * Companion Portal cannot tell a reinstalled Hub what to put back (#2131).
+   * A Portal that predates them ignores them.
+   */
+  kind?: typeof PORT_EXPOSE_KIND;
+  upstreamPort?: number;
 }
 
 /**
@@ -149,6 +159,17 @@ export interface PublicDnsFailure {
 }
 
 /**
+ * Per-app refusals the Portal says pass on their own: a Cloudflare write that failed, a write parked for
+ * a later sync, or an old address still being released. The other reasons name a conflict or a limit that
+ * a repeat cannot change.
+ */
+const TRANSIENT_APP_FAILURE_REASONS: ReadonlySet<PublicDnsFailureReason> = new Set(['api_error', 'write_failed', 'release_pending']);
+
+export function isTransientAppFailure(failure: PublicDnsFailure): boolean {
+  return TRANSIENT_APP_FAILURE_REASONS.has(failure.reason);
+}
+
+/**
  * Describes the outcome of a Companion Portal state synchronization.
  *
  * `ok` reports whether the request succeeded. `failed` lists apps whose public
@@ -180,6 +201,8 @@ export interface CloudflareSyncResult {
   errorStatus?: number;
   /** Provides a concise, user-safe reason for a full sync failure. */
   errorMessage?: string;
+  /** True unless the Portal answered with a 4xx: a network, DNS, timeout, or 5xx failure may pass on the next pass. */
+  transient?: boolean;
 }
 
 export interface PortalDeviceApplication {
@@ -188,6 +211,23 @@ export interface PortalDeviceApplication {
   slug: string;
   port: number;
   publicDomain: string | null;
+  /**
+   * The registry wrote the row: a port exposed This Machine Only or on the
+   * Private VPN. The tunnel sync never releases such a row, so a Hub that does
+   * not get the app back removes it itself (#2134). Absent from a Portal that
+   * predates it, like the three fields below.
+   */
+  pinned?: boolean;
+  /** `port-expose` for an app made with "Expose a port", else null. */
+  kind?: string | null;
+  /** The port on the Hub machine an exposed port forwards to. */
+  upstreamPort?: number | null;
+  /**
+   * Where an exposed port was reachable. The Portal records it from the route
+   * that wrote the row: `cloudflare` only from the tunnel sync, `local` or
+   * `tailscale` only from the registry.
+   */
+  exposureMode?: string | null;
 }
 
 @Injectable()
@@ -341,11 +381,20 @@ export class CloudflareClientService {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const result = await this.syncStateOnce(organizationId, apps, customDomainApps);
       if (result.ok) {
-        return result;
+        // The Portal answered, but some apps' DNS writes failed for a reason it says passes on its own. The
+        // state is reconciled as a whole, so sending it again is safe, and a second pass usually clears them.
+        if (!result.failures.some(isTransientAppFailure) || attempt === maxAttempts) {
+          return result;
+        }
+        this.logger.warn(`Cloudflare state sync attempt ${attempt}/${maxAttempts} left transient app address failures; retrying…`);
+        await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
+        continue;
       }
       lastError = result;
+      // 429 is the Portal shedding load, which a short wait clears like a 5xx does.
       const transient =
         result.errorStatus === undefined ||
+        result.errorStatus === 429 ||
         result.errorStatus >= 500 ||
         result.errorMessage?.toLowerCase().includes('timeout') ||
         result.errorMessage?.toLowerCase().includes('network');
@@ -487,8 +536,13 @@ export class CloudflareClientService {
         } else if (errorStatus >= 500) {
           errorMessage = `Portal/Cloudflare control-plane error (${errorStatus})`;
         }
+      } else if (error instanceof TranslatableError) {
+        // `postJson` answers every non-2xx with its own 502 and keeps the Portal's status in the params.
+        errorStatus = Number((error.getResponse() as { intlParams?: { status?: string } }).intlParams?.status) || undefined;
       }
-      return { ok: false, failed: [], failures: [], synced: 0, errorStatus, errorMessage };
+      // A 4xx is the Portal's answer, and it repeats until someone acts; a 429 is load that a wait clears. Anything else may pass.
+      const transient = errorStatus === undefined || errorStatus === 429 || errorStatus < 400 || errorStatus >= 500;
+      return { ok: false, failed: [], failures: [], synced: 0, errorStatus, errorMessage, transient };
     }
   }
 
@@ -736,7 +790,7 @@ export class CloudflareClientService {
     }
   }
 
-  async checkDnsAvailability(subdomain: string, domain?: string): Promise<DnsAvailability> {
+  async checkDnsAvailability(subdomain: string, domain?: string): Promise<PortalDnsAvailability> {
     try {
       const response = await this.client.get('cloudflare/check-dns-availability', {
         ...this.getRequestConfig(),

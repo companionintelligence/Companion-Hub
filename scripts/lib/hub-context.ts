@@ -8,6 +8,7 @@
  */
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { dockerBindMountPath } from '../heal-hub-bind-mounts.js';
 import { buildEnvOverrides, getComposeFiles, getEnvFileOrExit } from './cli-compose-env.js';
 import { isApplianceMode, isHubRepoRoot } from './cli-repo-context.js';
 import { BASE_COMMAND, type HubEnv } from './cli-types.js';
@@ -96,12 +97,22 @@ export function applyDockerEnginePin(overrides: Record<string, string | undefine
   }
 }
 
-/** Env overrides for a context; pins ROOT_FOLDER_HOST to the data dir in appliance mode. */
+/**
+ * Env overrides for a context; pins ROOT_FOLDER_HOST to the data dir in appliance mode.
+ *
+ * Compose reads ROOT_FOLDER_HOST and ENV_FILE from the environment ahead of `--env-file` and passes
+ * them to the engine as bind-mount sources, so in appliance mode both are in the form the pinned
+ * engine mounts, as the desktop app passes them. A Docker engine inside WSL2 refuses a native
+ * `C:\...` source ("mount path must be absolute"). An init script that writes under these folders
+ * needs the native paths instead (see startApplianceHub).
+ */
 export function envOverridesForContext(ctx: HubContext): Record<string, string | undefined> {
   let overrides = buildEnvOverrides(ctx.envFile);
   if (ctx.appliance && ctx.dataDir) {
-    overrides.ROOT_FOLDER_HOST = ctx.dataDir;
     overrides = applyDockerEnginePin(overrides, ctx.dataDir);
+    // After the pin, so the form follows the engine it chose.
+    overrides.ROOT_FOLDER_HOST = dockerBindMountPath(ctx.dataDir);
+    overrides.ENV_FILE = dockerBindMountPath(ctx.envFile);
   }
   return overrides;
 }

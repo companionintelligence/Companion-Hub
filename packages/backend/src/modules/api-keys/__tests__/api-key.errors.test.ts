@@ -1,11 +1,32 @@
 import { describe, expect, it } from 'vitest';
-import { ApiKeyStoreUnavailableError, isTransientDbError } from '../api-key.errors';
+import { ApiKeyStoreUnavailableError, isDatabaseCredentialError, isTransientDbError } from '../api-key.errors';
 
 /** Mimics DrizzleQueryError: wraps the driver failure as `cause`. */
 function wrapped(code?: string, message = 'boom'): Error {
   const inner = Object.assign(new Error(message), code ? { code } : {});
   return new Error('Failed query: SELECT ... FROM api_keys', { cause: inner });
 }
+
+describe('isDatabaseCredentialError', () => {
+  it('recognises the rejected login by its SQLSTATE, wrapped or not', () => {
+    expect(isDatabaseCredentialError(wrapped('28P01', 'password authentication failed for user "companion"'))).toBe(true);
+    expect(isDatabaseCredentialError(Object.assign(new Error('x'), { code: '28000' }))).toBe(true);
+  });
+
+  it('recognises the rejected login by its message when the driver dropped the code', () => {
+    expect(isDatabaseCredentialError(new Error('password authentication failed for user "companion"'))).toBe(true);
+  });
+
+  it('is not a transient failure, so it is not retried', () => {
+    const credentials = wrapped('28P01', 'password authentication failed');
+    expect(isTransientDbError(credentials)).toBe(false);
+  });
+
+  it('does not match a reachability failure or a query bug', () => {
+    expect(isDatabaseCredentialError(wrapped('EAI_AGAIN', 'getaddrinfo EAI_AGAIN ci-hub-db'))).toBe(false);
+    expect(isDatabaseCredentialError(wrapped(undefined, 'column "owner_app_urn" does not exist'))).toBe(false);
+  });
+});
 
 describe('isTransientDbError', () => {
   it('classifies the exact #933 failure — EAI_AGAIN wrapped by Drizzle — as transient', () => {

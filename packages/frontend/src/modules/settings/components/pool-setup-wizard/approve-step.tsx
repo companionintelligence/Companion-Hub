@@ -95,7 +95,7 @@ export function ApproveStep({
   return (
     <div className="flex flex-1 flex-col gap-4" data-testid="pool-setup-step-approve">
       <div className="space-y-0.5">
-        <h3 tabIndex={-1} data-step-heading className="text-base font-semibold outline-none">
+        <h3 tabIndex={-1} data-step-heading className="text-base font-medium outline-none">
           {t('HUB_POOL_SETUP_APPROVE_TITLE')}
         </h3>
         {waiting.length > 0 || vanished.length > 0 ? <p className="text-sm text-muted-foreground">{t('HUB_POOL_SETUP_APPROVE_EXPLAIN')}</p> : null}
@@ -116,7 +116,7 @@ export function ApproveStep({
           <div className="flex items-start gap-2.5">
             <CheckCircle2 aria-hidden="true" className="mt-0.5 size-5 shrink-0 text-success" />
             <div className="min-w-0 space-y-0.5">
-              <h4 className="text-sm font-semibold text-success">{t('HUB_POOL_SETUP_SUCCESS_TITLE')}</h4>
+              <h4 className="text-sm font-medium text-success">{t('HUB_POOL_SETUP_SUCCESS_TITLE')}</h4>
               {/* Said only when this Hub sends work to its peers. With outbound switched off the user chose to continue past
                   that warning, and "apps now route across the pool" would be false for them. */}
               <p className="text-xs text-muted-foreground">
@@ -127,13 +127,13 @@ export function ApproveStep({
           <dl className="grid grid-cols-2 gap-2 text-xs">
             <div className="rounded-md bg-background/60 px-3 py-2">
               <dt className="text-muted-foreground">{t('HUB_POOL_SETUP_SUCCESS_HUBS')}</dt>
-              <dd className="text-xl font-semibold leading-tight" data-testid="pool-setup-success-hubs">
+              <dd className="text-xl font-medium leading-tight" data-testid="pool-setup-success-hubs">
                 {verified.length}
               </dd>
             </div>
             <div className="rounded-md bg-background/60 px-3 py-2">
               <dt className="text-muted-foreground">{t('HUB_POOL_SETUP_SUCCESS_MODELS')}</dt>
-              <dd className="text-xl font-semibold leading-tight" data-testid="pool-setup-success-models">
+              <dd className="text-xl font-medium leading-tight" data-testid="pool-setup-success-models">
                 {countPoolModels(pool)}
               </dd>
             </div>
@@ -360,7 +360,7 @@ export function ApproveStep({
 function Group({ title, testId, children }: { title: string; testId: string; children: ReactNode }) {
   return (
     <section aria-label={title} data-testid={testId} className="space-y-2">
-      <h4 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{title}</h4>
+      <h4 className="text-xs font-medium   text-muted-foreground">{title}</h4>
       {children}
     </section>
   );

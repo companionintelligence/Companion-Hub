@@ -23,6 +23,7 @@ import { useDisclosure } from '@/lib/hooks/use-disclosure';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import './app-actions.css';
+import type { GetAppDto } from '@/api-client';
 import { ignoreAppVersionMutation, startAppMutation, unignoreAppVersionMutation } from '@/api-client/@tanstack/react-query.gen';
 import type { AppDetails, AppInfo, AppMetadata, AppStatus } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
@@ -40,10 +41,14 @@ import { UninstallDialog } from '../../components/dialogs/uninstall-dialog/unins
 import { UpdateSettingsDialog } from '../../components/dialogs/update-settings-dialog/update-settings-dialog';
 import { useAppStatus } from '../../helpers/use-app-status';
 import { useInstallationProgress } from '../../helpers/use-installation-progress';
+import { useUpdatePhase } from '../../helpers/use-update-phase';
 import { useMemoryConnection } from '../../helpers/use-memory-connection';
 import { useLocation, useNavigate, Link, useSearchParams } from 'react-router';
-import { invalidateAppQueries, type AppInstallErrorCache } from '../../helpers/app-sse-cache';
-import type { AppUrn } from '@ci-hub/common/types';
+import { invalidateAppQueries, invalidateUpdatesAvailable, type AppInstallErrorCache } from '../../helpers/app-sse-cache';
+import { appServiceFailureText } from '../../helpers/app-service-failure';
+import { type AppUrn, servedExposureMode } from '@ci-hub/common/types';
+import type { UpdatePhase } from '@ci-hub/common/schemas';
+import { hasUpdateAvailable } from '@ci-hub/common/validation';
 import { openExternal } from '@/lib/helpers/open-external';
 import { canOpenFolderInFileExplorer, openPathInFileExplorer } from '@/lib/helpers/open-folder';
 import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
@@ -58,6 +63,7 @@ import {
 import type { AppUrlAvailability, AppUrlProbeResult } from '../../helpers/use-app-url-availability';
 import { checkAvailability } from '@/api-client/sdk.gen';
 import { useAppContext } from '@/context/app-context';
+import { humanBytes } from '@/components/ui/dense/dense';
 
 function isArchitectureSupported(supported: string[] | undefined, hostArch: string | undefined): boolean {
   if (!hostArch || !supported?.length) return true;
@@ -126,6 +132,8 @@ interface IProps {
   metadata?: AppMetadata;
   /** Absolute host path of the app's data folder (desktop "Open data folder" button). */
   appDataHostPath?: string | null;
+  /** Why the app is down, from the Hub. Outlives a reload, unlike the event that first told this tab. */
+  failure?: GetAppDto['failure'];
   localDomain?: string;
   sslPort?: number;
   runtimeHealth?: AppRuntimeHealth;
@@ -136,7 +144,36 @@ interface IProps {
    */
   urlAvailability: AppUrlAvailability;
   layout?: 'default' | 'hero';
+  /**
+   * The Hub verbs this person holds on the app, when the page knows them (a custom app's page reads
+   * them from `useCustomAppAccess`). An action whose verb is missing is left out rather than shown and
+   * refused. Unset, every action shows, and the Hub decides when it is used.
+   */
+  allowedActions?: readonly string[];
 }
+
+/** The verb each action asks the Hub for. One not listed (Open, the data folder) only reads. */
+const ACTION_VERBS: Record<string, string> = {
+  start: 'start',
+  install: 'install',
+  'retry-install': 'install',
+  stop: 'stop',
+  'force-stop': 'stop',
+  cancel: 'stop',
+  restart: 'restart',
+  settings: 'configure',
+  'edit-config': 'configure',
+  reset: 'reset',
+  remove: 'uninstall',
+  update: 'update',
+  'ignore-version': 'configure',
+  'unignore-version': 'configure',
+  // Connecting or disconnecting Companion Memory restarts the app.
+  'memory-connect': 'restart',
+  'memory-connect-blocked': 'restart',
+  'memory-connect-pending': 'restart',
+  'memory-disconnect': 'restart',
+};
 
 interface BtnProps extends ButtonProps {
   IconComponent?: typeof Download;
@@ -181,6 +218,25 @@ const IconActionButton: React.FC<IconBtnProps> = ({ icon: Icon, label, className
 
 const INSTALL_FINALIZING_PROGRESS = 99;
 
+/** Docker often reports a small layer first, so the sizes wait until they add up to a megabyte. */
+const DOWNLOAD_SIZE_SHOWN_FROM_BYTES = 1024 * 1024;
+
+// What the progress line under an update says in each step. `preparing` and an update whose step is
+// not known yet (a page opened before the stream replayed it) say "Preparing...".
+const UPDATE_PHASE_LABEL_KEYS: Record<UpdatePhase, string> = {
+  preparing: 'APP_ACTION_PREPARING',
+  pulling: 'APP_UPDATE_PHASE_PULLING',
+  backing_up: 'APP_UPDATE_PHASE_BACKING_UP',
+  replacing: 'APP_UPDATE_PHASE_REPLACING',
+  starting: 'APP_UPDATE_PHASE_STARTING',
+  verifying: 'APP_UPDATE_PHASE_VERIFYING',
+  finalizing: 'APP_UPDATE_PHASE_FINALIZING',
+  rolling_back: 'APP_UPDATE_PHASE_ROLLING_BACK',
+};
+
+// Steps in which the Hub refuses a cancel: the update is finishing or already rolling back.
+const UPDATE_PHASES_PAST_CANCEL = new Set<UpdatePhase>(['finalizing', 'rolling_back']);
+
 // In-progress statuses that render the LoadingButton, mapped to their status label key.
 const LOADING_STATUS_LABEL_KEYS: Partial<Record<AppStatus, string>> = {
   installing: 'APP_STATUS_INSTALLING',
@@ -194,9 +250,20 @@ const LOADING_STATUS_LABEL_KEYS: Partial<Record<AppStatus, string>> = {
   restoring: 'APP_STATUS_RESTORING',
 };
 
-export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth, urlAvailability, layout = 'default' }: IProps) => {
+export const AppActions = ({
+  app,
+  info,
+  metadata,
+  appDataHostPath,
+  failure,
+  runtimeHealth,
+  urlAvailability,
+  layout = 'default',
+  allowedActions,
+}: IProps) => {
   const installDisclosure = useDisclosure();
   const cancelInstallDisclosure = useDisclosure();
+  const cancelUpdateDisclosure = useDisclosure();
   const stopDisclosure = useDisclosure();
   const forceStopDisclosure = useDisclosure();
   const restartDisclosure = useDisclosure();
@@ -209,12 +276,15 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   // Local optimistic flag while a cancel is in flight: the backend keeps the app in `installing`
   // until compensation finishes and the `install_cancelled` SSE lands, so we surface "Cancelling…".
   const [isCancellingInstall, setIsCancellingInstall] = useState(false);
+  // The same for an update: the Hub stops it at its next safe point and rolls it back.
+  const [isCancellingUpdate, setIsCancellingUpdate] = useState(false);
 
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const { architecture } = useAppContext();
   const { setOptimisticStatus } = useAppStatus();
   const installationProgress = useInstallationProgress(app?.status === 'installing' ? (info.urn as AppUrn) : undefined);
+  const updatePhase = useUpdatePhase(app?.status === 'updating' ? (info.urn as AppUrn) : undefined);
   const location = useLocation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -238,12 +308,14 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   // fails open, so an unavailable handoff never blocks the open.
   const openExternalUrl = (url: string) => (memory.applicable ? openExternalWithHubSession(url) : openExternal(url));
 
-  // Clear the optimistic "cancelling" flag once the app leaves the installing state (the
-  // install_cancelled SSE flips it to uninstalled/missing), so a later re-install isn't affected.
+  // Clear the optimistic "cancelling" flags whenever the status moves, into `installing` too. A queued
+  // install is cancelled at once, so install_cancelled can land before the reply that sets the flag,
+  // and the app's next install would then start out "Cancelling…" with Cancel disabled. An update
+  // cancelled during its download can end as quickly, so its flag is cleared the same way.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: app?.status is the trigger, not an input.
   useEffect(() => {
-    if (app?.status !== 'installing') {
-      setIsCancellingInstall(false);
-    }
+    setIsCancellingInstall(false);
+    setIsCancellingUpdate(false);
   }, [app?.status]);
 
   const urnParts = info.urn.split(':');
@@ -327,13 +399,25 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
     })();
   }, [app?.status, appSlug, storeId, installDisclosure.open, archSupported, showWrongArchitectureToast]);
 
-  const versionIsIgnored = app?.ignoredVersion === metadata?.latestVersion;
-  const updateAvailable = Number(app?.version ?? 0) < Number(metadata?.latestVersion || 0);
+  // Ignoring is recorded against the counter only, so it can hide nothing but a counter bump.
+  const counterBehind = Number(app?.version ?? 0) < Number(metadata?.latestVersion || 0);
+  // An app that has since reached the version it ignored has no update to un-ignore (#2376).
+  const versionIsIgnored = counterBehind && app?.ignoredVersion === metadata?.latestVersion;
+  // The one definition the tile's badge and the update-all sweep use, so a newer version with an
+  // unchanged counter can be acted on here too.
+  const updateAvailable = hasUpdateAvailable({
+    installedCounter: app?.version ?? 0,
+    latestCounter: metadata?.latestVersion,
+    ignoredCounter: app?.ignoredVersion,
+    installedVersion: info.version,
+    latestVersion: metadata?.latestDockerVersion,
+  });
+  const canIgnoreVersion = counterBehind && !versionIsIgnored;
 
   const startMutation = useMutation({
     ...startAppMutation(),
     onError: (e: TranslatableError) => {
-      toast.error(t(e.message, e.intlParams));
+      toast.error(t(e.message, e.intlParams ?? {}));
       // A pre-flight rejection (e.g. starting an app that was already removed, which
       // throws APP_ERROR_APP_NOT_FOUND before any status update) emits no lifecycle
       // SSE event, and the app-detail query has a 30s staleTime with no refetch
@@ -348,21 +432,29 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
 
   const ignoreVersionMutation = useMutation({
     ...ignoreAppVersionMutation(),
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       toast.success(t('APP_ACTION_IGNORE_VERSION_SUCCESS'));
+      invalidateAppQueries(queryClient, variables.path.urn);
+      // The count behind Home's "Update all" changed too (#2376).
+      invalidateUpdatesAvailable(queryClient);
     },
-    onError: (e: Error) => {
-      toast.error(e.message);
+    // The error is a translation key, as for Start: shown raw it read APP_ACTION_GRANT_DENIED (#2376).
+    onError: (e: TranslatableError) => {
+      toast.error(t(e.message, e.intlParams ?? {}));
     },
   });
 
   const unignoreVersionMutation = useMutation({
     ...unignoreAppVersionMutation(),
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       toast.success(t('APP_ACTION_UNIGNORE_VERSION_SUCCESS'));
+      invalidateAppQueries(queryClient, variables.path.urn);
+      // The count behind Home's "Update all" changed too (#2376).
+      invalidateUpdatesAvailable(queryClient);
     },
-    onError: (e: Error) => {
-      toast.error(e.message);
+    // The error is a translation key, as for Start: shown raw it read APP_ACTION_GRANT_DENIED (#2376).
+    onError: (e: TranslatableError) => {
+      toast.error(t(e.message, e.intlParams ?? {}));
     },
   });
 
@@ -379,17 +471,24 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   );
   const LoadingButton = (() => {
     const progress = app?.status === 'installing' ? installationProgress : null;
-    const progressValue = progress === null ? 12 : Math.max(8, Math.min(99, progress));
+    const progressValue = progress === null ? 12 : Math.max(8, Math.min(99, progress.percent));
 
-    const cancelling = isCancellingInstall && app?.status === 'installing';
+    const cancellingUpdate = isCancellingUpdate && app?.status === 'updating';
+    const cancelling = (isCancellingInstall && app?.status === 'installing') || cancellingUpdate;
     const statusLabel = cancelling ? t('APP_STATUS_CANCELLING') : t((app?.status && LOADING_STATUS_LABEL_KEYS[app.status]) ?? 'COMMON_INSTALLING');
 
     let stageText = t('APP_ACTION_PREPARING');
-    if (cancelling) {
+    if (app?.status === 'updating' && updatePhase === 'rolling_back') {
+      stageText = t(UPDATE_PHASE_LABEL_KEYS.rolling_back);
+    } else if (cancelling) {
       stageText = t('APP_STATUS_CANCELLING');
+    } else if (app?.status === 'updating' && updatePhase) {
+      stageText = t(UPDATE_PHASE_LABEL_KEYS[updatePhase], { name: info.name });
     } else if (progress !== null) {
-      if (progress >= INSTALL_FINALIZING_PROGRESS) stageText = t('APP_ACTION_FINALIZING');
-      else if (progress >= 60) stageText = t('APP_ACTION_DOWNLOADING');
+      if (progress.percent >= INSTALL_FINALIZING_PROGRESS) stageText = t('APP_ACTION_FINALIZING');
+      else if (progress.percent >= 60 && (progress.totalBytes ?? 0) >= DOWNLOAD_SIZE_SHOWN_FROM_BYTES)
+        stageText = `${t('APP_ACTION_DOWNLOADING')} ${humanBytes(progress.downloadedBytes ?? 0)} / ${humanBytes(progress.totalBytes ?? 0)}`;
+      else if (progress.percent >= 60) stageText = t('APP_ACTION_DOWNLOADING');
       else stageText = t('APP_ACTION_PREPARING');
     }
 
@@ -402,12 +501,14 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
           aria-label={statusLabel}
           aria-valuemin={0}
           aria-valuemax={100}
-          aria-valuenow={progress ?? undefined}
+          aria-valuenow={progress?.percent}
           aria-valuetext={stageText}
         >
           <div className="installation-progress-fill" style={{ width: `${progressValue}%` }} />
         </div>
-        <p className="installation-progress-stage">{stageText}</p>
+        <p className="installation-progress-stage" title={stageText}>
+          {stageText}
+        </p>
       </div>
     );
   })();
@@ -438,12 +539,16 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   );
 
   // Show install errors surfaced from SSE via query cache
-  const { data: installError } = useQuery({
+  const { data: installErrorFromEvent } = useQuery({
     queryKey: ['app-install-error', info.urn],
     queryFn: () => queryClient.getQueryData<AppInstallErrorCache | null>(['app-install-error', info.urn]) ?? null,
     initialData: () => queryClient.getQueryData<AppInstallErrorCache | null>(['app-install-error', info.urn]) ?? null,
     staleTime: Number.POSITIVE_INFINITY,
   });
+  // The reason on the app comes first: an event goes to every session, so it leaves out the log line,
+  // and a tab opened after the failure heard no event. While the app is being worked on again that
+  // read is out of date.
+  const installError = (app?.status === 'install_failed' || app?.status === 'stopped' ? failure : null) ?? installErrorFromEvent;
 
   // `||`, not `??`: an empty/unset mode means a pre-exposureMode install, which
   // is treated as local access — the same fallback the backend applies.
@@ -457,6 +562,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
     appUrl,
     localUrl,
     statusMessage,
+    publicAddressRefusal,
     withinGracePeriod,
     pollingStopped,
     resolvable,
@@ -502,11 +608,13 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
 
     // Escape hatch offered alongside every not-yet-available state: the probe
     // can be wrong (or merely pessimistic), so never trap the user behind it.
-    const openAnywayLink = appUrl ? (
-      <button type="button" className="text-xs text-muted-foreground underline hover:text-foreground" onClick={() => openExternalUrl(appUrl)}>
-        {t('APP_ACTION_OPEN_ANYWAY')}
-      </button>
-    ) : null;
+    // Except for an address the Portal refused: no record exists, so it could only end on a browser error.
+    const openAnywayLink =
+      appUrl && !publicAddressRefusal ? (
+        <button type="button" className="text-xs text-muted-foreground underline hover:text-foreground" onClick={() => openExternalUrl(appUrl)}>
+          {t('APP_ACTION_OPEN_ANYWAY')}
+        </button>
+      ) : null;
 
     // A real alternative route, not just an escape hatch. When the public route
     // is unreachable but the app publishes a LAN port, it is very likely serving
@@ -620,13 +728,25 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
     );
   };
 
+  // `install_error` carries a translation key for a refusal (`describePortalBundleFailure`) and plain text for most other failures.
+  // Only the key travels (`reportAndTranslateAppError`), so copy that asks for values would print `{{status}}` as written.
+  const describeInstallFailure = (message: string) => {
+    if (!i18n.exists(message)) {
+      return message;
+    }
+    const copy = t(message);
+    return copy.includes('{{') ? t('COMMON_AN_ERROR_OCCURRED') : copy;
+  };
+
   // If there was an install error for this app, show it under the open/action area
   const installErrorMessage =
     installError?.errorCode === 'rocm_kfd_missing'
       ? t('APP_ERROR_ROCM_KFD_MISSING')
       : installError?.errorCode === 'network_overlap'
         ? t('APP_ERROR_NETWORK_OVERLAP')
-        : installError?.message;
+        : installError?.serviceFailure
+          ? appServiceFailureText(t, installError.serviceFailure)
+          : installError?.message && describeInstallFailure(installError.message);
   const installErrorSettingsPath =
     installError?.settingsPath ?? (installError?.errorCode === 'rocm_kfd_missing' ? '/settings?tab=ai&section=rocm' : undefined);
 
@@ -724,7 +844,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
           size="lg"
           className="launch-action-button memory-action-button"
           data-tooltip-id="app-actions-tooltip"
-          data-tooltip-content={t('MEMORY_CONNECT_DESC')}
+          data-tooltip-content={t(memory.connectedByOther ? 'MEMORY_CONNECT_REPLACE_OTHER_DESC' : 'MEMORY_CONNECT_DESC')}
         />
       );
     }
@@ -785,6 +905,11 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
     return null;
   })();
 
+  const isCustomApp = info.urn.split(':')[1] === '_user';
+  const editConfigButton = (
+    <IconActionButton key="edit-config" icon={Edit} label={t('CUSTOM_APP_EDIT_CONFIG')} onClick={() => navigate(`/apps/${info.id}/edit`)} />
+  );
+
   switch (app?.status ?? 'missing') {
     case 'stopped':
     case 'missing': {
@@ -792,13 +917,13 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       // legacy/compose-down state and should offer Start, not Install.
       if (!app) {
         buttons.push(InstallButton);
-        if (info.urn.split(':')[1] === '_user') {
+        if (isCustomApp) {
           secondaryActions.push(
-            <IconActionButton key="edit-config" icon={Edit} label={t('CUSTOM_APP_EDIT_CONFIG')} onClick={() => navigate(`/apps/${info.id}/edit`)} />,
+            editConfigButton,
             <IconActionButton
               key="remove"
               icon={Trash}
-              label={t('COMMON_REMOVE')}
+              label={t('APP_ACTION_UNINSTALL')}
               onClick={uninstallDisclosure.open}
               className="text-destructive hover:text-destructive"
             />,
@@ -811,21 +936,22 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       secondaryActions.push(
         <IconActionButton key="settings" icon={Settings} label={t('COMMON_SETTINGS')} onClick={updateSettingsDisclosure.open} />,
         <IconActionButton key="reset" icon={Eraser} label={t('APP_INSTALL_FORM_RESET')} onClick={resetAppDisclosure.open} />,
+      );
+      if (isCustomApp) {
+        secondaryActions.push(editConfigButton);
+      }
+      if (openDataFolderButton) secondaryActions.push(openDataFolderButton);
+      // Last, as when the app is running: Uninstall sat in the middle of the bar for a stopped app.
+      secondaryActions.push(
         <IconActionButton
           key="remove"
           icon={Trash}
-          label={t('COMMON_REMOVE')}
+          label={t('APP_ACTION_UNINSTALL')}
           onClick={uninstallDisclosure.open}
           className="text-destructive hover:text-destructive"
         />,
       );
-      if (info.urn.split(':')[1] === '_user') {
-        secondaryActions.push(
-          <IconActionButton key="edit-config" icon={Edit} label={t('CUSTOM_APP_EDIT_CONFIG')} onClick={() => navigate(`/apps/${info.id}/edit`)} />,
-        );
-      }
-      if (openDataFolderButton) secondaryActions.push(openDataFolderButton);
-      if (updateAvailable && !versionIsIgnored) {
+      if (updateAvailable) {
         secondaryActions.push(
           <IconActionButton
             key="update"
@@ -833,6 +959,10 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
             label={t('COMMON_UPDATE')}
             onClick={() => navigate(`${location.pathname}/update`, { state: { from: location.pathname } })}
           />,
+        );
+      }
+      if (canIgnoreVersion) {
+        secondaryActions.push(
           <IconActionButton
             key="ignore-version"
             icon={Ban}
@@ -860,11 +990,14 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
         <IconActionButton key="restart" icon={RotateCw} label={t('COMMON_RESTART')} onClick={restartDisclosure.open} />,
         <IconActionButton key="settings" icon={Settings} label={t('COMMON_SETTINGS')} onClick={updateSettingsDisclosure.open} />,
         <IconActionButton key="reset" icon={Eraser} label={t('APP_INSTALL_FORM_RESET')} onClick={resetAppDisclosure.open} />,
+        // A running custom app can be edited too, as the API and MCP tools always allowed. The save marks it
+        // as needing a restart, and its page offers one (#2421). Same place as on a stopped app.
+        ...(isCustomApp ? [editConfigButton] : []),
         ...(openDataFolderButton ? [openDataFolderButton] : []),
         <IconActionButton
           key="remove"
           icon={Trash}
-          label={t('COMMON_REMOVE')}
+          label={t('APP_ACTION_UNINSTALL')}
           onClick={uninstallDisclosure.open}
           className="text-destructive hover:text-destructive"
         />,
@@ -877,7 +1010,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       const openArea = renderOpenButtonArea();
       if (openArea) buttons.push(openArea);
 
-      if (updateAvailable && !versionIsIgnored) {
+      if (updateAvailable) {
         secondaryActions.push(
           <IconActionButton
             key="update"
@@ -885,6 +1018,10 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
             label={t('COMMON_UPDATE')}
             onClick={() => navigate(`${location.pathname}/update`, { state: { from: location.pathname } })}
           />,
+        );
+      }
+      if (canIgnoreVersion) {
+        secondaryActions.push(
           <IconActionButton
             key="ignore-version"
             icon={Ban}
@@ -932,11 +1069,26 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
         />,
       );
       break;
+    case 'updating':
+      // An update can wait minutes for the new version's health checks. Cancel stops it at its next
+      // safe point and puts the previous version back; once it is finishing or rolling back, it can't.
+      buttons.push(LoadingButton);
+      secondaryActions.push(
+        <IconActionButton
+          key="cancel"
+          icon={CircleStop}
+          label={t('COMMON_CANCEL')}
+          onClick={cancelUpdateDisclosure.open}
+          disabled={isCancellingUpdate || (updatePhase !== null && UPDATE_PHASES_PAST_CANCEL.has(updatePhase))}
+        />,
+        <IconActionButton key="stop" icon={Pause} label={t('COMMON_STOP')} disabled />,
+        <IconActionButton key="restart" icon={RotateCw} label={t('COMMON_RESTART')} disabled />,
+      );
+      break;
     case 'uninstalling':
     case 'starting':
     case 'stopping':
     case 'restarting':
-    case 'updating':
     case 'resetting':
     case 'backing_up':
     case 'restoring':
@@ -956,14 +1108,14 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
         <IconActionButton
           key="remove"
           icon={Trash}
-          label={t('COMMON_REMOVE')}
+          label={t('APP_ACTION_UNINSTALL')}
           onClick={uninstallDisclosure.open}
           className="text-destructive hover:text-destructive"
         />,
       );
       break;
     default:
-      if (info.urn.split(':')[1] === '_user') {
+      if (isCustomApp) {
         secondaryActions.push(
           <IconActionButton
             key="edit-config"
@@ -977,19 +1129,45 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       break;
   }
 
+  const permitted = (action: React.JSX.Element) => {
+    const verb = ACTION_VERBS[String(action.key)];
+    return allowedActions === undefined || verb === undefined || allowedActions.includes(verb);
+  };
+  const shownButtons = buttons.filter(permitted);
+  const shownSecondaryActions = secondaryActions.filter(permitted);
+
   return (
     <>
-      <InstallDialog isOpen={installDisclosure.isOpen} onClose={installDisclosure.close} info={info} boundCustomDomain={app?.customDomain ?? null} />
+      <InstallDialog
+        isOpen={installDisclosure.isOpen}
+        onClose={installDisclosure.close}
+        info={info}
+        boundCustomDomain={app?.customDomain ?? null}
+        retryExposureMode={app?.status === 'install_failed' ? servedExposureMode(app) : undefined}
+        retryPort={app?.status === 'install_failed' ? app.port : undefined}
+      />
       <CancelInstallDialog
         isOpen={cancelInstallDisclosure.isOpen}
         onClose={cancelInstallDisclosure.close}
         info={info}
         onCancelStart={() => setIsCancellingInstall(true)}
       />
+      <CancelInstallDialog
+        operation="update"
+        isOpen={cancelUpdateDisclosure.isOpen}
+        onClose={cancelUpdateDisclosure.close}
+        info={info}
+        onCancelStart={() => setIsCancellingUpdate(true)}
+      />
       <StopDialog isOpen={stopDisclosure.isOpen} onClose={stopDisclosure.close} info={info} />
       <ForceStopDialog isOpen={forceStopDisclosure.isOpen} onClose={forceStopDisclosure.close} info={info} />
       <RestartDialog isOpen={restartDisclosure.isOpen} onClose={restartDisclosure.close} info={info} />
-      <UninstallDialog isOpen={uninstallDisclosure.isOpen} onClose={uninstallDisclosure.close} info={info} />
+      <UninstallDialog
+        isOpen={uninstallDisclosure.isOpen}
+        onClose={uninstallDisclosure.close}
+        info={info}
+        canReset={shownSecondaryActions.some((action) => action.key === 'reset')}
+      />
       <ResetDialog isOpen={resetAppDisclosure.isOpen} onClose={resetAppDisclosure.close} info={info} />
       <DisconnectMemoryDialog
         isOpen={disconnectMemoryDisclosure.isOpen}
@@ -1048,14 +1226,20 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
            * success toast.
            */
           ...(app ? { customDomainExpected: app.customDomain ?? '' } : {}),
+          /*
+           * The mode the app runs in, which its form does not always name: a custom app's holds only
+           * its port. Left out, the dialog would open on what a new install gets (Public Web on a
+           * paired Hub) and the next save would publish the app.
+           */
+          ...(app ? { exposureMode: servedExposureMode(app) } : {}),
         }}
         status={app?.status}
       />
       <div className={clsx('space-y-1', layout === 'default' && 'mt-1')}>
         <div className={clsx('flex flex-wrap items-start gap-2', layout === 'hero' && 'hero-actions-layout')}>
           {layout === 'hero' ? InstallErrorMessage : null}
-          {secondaryActions.length > 0 ? <div className="hero-action-bar">{secondaryActions}</div> : null}
-          {buttons.map((button) => {
+          {shownSecondaryActions.length > 0 ? <div className="hero-action-bar">{shownSecondaryActions}</div> : null}
+          {shownButtons.map((button) => {
             return createElement(button.type, {
               ...button.props,
               key: button.key,

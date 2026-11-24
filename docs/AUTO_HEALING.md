@@ -26,7 +26,9 @@ is the most healing-heavy path the app ever runs:
    creates the Hub data directory, seeds `docker-compose.prod.yml` and `.env`,
    and runs the **Traefik runtime preflight** (`prepare_traefik_runtime_state`),
    which seeds `state/traefik/config/traefik.yml`, `dynamic/dynamic.yml`, the
-   `tls/` directory, and `acme_storage.json` if any are missing.
+   `tls/` directory, and `acme_storage.json` if any are missing. It leaves a
+   Traefik file the Hub wrote alone, even one from another release after the
+   Hub's own update: the Hub writes both from its assets on every boot.
    (`main.rs` setup hook, ~L190–207)
 
 2. **Decide to start.** The hash-based reconciliation block sees that no
@@ -74,6 +76,8 @@ compares it to `.config-hash` in the data dir.
 |-----------|----------|-----|
 | User explicitly stopped the Hub (`.user-stopped` marker) | **don't start** | Honour the user's "Stop Hub" decision across relaunches |
 | Containers missing | **start** | First launch, or containers were removed |
+| Hub container stopped, missing or restart-looping | **start** | `hub_needs_runtime_recovery` |
+| Database, queue or Traefik stopped or missing beside a running Hub | **start** | Such as a Traefik that lost port 80 at boot (`stopped_core_services`) |
 | Traefik recreate required (preflight changed mounted state) | **start** | Runtime state changed; Traefik must be recreated before reuse |
 | Config hash changed | **start** | Upgrade, env fix, or compose change |
 | Otherwise | **do nothing** | Containers exist, config unchanged, no repair pending |
@@ -151,6 +155,16 @@ nothing: ci-memory's long-running services and OpenClaw stayed `Running`, and on
 exited init services started. Compose does not see a changed
 bind-mounted file, but this path rewrites only the compose file and `app.env`.
 
+On a boot that keeps the version, the Hub starts only the apps whose row says `running`
+but that have no container at all, and schedules the first app status sync after that.
+Uninstalling the desktop app with its data kept leaves exactly this: every app container
+is gone, and the cache still holds the old version. A stopped app stays stopped. An app
+with any container left, running or not, is left to the status sync. The row is set to
+`starting` first, so a start that fails never leaves a `running` row with no containers for
+the sync to report as a crash. If the queue refuses the start because it isn't up yet, the
+Hub tries once more as soon as it is, waiting up to 10 minutes. A start that fails otherwise,
+or again, marks the app `stopped`, so the next boot doesn't try it again.
+
 ### Tunnel sidecar (`cloudflared`)
 
 On boot the Hub leaves a `running` cloudflared alone. A missing, exited, or crash-looping
@@ -175,32 +189,134 @@ plugin is missing. The Hub image registers the plugin under
 errors and restarts the existing container. A log line that ends in
 `unknown flag: --env-file` means the docker CLI had no compose plugin.
 
+### Traefik ACME store
+
+`docker-compose.prod.yml` mounts `state/traefik/acme_storage.json` as a file with
+`create_host_path: false`, so Traefik can't start while that file is missing. `cihub up`
+and the desktop app's Traefik preflight create it before they start the stack. The Hub
+checks it on every boot too, before it rewrites `traefik.yml`, so a Hub started some
+other way still has a store when Traefik next restarts.
+
+The Hub creates a missing store as `{}` with mode 0600. Traefik drops its ACME resolver
+when group or others have any access to the store. An existing store is never touched.
+
+When the Hub had to create the store, it also starts a Traefik that is `exited` or
+`created`. Docker doesn't retry a container whose bind source was missing, even with
+`restart: unless-stopped`, so after a reboot that Traefik stays down until something
+starts it. A Traefik in any other state is left alone. The log line
+`Traefik's ACME store was missing; created an empty one` marks a boot that repaired it.
+The Hub tries that start once. If it fails, run `docker start traefik`.
+
+Only a Hub that runs in its container starts Traefik. A backend run from source on the host
+creates the store but leaves any container named `traefik` alone, because that container
+belongs to an installed Hub.
+
+The Hub leaves a directory in the file's place alone and logs how to fix it. A Traefik
+container that ran with the directory has a directory at its mount point. Docker won't bind
+a file there ("Are you trying to mount a directory onto a file (or vice-versa)?"), so
+swapping in a file would keep that Traefik from starting at all. Run `docker rm -f traefik`,
+delete the directory, then run `cihub up` or relaunch the desktop app. When the Hub can't
+create the store at all, it doesn't restart a running Traefik for a changed `traefik.yml`,
+because that Traefik couldn't start again.
+
+### Did the app come up
+
+`compose up` returning says only that Docker started the containers. Install, a retry of a
+failed install, start and restart then look at them about once a second
+(`AppCameUpWatch`, `docker/managed-app-containers.ts`) and report failure if:
+
+- a container seen crashing (`restarting`, or a restart count that climbs) hasn't run for 10 s in
+  a row. It has 30 s from the first look. A run under way when that ends gets to finish, so
+  40 s at most. Docker's retries back off, to one at about 13 s and the next at about 25 s, so a
+  service whose database takes longer than that fails the check. The status sync still moves it
+  to `running` once it settles. A Start or Restart a person or a key asked for has 120 s instead
+  of 30 s, because a failure there removes the containers and nothing retries after that;
+- a container exited with an error, or is `dead`;
+- no container is running after 10 s.
+
+A healthy app waits at most 5 s, less when its containers are already up. A boot that
+recreates nothing takes two looks. A one-shot that exited 0 and a container still `Created`
+are fine.
+
+A one-shot service that exited with an error is fine too while something else runs. A one-shot is
+a service with `restart: "no"` that isn't the main service and that no other service needs running.
+Only `service_completed_successfully` waits for a service to finish, so a dependent with any other
+`depends_on` condition, or a bare list, means it is expected to keep running. The app page shows
+Needs attention for a failed one-shot and the Hub's log gets its last lines. With nothing else running
+it is the failure. A one-shot that a service waits on to finish fails `compose up` itself as it
+always has and the dependent stays `Created`.
+
+A container whose health check says `starting` counts as up after 5 s of running:
+many apps take minutes to answer and the app page shows that as Initializing. A service that
+first crashes later than 5 s after it starts passes this check. The status sync reports it.
+
+A failed install ends `install_failed` and a failed start or restart ends `stopped`. After an
+install or one of the Hub's own starts and restarts (a boot, Start all, a saved config, the start
+after an update) the containers stay up, since the others may be useful and Docker's retries can
+still bring the app back. A Start or Restart a person or a key asked for runs
+`down --remove-orphans` instead, as Stop does, so `stopped` is true. Named volumes and bind mounts
+stay. The crashed container's `docker logs` go with it. The whole app goes down, also when only
+one of its services failed, unless that service is a one-shot. The same happens when
+`compose up` itself fails and leaves a container
+restarting or unhealthy, as a dependency that never gets healthy does, or a one-shot that a
+service waits on to finish exited with an error and left that service `Created`. Without that,
+the services that started before the one-shot would keep running behind `stopped`. The toast names the service
+and the exit code. The app page adds the log line that best says why, also after a reload, because the Hub
+keeps the reason on the lifecycle job. That read takes what reading the app's logs takes, so a
+member who may only see a custom app doesn't get it. The toast's event goes to every signed-in
+session, so it carries no log text.
+
 ### App status sync (every 5 minutes)
 
 `syncAllAppStatuses` lists all containers labelled `ci-os-hub.managed=true`,
 groups them by app URN, and reconciles each installed app's DB status against
 reality:
 
-- **`running`** — every container is running, or exited cleanly (`Exited (0)`).
-- **`stopped`** — some containers are not running (mixed state is logged).
-- **`missing`** — no containers exist at all.
+- **`running`**: at least one container is running and every other one is running, exited
+  cleanly (`Exited (0)`) as a one-shot init service does when it finishes or is a one-shot that
+  exited with an error.
+- **`stopped`**: no container is running, or a service other than a one-shot exited with an error
+  (mixed state is logged).
+  An app whose containers were all stopped with `docker stop`, such as by the desktop's
+  **Stop Hub**, is `stopped`, and so is an installed app with no containers at all.
 
 Guards prevent false alarms:
 
 - **Transitional grace.** Apps in a transitional state (`installing`,
   `uninstalling`, `stopping`, `starting`, `updating`, `resetting`, `restarting`,
-  `backing_up`, `restoring`) are skipped while within their grace window. The
-  window is `eventsTimeout`, extended to `max(eventsTimeout, image-pull-timeout)`
-  for the long-running `installing` / `updating` states so big image pulls
-  aren't mistaken for failures. Apps stuck past the grace window are logged as
-  stuck.
+  `backing_up`, `restoring`) are skipped while the operation registry lists an
+  operation for them. A restart, backup, or restore takes the containers down
+  first, so Docker can't tell a slow one from a stopped app. The skip lasts as
+  long as the app-events queue waits for a command, `max(eventsTimeout, image-pull-timeout)`
+  (45 minutes by default), counted from when the operation was registered. By
+  then the caller has given up on the command, and an entry that never clears,
+  such as a force stop hung on Docker, can't hold the app forever. A row the
+  registry doesn't list is skipped for `eventsTimeout` after its last update, or
+  for that same queue timeout in the long-running `installing` / `updating` states
+  so big image pulls aren't mistaken for failures. The registry lives in memory,
+  so after a backend restart every row is in this case. Apart from an install, a
+  command RabbitMQ hands to the new process writes no status when it finishes,
+  so the sync is what settles the row, and a longer window would only keep it
+  spinning. Apps stuck
+  past their window are logged as stuck.
 - **Mid-install protection.** An `installing` / `install_failed` app with no
   containers is **not** marked `missing` (the pull may simply be slow).
+- **A failed install stays failed.** An `install_failed` app stays that way
+  while it isn't fully running, whatever containers it left behind, so the page
+  keeps the failure and Retry install. A retry runs the install, not a start, so
+  it gets install's port handling. Once every container is up it moves to
+  `running` by itself.
+- **One look can land between two crashes.** A `stopped` or `install_failed` app
+  moves to `running` only when no container started under a minute ago. A
+  service that crashes every few seconds always has.
 
 When a status actually changes, it is written to the DB and broadcast over SSE
 (`status_change`). **Crash detection:** a `running → stopped` or
 `running → missing` transition fires an `app.crashed` agent notification at
 **high** urgency, so the agent layer can react.
+An app turned `stopped` because every container exited 0 is the exception. It
+was stopped on purpose, so it gets no notification and no crash report, the
+same as a stop from the Hub.
 
 > Related: `agent-health-check.service.ts` notifies the agent on high disk usage
 > (high urgency), high memory (medium), and health-check failures (low).
@@ -257,6 +373,15 @@ Auto-healing never fights the user:
   click **Start Hub** (which clears the marker). The startup screen says so
   when the app opens: "CI Hub is stopped", with when it was stopped and a
   **Start Hub** button, instead of a startup timer.
+- **Stop Hub** in the tray, and **Clear Tunnel Token**, stop the running apps
+  too, and list their containers in `.apps-stopped-with-hub` in the data dir.
+  The next start, such as **Start Hub** from the tray or the startup screen,
+  starts those containers again right after `compose up`, before the Hub's
+  first app status sync. One that won't start stays stopped, and
+  `desktop.log` says why. That happens when `ci-hub_network` was removed and
+  created again while the apps were stopped, as a second Stop Hub does: Docker
+  looks the network up by its old ID. The Hub then shows the app **Stopped**,
+  and its **Start** recreates the containers.
 - `restart: unless-stopped` won't resurrect a container the user stopped
   on purpose.
 - After a failed start (`.start-failed` marker), the startup screen shows the

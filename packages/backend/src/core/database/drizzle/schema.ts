@@ -146,6 +146,15 @@ export const app = pgTable(
     autoRestartOnDomainChange: boolean('auto_restart_on_domain_change').default(false).notNull(),
     userConfigEnabled: boolean('user_config_enabled').default(true).notNull(),
     maxBackups: integer('max_backups'),
+    /**
+     * A person's answer to an app's `hub_integration.mcp_client`: whether it may use the Hub's MCP
+     * tools on the apps beside it, and at what level (`McpAccessChoice`). `null` means nobody was
+     * asked; `none` means asked and refused. The Hub mints the app's MCP key only at `read` or above.
+     *
+     * ⚠ ONLY A PERSON'S SESSION WRITES THIS. An app's own key may change its own app, so this is
+     * never read from the stored form, which that key can rewrite (see 0068_app_mcp_access.sql).
+     */
+    mcpAccess: varchar('mcp_access'),
   },
   (table) => [uniqueIndex('app_name_store_slug_uidx').on(table.appName, table.appStoreSlug)],
 );
@@ -196,7 +205,8 @@ export const user = pgTable(
  * signed as `X-CI-Hub-User-Issuer`), and it lives and dies with this database. An app keeping
  * links to Hub people can therefore tell "another person of this Hub" — a username handed on after
  * a rename, which must not inherit the account — from "a person of a Hub that no longer exists": a
- * backup restored onto a fresh Hub, whose people must be able to claim their accounts again.
+ * backup restored onto a fresh Hub, whose people must be able to claim their accounts again. A
+ * factory reset empties it with `user`, so the Hub it leaves is such a fresh Hub.
  */
 export const userDirectory = pgTable(
   'user_directory',
@@ -364,6 +374,26 @@ export const memoryConnection = pgTable(
     updatedAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
   },
   (table) => [uniqueIndex('memory_connection_app_urn_hub_user_idx').on(table.appUrn, table.hubUserId)],
+);
+
+/**
+ * An operator's leave for one app to reach another directly (`hub_integration.links`). Only needed
+ * for a link the Hub does not make by itself: one between two stores, or one only one side declared.
+ * Bound to the service and name the link was allowed with, so a manifest that later points the link
+ * somewhere else asks again.
+ */
+export const appLinkApproval = pgTable(
+  'app_link_approval',
+  {
+    id: serial().primaryKey().notNull(),
+    consumerUrn: varchar('consumer_urn').notNull(),
+    providerUrn: varchar('provider_urn').notNull(),
+    service: varchar().notNull(),
+    alias: varchar().notNull(),
+    approvedByUserId: integer('approved_by_user_id'),
+    createdAt: timestamp('created_at', { mode: 'string' }).defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex('app_link_approval_pair_idx').on(table.consumerUrn, table.providerUrn)],
 );
 
 const telemetryJson = customType<{ data: unknown; driverData: string }>({

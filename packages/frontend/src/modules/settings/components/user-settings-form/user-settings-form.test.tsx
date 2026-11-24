@@ -13,13 +13,10 @@ global.ResizeObserver = class ResizeObserver {
 const newHubSettings: SettingsFormValues = {
   advancedSettings: false,
   localDomain: 'localhost',
-  guestDashboard: false,
-  allowAutoThemes: true,
   allowErrorMonitoring: true,
   timeZone: 'Etc/GMT',
   domain: 'example.com',
   internalIp: '192.168.1.10',
-  listenIp: '0.0.0.0',
   port: 80,
   sslPort: 443,
   eventsTimeout: 5,
@@ -28,7 +25,6 @@ const newHubSettings: SettingsFormValues = {
   appDataPath: '/app-data',
   forwardAuthUrl: 'http://ci-hub:3000/api/auth/traefik',
   logLevel: 'info',
-  themeBase: 'gray',
 };
 
 const localDomainField = () => screen.getByLabelText(/^local domain/i);
@@ -38,21 +34,76 @@ async function typeLocalDomain(value: string) {
   await userEvent.type(localDomainField(), value);
 }
 
+const forwardAuthField = () => screen.getByLabelText(/^forward auth url/i);
+
+async function retype(field: HTMLElement, value: string) {
+  await userEvent.clear(field);
+  if (value) {
+    await userEvent.type(field, value);
+  }
+}
+
 const submit = () => userEvent.click(screen.getByRole('button', { name: 'Update settings' }));
 
 it('lets a keyboard user focus a setting hint', () => {
   render(<UserSettingsForm initialValues={newHubSettings} onSubmit={vi.fn()} />);
 
   const hint = screen.getByRole('button', {
-    name: 'This will allow non-authenticated users to see a limited dashboard and easily access the running apps on your instance.',
+    name: 'Off unless you turn it on. When on, anonymous crash reports, performance data and masked session recordings go to the Companion Hub team to help us fix bugs.',
   });
   expect(hint).toHaveTextContent('?');
   hint.focus();
   expect(hint).toHaveFocus();
 });
 
+it('saves the form when Enter is pressed in a field', async () => {
+  const onSubmit = vi.fn();
+  render(<UserSettingsForm initialValues={newHubSettings} onSubmit={onSubmit} />);
+
+  localDomainField().focus();
+  await userEvent.keyboard('{Enter}');
+
+  await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+});
+
+// Every setting but the language applies to the whole Hub, an owner's or admin's to change.
+it("shows a member only their own language, and nothing that changes the Hub's settings", () => {
+  render(<UserSettingsForm initialValues={newHubSettings} onSubmit={vi.fn()} manageHub={false} />);
+
+  expect(screen.getByText('User settings')).toBeInTheDocument();
+  expect(screen.getByRole('combobox', { name: /language/i })).toBeInTheDocument();
+  expect(screen.queryByText('General settings')).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Update settings' })).not.toBeInTheDocument();
+  expect(screen.getAllByRole('combobox')).toHaveLength(1);
+});
+
+// The Base theme palettes left with the old CSS framework, so the box saved a choice that changed nothing.
+it('offers no Base theme, only Language, in the User settings card', () => {
+  render(<UserSettingsForm initialValues={newHubSettings} onSubmit={vi.fn()} />);
+
+  const card = screen.getByText('User settings').closest('.rounded-lg');
+  expect(card).toContainElement(screen.getByRole('combobox', { name: /language/i }));
+  expect(screen.getAllByRole('combobox').filter((box) => card?.contains(box))).toHaveLength(1);
+});
+
 /** The Timezone box. Its label is not tied to it, so find it by its name. */
 const timezoneField = () => screen.getAllByRole('combobox').find((box) => box.getAttribute('name') === 'timezone');
+
+// #2422: the guest dashboard switch moved to its own card, which saves it by itself. A General settings
+// save must not carry the value the form opened with, or it would undo a change made in that card.
+describe('UserSettingsForm guest dashboard', () => {
+  it('has no guest dashboard switch and leaves it out of a save', async () => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={{ ...newHubSettings, guestDashboard: true } as SettingsFormValues} onSubmit={onSubmit} />);
+
+    expect(screen.queryByRole('switch', { name: /guest dashboard/i })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('switch', { name: /Allow anonymous error monitoring/ }));
+    await submit();
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit).toHaveBeenCalledWith(expect.not.objectContaining({ guestDashboard: expect.anything() }));
+  });
+});
 
 describe('UserSettingsForm Local domain check', () => {
   it('saves a change on a new Hub, where the read-only Local domain is the localhost the Hub filled in', async () => {
@@ -60,11 +111,11 @@ describe('UserSettingsForm Local domain check', () => {
     render(<UserSettingsForm initialValues={newHubSettings} onSubmit={onSubmit} />);
 
     expect(localDomainField()).toHaveAttribute('readonly');
-    await userEvent.click(screen.getByRole('switch', { name: 'Enable guest dashboard' }));
+    await userEvent.click(screen.getByRole('switch', { name: /Allow anonymous error monitoring/ }));
     await submit();
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
-    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ guestDashboard: true, localDomain: 'localhost' }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ allowErrorMonitoring: false, localDomain: 'localhost' }));
     expect(screen.queryByText('Invalid domain')).not.toBeInTheDocument();
   });
 
@@ -87,11 +138,24 @@ describe('UserSettingsForm Local domain check', () => {
     const onSubmit = vi.fn();
     render(<UserSettingsForm initialValues={{ ...newHubSettings, localDomain: 'lan' }} onSubmit={onSubmit} />);
 
-    await userEvent.click(screen.getByRole('switch', { name: 'Enable guest dashboard' }));
+    await userEvent.click(screen.getByRole('switch', { name: /Allow anonymous error monitoring/ }));
     await submit();
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
-    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ guestDashboard: true, localDomain: 'lan' }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ allowErrorMonitoring: false, localDomain: 'lan' }));
+  });
+
+  // CI-Hub#2380: the Apps repo URL field is not on the page, so a stored value the URL check refuses
+  // stopped every save with no message anywhere.
+  it('does not block a save on a stored Apps repo URL the page does not show', async () => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={{ ...newHubSettings, appsRepoUrl: 'http://ci-marketplace:8080/repo' }} onSubmit={onSubmit} />);
+
+    await userEvent.click(screen.getByRole('switch', { name: /Allow anonymous error monitoring/ }));
+    await submit();
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ allowErrorMonitoring: false }));
   });
 
   it('still rejects a typed Local domain that is not a domain name', async () => {
@@ -103,6 +167,247 @@ describe('UserSettingsForm Local domain check', () => {
 
     expect(await screen.findByText('Invalid domain')).toBeInTheDocument();
     expect(onSubmit).not.toHaveBeenCalled();
+  });
+});
+
+describe('UserSettingsForm Advanced settings messages', () => {
+  const advancedSettings = { ...newHubSettings, advancedSettings: true };
+
+  it.each([
+    ['text that is not a URL', 'not a url'],
+    ['nothing', ''],
+    ['a host and port with no http://', 'auth.example.com:9000/verify'],
+    ['a scheme that is not http', 'mailto:auth@example.com'],
+  ])('shows a message under a Forward auth URL of %s, goes to the field and sends nothing', async (_kind, value) => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={advancedSettings} onSubmit={onSubmit} />);
+
+    await retype(forwardAuthField(), value);
+    await submit();
+
+    expect(await screen.findByText('Invalid URL')).toBeInTheDocument();
+    expect(forwardAuthField()).toHaveAttribute('aria-invalid', 'true');
+    expect(forwardAuthField()).toHaveFocus();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('saves a valid Forward auth URL, including after correcting one that was refused', async () => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={advancedSettings} onSubmit={onSubmit} />);
+
+    await retype(forwardAuthField(), 'not a url');
+    await submit();
+    expect(await screen.findByText('Invalid URL')).toBeInTheDocument();
+
+    await retype(forwardAuthField(), 'https://auth.example.com/verify');
+    await submit();
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ forwardAuthUrl: 'https://auth.example.com/verify' }));
+    expect(screen.queryByText('Invalid URL')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['Port', /^port(?! \(ssl)/i],
+    ['Port (SSL)', /^port \(ssl\)/i],
+    ['Events timeout', /^events timeout/i],
+    ['Maximum backups to keep', /^maximum backups/i],
+  ])('shows a message under an emptied %s and sends nothing', async (_name, label) => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={advancedSettings} onSubmit={onSubmit} />);
+    const field = screen.getByLabelText(label);
+
+    await retype(field, '');
+    await submit();
+
+    expect(await screen.findByText('Invalid value')).toBeInTheDocument();
+    expect(field).toHaveAttribute('aria-invalid', 'true');
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('shows a message under an Events timeout above the 120 the Hub takes and sends nothing', async () => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={advancedSettings} onSubmit={onSubmit} />);
+
+    await retype(screen.getByLabelText(/^events timeout/i), '121');
+    await submit();
+
+    expect(await screen.findByText('Invalid value')).toBeInTheDocument();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('shows every refused field at once and goes to the first on the page', async () => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={advancedSettings} onSubmit={onSubmit} />);
+    const internalIpField = screen.getByLabelText(/^internal ip/i);
+
+    await retype(forwardAuthField(), 'not a url');
+    await retype(screen.getByLabelText(/^events timeout/i), '');
+    await retype(internalIpField, 'hub.lan');
+    await submit();
+
+    expect(await screen.findByText('Invalid IP address')).toBeInTheDocument();
+    expect(screen.getByText('Invalid URL')).toBeInTheDocument();
+    expect(screen.getByText('Invalid value')).toBeInTheDocument();
+    await waitFor(() => expect(internalIpField).toHaveFocus());
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+});
+
+describe('UserSettingsForm values the Hub already had', () => {
+  const brokenForwardAuth = { ...newHubSettings, forwardAuthUrl: 'not-a-url' };
+
+  it('saves with an Events timeout above 120 that the Hub already had and leaves it out of the request', async () => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={{ ...newHubSettings, eventsTimeout: 180 }} onSubmit={onSubmit} />);
+
+    await submit();
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0]?.[0]).not.toHaveProperty('eventsTimeout');
+  });
+
+  it('saves with Advanced settings off when the Hub reports a Forward auth URL the form refuses', async () => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={brokenForwardAuth} onSubmit={onSubmit} />);
+
+    await submit();
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0]?.[0]).not.toHaveProperty('forwardAuthUrl');
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ port: 80, maxBackups: 5 }));
+  });
+
+  it('saves with Advanced settings on while the refused value is left as it was', async () => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={{ ...brokenForwardAuth, advancedSettings: true }} onSubmit={onSubmit} />);
+
+    await submit();
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0]?.[0]).not.toHaveProperty('forwardAuthUrl');
+  });
+
+  it('still refuses that field once the person changes it to something else that is not a URL', async () => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={{ ...brokenForwardAuth, advancedSettings: true }} onSubmit={onSubmit} />);
+
+    await retype(forwardAuthField(), 'still not a url');
+    await submit();
+
+    expect(await screen.findByText('Invalid URL')).toBeInTheDocument();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+});
+
+describe('UserSettingsForm Internal IP check', () => {
+  const advancedSettings = { ...newHubSettings, advancedSettings: true };
+  const internalIpField = () => screen.getByLabelText(/^internal ip/i);
+
+  const typeInternalIp = (value: string) => retype(internalIpField(), value);
+
+  // INTERNAL_IP is read as it was set, so the Hub can report something that is not an IPv4 address.
+  it.each([
+    ['empty', ''],
+    ['an IPv6 address', '::'],
+    ['a name', 'hub.lan'],
+  ])('saves a change when the Hub reported an Internal IP that is %s, and leaves it out of the request', async (_kind, internalIp) => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={{ ...newHubSettings, internalIp }} onSubmit={onSubmit} />);
+
+    await userEvent.click(screen.getByRole('switch', { name: /Allow anonymous error monitoring/ }));
+    await submit();
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ allowErrorMonitoring: false }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.not.objectContaining({ internalIp: expect.anything() }));
+  });
+
+  it('saves with the field shown and left alone, whatever the Hub reported in it', async () => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={{ ...advancedSettings, internalIp: '::' }} onSubmit={onSubmit} />);
+
+    expect(internalIpField()).toHaveValue('::');
+    await submit();
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText('Invalid IP address')).not.toBeInTheDocument();
+  });
+
+  it('sends an Internal IP the Hub reported as it is when it is an IPv4 address', async () => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={newHubSettings} onSubmit={onSubmit} />);
+
+    await submit();
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ internalIp: '192.168.1.10' }));
+  });
+
+  it('saves an Internal IP typed with stray spaces, without them', async () => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={advancedSettings} onSubmit={onSubmit} />);
+
+    await typeInternalIp('  10.0.0.5 ');
+    await submit();
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ internalIp: '10.0.0.5' }));
+  });
+
+  it.each([
+    ['a name', 'hub.lan'],
+    ['an IPv6 address', 'fd00::1'],
+    ['an address with a part too many', '10.0.0.5.1'],
+    ['nothing, which the Hub cannot take in place of its address', ''],
+  ])('rejects a typed Internal IP that is %s', async (_kind, typed) => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={advancedSettings} onSubmit={onSubmit} />);
+
+    await typeInternalIp(typed);
+    await submit();
+
+    expect(await screen.findByText('Invalid IP address')).toBeInTheDocument();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+});
+
+describe('UserSettingsForm Default app CPU limit', () => {
+  it('sends an emptied field, so the saved default is cleared rather than kept', async () => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={{ ...newHubSettings, defaultAppCpuLimit: '0.5' }} onSubmit={onSubmit} />);
+
+    await userEvent.clear(screen.getByLabelText(/^default app cpu limit/i));
+    await submit();
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ defaultAppCpuLimit: '' }));
+  });
+});
+
+describe('UserSettingsForm Listen IP', () => {
+  // The Hub still reports a Listen IP with its settings, whether or not the page shows one.
+  const withStoredListenIp = { ...newHubSettings, advancedSettings: true, listenIp: '10.0.0.5' };
+
+  it('has no Listen IP field, even with Advanced settings on', () => {
+    render(<UserSettingsForm initialValues={withStoredListenIp} onSubmit={vi.fn()} />);
+
+    expect(screen.getByLabelText(/^internal ip/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/listen ip/i)).not.toBeInTheDocument();
+    // By name as well, so the check doesn't hang on the label's string.
+    expect(document.querySelector('[name="listenIp"]')).toBeNull();
+  });
+
+  it('saves every other value as it was, and leaves a stored Listen IP out of the request', async () => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={withStoredListenIp} onSubmit={onSubmit} />);
+
+    await submit();
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const { listenIp: _notSent, ...shown } = withStoredListenIp;
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining(shown));
+    expect(onSubmit).toHaveBeenCalledWith(expect.not.objectContaining({ listenIp: expect.anything() }));
   });
 });
 

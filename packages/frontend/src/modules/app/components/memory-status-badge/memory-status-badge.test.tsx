@@ -17,6 +17,7 @@ function mockConnection(partial: Record<string, unknown>) {
   useMemoryConnection.mockReturnValue({
     applicable: true,
     connected: false,
+    connectedByOther: false,
     memoryInstalled: false,
     memoryReady: false,
     providerStatus: 'absent',
@@ -47,7 +48,7 @@ describe('MemoryStatusBadge', () => {
   it('shows "offline" when ci-memory is installed but stopped', () => {
     mockConnection({ memoryInstalled: true, providerStatus: 'offline' });
     render(<MemoryStatusBadge appUrn="ci-openclaw:local" />);
-    expect(screen.getByText('MEMORY_CONNECT_BADGE_OFFLINE')).toBeInTheDocument();
+    expect(screen.getByText('MEMORY_CONNECT_BADGE_OFFLINE')).toHaveAttribute('title', 'MEMORY_CONNECT_OFFLINE_DESC');
   });
 
   it('shows "not connected" only once ci-memory is ready', () => {
@@ -56,10 +57,33 @@ describe('MemoryStatusBadge', () => {
     expect(screen.getByText('MEMORY_CONNECT_BADGE_NOT_CONNECTED')).toBeInTheDocument();
   });
 
-  it('shows "connected" even if ci-memory is momentarily offline (a live key outranks provider status)', () => {
+  it('shows "offline" for a connected app while ci-memory is stopped and says the connection is kept (#2315)', () => {
     mockConnection({ connected: true, memoryInstalled: true, memoryReady: false, providerStatus: 'offline' });
+    render(<MemoryStatusBadge appUrn="ci-hermes:local" />);
+    const pill = screen.getByText('MEMORY_CONNECT_BADGE_OFFLINE');
+    expect(pill).toHaveAttribute('title', 'MEMORY_CONNECT_CONNECTED_OFFLINE_DESC');
+    expect(screen.queryByText('MEMORY_CONNECT_BADGE_CONNECTED')).not.toBeInTheDocument();
+    expect(screen.queryByText('MEMORY_CONNECT_BADGE_NOT_CONNECTED')).not.toBeInTheDocument();
+  });
+
+  it('shows "offline" for an app another person connected while ci-memory is stopped', () => {
+    mockConnection({ connectedByOther: true, memoryInstalled: true, memoryReady: false, providerStatus: 'offline' });
+    render(<MemoryStatusBadge appUrn="ci-hermes:local" />);
+    expect(screen.getByText('MEMORY_CONNECT_BADGE_OFFLINE')).toHaveAttribute('title', 'MEMORY_CONNECT_CONNECTED_OFFLINE_DESC');
+    expect(screen.queryByText('MEMORY_CONNECT_BADGE_CONNECTED_BY_OTHER')).not.toBeInTheDocument();
+  });
+
+  it('keeps "connected" while ci-memory is only starting again (a live key outranks a restart)', () => {
+    mockConnection({ connected: true, memoryInstalled: true, memoryReady: false, providerStatus: 'starting' });
     render(<MemoryStatusBadge appUrn="ci-openclaw:local" />);
     expect(screen.getByText('MEMORY_CONNECT_BADGE_CONNECTED')).toBeInTheDocument();
+  });
+
+  it('says another person connected the app instead of "not connected" (#2080)', () => {
+    mockConnection({ connectedByOther: true, memoryInstalled: true, memoryReady: true, providerStatus: 'ready' });
+    render(<MemoryStatusBadge appUrn="ci-openclaw:local" />);
+    expect(screen.getByText('MEMORY_CONNECT_BADGE_CONNECTED_BY_OTHER')).toBeInTheDocument();
+    expect(screen.queryByText('MEMORY_CONNECT_BADGE_NOT_CONNECTED')).not.toBeInTheDocument();
   });
 
   it('does NOT show "connected" when the connection is stale and ci-memory has been uninstalled (provider absent)', () => {

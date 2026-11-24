@@ -1,15 +1,16 @@
 import { render, screen } from '@/tests/test-utils';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { DashboardLayout } from '@/components/layouts/dashboard/layout';
 
-const { appContext } = vi.hoisted(() => ({
+const { appContext, registration } = vi.hoisted(() => ({
   appContext: {
     user: { hasCompletedOnboarding: true },
-    userSettings: { ciHubDeviceSlug: 'hub-device', allowAutoThemes: false },
+    userSettings: { ciHubDeviceSlug: 'hub-device' },
     isLoading: false,
     loadFailed: false,
   },
+  registration: { data: null as unknown },
 }));
 
 vi.mock('@/lib/mobile-connection', () => ({
@@ -24,7 +25,7 @@ vi.mock('react-i18next', () => ({
 }));
 vi.mock('@/context/user-context', () => ({ useUserContext: () => ({ isLoggedIn: true }) }));
 vi.mock('@/context/app-context', () => ({ useAppContext: () => appContext }));
-vi.mock('@/lib/hooks/use-registration-status', () => ({ useRegistrationStatus: () => ({ data: null }) }));
+vi.mock('@/lib/hooks/use-registration-status', () => ({ useRegistrationStatus: () => registration }));
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   logoutMutation: () => ({ mutationFn: vi.fn() }),
   systemLoadOptions: () => ({ queryKey: ['system-load'], queryFn: async () => null }),
@@ -61,6 +62,18 @@ function renderAt(path: string) {
 }
 
 describe('DashboardLayout page wrapper', () => {
+  beforeEach(() => {
+    registration.data = null;
+  });
+
+  it('shows the Portal notice on the page when check-ins keep failing', () => {
+    registration.data = { phase: 'degraded', registered: true, degradedReasons: ['cloud_validation_failed'] };
+
+    renderAt('/home');
+
+    expect(screen.getByTestId('portal-connection-banner')).toBeInTheDocument();
+  });
+
   it('fits the page to the height of <main> so pages scroll in their own panes', () => {
     renderAt('/settings');
 
@@ -87,7 +100,9 @@ describe('DashboardLayout <main>', () => {
     // top of the scrollbar and hid the thumb at the top of the page.
     const main = screen.getByRole('main');
     expect(main).not.toHaveClass('no-scrollbar');
-    expect(main).toHaveStyle({ marginTop: 'var(--header-offset)' });
+    // Read the declared value. jsdom 31 resolves var() in computed styles, and this test never defines
+    // --header-offset, so the computed margin is 0px. The component sets this exact inline value.
+    expect(main.style.marginTop).toBe('var(--header-offset)');
   });
 
   it('spans the window and pads its content into the page column, so scrollbars sit at the window edge', () => {

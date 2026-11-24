@@ -4,7 +4,8 @@ import type { ConfigurationService } from '@/core/config/configuration.service';
 import type { AppStore } from '@/core/database/drizzle/types';
 import type { FilesystemService } from '@/core/filesystem/filesystem.service';
 import type { LoggerService } from '@/core/logger/logger.service';
-import { APP_CATEGORIES, appInfoSchema } from '@ci-hub/common/schemas';
+import { warnHubOwnedEnvLeftOut } from '@/modules/apps/app-files-manager';
+import { APP_CATEGORIES, appInfoSchema, parseInstalledAppInfo } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 
 const KNOWN_APP_CATEGORIES = new Set<string>(APP_CATEGORIES);
@@ -157,7 +158,8 @@ export class AppStoreFilesManager {
       const configFile = await this.filesystem.readTextFile(path.join(appInstalledDir, 'config.json'));
 
       const config = normalizeAppConfigCategories(JSON.parse(configFile ?? '{}') as Record<string, unknown>);
-      const parsedConfig = appInfoSchema.safeParse({ ...config, urn: appUrn });
+      const { parsed: parsedConfig, leftOut } = parseInstalledAppInfo({ ...config, urn: appUrn });
+      warnHubOwnedEnvLeftOut(this.logger, appUrn, leftOut, 'installed config.json');
 
       if (!parsedConfig.success) {
         this.logger.debug(`App ${appUrn} installed config error:`);
@@ -227,7 +229,7 @@ export class AppStoreFilesManager {
 
     // Copy app folder from repo
     this.logger.info(`Copying app ${appUrn} from repo ${this.storeConfig.slug}`);
-    const copied = await this.filesystem.copyDirectory(appRepoDir, appInstalledDir);
+    const copied = await this.filesystem.copyDirectory(appRepoDir, appInstalledDir, { verbatimSymlinks: true });
 
     if (removed === false || createdApp === false || createdData === false || copied === false) {
       throw new Error(`Could not copy ${appUrn} from repo ${this.storeConfig.slug} into the installed apps folder`);
@@ -301,6 +303,10 @@ export class AppStoreFilesManager {
   /**
    * Given a template and a map of variables, this function replaces all instances of the variables in the template with their values.
    *
+   * The values are written exactly as given. Several are secrets the user typed, and a password such as
+   * `pa$$word` or `a$&b` must not be read as a `$` replacement pattern (`$$`, `$&`, `` $` ``, `$'`, `$1`),
+   * so the replacement is a function, whose result `replace` inserts without interpreting it.
+   *
    * @param {string} template - The template to be rendered.
    * @param {Map<string, string>} envMap - The map of variables and their values.
    */
@@ -308,8 +314,9 @@ export class AppStoreFilesManager {
     let renderedTemplate = template;
 
     envMap.forEach((value, key) => {
+      // The key is matched as literal text: escape it, and the braces around it, so none of it is read as regex syntax.
       const safeKey = key.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
-      renderedTemplate = renderedTemplate.replace(new RegExp(`{{${safeKey}}}`, 'g'), value);
+      renderedTemplate = renderedTemplate.replace(new RegExp(`\\{\\{${safeKey}\\}\\}`, 'g'), () => value);
     });
 
     return renderedTemplate;

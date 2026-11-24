@@ -157,7 +157,7 @@ Registration and claiming are two different things, and only one of them was eve
 `cihub register` pairs the appliance and writes `ciHubApiKey` and `ciHubOrganizationId` into
 `state/settings.json`. It does **not** create a row in the `user` table — that row was written only
 by an interactive Portal sign-in landing on `/api/auth/portal/callback`, and `POST /api/auth/register`
-cannot finish unattended because Portal answers it with `requiresEmailVerification`.
+refuses on a paired Hub, because the CI Account it would create is in no organization (#2061).
 
 A Hub in that state is paired, keyed, and unable to authenticate anybody: the device key is accepted,
 there is no operator for it to speak as, and every guarded route answers **409
@@ -280,17 +280,19 @@ than averaged away.
 ## Hub lifecycle
 
 ```bash
-cihub up [env] [--detached]  # start the hub stack
-cihub down [env]             # stop the hub stack
-cihub restart [env]          # stop then start the target environment
-cihub recreate [env]         # reset runtime state, then start again
-cihub status [env]           # show container health + resolved config
-cihub logs [env] [service]   # stream compose logs
-cihub config [env]           # show resolved config values only
+cihub up [env] [--detached|--attached]               # start the hub stack
+cihub down [env]                                     # stop the hub stack
+cihub restart [env] [--detached|--attached]          # stop then start the target environment
+cihub recreate [env] [--detached|--attached] [--yes] # reset runtime state, then start again
+cihub status [env]                                   # show container health + resolved config
+cihub logs [env] [service]                           # stream compose logs
+cihub config [env]                                   # show resolved config values only
 ```
 
-- `--detached` runs the stack in the background (equivalent to `docker compose up -d`).
+- `--detached` runs the stack in the background (equivalent to `docker compose up -d`). Outside a CI-Hub checkout (the `cihub` a desktop install or a standalone binary puts on PATH), `up`, `restart` and `recreate` run detached unless you pass `--attached`. In a checkout they pick the mode `up` would: `dev` runs detached, other environments stay attached unless you pass `--detached`. In 0.3.6 and earlier, `restart` and `recreate` stayed attached in both places, `restart dev` in a checkout included. Attached, the command stays on `docker compose up`. Ctrl+C or a signal to it then makes Compose stop the containers, `cloudflared` included.
+- Outside a checkout, `up` and `restart` leave the keys the desktop app writes in the data dir's env file alone (`DOCKER_GID`, `CI_HUB_CONTAINER_UID`, `CI_HUB_CONTAINER_GID`) and add only the ones that are missing. That is a file the desktop app wrote, whose header reads `# Derived (recomputed every launch from the current binary)`. In a file `cihub up` seeded on a headless node no app recomputes anything, so `cihub` refreshes the keys it computes itself: `DOCKER_GID` from the host's docker group plus the `0` uid and gid it pins under Docker Desktop. Both env files there hold `JWT_SECRET`, `POSTGRES_PASSWORD` and `RABBITMQ_PASSWORD`. `cihub` restricts them to `0600` before it starts the stack. It leaves the mode alone when `CI_HUB_CONTAINER_UID` pins the Hub to a non-root uid other than the file's owner, since the Hub then reads the file as that uid.
 - Before it starts the stack, `cihub up` checks the Docker versions the stack file needs. If Docker Compose is older than 2.33, which can't read the file, it stops and names the version it found. If Docker Engine is older than 28, which ignores the file's network priority, it warns that the Hub, Traefik, and the Tailscale helper may use the wrong network for internet and host traffic, and starts anyway. If it can't read a version, it says so and starts anyway. `restart` and `recreate` run the same check when they start the stack again. `cihub up local` (source dev) isn't checked.
+- The prod compose requires `RABBITMQ_PASSWORD` from the env file, and the Hub warns loudly on `admin` in production, which a later release will refuse ([#884](https://github.com/companionintelligence/Companion-Hub/issues/884)). So every `cihub up` except `cihub up local` rewrites `RABBITMQ_PASSWORD` in the env files when it is missing, empty or `admin`: outside a checkout in both of the data dir's env files, in a checkout in `.env.<env>`. It writes the strong value one of those files already has, or else 64 random hex characters, and leaves a strong value alone. The broker is then changed to match before the Hub starts. `cihub pool update` does the same before it pulls; see [`cihub pool update`](#cihub-pool-update).
 - After a reset (no `~/.local/share/companion-hub` seed), `cihub up prod` prompts interactively for a database password and writes a fresh install. Set `POSTGRES_PASSWORD` (or `CIHUB_POSTGRES_PASSWORD`) to skip the prompt.
 - The fresh install pins `CI_HUB_IMAGE` from exactly one of these, in order, and prints which:
   1. `CI_HUB_IMAGE` in the environment.
@@ -302,9 +304,32 @@ cihub config [env]           # show resolved config values only
 - The seed never reads a CI-Hub checkout under the home directory or an env file left by an earlier install. If it passed over a file, if a desktop package at another release is installed, or if a desktop app is running that will rewrite the pin on its next start, the seed says so in a red box. If nothing uses the desktop app, the box says to quit it and leave it closed, since it only rewrites the env while it runs. Don't remove the `companion-hub` package to get rid of it: its uninstall deletes the Hub `cihub up` just set up, with every app and its data, because both use `~/.local/share/companion-hub`, the `ci_hub_pgdata` volume and the same containers.
 - `status` shows three sections: **Containers** (color-coded ●/✗), **Network** (local URL, Cloudflare tunnel URL from `CF_DOMAIN`/`DOMAIN`, Tailscale VPN IP), and **Models** (installed Ollama models).
 
+- Outside a checkout, `config` reads and `mcp` writes the installed Hub's env files in the data dir. With no install they exit `2`. `models` uses the host's `ollama` command at the address its service listens on when the Hub has no Ollama container, which is the normal case on an installed Hub.
+
 ![Screenshot of cihub status local](./images/cli/status.svg)
 
 ![Screenshots of cihub config, cihub up, and cihub down](./images/cli/lifecycle.svg)
+
+### After a reboot on Linux
+
+The Hub's containers bind-mount files from a folder in the home folder: the data dir (`~/.local/share/companion-hub`) on an installed Hub, the checkout on a developer's. If the home folder is only unlocked at login (eCryptfs, fscrypt or systemd-homed), Docker starts before those files exist. The containers then fail to start (`error mounting … not a directory`, exit 127), and Docker doesn't retry a container that failed to start. A disk that is unlocked before boot, such as full-disk LUKS, isn't affected. On one machine, Docker gave up on `ci-hub` and `traefik` 0.3 seconds before the login mounted the home folder.
+
+So on Linux, `cihub up` (any environment but `local`) and the desktop package's headless mode (`companion-hub --detached`) install a systemd user service, `companion-hub-login-start.service`, and enable it the first time. Both install the same files, `scripts/login-start/` in this repo, at the same paths. The windowed desktop app uses its login autostart entry instead. It runs once at each login, waits up to two minutes for Docker, and starts a Hub container only when all of these are true:
+
+- It belongs to the Hub: the `ci-hub.managed=true` label, or the `ci-hub` compose project.
+- Its restart policy is `unless-stopped` or `always`, and it isn't running.
+- Its last start failed with a bind-mount error, and the missing file is there now. It waits up to a minute for the file.
+
+`ci-hub` goes first, since its own boot brings back a Traefik that is still down. A Hub you stopped with `cihub down`, or the desktop's **Stop Hub**, has no mount error, so it stays stopped. The service writes what it did to the user journal: `journalctl --user -u companion-hub-login-start`.
+
+- The unit is `$XDG_CONFIG_HOME/systemd/user/companion-hub-login-start.service` (default `~/.config/`), and the script it runs is `~/.config/companion-hub/login-start.sh`. Later `cihub up` runs rewrite them when they change.
+- `systemctl --user disable companion-hub-login-start` turns it off for good: `cihub up` enables it only once, which `~/.config/companion-hub/.login-start-installed` records. A deleted unit isn't written again either.
+- Without a systemd user manager (inside a container, or on some SSH-only setups), nothing is installed.
+- Run as root, nothing is installed. `scripts/install.sh` runs `sudo -E ./cihub up`, and root's home isn't a folder unlocked at someone's login, so that Hub comes back by its restart policy.
+- `cihub uninstall` disables and deletes it. The headless desktop app writes what it did to `desktop.log` (`login-start-unit`).
+- With lingering enabled (`loginctl enable-linger`), the user manager starts at boot, before an encrypted home folder is unlocked, so it can't see the unit. Start the Hub after logging in with `docker start ci-hub`.
+
+The desktop app covers its own install the same way with a login autostart entry; see [After a reboot on Linux](system/desktop.md#after-a-reboot-on-linux). The two don't conflict: whichever runs second finds the Hub already running.
 
 ---
 
@@ -395,7 +420,14 @@ It refuses, with the right command instead, when:
 | Shipped inside the desktop app | The desktop updater replaces the app and its bundled CLI as one artifact |
 | Running from a source checkout | There is no binary to replace — `git pull`, then `node scripts/build-standalone-cli.cjs` |
 | Windows | Windows cannot replace a running executable |
-| No `GH_TOKEN`/`GITHUB_TOKEN` | The CI-Hub releases are **private**; unauthenticated the API answers 404, which reads like "no such release" |
+
+It needs no GitHub token: the repository and its release assets are public. When `GH_TOKEN` or
+`GITHUB_TOKEN` is set it is sent along, which raises GitHub's limit of 60 unauthenticated API
+requests an hour.
+
+The download is checked against the sha256 GitHub publishes for the asset (the release API's
+`digest`) and refused when it differs. An asset GitHub publishes no digest for is still installed,
+and the completion box says only TLS vouched for it.
 
 Before anything is replaced, the downloaded asset is staged beside the target on the same
 filesystem, run once to make it identify itself, and checked against the version that was asked for.
@@ -460,6 +492,8 @@ cihub mcp shutdown [env]  # set MCP_ENABLED=false
 cihub mcp config [env]    # show current MCP settings
 ```
 
+The Hub reads `MCP_ENABLED` when it starts, so `setup` and `shutdown` take effect after `cihub restart`.
+
 ![Screenshots of cihub mcp setup, config, and shutdown](./images/cli/mcp.svg)
 
 ### API keys
@@ -496,7 +530,19 @@ authenticates nothing with it. See [Use your Hub from your editor](editor-infere
 
 `create` also accepts `--capability read|write|full`, which decides what the key may do on the
 surfaces its scopes opened — `write` is the default. Raise or lower an existing key's capability in
-**Settings → Security**; the CLI has `create` and `list` only.
+**Settings → Security**; the CLI has `create` and `list` only. A Hub released before per-key
+capability cannot store one, so on such a Hub `create` refuses `--capability` instead of creating a
+key that can do everything its scopes allow.
+
+A key from `create` records no creator, so it can't use the MCP tools that change the whole Hub (model
+pulls and loads, cloud providers, updates, app stores) or read the Hub's log: those take a key that the
+operator who claimed the Hub or an organization owner or admin created in the Hub's Security settings. See
+[MCP agent bootstrap](MCP_AGENT_BOOTSTRAP.md).
+
+Both commands run `psql` in the `ci-hub-db` container. Through the Docker engine the Windows desktop
+app runs in WSL2, `docker exec` returns nothing the command printed, so the CLI runs the query again
+detached and copies its answer out with `docker cp`. When neither way returns an answer, the command
+exits `1` and names the Docker context it used.
 
 A key you create with the CLI records no creator, because nobody is signed in. It keeps its per-app
 reach on every app, and it can't change an app's custom domain. **Settings → Security** marks it
@@ -611,17 +657,20 @@ cihub pool unpin [--model <id>]               # drop that preference and rank by
 cihub pool ceiling <tokens>|clear [env]       # longer prompts go to another node when one can serve them
 cihub pool context-cap <tokens>|clear [env]   # cap the num_ctx handed to this node's apps at the engine's context
 cihub pool slots <n>|clear [env]              # state how many requests this node's Ollama runs at once (OLLAMA_NUM_PARALLEL)
+cihub pool kv-cache <f16|q8_0|q4_0>|clear [env] # state the KV cache this node's Ollama runs (OLLAMA_KV_CACHE_TYPE)
 cihub pool log [env] [--limit N]              # recent routing decisions, failovers marked
 cihub pool enable [env] | cihub pool disable  # flip the persisted kill switch
 cihub pool enable --outbound | --inbound      # ...or just one direction
 cihub pool peer-enable <id> | peer-disable    # take one peer in or out of the pool
+cihub pool require-signed [env] [--yes]       # require pinned peer identities (refuses while any peer is legacy)
+cihub pool allow-bearer [env] [--yes]         # recovery switch: allow the legacy bearer path again
 ```
 
 | Flag | Effect |
 | ---- | ------ |
 | `--yes` | Skip the confirmation prompt. Required for `pair`/`approve`/`reject`/`unpair`/`enable`/`disable` on a non-interactive terminal |
 | `--name <label>` | `pair` only: a display label for the peer |
-| `--model <id>` | `pin`/`unpin` only: which model the pin covers. Omit it for the pool-wide pin. Compared verbatim against the engine's inventory, so case matters |
+| `--model <id>` | `pin`/`unpin` only: which model the pin covers. Omit it for the pool-wide pin. `name` and `name:latest` are one model when routing, saving and removing; anything else is compared verbatim, so case matters. If both spellings are stored as separate pins, each is touched only when named exactly |
 | `--pin <digits>` | `pair` only: the six digits minted on the *other* Hub. Required when the target is an address |
 | `--limit N` | `log` only: how many decisions to show, 1–200 (default: all 200 retained) |
 | `--check-latency` | `doctor` only: also measure non-streaming first-byte latency. Spends GPU time, so it is skipped otherwise |
@@ -721,6 +770,27 @@ given and `--ollama-parallel N` alone would drop `OLLAMA_KEEP_ALIVE` and `OLLAMA
 from every node it touches; this command is the single-node form, and touches no daemon.
 
 The value is a whole number from 1 to 64, digits only, the bounds `--ollama-parallel` accepts.
+
+### `cihub pool kv-cache`
+
+`cihub pool kv-cache q8_0` states that this node's Ollama runs an 8-bit KV cache; `clear` withdraws the
+statement, and the Hub sizes for Ollama's default 16-bit cache again. It is the Hub's half of
+`OLLAMA_KV_CACHE_TYPE`, which Ollama's API does not expose: the Hub sizes every Ollama window it hands out
+or loads at the cache stated here — an 8-bit cache holds about twice the context in the same memory, a
+4-bit one nearly four times. The setting is server-wide, so it applies to every model the node's Ollama
+serves.
+
+The model picker recommends it. When an installed app's minimum window (Hermes' 64000) is out of a
+model's reach at the cache stated, and 8-bit — or, last, 4-bit — would reach it, the card says so and
+names the setting, and the Hub log says it once when the model loads. 4-bit is the last step for the
+reason the Lemonade planner gives (`QUANTIZED_KV_CACHE_TYPES`): on small models it kept long-context
+recall and short labels and noticeably changed long structured extraction.
+
+Stating it does not set it: put `OLLAMA_KV_CACHE_TYPE` (and `OLLAMA_FLASH_ATTENTION=1`, without which
+Ollama keeps the cache 16-bit) in the Ollama service's environment — across a fleet,
+`cihub fleet backends --ollama-kv-cache q8_0` with the node's other runtime flags — then state it here
+on each node. Stated but not set, the Hub hands apps windows the daemon cannot hold; set but not stated,
+it sizes for 16-bit, which only under-uses the card.
 Confirmed like `context-cap`, because it is a state change — though unlike the cap it restarts
 nothing: it changes what this node advertises to peers and how the pool ranks it, not any app's
 environment. The command reads `GET /api/inference/preferences` before the write (a count already in
@@ -894,6 +964,14 @@ behalf. After the pull and redeploy it polls `/api/health` for up to ~20s, then 
 off `/api/inference/pool/identify` so you know at a glance whether the redeploy landed and whether this
 build has Hub Pool at all.
 
+Before it pulls, it rewrites `RABBITMQ_PASSWORD` in the env files compose reads (both data-dir env
+files on a packaged install) when the value is missing, empty or `admin`, as `cihub up` does. The prod
+compose requires the value and the Hub warns on `admin` in production
+([#884](https://github.com/companionintelligence/Companion-Hub/issues/884)), so a checkout whose env
+file came from `.env.example` would otherwise stop at `RABBITMQ_PASSWORD must be set` after the
+fast-forward. The new value changes the broker's `RABBITMQ_DEFAULT_PASS`, so the redeploy recreates the
+broker, and the command then checks the broker accepts it (`scripts/sync-rabbitmq-password.ts`).
+
 #### Which image it deploys
 
 The command exports `CI_HUB_IMAGE` into the `docker compose` child's **environment**, and Compose
@@ -942,7 +1020,8 @@ Runs before the device-key gate, like `doctor` — the node most likely to need 
 The answer to "is pooling actually doing anything". One line per routing decision — time, direction,
 model, the node that served it, which ranked candidate won, time to response headers, and outcome — with
 a `↳ failed over from …` line naming the chain whenever a candidate was tried and rejected. `in` rows are
-work a *peer* sent to this node's engines.
+work a *peer* sent to this node's engines. This node appears under its tailnet name, or as `this Hub` when
+it has none or `/status` did not supply it in time; `local` is only the key the routing log stores for it.
 
 The log is in-memory, process-local and holds the last 200 decisions, so an empty log means "nothing
 routed since this Hub started", not "nothing ever routed". Duration is time to headers, not the streamed
@@ -992,8 +1071,9 @@ cihub fleet status [--nodes a,b] [--json]              # re-probe every rostered
 cihub fleet preflight [--nodes a,b] [--touches-boot]   # is each node safe to hand a package transaction?
 cihub fleet backends [--backends a,b] [--execute]      # what each node can run for inference, then install it
 cihub fleet backends [--backends a,b] [--bind tailnet|all|local] [--execute]  # what each node can run for inference, then install it
-cihub fleet backends --ollama-parallel 4 --ollama-keep-alive 24h [--ollama-context N] [--ollama-igpu on|off] [--ollama-max-loaded N] [--execute]  # Ollama's runtime env, one file, restart only on change
+cihub fleet backends --ollama-parallel 4 --ollama-keep-alive 24h [--ollama-context N] [--ollama-igpu on|off] [--ollama-max-loaded N] [--ollama-kv-cache f16|q8_0|q4_0] [--execute]  # Ollama's runtime env, one file, restart only on change
 cihub fleet backends --backends omlx|vllm|lemonade|ollama [--execute]  # install only an engine this machine can run
+cihub fleet backends --backends omlx-helper [--omlx-helper-version x.y.z] [--execute]  # oMLX's prefill helper on NVIDIA nodes, for a Mac running oMLX
 cihub fleet install [--user <acct>] [--cihub-binary <path>] [--pairing-gap <s>] [--execute]   # stand a Hub up on each node and register it
 cihub fleet update [--hub] [--ollama] [--gpu-probe] [--models a,b] [--execute]  # refresh the Hub image, pin Ollama, install the GPU probe timer, pull models
 cihub fleet update [--hub] [--models a,b|recommended] [--execute]  # refresh the Hub image, pull models (per node's own Hub with `recommended`)
@@ -1107,7 +1187,7 @@ all installed on. To act on some nodes only, pass `--nodes`.
 | `--concurrency <n>` | Parallel **probes**, 1–32 (default 4). The runners stay serialised regardless |
 | `--force` | `install`/`update` only: proceed on a node whose preflight said `block`. The finding is still printed, marked as overridden |
 | `--touches-boot` | `preflight`/`install`/`update`: rate the boot-recovery and grub-customizer findings as `block` rather than `warn`, as they are before anything that touches the kernel, initramfs or GRUB |
-| `--backends a,b` | `backends` only: from `ollama`, `omlx`, `vllm`, `lemonade`. Omit to plan every engine this machine can run |
+| `--backends a,b` | `backends` only: from `ollama`, `omlx`, `vllm`, `lemonade`, `omlx-helper`. Omit to plan every engine this machine can run, except `omlx-helper`, which runs only when named |
 | `--bind tailnet\|all\|local` | `backends` only: where Ollama listens (default `all` — `0.0.0.0` behind `ollama-tailnet-guard.service`, which admits the tailnet, loopback and the Docker bridges the Hub container arrives on; `tailnet` is the node's Tailscale IPv4 from `tailscale ip -4`). Written to one drop-in and read back after the restart — see [Ollama's bind](#ollamas-bind-one-file-read-back) |
 | `--data-dir <path>` | Where the Hub keeps runner venvs and model dirs on the **remote** machine (default `/var/lib/companion-hub`) |
 | `--code <code>` | `install` only: one Portal pairing code, which enrolls exactly one node |
@@ -1122,6 +1202,7 @@ all installed on. To act on some nodes only, pass `--nodes`.
 | `--to-majority` | `update --hub` only: pin every targeted node to the build most of the **whole roster** runs. Refused unless that is a strict majority — more than half of all rostered nodes, unknown ones included — and refused on a tie |
 | `--models a,b` | `update` only: pull these models on each node |
 | `--ollama` | `update` only: bring each node's Ollama to the pinned release via `ollama.com/install.sh`, confirmed at `/api/version` on the node's own bind. Nodes already there are left alone; a node with no Ollama is reported, not installed |
+| `--omlx-helper-version <x.y.z>` | `backends --backends omlx-helper` only: the `jundot/omlx-cuda-helper` tag a fresh helper gets, instead of the pin (`OMLX_HELPER_PINNED_VERSION` in `fleet-omlx-helper.ts`). `latest` is refused |
 | `--ollama-version <x.y.z>` | `backends`, `update --ollama`, `status`: use this exact release instead of the pin (`OLLAMA_PINNED_VERSION` in `fleet-ollama-version.ts`). `latest` is refused |
 | `--apps a,b` | `apps` only: from `hermes-agent`, `openclaw`. Omit for both |
 | `--endpoint pool\|local` | `apps` only: which endpoint the report is labelled for (default `pool`). The check itself is the same either way — see below |
@@ -1297,8 +1378,8 @@ not the one requested**; the dry run lists every file it would move, by name, an
 would install (`all`) or remove (`tailnet`, `local`) before the restart.
 
 Two refusals, both facts about the machine rather than failures: a node whose `:11434` belongs to a
-**user-scope** unit (beta-1 runs `ollama-local.service` under the `ci` user's `systemd --user`, with
-the system unit disabled) is skipped with the reason, because `systemctl enable --now ollama` there
+**user-scope** unit (beta-1 ran `ollama-local.service` under the `ci` user's `systemd --user`, with
+the system unit disabled, until 2026-10-23) is skipped with the reason, because `systemctl enable --now ollama` there
 starts a second daemon that collides on the port — and ollama.com's own installer runs that command,
 so the check happens *before* anything is downloaded. And `--bind tailnet` on a node with no tailnet
 address fails rather than silently binding somewhere else.
@@ -1319,8 +1400,9 @@ bind: ollama-tunnel.service is active under ci's systemd --user, but the system 
 ```
 
 Everywhere else the name refuses as it always did, on purpose. **Nothing listening** on `:11434`
-beside an active `ollama*` user unit is still a skip: that is exactly what beta-1 looks like for
-the second between `systemctl --user restart ollama-local` stopping the daemon and the new one
+beside an active `ollama*` user unit is still a skip: that is exactly what a user-unit node (beta-1
+until 2026-10-23) looks like for the second between `systemctl --user restart ollama-local` stopping
+the daemon and the new one
 binding, and the probe's `systemctl --user list-units` rows carry no `OLLAMA_HOST` that could tell a
 tunnel from a daemon that has not bound yet — so a free port is not treated as proof. Something
 listening whose owner the probe **cannot see** (no pid, no cgroup — an `ss` before iproute2 5.10)
@@ -1412,6 +1494,7 @@ can never touch it:
 | `--ollama-context N` | `OLLAMA_CONTEXT_LENGTH` | 512–1048576 |
 | `--ollama-igpu on\|off` | `OLLAMA_IGPU_ENABLE` | `1` or `0` — the operator override; on gfx1151 the bind file already sets `1`, see [above](#strix-halo-vulkan-and-the-igpu-key-in-the-bind-file) |
 | `--ollama-max-loaded N` | `OLLAMA_MAX_LOADED_MODELS` | 1–16 (`0` is refused: Ollama reads it as 3 × GPUs, not a cap — use `unset`) |
+| `--ollama-kv-cache T` | `OLLAMA_KV_CACHE_TYPE`, and `OLLAMA_FLASH_ATTENTION=1` beside `q8_0` or `q4_0` | `f16`, `q8_0` or `q4_0`. No Hub half is written: state it per node with [`cihub pool kv-cache`](#cihub-pool-kv-cache) |
 
 Every flag also accepts **`unset`**, which leaves that key out of the file. The file is rendered
 whole from the five values on every run: a key you did not pass is not in it, and falls back to
@@ -1465,7 +1548,7 @@ still applied — if systemd reports it never loaded the file (a previous run cu
 `daemon-reload`), it is reloaded and Ollama restarted; otherwise the read-back fails the node as
 above. The dry run prints the same plan — what is in effect now, whether the file would change, or
 what the daemon resolves instead — and runs nothing. A node whose `:11434` belongs to a user-scope unit (beta-1's
-`ollama-local.service`) is skipped with the reason: a drop-in under `ollama.service.d/` configures
+`ollama-local.service` until 2026-10-23) is skipped with the reason: a drop-in under `ollama.service.d/` configures
 nothing there, and that unit carries its own environment. A user-scope unit that merely *looks* like
 one (core-2's `ollama-tunnel.service`, an ssh forward beside a **serving** system unit) is not a
 skip — [the listener decides](#ollamas-bind-one-file-read-back); the same unit with nobody on the
@@ -1533,7 +1616,60 @@ leaves that node's daemon at N slots with its Hub stating nothing.
 
 #### llama-server is not a Hub backend
 
-The fleet does not install a separate llama-server. Ollama is how that engine ships. `--backends` accepts `ollama`, `omlx`, `vllm`, and `lemonade`. oMLX is Apple Silicon (`brew install jundot/omlx/omlx`, then `omlx start`). vLLM is NVIDIA only. Lemonade is AMD or NPU and stays operator-managed.
+The fleet does not install a separate llama-server. Ollama is how that engine ships. `--backends` accepts `ollama`, `omlx`, `vllm`, `lemonade`, and `omlx-helper`. oMLX is Apple Silicon (`brew install jundot/omlx/omlx`, then `omlx start`). vLLM is NVIDIA only. Lemonade is AMD or NPU and stays operator-managed. `omlx-helper` is not an engine; see the next section.
+
+#### oMLX's prefill helper on NVIDIA nodes
+
+oMLX 0.8.0 adds a Prefill Accelerator. A machine with NVIDIA GPUs runs the first layers of each long
+prompt for a Mac that serves the model, and the Mac runs the rest, decodes, and keeps the KV cache.
+Upstream measured prefill on a 64K prompt going from 352 to 1,879 tokens per second for Qwen3.8 27B on
+an M3 Ultra with two RTX A6000 cards over 2.5 GbE. Decode speed stays about the same. The NVIDIA side is
+`omlx-cuda-helper`, an image from [jundot/omlx](https://github.com/jundot/omlx/tree/main/apps/omlx-cuda-helper)
+(Apache-2.0). It serves no OpenAI API, so the Hub never routes requests to it.
+
+`--backends omlx-helper` runs upstream's command on each node that can use it, with the tag pinned
+(`0.1.3`, the helper published with oMLX 0.8.0rc1) and a label that marks the container as this CLI's:
+
+```bash
+docker run -d --name omlx-helper --label ci-hub.fleet-backend=omlx-helper --restart unless-stopped \
+  --gpus all --network host -v omlx-helper:/data jundot/omlx-cuda-helper:0.1.3
+```
+
+- **Opt-in.** A run that does not name `omlx-helper` never plans it. It pulls about 2.3 GB, and it
+  listens on every interface.
+- **Gates.** The node needs Linux; an NVIDIA driver of 580 or newer, because the image is CUDA 13; an
+  Ampere or newer GPU (compute capability 8.0, judged by the lowest card) or a GB10; Docker that the
+  SSH account can use; and the NVIDIA Container Toolkit, whose `nvidia-container-runtime-hook`
+  `docker run --gpus` needs. The container checks neither the driver nor the card at start, so a node
+  that fails either would install, pair, and then fail the first long prompt.
+- **Adoption.** A helper that already answers on `:8850` is adopted as it is, whatever its version,
+  and the plan line names that version beside the pin. To move a node to a new pin, run
+  `docker rm -f omlx-helper` on it and run `backends` again. The `omlx-helper` volume keeps the
+  helper's identity and its pairings.
+- **Other people's containers.** A stopped `omlx-helper` container without the label is left alone,
+  and the node is reported as skipped. A stopped one with the label is replaced.
+- **Failures.** If the helper does not answer on `:8850` within 90 seconds, or restarts, the run
+  prints its last log lines and stops the container so it does not restart in a loop.
+- **Another tag.** `--omlx-helper-version x.y.z` installs it. The Mac checks the helper per model
+  family, not per oMLX version, and names the side to update when they disagree.
+
+After the install, pair the helper from the Mac:
+
+1. In oMLX 0.8.0 or later, turn on **Global Settings > Advanced > Enable Distributed Inference** and
+   restart oMLX.
+2. In the Cluster tab, press **Pair** on the node. The helper prints `PAIRING CODE 123456` in its log.
+   Read it on the node with `docker logs omlx-helper 2>&1 | grep 'PAIRING CODE'` and type it on the Mac
+   within 10 minutes.
+3. In the model's settings, under **Acceleration**, choose the node as **Prefill Accelerator**.
+
+The helper uses host networking so that the Mac's Cluster tab can find it over mDNS. It listens on
+`:8850` (discovery and pairing) and `:8851` (control) on every interface from the start, and on
+`:8852` (prefill data) while a Mac uses it. Its pairing exchange is plain HTTP, so run it only on a
+network you trust. If ufw is active on the node, allow the Mac to reach those three TCP ports and
+UDP 5353 for mDNS. The link sets the speedup: upstream's checks warn below 5 GbE.
+
+On an NVIDIA node, the oMLX section of **Settings → AI** says whether the helper is running, and shows
+the command to start it or to read its pairing code.
 
 #### Firewall rules for the Hub's engine probes
 
@@ -1573,14 +1709,17 @@ route, fails the step with the pairing code unsent. The node's line names the `C
 env file pins, and says when a desktop app on the node is running. On 2026-09-26, core-6 and fzzy
 ran `register` against 0.2.70 and 0.2.61 Hubs, and both codes were spent.
 
-The **`cihub` binary** comes from this machine, not from the node. The release assets live in a
-private repository, so a node cannot fetch them; the first installer had each node try and every
-node got a 404. Either set `GH_TOKEN` (for example `GH_TOKEN="$(gh auth token)"`) and the run
-fetches the release asset here — once per architecture, verified to be an ELF binary — and streams
-it down the SSH session it already holds, or pass `--cihub-binary <path>` to a `cihub-linux-x64` /
-`cihub-linux-arm64` asset already on disk (`--cihub-version <tag>` pins which release the token
-fetches; default `latest`). The token never reaches a node. Before any node is dialled, the run
-resolves what it has to a version: `latest` becomes the tag GitHub names right now, printed on the
+The **`cihub` binary** comes from this machine, not from the node. The run fetches the release
+asset here (once per architecture, verified to be an ELF binary) and streams it down the SSH session
+it already holds. The asset is checked against the sha256 GitHub publishes for it and refused when it
+differs. When GitHub publishes none it is installed anyway. The node's `install cihub` line then says
+only TLS vouched for it. Or pass `--cihub-binary <path>` to a `cihub-linux-x64` /
+`cihub-linux-arm64` asset already on disk. `--cihub-version <tag>` pins which release it fetches
+(default `latest`). No GitHub token is needed: the repository and its release assets have been
+public since 2026-09-30. A `GH_TOKEN` or `GITHUB_TOKEN` in this machine's environment is still sent
+(it raises GitHub's limit of 60 unauthenticated API requests an hour). It never reaches a node.
+While the repository was private, the first installer had each node fetch the asset itself and every
+node got a 404. Before any node is dialled, the run resolves what it has to a version: `latest` becomes the tag GitHub names right now, printed on the
 summary line as `release v0.2.72 (latest)`, and a `--cihub-binary` is run here with `version`. Every
 node then compares against that one real version, never the word `latest`. A `cihub` already on the
 node is adopted only when it is not older than it — a forgotten `~/.local/bin/cihub` from months ago
@@ -1588,10 +1727,10 @@ once drove a fresh install and ran `up` against service names that no longer exi
 build adopted against `latest`, with a current release in hand, did not know how to seed a headless
 Hub — and a copy that would shadow `/usr/local/bin/cihub` on the login shell's PATH is moved aside
 (renamed, never deleted) so the node runs the one that was just installed. When nothing comparable is
-on offer — no token and no file, a release lookup the token cannot do, or a `--cihub-binary` that
-will not run on this machine (an arm64 asset on an x64 laptop; `--cihub-version` then names what it
-is) — an existing `cihub` is still adopted, and the node's line says `version not compared` and why,
-rather than reading like a check that passed.
+on offer, an existing `cihub` is still adopted and the node's line says `version not compared` and
+why, rather than reading like a check that passed. That happens when the release lookup fails (no such
+tag, a refused token, GitHub's rate limit) or when a `--cihub-binary` will not run on this machine (an
+arm64 asset on an x64 laptop; `--cihub-version` then names what it is).
 
 The **portal device** step mints the node's pairing code as late as possible: after every gate and
 after the binary is on the node, immediately before `register`. A code is one device's credential
@@ -1897,8 +2036,8 @@ cihub uninstall [--yes]                # full machine cleanup of CI-Hub runtime 
 ```
 
 `reset` is the environment-focused cleanup path. `uninstall` is the full machine cleanup path.
-`reset` prints the apps and containers it will remove before it asks; `reset --dry-run` prints
-that list and the host data it would delete, then stops. See [RESET_RUNBOOK.md](RESET_RUNBOOK.md).
+`reset` and `uninstall` print the apps and containers they will remove before they ask; `reset --dry-run`
+prints that list and the host data it would delete, then stops. See [RESET_RUNBOOK.md](RESET_RUNBOOK.md).
 
 `doctor` first names the Hub it checks: the checkout it runs in, or, outside a checkout, the
 installed Hub's data folder. Inside a checkout, the file checks read the checkout, while the live
@@ -1929,7 +2068,7 @@ straight through a broken Docker bridge, and a fleet run that installed on 0 of 
 | `fleet preflight` | Any node would be refused by `install`/`update` — a `block` finding, or a probe that could not run |
 | `pool context-cap` | The Hub's build predates the cap (nothing was written), or the cap read back after the write is not the one requested |
 | `pool slots` | The Hub's build predates the slot count (nothing was written), or the count read back after the write is not the one requested |
-| `models list` / `install` / `rm` | There is no Ollama container to talk to |
+| `models list` / `install` / `rm` | The Hub has no Ollama container and this machine has no `ollama` command |
 | `app status <name>` | That named container is not there |
 | `app inspect <name>` | `docker inspect` could not read the container |
 | `public-web repair` | A repair step failed |

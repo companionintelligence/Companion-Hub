@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { copiedCommandFolder } from './docker-cp-archive';
 
 const spawnSync = vi.fn();
 const parseEnvFile = vi.fn();
@@ -41,12 +42,18 @@ function mockDocker(handlers: { inspect?: string; exec?: (script: string) => num
     if (args[0] === 'inspect') return { status: handlers.inspect ? 0 : 1, stdout: handlers.inspect ?? '' };
     if (args[0] === 'exec') {
       const script = String(args[args.length - 1]);
-      // The dns lookup probe prints the gateway; the net.connect probe only exits.
+      // The dns lookup probe prints the gateway; the net.connect probe prints the code it exits with.
       if (script.includes('dns')) return { status: 0, stdout: '172.17.0.1' };
-      return { status: handlers.exec ? handlers.exec(script) : 10, stdout: '' };
+      const code = handlers.exec ? handlers.exec(script) : 10;
+      return { status: code, stdout: String(code) };
     }
     return { status: 1, stdout: '' };
   });
+}
+
+/** What `docker cp <container>:<dir> -` returns for the folder a probe run detached leaves: out, err and its exit status. */
+function copiedProbeFolder(dir: string, code: number, out = String(code)): Buffer {
+  return copiedCommandFolder(dir, out, code);
 }
 
 describe('bridge-diagnostics-cli', () => {
@@ -67,24 +74,29 @@ describe('bridge-diagnostics-cli', () => {
       ]);
     });
 
-    // Regression (CI-Hub#1695): an unset DSPARK_URL fell back to 8080, which on a desktop Hub is
-    // Traefik's dashboard, and doctor failed a healthy Hub over an engine nobody had set up.
-    it('leaves out engines whose URL is unset or blank', () => {
-      parseEnvFile.mockReturnValue({ DSPARK_URL: '', MTPLX_URL: '   ' });
+    // Regression (CI-Hub#1695): an unset engine URL fell back to a stock port, which on a desktop Hub can
+    // be Traefik's dashboard (8080), and doctor failed a healthy Hub over an engine nobody had set up.
+    it('leaves out an engine whose URL is unset or blank', () => {
+      parseEnvFile.mockReturnValue({ OMLX_URL: '   ' });
       const labels = resolveBridgeServices('.env.prod').map((service) => service.label);
-      expect(labels).not.toContain('MTPLX');
-      expect(labels).not.toContain('Speculative inference');
+      expect(labels).not.toContain('oMLX');
+      expect(resolveBridgeServices('.env.prod')).toHaveLength(4);
     });
 
-    it('checks the optional engines whose URL is set', () => {
+    it('checks oMLX when its URL is set, at the port that URL names', () => {
+      parseEnvFile.mockReturnValue({ OMLX_URL: 'http://host.docker.internal:8010' });
+      const services = resolveBridgeServices('.env.prod');
+      expect(services).toContainEqual({ label: 'oMLX', port: 8010 });
+      expect(services).toHaveLength(5);
+    });
+
+    it('no longer reads the retired runners URLs, which the Hub does not dial', () => {
       parseEnvFile.mockReturnValue({
         MTPLX_URL: 'http://host.docker.internal:8010',
+        DSPARK_URL: 'http://host.docker.internal:9090',
         SPECULATIVE_INFERENCE_URL: 'http://host.docker.internal:8020',
       });
-      const services = resolveBridgeServices('.env.prod');
-      expect(services).toContainEqual({ label: 'MTPLX', port: 8010 });
-      expect(services).toContainEqual({ label: 'Speculative inference', port: 8020 });
-      expect(services).toHaveLength(6);
+      expect(resolveBridgeServices('.env.prod')).toHaveLength(4);
     });
 
     it('reads ports from the env file, including URL-shaped values', () => {
@@ -98,9 +110,11 @@ describe('bridge-diagnostics-cli', () => {
       expect(services[1]).toEqual({ label: 'Ollama', port: 12000 });
     });
 
-    it('reads the speculative inference port from a URL-shaped DSPARK_URL', () => {
-      parseEnvFile.mockReturnValue({ DSPARK_URL: 'http://host.docker.internal:9090' });
-      expect(resolveBridgeServices('.env.prod')).toContainEqual({ label: 'Speculative inference', port: 9090 });
+    it('reads the oMLX port from a URL-shaped OMLX_URL, and falls back to 8000 when the URL names none', () => {
+      parseEnvFile.mockReturnValue({ OMLX_URL: 'http://host.docker.internal:9090' });
+      expect(resolveBridgeServices('.env.prod')).toContainEqual({ label: 'oMLX', port: 9090 });
+      parseEnvFile.mockReturnValue({ OMLX_URL: 'http://mac-studio.lan' });
+      expect(resolveBridgeServices('.env.prod')).toContainEqual({ label: 'oMLX', port: 8000 });
     });
 
     it('falls back when a port is out of range rather than handing net.connect a bad port', () => {
@@ -190,17 +204,17 @@ describe('bridge-diagnostics-cli', () => {
       expect(section.failureCount).toBe(0);
       expect(section.issueCount).toBe(0);
       expect(section.lines[0]).toContain('ok');
-      expect(section.lines.join('\n')).not.toContain('Speculative inference');
+      expect(section.lines.join('\n')).not.toContain('oMLX');
     });
 
-    it('still checks a speculative inference server whose URL is set', async () => {
-      parseEnvFile.mockReturnValue({ DSPARK_URL: 'http://host.docker.internal:8080' });
+    it('still checks an oMLX server whose URL is set', async () => {
+      parseEnvFile.mockReturnValue({ OMLX_URL: 'http://host.docker.internal:8080' });
       listeningHostPorts = new Set([8080]);
       mockDocker({ ps: 'ci-hub', inspect: '172.18.0.7/16', exec: () => 11 });
 
       const section = await runBridgeDoctorSection('.env.prod');
       expect(section.failureCount).toBe(1);
-      expect(section.lines.join('\n')).toContain('Speculative inference');
+      expect(section.lines.join('\n')).toContain('oMLX');
     });
 
     // The core case: the service answers on the host but not from the container.
@@ -244,6 +258,54 @@ describe('bridge-diagnostics-cli', () => {
       expect(text).toContain('OLLAMA_HOST=0.0.0.0');
       expect(text).not.toContain('A host firewall is dropping these');
       expect(text).not.toContain('sudo ufw allow');
+    });
+
+    // Through the Docker engine the desktop app runs in WSL2, `docker exec` exits 0 and prints nothing
+    // whatever the probe found, so every listening service read as reachable from the container.
+    it('reads the verdict back with docker cp when docker exec loses it, instead of calling the port reachable', async () => {
+      listeningHostPorts = new Set([11434]);
+      spawnSync.mockImplementation((_command: string, args: string[]) => {
+        if (args[0] === 'ps') return { status: 0, stdout: 'ci-os-hub' };
+        if (args[0] === 'inspect') return { status: 0, stdout: '172.18.0.7/16' };
+        if (args[0] === 'cp') return { status: 0, stdout: copiedProbeFolder(String(args[1]).split('/').pop() ?? '', 11) };
+        return { status: 0, stdout: '' };
+      });
+
+      const section = await runBridgeDoctorSection('.env.prod');
+      expect(section.lines[0]).not.toMatch(/\bok\b/);
+      expect(section.lines.join('\n')).toContain('bound to loopback');
+    });
+
+    it('sends the later probes and the gateway lookup straight to docker cp once docker exec lost one answer', async () => {
+      listeningHostPorts = new Set([11434, 13305]);
+      const scriptByDir = new Map<string, string>();
+      spawnSync.mockImplementation((_command: string, args: string[]) => {
+        if (args[0] === 'ps') return { status: 0, stdout: 'ci-os-hub' };
+        if (args[0] === 'inspect') return { status: 0, stdout: '172.18.0.7/16' };
+        if (args[0] === 'exec' && args[1] === '-d' && args[3] === 'sh') scriptByDir.set(String(args[7]), String(args.at(-1)));
+        if (args[0] === 'cp') {
+          const dir = String(args[1]).slice(String(args[1]).indexOf(':') + 1);
+          const name = dir.split('/').pop() ?? '';
+          // The gateway lookup prints the address; both ports time out from the container.
+          return {
+            status: 0,
+            stdout: scriptByDir.get(dir)?.includes('dns') ? copiedProbeFolder(name, 0, '172.17.0.1\n') : copiedProbeFolder(name, 10),
+          };
+        }
+        return { status: 0, stdout: '' };
+      });
+
+      const section = await runBridgeDoctorSection('.env.prod');
+
+      expect(section.remediationCommands).toEqual([
+        'sudo ufw allow from 172.18.0.0/16 to 172.17.0.1 port 11434 proto tcp',
+        'sudo ufw allow from 172.18.0.0/16 to 172.17.0.1 port 13305 proto tcp',
+      ]);
+      // Only the first probe tried a plain docker exec.
+      const plainExecs = (spawnSync.mock.calls as unknown[][]).filter(
+        ([, args]) => (args as string[])[0] === 'exec' && (args as string[])[1] !== '-d',
+      );
+      expect(plainExecs).toHaveLength(1);
     });
 
     it('points at the missing host-gateway mapping when the name does not resolve', async () => {

@@ -9,6 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
  */
 const calls = vi.hoisted(() => ({ scripts: [] as string[], runs: [] as string[][], compose: [] as string[][], bestEffort: [] as string[][] }));
 const ctxState = vi.hoisted(() => ({ envFile: '/data/companion-hub/.env.dev', image: undefined as string | undefined }));
+/** The engine's form of the data dir and env file, as envOverridesForContext hands them to compose. */
+const enginePaths = vi.hoisted(() => ({ dataDir: '/mnt/c/data/companion-hub', envFile: '/mnt/c/data/companion-hub/.env.dev' }));
 
 vi.mock('../compose-up.js', () => ({
   isHostPortBindConflict: () => false,
@@ -29,6 +31,8 @@ vi.mock('../init-traefik.js', () => ({ initTraefik: vi.fn() }));
 vi.mock('../sync-postgres-password.js', () => ({ syncPostgresPasswordFromEnv: vi.fn() }));
 vi.mock('../sync-rabbitmq-password.js', () => ({ syncRabbitmqPasswordFromEnv: vi.fn() }));
 vi.mock('../lib/cli-repo-context.js', () => ({ isApplianceMode: () => true, requireRepoRoot: vi.fn() }));
+// Unmocked, `cihub up` would write a systemd user unit into the real ~/.config.
+vi.mock('../lib/login-start-unit.js', () => ({ ensureLoginStartUnit: vi.fn(() => 'unchanged'), describeLoginStartOutcome: () => null }));
 vi.mock('../lib/docker-versions.js', () => ({ requireDockerForHubStack: vi.fn() }));
 vi.mock('../lib/cli-ui.js', () => ({ printMessageBox: vi.fn(), colorize: (s: string) => s, dim: (s: string) => s }));
 vi.mock('../lib/cli-proc.js', () => ({
@@ -49,8 +53,8 @@ vi.mock('../lib/hub-context.js', () => ({
   buildComposeBaseArgs: (envFile: string, files: string[]) => ['compose', '--env-file', envFile, ...files.flatMap((f) => ['-f', f])],
   ensureApplianceInstall: vi.fn(async () => {}),
   envOverridesForContext: () => ({
-    ENV_FILE: ctxState.envFile,
-    ROOT_FOLDER_HOST: '/data/companion-hub',
+    ENV_FILE: enginePaths.envFile,
+    ROOT_FOLDER_HOST: enginePaths.dataDir,
     DOCKER_HOST: 'unix:///pinned/docker.sock',
     ...(ctxState.image ? { CI_HUB_IMAGE: ctxState.image } : {}),
   }),
@@ -68,6 +72,8 @@ const { startHub } = await import('../lib/cli-lifecycle');
 const { initTraefik } = await import('../init-traefik.js');
 const { runScript } = await import('../lib/cli-proc.js');
 const { requireDockerForHubStack } = await import('../lib/docker-versions.js');
+const { runDockerComposeUpOnce } = await import('../compose-up.js');
+const { initHubDataDirs } = await import('../init-hub-data-dirs.js');
 
 describe('cihub up on an appliance', () => {
   beforeEach(() => {
@@ -104,6 +110,26 @@ describe('cihub up on an appliance', () => {
     const firstDocker = calls.runs.findIndex(([cmd]) => cmd === 'docker');
     expect(firstDocker).toBeGreaterThanOrEqual(0);
     expect(calls.compose.length).toBe(1);
+  });
+
+  it('gives every init script the data dir it can write to, and compose the form the engine mounts', async () => {
+    await startHub('detached', 'prod');
+
+    // The init scripts write under ROOT_FOLDER_HOST and read the env file at ENV_FILE. Given the
+    // engine's `/mnt/c/...` form on Windows, they wrote a stray copy of the data dir under C:\mnt.
+    for (const label of ['scripts/init-hub-data-dirs.ts', 'scripts/init-traefik.ts', 'scripts/init-gpu-runtime.ts', 'scripts/init-host-probe.ts']) {
+      const call = vi.mocked(runScript).mock.calls.find(([name]) => name === label);
+      expect(call?.[2], label).toMatchObject({ ENV_FILE: ctxState.envFile, ROOT_FOLDER_HOST: '/data/companion-hub' });
+    }
+    // Compose passes both to the daemon as bind-mount sources, so it gets the engine's form.
+    const composeOptions = vi.mocked(runDockerComposeUpOnce).mock.calls[0]?.[1];
+    expect(composeOptions?.envOverrides).toMatchObject({ ENV_FILE: enginePaths.envFile, ROOT_FOLDER_HOST: enginePaths.dataDir });
+  });
+
+  it("tells init-hub-data-dirs the env file is the desktop app's, so it keeps the app's keys", async () => {
+    // `cihub restart prod` took the app's CI_HUB_CONTAINER_UID/GID out of .env.dev and added ENV_FILE.
+    await startHub('detached', 'prod');
+    expect(initHubDataDirs).toHaveBeenCalledWith({ appliance: true });
   });
 
   it('pulls a floating Hub image before compose, so `pull_policy: if_not_present` cannot keep a stale :latest', async () => {

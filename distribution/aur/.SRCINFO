@@ -1,8 +1,8 @@
 pkgbase = companion-hub-bin
 	pkgdesc = AI-powered companion intelligence hub
-	pkgver = 0.2.4
+	pkgver = 0.3.10
 	pkgrel = 1
-	url = https://github.com/companionintelligence/CI-Hub
+	url = https://github.com/companionintelligence/Companion-Hub
 	arch = x86_64
 	arch = aarch64
 	license = custom:CI-Commercial-1.0
@@ -13,11 +13,11 @@ pkgbase = companion-hub-bin
 	provides = companion-hub
 	conflicts = companion-hub
 	install = companion-hub-bin.install
-	source_x86_64 = https://github.com/companionintelligence/CI-Hub/releases/download/v0.2.4/Companion.Hub_0.2.4_amd64.deb
-	sha256sums_x86_64 = SKIP
-	source_aarch64 = https://github.com/companionintelligence/CI-Hub/releases/download/v0.2.4/Companion.Hub_0.2.4_arm64.deb
-	sha256sums_aarch64 = SKIP
-	source = license.md::https://raw.githubusercontent.com/companionintelligence/CI-Hub/v0.2.4/license.md
+	source_x86_64 = https://github.com/companionintelligence/Companion-Hub/releases/download/v0.3.10/Companion.Hub_0.3.10_amd64.deb
+	sha256sums_x86_64 = 38e04432b4fd80c0bea4658bda8dd4c5ac9637c6859a2c8e0e33f77becbf2f01
+	source_aarch64 = https://github.com/companionintelligence/Companion-Hub/releases/download/v0.3.10/Companion.Hub_0.3.10_arm64.deb
+	sha256sums_aarch64 = 495bd13a2d9c0d2bce7b1abc5289c8827480e27be926f4006007e9278b8713d0
+	source = license.md::https://raw.githubusercontent.com/companionintelligence/Companion-Hub/v0.3.10/LICENSE.md
 	sha256sums = SKIP
 
 pkgname = companion-hub-bin

@@ -2,9 +2,10 @@ import { Injectable } from '@nestjs/common';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { type CallToolResult, CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { LoggerService } from '@/core/logger/logger.service';
+import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { McpService } from './mcp.service';
 import { McpToolRegistry, toToolDescriptor } from './mcp-tool-registry.service';
-import { invokeRegistryTool, mcpCallerCapability } from './mcp-tool-call';
+import { invokeRegistryTool, mcpCallerCapability, mcpKeyMayListHubWide } from './mcp-tool-call';
 
 /**
  * BUG-MCP-1: builds a spec-compliant MCP {@link Server} (official SDK) bound to the Hub's shared
@@ -19,6 +20,7 @@ export class McpServerFactory {
     private readonly registry: McpToolRegistry,
     private readonly mcpService: McpService,
     private readonly logger: LoggerService,
+    private readonly whois: MarketplaceWhoIsService,
   ) {}
 
   /**
@@ -31,15 +33,17 @@ export class McpServerFactory {
     // tools/list — project the registry into the MCP tool descriptor shape (shared with the admin
     // catalog), filtered to what the calling key can actually run. An agent is shown a coherent
     // surface rather than tools it was always going to be refused; the annotations on each descriptor
-    // then say which of the visible ones mutate.
+    // then say which of the visible ones mutate. The Hub-wide tools follow the key's creator.
     server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: this.registry.listToolsForCapability(mcpCallerCapability()).map(toToolDescriptor),
+      tools: this.registry
+        .listToolsForCapability(mcpCallerCapability(), { mayManageHub: await mcpKeyMayListHubWide(this.whois) })
+        .map(toToolDescriptor),
     }));
 
     server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToolResult> => {
       const toolName = request.params.name;
       const toolArgs = (request.params.arguments ?? {}) as Record<string, unknown>;
-      return invokeRegistryTool(this.registry, this.logger, toolName, toolArgs);
+      return invokeRegistryTool(this.registry, this.logger, this.whois, toolName, toolArgs);
     });
 
     return server;

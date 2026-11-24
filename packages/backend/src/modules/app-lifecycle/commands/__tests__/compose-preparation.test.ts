@@ -34,7 +34,7 @@ interface BuilderConstruction {
   domain: string;
   localDomain: string;
   posixPermissionsSupported: boolean;
-  options?: { loopbackHostPort?: boolean };
+  options?: { loopbackHostPort?: boolean; defaultAppCpuLimit?: string; knownAppIds?: Iterable<string>; hostVariables?: Iterable<string> };
 }
 
 const { builderSpy, posixProbe, schemaSpy } = vi.hoisted(() => ({
@@ -59,7 +59,7 @@ const { builderSpy, posixProbe, schemaSpy } = vi.hoisted(() => ({
  */
 vi.mock('@/modules/docker/builders/compose.builder', () => ({
   DockerComposeBuilder: class {
-    constructor(domain: string, localDomain: string, posixPermissionsSupported = true, options?: { loopbackHostPort?: boolean }) {
+    constructor(domain: string, localDomain: string, posixPermissionsSupported = true, options?: BuilderConstruction['options']) {
       builderSpy.constructions.push({ domain, localDomain, posixPermissionsSupported, options });
     }
 
@@ -101,14 +101,14 @@ vi.mock('@/common/helpers/bind-mount-helpers', async (importOriginal) => ({
 }));
 
 /*
- * `parseComposeJson` throws a plain Error today, so the ZodError arm of the catch block is only
- * reachable through a collaborator. Keep the real parser as the default implementation — every
+ * `parseInstalledComposeJson` throws a plain Error today, so the ZodError arm of the catch block is
+ * only reachable through a collaborator. Keep the real parser as the default implementation — every
  * other test then exercises real schema parsing — and swap in a thrown ZodError for that one case.
  */
 vi.mock('@ci-hub/common/schemas', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@ci-hub/common/schemas')>();
-  schemaSpy.original = actual.parseComposeJson;
-  return { ...actual, parseComposeJson: schemaSpy.parse };
+  schemaSpy.original = actual.parseInstalledComposeJson;
+  return { ...actual, parseInstalledComposeJson: schemaSpy.parse };
 });
 
 const APP_URN = 'nextcloud:migrated' as AppUrn;
@@ -160,16 +160,20 @@ interface Stubs {
     getDockerComposeJson: Stub;
     getAppEnv: Stub;
     writeDockerComposeYml: Stub;
+    createVolumeHostDirs: Stub;
+    storeDataCopyPending: Stub;
     setAppDataDirPermissions: Stub;
+    declaresDataMoves: Stub;
+    applyDataMoves: Stub;
   };
-  marketplaceService: { getAppInfoFromAppStoreOrInstalled: Stub; copyAppFromRepoToInstalled: Stub };
-  logger: { info: Stub; warn: Stub; error: Stub };
+  marketplaceService: { getAppInfoFromAppStoreOrInstalled: Stub; copyAppFromRepoToInstalled: Stub; listedAppUrns: Stub };
+  logger: { info: Stub; warn: Stub; error: Stub; debug: Stub };
   subnetManager: { allocateSubnet: Stub };
   configService: { get: Stub; getConfig: Stub };
-  resourceAllocator: { getEffectiveAppDefaults: Stub };
+  resourceAllocator: { getEffectiveAppDefaults: Stub; getDockerCapacity: Stub; getDockerServerVersion: Stub };
   registrationService: { getDeviceRegistrationInfo: Stub };
-  appsRepository: { getAppCustomDomain: Stub };
-  docker: { pruneContainers: Stub };
+  appsRepository: { getAppCustomDomain: Stub; getApps: Stub };
+  docker: { pruneContainers: Stub; listContainers: Stub };
 }
 
 const makeForm = (overrides: Record<string, unknown> = {}): AppEventFormInput =>
@@ -181,13 +185,19 @@ const createHarness = () => {
       getDockerComposeJson: vi.fn().mockResolvedValue({ path: '/data/apps/nextcloud/docker-compose.json', content: composeJsonFixture() }),
       getAppEnv: vi.fn().mockResolvedValue({ path: APP_ENV_PATH, content: APP_ENV_CONTENT }),
       writeDockerComposeYml: vi.fn().mockResolvedValue(undefined),
+      createVolumeHostDirs: vi.fn().mockResolvedValue(undefined),
+      // The store's data folder is already copied: the guard for a pending copy is tested on real files.
+      storeDataCopyPending: vi.fn().mockResolvedValue(false),
       setAppDataDirPermissions: vi.fn().mockResolvedValue(undefined),
+      declaresDataMoves: vi.fn().mockResolvedValue(false),
+      applyDataMoves: vi.fn().mockResolvedValue([]),
     },
     marketplaceService: {
       getAppInfoFromAppStoreOrInstalled: vi.fn().mockResolvedValue({ id: 'nextcloud' }),
       copyAppFromRepoToInstalled: vi.fn().mockResolvedValue(undefined),
+      listedAppUrns: vi.fn().mockResolvedValue([]),
     },
-    logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
     subnetManager: { allocateSubnet: vi.fn().mockResolvedValue('10.128.7.0/24') },
     configService: {
       get: vi.fn((key: string) => {
@@ -201,10 +211,17 @@ const createHarness = () => {
         userSettings: { domain: 'settings.example', localDomain: 'settings.local' },
       })),
     },
-    resourceAllocator: { getEffectiveAppDefaults: vi.fn().mockResolvedValue({ cpuLimit: '4', memoryLimit: '8192M' }) },
+    resourceAllocator: {
+      getEffectiveAppDefaults: vi.fn().mockResolvedValue({ cpuLimit: '4', memoryLimit: '8192M' }),
+      getDockerCapacity: vi.fn().mockResolvedValue({ cpuCores: 16, memTotalMb: 32768 }),
+      getDockerServerVersion: vi.fn().mockResolvedValue('29.6.1'),
+    },
     registrationService: { getDeviceRegistrationInfo: vi.fn().mockResolvedValue({ hubSubdomain: 'hub-desk-acme', slug: 'acme' }) },
-    appsRepository: { getAppCustomDomain: vi.fn().mockResolvedValue(null) },
-    docker: { pruneContainers: vi.fn().mockResolvedValue({ ContainersDeleted: [], SpaceReclaimed: 0 }) },
+    appsRepository: { getAppCustomDomain: vi.fn().mockResolvedValue(null), getApps: vi.fn().mockResolvedValue([]) },
+    docker: {
+      pruneContainers: vi.fn().mockResolvedValue({ ContainersDeleted: [], SpaceReclaimed: 0 }),
+      listContainers: vi.fn().mockResolvedValue([]),
+    },
   };
 
   const moduleRef = {
@@ -272,6 +289,100 @@ describe('prepareAppComposeDir', () => {
     expect(lastComposeCall().envFilePath).toBe(APP_ENV_PATH);
   });
 
+  /*
+   * Docker makes a missing bind-mount folder itself, as root 755, and a Hub running as the host user
+   * can't open that up or delete what the app writes there. Install makes them first, but a custom
+   * app is added without an install and an edit can add a volume, so every start makes them (#2198).
+   */
+  it('makes the volume folders before the permission sweep, on every prepare', async () => {
+    const { stubs, moduleRef, docker } = createHarness();
+    const order: string[] = [];
+    stubs.appFilesManager.writeDockerComposeYml.mockImplementation(async () => {
+      order.push('write');
+    });
+    stubs.appFilesManager.createVolumeHostDirs.mockImplementation(async () => {
+      order.push('mkdir');
+    });
+    stubs.appFilesManager.setAppDataDirPermissions.mockImplementation(async () => {
+      order.push('chmod');
+    });
+
+    await prepareAppComposeDir(moduleRef, docker, 'my-app:_user' as AppUrn, makeForm());
+
+    expect(stubs.appFilesManager.createVolumeHostDirs).toHaveBeenCalledWith('my-app:_user');
+    expect(order).toEqual(['write', 'mkdir', 'chmod']);
+  });
+
+  /*
+   * A listing that changed its data layout says what moves where (`data_moves`). The data has to be in
+   * the new places before the mount folders are made and the containers start, and never moved out
+   * from under a container that still runs.
+   */
+  describe('data moves', () => {
+    it('runs them before the volume folders are made, when none of the app runs', async () => {
+      const { stubs, moduleRef, docker } = createHarness();
+      const order: string[] = [];
+      stubs.appFilesManager.declaresDataMoves.mockResolvedValue(true);
+      stubs.appFilesManager.applyDataMoves.mockImplementation(async () => {
+        order.push('move');
+        return ['data/x → data/app/x'];
+      });
+      stubs.appFilesManager.createVolumeHostDirs.mockImplementation(async () => {
+        order.push('mkdir');
+      });
+
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+
+      expect(order).toEqual(['move', 'mkdir']);
+      expect(stubs.docker.listContainers).toHaveBeenCalledWith(
+        expect.objectContaining({ filters: expect.objectContaining({ status: ['running', 'restarting', 'paused'] }) }),
+      );
+    });
+
+    it('leaves them for the next start while a container of the app still runs', async () => {
+      const { stubs, moduleRef, docker } = createHarness();
+      stubs.appFilesManager.declaresDataMoves.mockResolvedValue(true);
+      stubs.docker.listContainers.mockResolvedValue([{ Id: 'c1', State: 'running' }]);
+
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+
+      expect(stubs.appFilesManager.applyDataMoves).not.toHaveBeenCalled();
+      expect(stubs.appFilesManager.createVolumeHostDirs).toHaveBeenCalled();
+    });
+
+    it('stops the prepare when a move would overwrite files', async () => {
+      const { stubs, moduleRef, docker } = createHarness();
+      stubs.appFilesManager.declaresDataMoves.mockResolvedValue(true);
+      stubs.appFilesManager.applyDataMoves.mockRejectedValue(new Error('both places hold files'));
+
+      await expect(prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm())).rejects.toThrow('both places hold files');
+      expect(stubs.appFilesManager.createVolumeHostDirs).not.toHaveBeenCalled();
+    });
+
+    it('is skipped when the caller runs them itself, as an update does, and for a listing that declares none', async () => {
+      const { stubs, moduleRef, docker } = createHarness();
+      stubs.appFilesManager.declaresDataMoves.mockResolvedValue(true);
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm(), { applyDataMoves: false });
+      expect(stubs.appFilesManager.applyDataMoves).not.toHaveBeenCalled();
+
+      stubs.appFilesManager.declaresDataMoves.mockResolvedValue(false);
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+      expect(stubs.appFilesManager.applyDataMoves).not.toHaveBeenCalled();
+      expect(stubs.docker.listContainers).not.toHaveBeenCalled();
+    });
+  });
+
+  it('still sweeps permissions when the volume folders cannot be made, and says why', async () => {
+    const { stubs, moduleRef, docker } = createHarness();
+    stubs.appFilesManager.createVolumeHostDirs.mockRejectedValue(new Error('EACCES'));
+
+    await expect(prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm())).resolves.toBeUndefined();
+
+    expect(stubs.appFilesManager.setAppDataDirPermissions).toHaveBeenCalledWith(APP_URN);
+    expect(stubs.logger.warn).toHaveBeenCalledWith(expect.stringContaining(`Could not create the volume folders of ${APP_URN}`));
+    expect(stubs.logger.warn).toHaveBeenCalledWith(expect.stringContaining('EACCES'));
+  });
+
   it('builds for the app it was handed and passes the caller form through untouched', async () => {
     const { stubs, moduleRef, docker } = createHarness();
     const form = makeForm({ exposureMode: 'local', openPort: false, localSubdomain: 'nextcloud' });
@@ -287,6 +398,60 @@ describe('prepareAppComposeDir', () => {
     expect(stubs.appFilesManager.getAppEnv).toHaveBeenCalledWith(APP_URN);
     expect(stubs.marketplaceService.getAppInfoFromAppStoreOrInstalled).toHaveBeenCalledWith(APP_URN);
     expect(stubs.appFilesManager.setAppDataDirPermissions).toHaveBeenCalledWith(APP_URN);
+  });
+
+  /*
+   * The builder gives a Traefik name to the app with the longest id that covers it, so it needs every
+   * id the Hub knows: an app installed from any store, a custom app and an app a store lists that
+   * is not installed yet, which may be installed after this app.
+   */
+  it('hands the builder the id of every installed app and every app the stores list', async () => {
+    const { stubs, moduleRef, docker } = createHarness();
+    stubs.appsRepository.getApps.mockResolvedValue([
+      { appName: 'nextcloud', appStoreSlug: 'migrated' },
+      { appName: 'my-app', appStoreSlug: '_user' },
+    ]);
+    stubs.marketplaceService.listedAppUrns.mockResolvedValue(['nextcloud:migrated-lab', 'app:ci-marketplace']);
+
+    await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+
+    expect([...(lastConstruction().options?.knownAppIds ?? [])].sort()).toEqual([
+      'app-ci-marketplace',
+      'my-app-_user',
+      'nextcloud-migrated',
+      'nextcloud-migrated-lab',
+    ]);
+  });
+
+  // compose expands a host the Hub left unset from wherever else it finds it, so a rule may name only
+  // the ones the app's env holds.
+  it('hands the builder the hosts the Hub set in the app’s env', async () => {
+    const { stubs, moduleRef, docker } = createHarness();
+    stubs.appFilesManager.getAppEnv.mockResolvedValue({
+      path: APP_ENV_PATH,
+      content: [APP_ENV_CONTENT, 'APP_DOMAIN=nextcloud-desk-acme.companion.example', 'APP_LOCAL_DOMAIN=', 'APP_BASE_HOST=cloud.example.org'].join(
+        '\n',
+      ),
+    });
+
+    await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+
+    expect(lastConstruction().options?.hostVariables).toEqual(['APP_DOMAIN', 'APP_BASE_HOST']);
+  });
+
+  // A store's listing is what any store publishes: it must not stop an app from starting.
+  it('skips a listed name that is no app URN and keeps the installed ids when the listing fails', async () => {
+    const { stubs, moduleRef, docker } = createHarness();
+    stubs.appsRepository.getApps.mockResolvedValue([{ appName: 'nextcloud', appStoreSlug: 'migrated' }]);
+    stubs.marketplaceService.listedAppUrns.mockResolvedValueOnce([':odd', 'app:home-lab']);
+
+    await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+    expect([...(lastConstruction().options?.knownAppIds ?? [])].sort()).toEqual(['app-home-lab', 'nextcloud-migrated']);
+
+    stubs.marketplaceService.listedAppUrns.mockRejectedValueOnce(new Error('EACCES: permission denied'));
+    await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+    expect([...(lastConstruction().options?.knownAppIds ?? [])]).toEqual(['nextcloud-migrated']);
+    expect(stubs.logger.warn).toHaveBeenCalledWith(expect.stringContaining('EACCES: permission denied'));
   });
 
   describe('domain resolution', () => {
@@ -380,6 +545,54 @@ describe('prepareAppComposeDir', () => {
     });
   });
 
+  // Compose refuses healthcheck.start_interval on Docker Engine older than 25, so such an app could not
+  // install or start there at all (#2110).
+  describe('health check start interval', () => {
+    const composeWithStartInterval = () => ({
+      schemaVersion: 2,
+      services: [
+        {
+          name: 'nextcloud',
+          image: 'nextcloud:29',
+          internalPort: 80,
+          isMain: true,
+          healthCheck: { test: 'curl -f http://localhost', interval: '30s', startInterval: '5s', startPeriod: '60s' },
+        },
+        { name: 'redis', image: 'redis:7', internalPort: 6379 },
+      ],
+    });
+
+    it('leaves it out on Docker Engine 24 and logs it', async () => {
+      const { stubs, moduleRef, docker } = createHarness();
+      stubs.appFilesManager.getDockerComposeJson.mockResolvedValue({
+        path: '/data/apps/nextcloud/docker-compose.json',
+        content: composeWithStartInterval(),
+      });
+      stubs.resourceAllocator.getDockerServerVersion.mockResolvedValue('24.0.9');
+
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+
+      const nextcloud = lastComposeCall().services.find((service) => service.name === 'nextcloud');
+      expect(nextcloud?.healthCheck).toEqual({ test: 'curl -f http://localhost', interval: '30s', startPeriod: '60s' });
+      expect(stubs.logger.warn).toHaveBeenCalledWith(expect.stringMatching(/Docker Engine 24\.0\.9 .*start_interval.*nextcloud/));
+    });
+
+    it('keeps it on Docker Engine 25 and newer', async () => {
+      const { stubs, moduleRef, docker } = createHarness();
+      stubs.appFilesManager.getDockerComposeJson.mockResolvedValue({
+        path: '/data/apps/nextcloud/docker-compose.json',
+        content: composeWithStartInterval(),
+      });
+      stubs.resourceAllocator.getDockerServerVersion.mockResolvedValue('25.0.3');
+
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+
+      const nextcloud = lastComposeCall().services.find((service) => service.name === 'nextcloud');
+      expect(nextcloud?.healthCheck).toMatchObject({ startInterval: '5s' });
+      expect(stubs.logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('start_interval'));
+    });
+  });
+
   describe('compose parsing failures', () => {
     it('turns a ZodError into a readable maintainer-facing message instead of leaking the raw Zod error', async () => {
       const { stubs, moduleRef, docker } = createHarness();
@@ -421,6 +634,45 @@ describe('prepareAppComposeDir', () => {
       // The generic thrown message names no cause, so losing either log leaves nothing to debug.
       expect(stubs.logger.error).toHaveBeenCalledWith(`Error generating docker-compose.yml file for app ${APP_URN}`);
       expect(stubs.logger.error).toHaveBeenCalledWith(cause);
+    });
+  });
+
+  // An app saved before a label rule existed: the builder leaves those labels out, so they don't stop
+  // the start. Every other refusal still does.
+  describe('labels the builder leaves out', () => {
+    const OLD_LABELS = { 'traefik.docker.network': 'ci-hub_network', 'ci-hub.appurn': 'other-app:ci-marketplace', 'com.example.team': 'web' };
+    const storedCompose = (main: Record<string, unknown>) => {
+      const [nextcloud, redis] = composeJsonFixture().services;
+      return { schemaVersion: 2, services: [{ ...nextcloud, ...main }, redis] };
+    };
+
+    it('builds an installed compose that holds them, handing the builder the labels as stored', async () => {
+      const { stubs, moduleRef, docker } = createHarness();
+      stubs.appFilesManager.getDockerComposeJson.mockResolvedValue({
+        path: '/data/apps/nextcloud/docker-compose.json',
+        content: storedCompose({ extraLabels: OLD_LABELS }),
+      });
+
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+
+      expect(lastComposeCall().services[0]).toMatchObject({ name: 'nextcloud', extraLabels: OLD_LABELS });
+      expect(stubs.appFilesManager.writeDockerComposeYml).toHaveBeenCalledWith(APP_URN, builderSpy.output);
+    });
+
+    it('still refuses an installed compose with a privileged service, labels or not', async () => {
+      const { stubs, moduleRef, docker } = createHarness();
+      stubs.appFilesManager.getDockerComposeJson.mockResolvedValue({
+        path: '/data/apps/nextcloud/docker-compose.json',
+        content: storedCompose({ privileged: true, extraLabels: OLD_LABELS }),
+      });
+
+      await expect(prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm())).rejects.toThrow(
+        `Error generating docker-compose.yml file for app ${APP_URN}.`,
+      );
+      expect(stubs.logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringContaining('CUSTOM_APP_ERROR_PRIVILEGED_NOT_ALLOWED') }),
+      );
+      expect(stubs.appFilesManager.writeDockerComposeYml).not.toHaveBeenCalled();
     });
   });
 
@@ -655,7 +907,7 @@ describe('prepareAppComposeDir', () => {
       await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm({ exposureMode: 'local' }));
 
       // The manifest rides along so the route builder can fall back to its edge-auth default.
-      expect(lastConstruction().options).toEqual({ loopbackHostPort: true, manifest });
+      expect(lastConstruction().options).toEqual({ loopbackHostPort: true, manifest, knownAppIds: [], hostVariables: [] });
     });
 
     it('keeps the host port on loopback for an app that asks for edge auth', async () => {
@@ -670,7 +922,7 @@ describe('prepareAppComposeDir', () => {
       // The stored enableAuth is no opt-out: an install that never decided also reads `false`.
       await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm({ exposureMode: 'local', enableAuth: false }));
 
-      expect(lastConstruction().options).toEqual({ loopbackHostPort: true, manifest });
+      expect(lastConstruction().options).toEqual({ loopbackHostPort: true, manifest, knownAppIds: [], hostVariables: [] });
     });
 
     it('publishes on every interface for an app with neither', async () => {
@@ -680,7 +932,7 @@ describe('prepareAppComposeDir', () => {
 
       await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm({ exposureMode: 'local', enableAuth: true }));
 
-      expect(lastConstruction().options).toEqual({ loopbackHostPort: false, manifest });
+      expect(lastConstruction().options).toEqual({ loopbackHostPort: false, manifest, knownAppIds: [], hostVariables: [] });
     });
 
     it('keeps the all-interfaces default and says so when the listing cannot be resolved', async () => {
@@ -690,7 +942,7 @@ describe('prepareAppComposeDir', () => {
       await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
 
       // No manifest to hand the route builder either: it decides from the form and the port alone.
-      expect(lastConstruction().options).toEqual({ loopbackHostPort: false, manifest: undefined });
+      expect(lastConstruction().options).toEqual({ loopbackHostPort: false, manifest: undefined, knownAppIds: [], hostVariables: [] });
       expect(stubs.logger.warn).toHaveBeenCalledWith(expect.stringContaining(`No manifest for ${APP_URN}`));
     });
   });
@@ -766,6 +1018,74 @@ describe('prepareAppComposeDir', () => {
       await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
 
       expect(lastComposeCall().cpuLimit).toBeUndefined();
+    });
+
+    it('hands the builder the Default app CPU limit from Settings to apply, trimmed', async () => {
+      const { stubs, moduleRef, docker } = createHarness();
+      stubs.configService.getConfig.mockReturnValue({
+        domain: 'config.example',
+        localDomain: 'config.local',
+        userSettings: { defaultAppCpuLimit: ' 0.5 ' },
+      });
+
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+
+      expect(lastConstruction().options).toMatchObject({ defaultAppCpuLimit: '0.5' });
+    });
+
+    it("never hands the builder the allocator's recommendation to apply when Settings has no default", async () => {
+      // The harness allocator recommends 4 CPUs: the host-sized cap #1186 stopped stamping on every service.
+      const { moduleRef, docker } = createHarness();
+
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+
+      expect(lastConstruction().options?.defaultAppCpuLimit).toBeUndefined();
+    });
+
+    it('leaves out a Default app CPU limit above the CPUs Docker has, and says why', async () => {
+      // Docker refuses to create such a container ("range of CPUs is from 0.01 to 16.00"), so every
+      // app without a limit of its own would fail to start, including on the boot after an upgrade.
+      const { stubs, moduleRef, docker } = createHarness();
+      stubs.configService.getConfig.mockReturnValue({
+        domain: 'config.example',
+        localDomain: 'config.local',
+        userSettings: { defaultAppCpuLimit: '32' },
+      });
+
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+
+      expect(lastConstruction().options?.defaultAppCpuLimit).toBeUndefined();
+      expect(stubs.logger.warn).toHaveBeenCalledWith(expect.stringMatching(/Default app CPU limit 32 .*16 CPUs/));
+    });
+
+    it('neither checks nor blames the default for an app whose form sets its own CPU limit', async () => {
+      const { stubs, moduleRef, docker } = createHarness();
+      stubs.configService.getConfig.mockReturnValue({
+        domain: 'config.example',
+        localDomain: 'config.local',
+        userSettings: { defaultAppCpuLimit: '32' },
+      });
+
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm({ cpuLimit: '2' }));
+
+      expect(stubs.resourceAllocator.getDockerCapacity).not.toHaveBeenCalled();
+      expect(stubs.logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('Default app CPU limit'));
+    });
+
+    it("still applies a default of exactly Docker's CPU count, and any default when the count is unknown", async () => {
+      const { stubs, moduleRef, docker } = createHarness();
+      stubs.configService.getConfig.mockReturnValue({
+        domain: 'config.example',
+        localDomain: 'config.local',
+        userSettings: { defaultAppCpuLimit: '16' },
+      });
+
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+      expect(lastConstruction().options?.defaultAppCpuLimit).toBe('16');
+
+      stubs.resourceAllocator.getDockerCapacity.mockResolvedValue(null);
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+      expect(lastConstruction().options?.defaultAppCpuLimit).toBe('16');
     });
   });
 

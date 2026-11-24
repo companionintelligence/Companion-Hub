@@ -21,7 +21,9 @@
     {
       "description": "A list of capabilities.",
       "type": "object",
-      "required": ["capabilities"],
+      "required": [
+        "capabilities"
+      ],
       "properties": {
         "capabilities": {
           "description": "The list of capabilities.",
@@ -37,7 +39,10 @@
     "Capability": {
       "description": "A grouping and boundary mechanism developers can use to isolate access to the IPC layer.\n\nIt controls application windows' and webviews' fine grained access to the Tauri core, application, or plugin commands. If a webview or its window is not matching any capability then it has no access to the IPC layer at all.\n\nThis can be done to create groups of windows, based on their required system access, which can reduce impact of frontend vulnerabilities in less privileged windows. Windows can be added to a capability by exact name (e.g. `main-window`) or glob patterns like `*` or `admin-*`. A Window can have none, one, or multiple associated capabilities.\n\n## Example\n\n```json { \"identifier\": \"main-user-files-write\", \"description\": \"This capability allows the `main` window on macOS and Windows access to `filesystem` write related commands and `dialog` commands to enable programmatic access to files selected by the user.\", \"windows\": [ \"main\" ], \"permissions\": [ \"core:default\", \"dialog:open\", { \"identifier\": \"fs:allow-write-text-file\", \"allow\": [{ \"path\": \"$HOME/test.txt\" }] }, ], \"platforms\": [\"macOS\",\"windows\"] } ```",
       "type": "object",
-      "required": ["identifier", "permissions"],
+      "required": [
+        "identifier",
+        "permissions"
+      ],
       "properties": {
         "identifier": {
           "description": "Identifier of the capability.\n\n## Example\n\n`main-user-files-write`",
@@ -88,7 +93,10 @@
         },
         "platforms": {
           "description": "Limit which target platforms this capability applies to.\n\nBy default all platforms are targeted.\n\n## Example\n\n`[\"macOS\",\"windows\"]`",
-          "type": ["array", "null"],
+          "type": [
+            "array",
+            "null"
+          ],
           "items": {
             "$ref": "#/definitions/Target"
           }
@@ -98,7 +106,9 @@
     "CapabilityRemote": {
       "description": "Configuration for remote URLs that are associated with the capability.",
       "type": "object",
-      "required": ["urls"],
+      "required": [
+        "urls"
+      ],
       "properties": {
         "urls": {
           "description": "Remote domains this capability refers to using the [URLPattern standard](https://urlpattern.spec.whatwg.org/).\n\n## Examples\n\n- \"https://*.mydomain.dev\": allows subdomains of mydomain.dev - \"https://mydomain.dev/api/*\": allows any subpath of mydomain.dev/api",
@@ -190,7 +200,9 @@
                       "anyOf": [
                         {
                           "type": "object",
-                          "required": ["url"],
+                          "required": [
+                            "url"
+                          ],
                           "properties": {
                             "app": {
                               "description": "An application to open this url with, for example: firefox.",
@@ -208,7 +220,9 @@
                         },
                         {
                           "type": "object",
-                          "required": ["path"],
+                          "required": [
+                            "path"
+                          ],
                           "properties": {
                             "app": {
                               "description": "An application to open this path with, for example: xdg-open.",
@@ -234,7 +248,9 @@
                       "anyOf": [
                         {
                           "type": "object",
-                          "required": ["url"],
+                          "required": [
+                            "url"
+                          ],
                           "properties": {
                             "app": {
                               "description": "An application to open this url with, for example: firefox.",
@@ -252,7 +268,9 @@
                         },
                         {
                           "type": "object",
-                          "required": ["path"],
+                          "required": [
+                            "path"
+                          ],
                           "properties": {
                             "app": {
                               "description": "An application to open this path with, for example: xdg-open.",
@@ -296,14 +314,20 @@
                 },
                 "allow": {
                   "description": "Data that defines what is allowed by the scope.",
-                  "type": ["array", "null"],
+                  "type": [
+                    "array",
+                    "null"
+                  ],
                   "items": {
                     "$ref": "#/definitions/Value"
                   }
                 },
                 "deny": {
                   "description": "Data that defines what is denied by the scope. This should be prioritized by validation logic.",
-                  "type": ["array", "null"],
+                  "type": [
+                    "array",
+                    "null"
+                  ],
                   "items": {
                     "$ref": "#/definitions/Value"
                   }
@@ -311,13 +335,105 @@
               }
             }
           ],
-          "required": ["identifier"]
+          "required": [
+            "identifier"
+          ]
         }
       ]
     },
     "Identifier": {
       "description": "Permission identifier",
       "oneOf": [
+        {
+          "description": "All Companion Hub desktop IPC commands. Required once the webview leaves\ntauri://localhost for the Hub UI (hub.ci.localhost / *.ci.lan / etc.): Tauri 2\nrejects app commands from a remote origin unless they are explicitly allowed\nhere. Without this grant, Open data folder / Start Hub / installers fail with\n\"Command … not allowed by ACL\" on every OS.\n",
+          "type": "string",
+          "const": "allow-desktop-ipc",
+          "markdownDescription": "All Companion Hub desktop IPC commands. Required once the webview leaves\ntauri://localhost for the Hub UI (hub.ci.localhost / *.ci.lan / etc.): Tauri 2\nrejects app commands from a remote origin unless they are explicitly allowed\nhere. Without this grant, Open data folder / Start Hub / installers fail with\n\"Command … not allowed by ACL\" on every OS.\n"
+        },
+        {
+          "description": "The desktop Portal sign-in's token request (`portal_token_request_command`, src/portal_token.rs):\none POST of an OAuth token grant to this desktop's own Portal token endpoint. Sent natively\nbecause Portal answers CORS for its own UI only, so the WebView could never read the reply.\nGranted to the Hub's own origins only (capabilities/ci-auth.json), like the keychain.\n",
+          "type": "string",
+          "const": "allow-portal-token-request",
+          "markdownDescription": "The desktop Portal sign-in's token request (`portal_token_request_command`, src/portal_token.rs):\none POST of an OAuth token grant to this desktop's own Portal token endpoint. Sent natively\nbecause Portal answers CORS for its own UI only, so the WebView could never read the reply.\nGranted to the Hub's own origins only (capabilities/ci-auth.json), like the keychain.\n"
+        },
+        {
+          "description": "Sign-in over a loopback redirect and OS keychain storage for ci-auth.\n#### This default permission set includes:\n\n- `allow-begin-loopback`\n- `allow-await-loopback`\n- `allow-cancel-loopback`\n- `allow-secure-get`\n- `allow-secure-set`\n- `allow-secure-remove`",
+          "type": "string",
+          "const": "ci-auth:default",
+          "markdownDescription": "Sign-in over a loopback redirect and OS keychain storage for ci-auth.\n#### This default permission set includes:\n\n- `allow-begin-loopback`\n- `allow-await-loopback`\n- `allow-cancel-loopback`\n- `allow-secure-get`\n- `allow-secure-set`\n- `allow-secure-remove`"
+        },
+        {
+          "description": "Enables the await_loopback command without any pre-configured scope.",
+          "type": "string",
+          "const": "ci-auth:allow-await-loopback",
+          "markdownDescription": "Enables the await_loopback command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the begin_loopback command without any pre-configured scope.",
+          "type": "string",
+          "const": "ci-auth:allow-begin-loopback",
+          "markdownDescription": "Enables the begin_loopback command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the cancel_loopback command without any pre-configured scope.",
+          "type": "string",
+          "const": "ci-auth:allow-cancel-loopback",
+          "markdownDescription": "Enables the cancel_loopback command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the secure_get command without any pre-configured scope.",
+          "type": "string",
+          "const": "ci-auth:allow-secure-get",
+          "markdownDescription": "Enables the secure_get command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the secure_remove command without any pre-configured scope.",
+          "type": "string",
+          "const": "ci-auth:allow-secure-remove",
+          "markdownDescription": "Enables the secure_remove command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the secure_set command without any pre-configured scope.",
+          "type": "string",
+          "const": "ci-auth:allow-secure-set",
+          "markdownDescription": "Enables the secure_set command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the await_loopback command without any pre-configured scope.",
+          "type": "string",
+          "const": "ci-auth:deny-await-loopback",
+          "markdownDescription": "Denies the await_loopback command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the begin_loopback command without any pre-configured scope.",
+          "type": "string",
+          "const": "ci-auth:deny-begin-loopback",
+          "markdownDescription": "Denies the begin_loopback command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the cancel_loopback command without any pre-configured scope.",
+          "type": "string",
+          "const": "ci-auth:deny-cancel-loopback",
+          "markdownDescription": "Denies the cancel_loopback command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the secure_get command without any pre-configured scope.",
+          "type": "string",
+          "const": "ci-auth:deny-secure-get",
+          "markdownDescription": "Denies the secure_get command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the secure_remove command without any pre-configured scope.",
+          "type": "string",
+          "const": "ci-auth:deny-secure-remove",
+          "markdownDescription": "Denies the secure_remove command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the secure_set command without any pre-configured scope.",
+          "type": "string",
+          "const": "ci-auth:deny-secure-set",
+          "markdownDescription": "Denies the secure_set command without any pre-configured scope."
+        },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
           "type": "string",
@@ -353,6 +469,12 @@
           "type": "string",
           "const": "core:app:allow-default-window-icon",
           "markdownDescription": "Enables the default_window_icon command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the exit command without any pre-configured scope.",
+          "type": "string",
+          "const": "core:app:allow-exit",
+          "markdownDescription": "Enables the exit command without any pre-configured scope."
         },
         {
           "description": "Enables the fetch_data_store_identifiers command without any pre-configured scope.",
@@ -443,6 +565,12 @@
           "type": "string",
           "const": "core:app:deny-default-window-icon",
           "markdownDescription": "Denies the default_window_icon command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the exit command without any pre-configured scope.",
+          "type": "string",
+          "const": "core:app:deny-exit",
+          "markdownDescription": "Denies the exit command without any pre-configured scope."
         },
         {
           "description": "Denies the fetch_data_store_identifiers command without any pre-configured scope.",
@@ -1705,6 +1833,12 @@
           "markdownDescription": "Enables the set_fullscreen command without any pre-configured scope."
         },
         {
+          "description": "Enables the set_fullscreen_on_monitor command without any pre-configured scope.",
+          "type": "string",
+          "const": "core:window:allow-set-fullscreen-on-monitor",
+          "markdownDescription": "Enables the set_fullscreen_on_monitor command without any pre-configured scope."
+        },
+        {
           "description": "Enables the set_icon command without any pre-configured scope.",
           "type": "string",
           "const": "core:window:allow-set-icon",
@@ -2173,6 +2307,12 @@
           "markdownDescription": "Denies the set_fullscreen command without any pre-configured scope."
         },
         {
+          "description": "Denies the set_fullscreen_on_monitor command without any pre-configured scope.",
+          "type": "string",
+          "const": "core:window:deny-set-fullscreen-on-monitor",
+          "markdownDescription": "Denies the set_fullscreen_on_monitor command without any pre-configured scope."
+        },
+        {
           "description": "Denies the set_icon command without any pre-configured scope.",
           "type": "string",
           "const": "core:window:deny-set-icon",
@@ -2455,10 +2595,10 @@
           "markdownDescription": "Denies the save command without any pre-configured scope."
         },
         {
-          "description": "This permission set configures which\nnotification features are by default exposed.\n\n#### Granted Permissions\n\nIt allows all notification related features.\n\n\n#### This default permission set includes:\n\n- `allow-is-permission-granted`\n- `allow-request-permission`\n- `allow-notify`\n- `allow-register-action-types`\n- `allow-register-listener`\n- `allow-cancel`\n- `allow-get-pending`\n- `allow-remove-active`\n- `allow-get-active`\n- `allow-check-permissions`\n- `allow-show`\n- `allow-batch`\n- `allow-list-channels`\n- `allow-delete-channel`\n- `allow-create-channel`\n- `allow-permission-state`",
+          "description": "This permission set configures which\nnotification features are by default exposed.\n\n#### Granted Permissions\n\nIt allows all notification related features.\n\n\n#### This default permission set includes:\n\n- `allow-is-permission-granted`\n- `allow-request-permission`\n- `allow-notify`\n- `allow-register-action-types`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-cancel`\n- `allow-get-pending`\n- `allow-remove-active`\n- `allow-get-active`\n- `allow-check-permissions`\n- `allow-show`\n- `allow-batch`\n- `allow-list-channels`\n- `allow-delete-channel`\n- `allow-create-channel`\n- `allow-permission-state`",
           "type": "string",
           "const": "notification:default",
-          "markdownDescription": "This permission set configures which\nnotification features are by default exposed.\n\n#### Granted Permissions\n\nIt allows all notification related features.\n\n\n#### This default permission set includes:\n\n- `allow-is-permission-granted`\n- `allow-request-permission`\n- `allow-notify`\n- `allow-register-action-types`\n- `allow-register-listener`\n- `allow-cancel`\n- `allow-get-pending`\n- `allow-remove-active`\n- `allow-get-active`\n- `allow-check-permissions`\n- `allow-show`\n- `allow-batch`\n- `allow-list-channels`\n- `allow-delete-channel`\n- `allow-create-channel`\n- `allow-permission-state`"
+          "markdownDescription": "This permission set configures which\nnotification features are by default exposed.\n\n#### Granted Permissions\n\nIt allows all notification related features.\n\n\n#### This default permission set includes:\n\n- `allow-is-permission-granted`\n- `allow-request-permission`\n- `allow-notify`\n- `allow-register-action-types`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-cancel`\n- `allow-get-pending`\n- `allow-remove-active`\n- `allow-get-active`\n- `allow-check-permissions`\n- `allow-show`\n- `allow-batch`\n- `allow-list-channels`\n- `allow-delete-channel`\n- `allow-create-channel`\n- `allow-permission-state`"
         },
         {
           "description": "Enables the batch command without any pre-configured scope.",
@@ -2543,6 +2683,12 @@
           "type": "string",
           "const": "notification:allow-remove-active",
           "markdownDescription": "Enables the remove_active command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the remove_listener command without any pre-configured scope.",
+          "type": "string",
+          "const": "notification:allow-remove-listener",
+          "markdownDescription": "Enables the remove_listener command without any pre-configured scope."
         },
         {
           "description": "Enables the request_permission command without any pre-configured scope.",
@@ -2639,6 +2785,12 @@
           "type": "string",
           "const": "notification:deny-remove-active",
           "markdownDescription": "Denies the remove_active command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the remove_listener command without any pre-configured scope.",
+          "type": "string",
+          "const": "notification:deny-remove-listener",
+          "markdownDescription": "Denies the remove_listener command without any pre-configured scope."
         },
         {
           "description": "Denies the request_permission command without any pre-configured scope.",
@@ -3038,27 +3190,37 @@
         {
           "description": "MacOS.",
           "type": "string",
-          "enum": ["macOS"]
+          "enum": [
+            "macOS"
+          ]
         },
         {
           "description": "Windows.",
           "type": "string",
-          "enum": ["windows"]
+          "enum": [
+            "windows"
+          ]
         },
         {
           "description": "Linux.",
           "type": "string",
-          "enum": ["linux"]
+          "enum": [
+            "linux"
+          ]
         },
         {
           "description": "Android.",
           "type": "string",
-          "enum": ["android"]
+          "enum": [
+            "android"
+          ]
         },
         {
           "description": "iOS.",
           "type": "string",
-          "enum": ["iOS"]
+          "enum": [
+            "iOS"
+          ]
         }
       ]
     },

@@ -5,21 +5,62 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { appIdOf } from '@/modules/apps/app-id.helpers';
+import { securityGrantsFor } from '@/modules/apps/security-grants';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { publishesCloudflarePublicRoute } from '@/modules/apps/app-public-routing.helpers';
 import { DockerComposeBuilder } from '@/modules/docker/builders/compose.builder';
+import { appUrnLabelSets, listContainersMatchingAnyLabelSets } from '@/modules/docker/hub-container-query';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { SubnetManagerService } from '@/modules/network/subnet-manager.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import { ResourceAllocatorService } from '@/modules/system/resource-allocator.service';
-import { hostPortStaysOnLoopback, parseComposeJson } from '@ci-hub/common/schemas';
+import { HEALTHCHECK_START_INTERVAL_MIN_ENGINE_MAJOR, withoutUnsupportedStartInterval } from '@/modules/docker/healthcheck-start-interval';
+import { hostPortStaysOnLoopback, parseInstalledComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { buildOriginServerName, buildPublicWebIdentity, normalizeStoredHostname, resolvePublicDomainRoot } from '@ci-hub/common/types';
 import type { ModuleRef } from '@nestjs/core';
 import Dockerode from 'dockerode';
 import { ZodError } from 'zod';
 import { fromError } from 'zod-validation-error';
+
+/** The app's own hosts in its env, which its Traefik router rules may name. */
+const OWN_HOST_VARIABLES = ['APP_DOMAIN', 'APP_LOCAL_DOMAIN', 'APP_BASE_HOST'];
+
+/**
+ * The id of every app the Hub knows about: each installed app (custom apps among them) and each app
+ * the enabled stores list, so that an app installed later counts too. The compose builder gives a
+ * Traefik name to the app with the longest of these ids that covers it.
+ *
+ * A store's listing is a folder of names any store can publish. One that is no app URN is skipped.
+ * A listing that can't be read leaves the installed apps' ids. Neither stops the app starting.
+ */
+async function knownAppIds(
+  moduleRef: ModuleRef,
+  marketplaceService: Pick<MarketplaceService, 'listedAppUrns'>,
+  logger: Pick<LoggerService, 'warn'>,
+): Promise<string[]> {
+  const [installed, listed] = await Promise.all([
+    moduleRef.get(AppsRepository, { strict: false }).getApps(),
+    Promise.resolve()
+      .then(() => marketplaceService.listedAppUrns())
+      .catch((error: unknown): AppUrn[] => {
+        logger.warn(`[compose] Could not list the stores' apps, so Traefik names are checked against installed apps only: ${String(error)}`);
+        return [];
+      }),
+  ]);
+  const ids = new Set(installed.map((app) => appIdOf(app.appName, app.appStoreSlug)));
+  for (const urn of listed) {
+    try {
+      const { appName, appStoreId } = extractAppUrn(urn);
+      ids.add(appIdOf(appName, appStoreId));
+    } catch {
+      // Not an app URN: no app of that id can be installed.
+    }
+  }
+  return [...ids];
+}
 
 /**
  * Generates an app's docker-compose.yml from its marketplace manifest.
@@ -33,7 +74,7 @@ export async function prepareAppComposeDir(
   docker: Dockerode,
   appUrn: AppUrn,
   form: AppEventFormInput,
-  options?: { excludeSubnets?: string[] },
+  options?: { excludeSubnets?: string[]; createVolumeDirs?: boolean; applyDataMoves?: boolean },
 ): Promise<void> {
   const appFilesManager = moduleRef.get(AppFilesManager, { strict: false });
   const marketplaceService = moduleRef.get(MarketplaceService, { strict: false });
@@ -66,7 +107,14 @@ export async function prepareAppComposeDir(
   }
 
   try {
-    const { services, overrides } = parseComposeJson(composeJson.content);
+    const { services, overrides } = parseInstalledComposeJson(composeJson.content, securityGrantsFor(appUrn));
+
+    // A database read and a listing of every store's folder, which the builder needs only at the end:
+    // started now so it runs beside the reads below. Handled at once so a failure that stops the
+    // build first is not left unhandled.
+    const knownAppIdsLookup = knownAppIds(moduleRef, marketplaceService, logger);
+    knownAppIdsLookup.catch(() => undefined);
+
     const architecture = configService.get('architecture');
 
     // Merge architecture-specific overrides with base services
@@ -85,6 +133,22 @@ export async function prepareAppComposeDir(
       mergedServices = mergedServices.map((service) => (service.isMain ? { ...service, stdinOpen: true } : service));
     }
 
+    // Compose refuses a health check's start_interval on Docker Engine older than 25, which left any
+    // app that sets one unable to install or start there. The engine is read only when a service sets it.
+    if (mergedServices.some((service) => service.healthCheck?.startInterval)) {
+      let engineVersion: string | undefined;
+      try {
+        engineVersion = await moduleRef.get(ResourceAllocatorService, { strict: false }).getDockerServerVersion();
+      } catch {
+        // Unknown engine: keep the setting.
+      }
+      mergedServices = withoutUnsupportedStartInterval(mergedServices, engineVersion, (service) => {
+        logger.warn(
+          `[compose] Docker Engine ${engineVersion} can't use a health check start_interval (it needs Engine ${HEALTHCHECK_START_INTERVAL_MIN_ENGINE_MAJOR} or newer); ${appUrn} service ${service.name} starts without it`,
+        );
+      });
+    }
+
     // Read app env file to get DOMAIN and LOCAL_DOMAIN for Traefik label interpolation
     const appEnv = await appFilesManager.getAppEnv(appUrn);
     const envUtils = new EnvUtils();
@@ -92,6 +156,8 @@ export async function prepareAppComposeDir(
 
     const domain = envMap.get('DOMAIN') || fullConfig.userSettings?.domain || fullConfig.domain;
     const localDomain = envMap.get('LOCAL_DOMAIN') || fullConfig.userSettings?.localDomain || fullConfig.localDomain;
+    const configuredCpuLimit = (fullConfig.userSettings as Record<string, unknown> | undefined)?.defaultAppCpuLimit;
+    const savedDefaultCpuLimit = typeof configuredCpuLimit === 'string' ? configuredCpuLimit.trim() || undefined : undefined;
     let defaultCpuLimit: string | undefined;
     let defaultMemoryLimit: string | undefined;
     try {
@@ -102,10 +168,7 @@ export async function prepareAppComposeDir(
     } catch (resourceError) {
       // Fall back to the user-configured CPU limit if the allocator is unavailable
       logger.warn(`Resource allocator unavailable, skipping auto resource limits: ${resourceError}`);
-      defaultCpuLimit =
-        typeof (fullConfig.userSettings as Record<string, unknown> | undefined)?.defaultAppCpuLimit === 'string'
-          ? ((fullConfig.userSettings as Record<string, unknown>).defaultAppCpuLimit as string).trim() || undefined
-          : undefined;
+      defaultCpuLimit = savedDefaultCpuLimit;
     }
 
     let cloudflareOriginHostname: string | undefined;
@@ -183,11 +246,41 @@ export async function prepareAppComposeDir(
     }
     const loopbackHostPort = appInfo ? hostPortStaysOnLoopback(appInfo) : false;
 
+    // The builder applies the operator's Default app CPU limit to services the form and the manifest
+    // leave uncapped. Only the saved setting: `defaultCpuLimit` above can be the allocator's
+    // host-sized recommendation, which #1186 stopped stamping on every service. A limit in the form
+    // caps every service, so the default is never used and the checks below would only mislead.
+    let defaultAppCpuLimit = form.cpuLimit?.trim() ? undefined : savedDefaultCpuLimit;
+    // Docker refuses to create a container capped above the CPUs it has ("range of CPUs is from 0.01
+    // to 16.00"), and a cap that high limits nothing. A default saved on a bigger machine, or before
+    // Docker's VM got fewer CPUs, would otherwise stop every app without a limit of its own.
+    if (defaultAppCpuLimit) {
+      let dockerCpus: number | undefined;
+      try {
+        dockerCpus = (await moduleRef.get(ResourceAllocatorService, { strict: false }).getDockerCapacity())?.cpuCores;
+      } catch {
+        // Count unknown: apply the default as saved.
+      }
+      if (dockerCpus && Number(defaultAppCpuLimit) > dockerCpus) {
+        logger.warn(
+          `[compose] Default app CPU limit ${defaultAppCpuLimit} is more than the ${dockerCpus} CPUs Docker has; ${appUrn} runs without it`,
+        );
+        defaultAppCpuLimit = undefined;
+      }
+    }
+
     // The manifest also carries the edge-auth default the route builder falls back to for a stored
     // form that never decided `enableAuth` (see `requiresHubLoginOnPublicRoute`).
     const dockerComposeBuilder = new DockerComposeBuilder(domain, localDomain, posixPermissionsSupported, {
       loopbackHostPort,
       manifest: appInfo ?? undefined,
+      // A mount a data move relocated keeps its named volume where the Hub uses one (see `dataMoves`).
+      dataMoves: appInfo?.data_moves,
+      defaultAppCpuLimit,
+      knownAppIds: await knownAppIdsLookup,
+      // The hosts the Hub set for this app. compose expands one it left unset from the Hub's own
+      // environment or a user env file, so an app's router rule may name only these.
+      hostVariables: OWN_HOST_VARIABLES.filter((name) => envMap.has(name)),
     });
     const subnet = await subnetManager.allocateSubnet(appUrn, 0, options?.excludeSubnets ?? []);
 
@@ -219,6 +312,41 @@ export async function prepareAppComposeDir(
 
     logger.error(err);
     throw new Error(`Error generating docker-compose.yml file for app ${appUrn}.`);
+  }
+
+  // Make the folders the app's volumes point at, as the Hub. Docker otherwise makes a missing one
+  // itself as root, which a service of another uid can't write to and the Hub can't reset or delete.
+  // A custom app is added without an install, and an edit can add a volume (#2198).
+  // Install's first prepare runs before the store's data folder is copied: a folder made there for
+  // `data/config.yml` takes the place of the file, and copyDataDir skips an app whose `data/` exists.
+  // Install makes the folders itself once the copy is done. Any other prepare while that copy is
+  // pending (a start, restart, reset or update of an app whose install failed before it) skips them
+  // too, as dev did: Docker only made them when it created a container.
+  // Before the mount folders are made: a listing that changed its data layout says what moves where
+  // (`data_moves`), and its data has to be in the new places when its containers start. Only while
+  // none of them runs (a restart prepares once before its `down`, a dashboard start may leave some
+  // up): the moves then wait for the next prepare. An update runs them itself, after it has stopped
+  // the app and counts the new version as started, so a rollback brings the old data back.
+  // A move that would overwrite files throws, and the start stops with it.
+  if (
+    options?.applyDataMoves !== false &&
+    !(await appFilesManager.storeDataCopyPending(appUrn)) &&
+    (await appFilesManager.declaresDataMoves(appUrn))
+  ) {
+    const running = await listContainersMatchingAnyLabelSets(docker, appUrnLabelSets(appUrn), true, { status: ['running', 'restarting', 'paused'] });
+    if (running.length === 0) {
+      await appFilesManager.applyDataMoves(appUrn);
+    } else {
+      logger.debug(`Left the data moves of ${appUrn} for its next start: ${running.length} of its containers still run`);
+    }
+  }
+
+  if (options?.createVolumeDirs !== false && !(await appFilesManager.storeDataCopyPending(appUrn))) {
+    try {
+      await appFilesManager.createVolumeHostDirs(appUrn);
+    } catch (error) {
+      logger.warn(`Could not create the volume folders of ${appUrn}: ${String(error)}`);
+    }
   }
 
   // Set permissions

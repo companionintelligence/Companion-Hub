@@ -1,6 +1,7 @@
 import { BadRequestException, ForbiddenException, NotFoundException, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
+import { TranslatableError } from '@/common/error/translatable-error';
 import { LoggerService } from '@/core/logger/logger.service';
 import { EncryptionService } from '@/core/encryption/encryption.service';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
@@ -211,6 +212,104 @@ describe('HubPoolPeerService', () => {
       await expect(service.initiatePairing('peer-hub.tailxyz.ts.net')).rejects.toThrow();
 
       expect(repo.delete).toHaveBeenCalledWith('rollback-me');
+    });
+
+    /**
+     * What the page gets back when the other Hub says no. A plain Error became a bare 500
+     * `INTERNAL_SERVER_ERROR`, so the card could only say that pairing failed. Each refusal now has a
+     * status below 500 or a 502 and a key the card can put under its own message.
+     */
+    describe('when the other Hub refuses', () => {
+      let logger: MockProxy<LoggerService>;
+      beforeEach(() => {
+        logger = mock<LoggerService>();
+        (service as unknown as { logger: LoggerService }).logger = logger;
+      });
+
+      const refusal = async (pin: string | undefined, answer: Response) => {
+        repo.findByNodeFqdn.mockResolvedValue(undefined);
+        repo.create.mockResolvedValue(mockPeer({ id: 'refused-row' }));
+        vi.mocked(global.fetch).mockResolvedValue(answer);
+        const error = await service.initiatePairing('peer-hub.tailxyz.ts.net', undefined, pin).then(
+          () => null,
+          (thrown: unknown) => thrown,
+        );
+        expect(error).toBeInstanceOf(TranslatableError);
+        expect(repo.delete).toHaveBeenCalledWith('refused-row');
+        const translatable = error as TranslatableError;
+        return { status: translatable.getStatus(), body: translatable.getResponse() };
+      };
+
+      it('answers a PIN the peer refused with 401 as a 400 that says to generate a new one', async () => {
+        const answer = new Response(JSON.stringify({ statusCode: 401, message: 'Invalid or expired pairing PIN' }), { status: 401 });
+
+        // Not 401: the page reads a 401 from its own Hub as a lapsed session and signs the operator out.
+        expect(await refusal('000000', answer)).toEqual({ status: 400, body: { message: 'HUB_POOL_PAIR_ERROR_PIN_REFUSED' } });
+        // The filter logs only 500s, so the service keeps the operator's log line itself.
+        expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('refused the pairing PIN'));
+      });
+
+      // The peer checks the tailnet after it has taken the PIN, so a fresh PIN would get the same 403.
+      it("reads the peer's 403 as a declined request with its reason, not as a refused PIN", async () => {
+        const answer = new Response(JSON.stringify({ statusCode: 403, message: 'Pairing requests are only accepted from devices on this tailnet' }), {
+          status: 403,
+        });
+
+        expect(await refusal('000000', answer)).toEqual({
+          status: 502,
+          body: {
+            message: 'HUB_POOL_PAIR_ERROR_PEER_DECLINED_REASON',
+            intlParams: { status: '403', detail: 'Pairing requests are only accepted from devices on this tailnet' },
+          },
+        });
+      });
+
+      it("drops a reason that is the peer's own translation key, which would show as the raw key", async () => {
+        const answer = new Response(JSON.stringify({ statusCode: 500, message: 'INTERNAL_SERVER_ERROR' }), { status: 500 });
+
+        expect(await refusal(undefined, answer)).toEqual({
+          status: 502,
+          body: { message: 'HUB_POOL_PAIR_ERROR_PEER_DECLINED', intlParams: { status: '500' } },
+        });
+      });
+
+      it("passes the peer's own reason on, as a 502, when it gave one", async () => {
+        const answer = new Response(
+          JSON.stringify({ statusCode: 503, message: 'Too many pairing requests are already awaiting approval on this node' }),
+          {
+            status: 503,
+          },
+        );
+
+        expect(await refusal(undefined, answer)).toEqual({
+          status: 502,
+          body: {
+            message: 'HUB_POOL_PAIR_ERROR_PEER_DECLINED_REASON',
+            intlParams: { status: '503', detail: 'Too many pairing requests are already awaiting approval on this node' },
+          },
+        });
+      });
+
+      it('names only the status when the peer gave no reason', async () => {
+        expect(await refusal(undefined, new Response('nope', { status: 404 }))).toEqual({
+          status: 502,
+          body: { message: 'HUB_POOL_PAIR_ERROR_PEER_DECLINED', intlParams: { status: '404' } },
+        });
+      });
+
+      it('reads a lockout after too many wrong PINs as a declined request, since a new PIN will not lift it', async () => {
+        const answer = new Response(
+          JSON.stringify({ statusCode: 429, message: 'Too many failed pairing attempts from this source; try again shortly' }),
+          {
+            status: 429,
+          },
+        );
+
+        expect(await refusal('000000', answer)).toMatchObject({
+          status: 502,
+          body: { message: 'HUB_POOL_PAIR_ERROR_PEER_DECLINED_REASON', intlParams: { status: '429' } },
+        });
+      });
     });
   });
 
@@ -571,6 +670,30 @@ describe('HubPoolPeerService', () => {
       expect(repo.listByStatuses).toHaveBeenCalledWith(['connected', 'unreachable']);
     });
 
+    it('still probes a switched-off peer but warns only about peers in use', async () => {
+      const logger = mock<LoggerService>();
+      (service as unknown as { logger: LoggerService }).logger = logger;
+      // Through the poll, not `refreshOnePeer`: the poll is what decides a switched-off peer is still probed.
+      const poll = (service as unknown as { refreshPeerHealth: () => Promise<void> }).refreshPeerHealth.bind(service);
+      vi.mocked(global.fetch).mockRejectedValue(new Error('fetch failed'));
+
+      repo.listByStatuses.mockResolvedValue([
+        mockPeer({ status: 'unreachable', consecutiveFailures: 18966, enabled: false, presentTokenEncrypted: 'ENC:token' }),
+      ]);
+      await poll();
+
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      expect(logger.warn).not.toHaveBeenCalled();
+      expect(logger.debug).toHaveBeenCalledWith(expect.stringContaining('capabilities probe'));
+
+      repo.listByStatuses.mockResolvedValue([
+        mockPeer({ status: 'unreachable', consecutiveFailures: 4, enabled: true, presentTokenEncrypted: 'ENC:token' }),
+      ]);
+      await poll();
+
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('capabilities probe'));
+    });
+
     it('drives a peer to unreachable and back to connected once it answers again', async () => {
       const capabilities = { hardwareTier: 'high', backends: [], updatedAt: new Date().toISOString() };
       const peer = mockPeer({ status: 'connected', consecutiveFailures: 2, presentTokenEncrypted: 'ENC:token' });
@@ -733,6 +856,23 @@ describe('HubPoolPeerService', () => {
       expect((await service.getPoolStatus()).peers[0]?.probeFailure).toBeNull();
     });
 
+    it.each([
+      ['identity-mismatch', 'identity_changed'],
+      [undefined, 'unauthorized'],
+    ])('keeps warning when a switched-off peer refuses this Hub (%s)', async (header, kind) => {
+      const logger = mock<LoggerService>();
+      (service as unknown as { logger: LoggerService }).logger = logger;
+      const peer = stalePeer({ enabled: false, status: 'unreachable', consecutiveFailures: 3 });
+      repo.listAll.mockResolvedValue([peer]);
+      vi.mocked(global.fetch).mockResolvedValue(refusal(header));
+
+      await refresh(peer);
+
+      expect((await service.getPoolStatus()).peers[0]?.probeFailure?.kind).toBe(kind);
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('cihub pool unpair beta-max.tailxyz.ts.net'));
+      expect(logger.debug).not.toHaveBeenCalledWith(expect.stringContaining('capabilities probe'));
+    });
+
     it('warns when a PIN pairing request is swallowed by the stale row it is meant to replace', async () => {
       const logger = mock<LoggerService>();
       (service as unknown as { logger: LoggerService }).logger = logger;
@@ -854,6 +994,109 @@ describe('HubPoolPeerService', () => {
       // polling peer can only count the work it forwarded itself.
       expect(capabilities.inFlightRequests).toBe(2);
       expect(capabilities.backends).toEqual([{ type: 'ollama', healthy: true, modelsLoaded: ['llama3.2:3b'] }]);
+    });
+
+    it('advertises a model the Hub has tracked once, under the id its engine knows it by', async () => {
+      const row = {
+        object: 'model',
+        created: 0,
+        owned_by: 'local:ollama',
+        state: 'loaded',
+        backend: 'ollama',
+        modality: ['text'],
+        local: true,
+      } as const;
+      inferenceRouter.listModels.mockResolvedValue([
+        { ...row, id: 'gemma3-270m', backend_model_id: 'gemma3:270m' },
+        { ...row, id: 'gemma3:270m' },
+        // `:latest` is the same model to Ollama, so these two are one as well.
+        { ...row, id: 'nomic-embed-text', backend_model_id: 'nomic-embed-text' },
+        { ...row, id: 'nomic-embed-text:latest' },
+        // The engine doesn't list this one, so the catalog id is all there is to advertise.
+        { ...row, id: 'qwen3-5-9b', backend_model_id: 'qwen3.5:9b', state: 'pulled' },
+      ]);
+
+      const capabilities = await service.getOwnCapabilities();
+
+      expect(capabilities.backends).toEqual([
+        { type: 'ollama', healthy: true, modelsLoaded: ['gemma3:270m', 'nomic-embed-text:latest', 'qwen3-5-9b'] },
+      ]);
+    });
+
+    it("treats Lemonade's user. namespace as the same model when it advertises a tracked one", async () => {
+      inferenceRouter.getStatus.mockResolvedValue({
+        ...ownStatus,
+        backends: [{ ...ownStatus.backends[0], type: 'lemonade' }],
+      });
+      const row = {
+        object: 'model',
+        created: 0,
+        owned_by: 'local:lemonade',
+        state: 'loaded',
+        backend: 'lemonade',
+        modality: ['text'],
+        local: true,
+      } as const;
+      inferenceRouter.listModels.mockResolvedValue([
+        { ...row, id: 'nomic-embed-text-v1-5-lemonade', backend_model_id: 'nomic-embed-text-v1.5-GGUF' },
+        { ...row, id: 'user.nomic-embed-text-v1.5-GGUF' },
+      ]);
+
+      const capabilities = await service.getOwnCapabilities();
+
+      expect(capabilities.backends).toEqual([{ type: 'lemonade', healthy: true, modelsLoaded: ['user.nomic-embed-text-v1.5-GGUF'] }]);
+    });
+
+    // oMLX does not list the catalog's `mlx-community/<name>` that a tracked row carries (0.7.3.dev1, measured): a
+    // model directory is listed by its own name, the Hugging Face cache by `<org>--<name>`.
+    it("treats oMLX's own spellings as the same model when it advertises a tracked one", async () => {
+      inferenceRouter.getStatus.mockResolvedValue({
+        ...ownStatus,
+        backends: [{ ...ownStatus.backends[0], type: 'omlx' }],
+      });
+      const row = {
+        object: 'model',
+        created: 0,
+        owned_by: 'local:omlx',
+        state: 'loaded',
+        backend: 'omlx',
+        modality: ['text'],
+        local: true,
+      } as const;
+      inferenceRouter.listModels.mockResolvedValue([
+        { ...row, id: 'qwen3-8b-mlx', backend_model_id: 'mlx-community/Qwen3-8B-4bit' },
+        { ...row, id: 'Qwen3-8B-4bit' },
+        { ...row, id: 'llama3-2-3b-mlx', backend_model_id: 'mlx-community/Llama-3.2-3B-Instruct-4bit' },
+        { ...row, id: 'mlx-community--Llama-3.2-3B-Instruct-4bit' },
+        // oMLX does not list this one, so the catalog id is all there is to advertise.
+        { ...row, id: 'gemma4-e4b-mlx', backend_model_id: 'mlx-community/gemma-4-e4b-it-4bit', state: 'pulled' },
+      ]);
+
+      const capabilities = await service.getOwnCapabilities();
+
+      expect(capabilities.backends).toEqual([
+        { type: 'omlx', healthy: true, modelsLoaded: ['Qwen3-8B-4bit', 'mlx-community--Llama-3.2-3B-Instruct-4bit', 'gemma4-e4b-mlx'] },
+      ]);
+    });
+
+    it('keeps a model when both of its spellings are tracked rows', async () => {
+      const row = {
+        object: 'model',
+        created: 0,
+        owned_by: 'local:ollama',
+        state: 'loaded',
+        backend: 'ollama',
+        modality: ['text'],
+        local: true,
+      } as const;
+      inferenceRouter.listModels.mockResolvedValue([
+        { ...row, id: 'embedder', backend_model_id: 'embedder' },
+        { ...row, id: 'embedder:latest', backend_model_id: 'embedder:latest' },
+      ]);
+
+      const capabilities = await service.getOwnCapabilities();
+
+      expect(capabilities.backends[0]?.modelsLoaded).toEqual(['embedder', 'embedder:latest']);
     });
 
     it('does not advertise a model the local engine has been unable to serve', async () => {

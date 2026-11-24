@@ -9,6 +9,21 @@ import type { CuratedModel, HardwareProfile } from '@ci-hub/common/types';
 const PAIR_RESERVE_MB = 2_048;
 
 /**
+ * The smallest model, by the catalog's `parameterScale` in billions, that background work is handed
+ * to. A utility call fills a schema from a prompt with worked examples in it. A model too small
+ * for that copies the example instead of reading the input: on core-7 (2026-10-24) `gemma3:270m`,
+ * handed out beside `qwen3.6:35b`, made Companion Memory store the prompt's made-up sister as the
+ * owner's. Everything the catalog lists under 2B stays out: Gemma 3 270M and 1B, Qwen 3 0.6B and
+ * 1.7B, Qwen 3.5 0.8B, Llama 3.2 1B and the 1.5B models.
+ *
+ * The floor is 2B and not higher so that Gemma 4 E2B and Qwen 3.5 2B qualify. On a small machine one
+ * of those is often the only small model, and without it every background call runs on the chat
+ * model and slows the person's own chats. On a test Hub `gemma4:e2b` wrote photo titles and
+ * descriptions correctly through the pool.
+ */
+const UTILITY_MIN_PARAMETER_SCALE = 2;
+
+/**
  * The model an app should run its background work on: extraction, classification, titling — the
  * hundreds of short calls Companion Memory makes for every chat turn a person types. On a card that
  * can hold a small model *beside* the chat model, those calls belong on the small one: they need
@@ -26,7 +41,9 @@ const PAIR_RESERVE_MB = 2_048;
  *    background call cost a reload — the thrash this exists to avoid.
  * 3. The smallest such model, on the active engine, that can chat (a utility call is a chat call
  *    with a schema): an embedder or reranker never qualifies, whatever its size.
- * 4. Otherwise the chat model itself. Always answered, so the app never falls back to a default it
+ * 4. At least {@link UTILITY_MIN_PARAMETER_SCALE} billion parameters. A model the catalog gives no
+ *    size never qualifies.
+ * 5. Otherwise the chat model itself. Always answered, so the app never falls back to a default it
  *    was compiled with for another engine.
  *
  * Pure: the resolver passes in what it already knows. `chat` is undefined when no chat model could
@@ -51,6 +68,7 @@ export function pickUtilityModel(input: {
   // modalities, and an LLM without tool calling still takes a schema-constrained chat call.
   const fits = installed
     .filter((model) => model.id !== chat.id && model.backend === chat.backend && model.modality === 'llm')
+    .filter((model) => (model.parameterScale ?? 0) >= UTILITY_MIN_PARAMETER_SCALE)
     .filter((model) => footprintMb(model) < chatMb && chatMb + footprintMb(model) <= budgetMb)
     .sort((a, b) => footprintMb(a) - footprintMb(b));
 

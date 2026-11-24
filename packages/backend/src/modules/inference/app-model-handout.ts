@@ -260,9 +260,9 @@ export interface ContextHandoutInput {
   model: CuratedModel;
   servedLocally: boolean;
   /**
-   * Memory the model may use on this node: `modelMemoryCeilingMb(profile)`, the budget the load is
-   * fit-checked against with nothing else loaded, so the window an app is told is one the load path
-   * will not refuse or step down on an empty card.
+   * Memory the model may use on this node: `MemoryManagerService.modelCeilingMb`, the node's
+   * `modelMemoryCeilingMb(profile)` without what this model itself holds now, so the window an app
+   * is told is one the load path will not refuse or step down on an empty card.
    */
   effectiveInferenceMemoryMb: number;
   minContextLength?: number;
@@ -273,6 +273,8 @@ export interface ContextHandoutInput {
    * Absent, `recommendContextLength` falls back to its footprint heuristic.
    */
   kvMbPerToken?: number | null;
+  /** Sliding-window KV MB that does not grow with the window (`ContextCost.fixedKvMb`); local path only. */
+  fixedKvMb?: number | null;
   weightMb?: number | null;
   /** Sequences the engine allocates a KV cache for (`kvSequencesFor`); local path only, like the cost. */
   kvSlots?: number | null;
@@ -310,6 +312,7 @@ function uncappedContextLength(input: ContextHandoutInput): number {
       modelContextWindow: model.runtime.contextWindow,
       minContextLength,
       kvMbPerToken: input.kvMbPerToken ?? null,
+      fixedKvMb: input.fixedKvMb ?? null,
       weightMb: input.weightMb ?? null,
       kvSlots: input.kvSlots ?? null,
       sighting: input.sighting ?? null,
@@ -460,8 +463,9 @@ export function decideModelPrePull(input: {
 
   if (input.cloudPrimary && kind === 'chat') return decide(false, 'a cloud provider is serving chat for this app');
   // Ollama and Lemonade download through the Hub (`ModelPullerService`). vLLM has no download API
-  // (its model is fixed when the server starts). oMLX has one, `POST /admin/api/hf/download`, but it
-  // needs an admin session from oMLX's main key, and the Hub does not use it.
+  // (its model is fixed when the server starts). oMLX downloads through the Hub too, but only the
+  // models the operator picks in setup or Settings > AI: its admin API needs oMLX's main key, which
+  // the Hub may not have, so an app's handout does not start one.
   if (input.backendType !== 'ollama' && input.backendType !== 'lemonade') {
     return decide(false, `${input.backendType} has no Hub-managed pull registry`);
   }

@@ -25,6 +25,12 @@ describe('app-exposure.helpers', () => {
       expect(publishesHostPort({ exposureMode: 'cloudflare', exposedLocal: false, openPort: false })).toBe(false);
     });
 
+    // The queue defaults a missing `openPort` to open, so compose publishes the port for such a form.
+    it('returns true for a form with no openPort, whatever its exposure mode', () => {
+      expect(publishesHostPort({ exposureMode: 'cloudflare', exposedLocal: false })).toBe(true);
+      expect(publishesHostPort({ exposureMode: 'tailscale' })).toBe(true);
+    });
+
     it('returns true when openPort is true regardless of exposure mode', () => {
       expect(publishesHostPort({ exposureMode: 'tailscale', exposedLocal: false, openPort: true })).toBe(true);
     });

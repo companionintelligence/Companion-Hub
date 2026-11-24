@@ -5,7 +5,7 @@
 > **Key paths:** `packages/frontend/src/components/hub-status/`, `packages/frontend/src/modules/`, `packages/frontend/src/lib/`
 > **Commands:** `cd packages/frontend && pnpm test`, `pnpm run local` (root, port 5004/5005)
 > **Owner persona:** code-quality + maintainability
-> **Last updated:** 2026-10-04 (Hub Pool setup guide)
+> **Last updated:** 2026-11-09 (a browser on a Hub with no desktop app gets a Desktop app card that says it was installed with `cihub`; Desktop app card offers the current installer in the desktop window; toasts sit at the top of the sign-in pages; the UI says Companion Hub)
 > **Related:** docs/system/desktop.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/system/e2e.md
 
 ---
@@ -63,21 +63,24 @@ Key behaviors agents must preserve:
 - The starting, "hasn't finished starting", stopped and couldn't-start screens are one `StartupScreen` card that must look and read the same as the desktop bootstrap page (`packages/desktop/bootstrap/`), because the app hands over from that page mid-startup. Change both together. `docs/system/desktop.md` describes the data both read from `get_startup_progress_command`.
 - The Hub container can be newer or older than the desktop shell, so `readStartupProgress` treats fields an older shell leaves out as false, null, or (for Docker) available.
 - Restart Hub needs `restart_hub_command` on the desktop IPC allowlist (`packages/desktop/src-tauri/permissions/allow-desktop-ipc.toml`). On an older shell without it, the screen starts the Hub instead.
+- When Docker doesn't answer (`daemon_unavailable` or `error`, not a missing CLI or a refused permission) and the shell reports `docker_engine: wsl-engine`, the Docker screen says WSL stopped the engine and offers **Start engine** (`start_wsl_engine_command`) instead of Docker Desktop's steps. An older shell reports no engine and gets Docker Desktop's steps, as before.
+- These screens show while the Hub that serves the page may be down, so `SetupPageShell` inlines its logo into the bundle (`src/assets/hub-logo.png?inline`, the file the bootstrap page ships) instead of loading `/hub.png` from the Hub. Both files, `/hub.png`, and the favicons are mirrors of `packages/frontend/hub-brand/`, the Hub's own mark; `pnpm --filter frontend brand:sync` rewrites them and `brand:check` fails on drift. The `brand/` folder next to it is the vendored Companion Intelligence company logo, not the Hub's.
 
-Tests: `packages/frontend/src/components/hub-status/hub-status.test.tsx`
+Tests: `packages/frontend/src/components/hub-status/hub-status.test.tsx`, `packages/frontend/src/components/hub-status/__tests__/hub-status-wsl-engine.test.tsx`
 
 ## API client
 
 - Generated from backend OpenAPI: `pnpm run gen:api-client`
 - `packages/frontend/src/api-client/` is **generator-owned**: `gen:api-client` wipes the directory and rewrites it from `packages/backend/src/swagger.json` (see `openapi-ts.config.ts`). Never hand-write a file there. A committed one survives only until the next regeneration, then shows up as an unexplained deletion in someone's diff, and restoring it by reflex re-arms the trap. Hand-written wrappers over the generated SDK belong in `src/lib/api-routes/` — for example `named-status-routes.ts`, which names the generator's numbered `getStatusN` operations.
+- `pnpm run check:openapi` (CI's "Check OpenAPI drift" step) generates `swagger.json` and then the client into temp folders, and fails when either differs from what is committed. It never writes to the tree. Commit the regenerated client with the `swagger.json` change that caused it.
 - Tauri release builds probe local ports via `packages/frontend/src/lib/tauri-hub-probe.ts`
 - Session refresh: `packages/frontend/src/lib/hub-session-refresh.ts`
 - Local Vite (`:5005`) must probe same-origin `/api/health/live` (the Vite proxy) before a leftover Docker Hub on `:5002`. Do **not** bind the API client to `:5004` or `:5002` — `/api` stays same-origin on `:5005` so the session cookie survives. Binding it was a 401 → full `/login` reload → "Connecting to local API...". HubStatus on `:5005` must ignore Docker compose status (that is the appliance stack). Featured (`GET /api/store/featured-bundle`) is served through that Vite proxy.
 - Companion Account flows (`packages/frontend/src/lib/hub-auth-flow.ts` — do not mix):
   - **`mobile-cloud-connect`** — iOS/Android `/connect` only. Portal PKCE (`oidc.ts`) → `openAuthSession` (iOS in-app `ASWebAuthenticationSession` sheet, Android system browser) → `cihub://auth/callback` → `deep-link-oidc`. Not Hub `/portal/start`.
   - **`mobile-hub-sso`** — iOS/Android `/login` after a Hub is chosen. `{remoteHub}/api/auth/portal/start?desktop=1` via `openAuthSession` → `cihub://auth?token=…` → `deep-link-auth`. Never localhost. Button + `openAuthSession` so WKWebView stays mounted and iOS never jumps out to Safari.
-  - **`desktop-hub-sso`** — Mac / Linux / Windows Tauri while the Hub is running. Same-origin (Vite `:5005` or packaged `:5002`) `/portal/start?desktop=1` in the system browser → `cihub-dev://` / `cihub://` → desktop-exchange on that Hub. Button + `openAuthInSystemBrowser`, never an `<a href>`: a same-origin anchor is left alone by the Providers link interceptor, so it navigates the app's own webview and unmounts `useDesktopPortalAuth` — the only code that exchanges the one-time token. Heartbeat `session-hint?desktop=1` so a Chrome loopback callback can hand off into Tauri.
-  - **`browser-hub-sso`** — any browser on a Hub (including a phone browser). Same-origin `/portal/start` with no `desktop=1`; cookie session. On **loopback**, this is stolen into `desktop-hub-sso` while Tauri is announcing presence (10 min). Stop the desktop shell to test a real browser cookie session. Product origin is **`:5002`**; `:5005` is source-dev only — see `docs/system/desktop.md` ("Two stacks — do not mix").
+  - **`desktop-hub-sso`** — Mac / Linux / Windows Tauri while the Hub is running. Same-origin (Vite `:5005` or packaged `:5002`) `/portal/start?desktop=1` in the system browser → `cihub-dev://` / `cihub://` → desktop-exchange on that Hub. Button + `openAuthInSystemBrowser`, never an `<a href>`: a same-origin anchor is left alone by the Providers link interceptor, so it navigates the app's own webview and unmounts `useDesktopPortalAuth`, the only code that exchanges the one-time token. While the window is signed out, the hook has the shell (`announce_desktop_sign_in_wait_command`) tell the Hub every 60 s that the desktop app is waiting, so a Chrome loopback callback can hand off into Tauri. The shell sends that from Rust with a proof made from the host-local key, so the page never holds it, and only a caller that can read the Hub's `state/settings.json` can set the flag. It does this only for a window on loopback at the Hub's API port, and writes each change in the outcome to `desktop.log`. A signed-in window's `session-hint?desktop=1` heartbeat clears the flag. `session-hint` names an account only to a signed-in caller, so the heartbeat keeps the window's own account in `ci-hub.portalAccountEmail` for the sign-in screen.
+  - **`browser-hub-sso`** — any browser on a Hub (including a phone browser). Same-origin `/portal/start` with no `desktop=1`; cookie session. On **loopback**, this is handed to `desktop-hub-sso` while the desktop app is open and signed out (10 min). A sign-in on any other address stays in the browser. Sign the desktop app in, or stop it, to test a real browser cookie session on loopback. Product origin is **`:5002`**; `:5005` is source-dev only — see `docs/system/desktop.md` ("Two stacks — do not mix").
 
 ## Desktop app release
 
@@ -85,11 +88,21 @@ Settings → System → **Desktop app** offers the newest desktop installer for 
 
 - The architecture comes from Chromium's client hints (`getHighEntropyValues(['architecture'])`) where the browser has them, because every Mac browser's user agent says "Intel Mac". Safari and Firefox have none, so a Mac gets the Apple silicon installer there.
 - A phone or tablet browser gets no installer and does not ask the Hub. `isMobileUserAgent()` catches iPhone, iPod, Android, and an iPad, including an iPad that reports itself as a Mac (it has touch points). Without that check, an iPhone's user agent passes for macOS and an Android one for Linux.
+- A browser on a Hub with no listener token, like a `cihub` install, gets a card with no download or update steps. It says the Hub was installed with `cihub` and tells someone who can manage the Hub to use the Hub stack card or `cihub pool update`. `GET /api/system/update/host-listener` says so with `desktopApp: false` and the card waits for that answer. The desktop window always has the card. See [DESKTOP-AUTO-UPDATE.md](../DESKTOP-AUTO-UPDATE.md).
 - The desktop app asks the Rust shell (`check_desktop_update_command`). When that fails it still reads the servers directly, and so does the phone app, which always lands there. Routing that fallback through the Hub would make the phone app offer desktop installers.
+- The Rust shell (`check_desktop_update_naming_installer` in `updater.rs`, behind `check_desktop_update_command`) names this computer's own installer for the newest version, whether or not it is newer than the running app: the `.deb` on Debian, Ubuntu and their family, the `.rpm` on Fedora, RHEL and theirs (from `ID` and `ID_LIKE` in `/etc/os-release`). When that file doesn't place the distro, as on Deepin or without the file, the installed package manager decides: `dpkg` with `apt` for the `.deb`, then `rpm` with `dnf` or `yum`. `dpkg` or `rpm` alone doesn't count, since Arch packages both as tools. With neither it wants an AppImage, which releases don't build. It names only that format, for an update too: another format would install a second copy or not at all. Releases build no AppImage, so Arch used to get the `.deb` with `apt` steps. When a newer version has nothing in this computer's format, the Desktop app card says so and opens that version's GitHub release, which lists every installer (`desktopReleasePage` in `update-service.ts`: `/releases/tag/v<version>`, or the releases list without a version; `/releases/latest` would skip pre-releases). Versions compare by semver precedence (`compare_semver` in `hub_env.rs`, shared with the stack image pin), so `0.3.6-rc.1` is older than `0.3.6`. A build ahead of its download server gets none, since that release would downgrade it, and a manifest it can't read only leaves the installer out. It also sends `packageFormat`, which tells the page that it looked. Desktop apps from before that named no installer whenever nothing was newer. For them, the Desktop app card asks the Hub (`checkForUpdates(version, { askHubForInstaller: true })`) when this computer runs the newest version, and keeps the answer only when it is for that version. The Hub picks from every format, so on Fedora it names the `.deb`. It isn't asked when the desktop app sends `packageFormat`. In production the up-to-date card meets only desktop apps of its own release or newer, so that case is left to dev builds. The install step reinstalls the version this computer runs (`apt install --reinstall`, `rpm -U --replacepkgs`), which apt would otherwise skip and rpm refuse, and says it installs that version again. Nothing asks the Hub or the download server about a newer version the shell found no installer for: they could only name another format. A release older than the running app gets no download at all. With nothing to offer, the card says only that the app is up to date. The update notice in `use-update-checker.tsx` doesn't ask the Hub: it also runs on the signed-out pages, where the Hub answers with a 401 and a 401 signs the page out. It looks up no installer for the version already running either, since it only shows a newer one. The CLI, the update listener and `perform_desktop_update_command` call `check_desktop_update`, which skips that manifest read.
 - `desktop-release.ts` in `@ci-hub/common/types` holds the server choice, the installer choice, and the URL trust check for both the Hub and the page, so the page accepts the installer the Hub returns.
 - The install steps under the button never say to remove the app first. Removing the Linux package runs its cleanup (deb `postrm` on `remove`/`purge`, rpm `postun` at `0`), which deletes the Hub's database, every app with its data, and the Hub's folder. The steps install over it: `sudo apt install "./<file>"`, `sudo rpm -U "./<file>"`, or `chmod +x "./<file>"` for an AppImage. `<file>` is the download URL's last segment, decoded (`Companion Hub_0.2.78_amd64.deb`, with a space), and the step shows no command when the name has anything but letters, digits, spaces, `.`, `_`, `+` and `-`.
 - In the desktop window, an available update installs in one click: `installDesktopUpdate()` in `update-service.ts` calls the app's `perform_desktop_update_command` and reports `get_update_progress_command`. The updater stops the Hub during the update (older releases before they install, current ones once the update is installed), so `HubStatus` keeps the page while `isDesktopUpdateRunning()`, and a failed call starts the Hub again when its API doesn't answer. Then the card offers the download and the manual steps, unless the app had reported `done` or `relaunch`: the update is installed and only the restart failed, so the card says to quit and reopen the app. See [`DESKTOP-AUTO-UPDATE.md`](../DESKTOP-AUTO-UPDATE.md).
 - The card never says the desktop app isn't running. The Hub can't reach the listener of any desktop app up to 0.2.77, so an unreachable listener says nothing about the app. A browser gets where to update instead: Companion Hub on the computer that runs the Hub, or `companion-hub update` there.
+
+## Product name
+
+The UI calls the app Companion Hub, the desktop app's `productName` in `tauri.conf.json`. `APP_NAME` names it in the desktop title bar (`components/titlebar/titlebar.tsx`), the document title (`root.tsx`, the browser tab) and the startup gate's heading (`components/hub-status/hub-status.tsx`). The desktop bootstrap page (`packages/desktop/bootstrap/`) and the PWA manifest (`public/icons/site.webmanifest`) spell it out themselves. `titlebar.test.tsx` fails when a translation file says "CI Hub" again. Names the backend sends, like the Hub's own row in the resource monitor, still say CI Hub.
+
+## Toasts on the sign-in pages
+
+Toasts sit at the bottom centre, except on the pages that show the sign-in card (`/login`, `/register`, `/reset-password`, `/device-registration`). There the bottom of the window holds the form's last rows and the desktop app's restart notice stays until it is answered, so `toasterPlacement()` in `components/ui/Toaster/toaster-placement.ts` puts them at the top, below the title bar. `root.tsx` passes it to the Toaster for the current path, so a toast still open after signing in moves back to the bottom. `Toaster.tsx` itself stays as it is, in step with the Portal's copy. In a short window (the desktop app's smallest, 615x461) the page scrolls under the notice, so the rows near the card's top hide behind it until you scroll back up.
 
 ## Styling
 
@@ -123,18 +136,54 @@ The iOS/Android thin client signs into the Portal with PKCE and a `cihub://auth/
 - After a Hub is chosen, go to `/login` (not `/`). Root must not wait on the remote Hub's registration API on any mobile route.
 - `I18nProvider` must not fetch `/api/i18n` on a phone — that `window.fetch` to the remote Hub never settles and leaves the exact "Loading…" screen. Use bundled `en`.
 - Hub `/login` Portal SSO on iOS/Android uses the chosen Hub URL (not `localhost:5002`) with `desktop=1`, opened via `openAuthSession` (iOS in-app Safari sheet, Android system browser), so the phone returns via `cihub://auth?token=…` instead of navigating the WKWebView away from `/login`.
-- The SSO button email is the **Portal user** from the OIDC `id_token` (or email/password), stored in `ci-hub.portalAccountEmail`. On a phone, that wins over the Hub operator (`hub_operator` is often `support@…` on a shared appliance).
+- The SSO button email is the **Portal user** from the OIDC `id_token` (or email/password), stored in `ci-hub.portalAccountEmail`. On a phone, that wins over the Hub's own `session-hint` answer.
 - Hung Hub calls must not spin forever. I18n never gates on "Loading…". Root loader, `/home` session/app-context, and a 6s DOM watchdog all end in Retry + Switch Hub. The HTML boot strip also grows Reload / Connect if React never paints. Do not send a failed app-context load into onboarding.
 
 Tests: `packages/frontend/src/modules/mobile-connect/oidc.test.ts`, `connect-page.test.tsx`
+
+## Mobile home-screen widget
+
+The mobile shell has a small native launcher widget alongside the React dashboard. iOS declares
+the `CompanionHubWidgets` WidgetKit extension in `packages/mobile/src-tauri/gen/apple/`; Android
+declares `HubQuickActionsWidgetProvider` in `packages/mobile/src-tauri/gen/android/`. Both expose
+the fixed `cihub://intent/home`, `cihub://intent/connect`, `cihub://intent/switch`, and
+`cihub://intent/settings` destinations and hand them to the app's existing deep-link router.
+
+The widget contains no live Hub status or account data. It is deliberately a quick-action surface;
+CPU, memory, container and app state stay in the authenticated dashboard. The Android unit tests
+pin the supported destination list and reject arbitrary actions at
+`packages/mobile/src-tauri/gen/android/app/src/test/java/computer/ci/app/hub/HubQuickActionsWidgetTest.kt`.
 
 ## Onboarding inference setup
 
 `AiSetupStep` owns Step 3 of the FTUE: one “Set up inference” panel contains the backend choice,
 the selected backend's readiness check, and the Ollama embeddings check when a host-served backend
 is selected. Apple Silicon offers Ollama and oMLX. NVIDIA offers Ollama and vLLM. AMD or NPU offers Ollama and Lemonade. Manual mode is a decode endpoint and an encode endpoint. When the
-operator confirms “Install & Finish”, `InstallStep` asks the desktop shell to install the chosen runner. oMLX is Homebrew. vLLM pairs with Ollama for embeddings. A plain browser build does not
+operator confirms “Install & Finish”, `InstallStep` asks the desktop shell to install the chosen runner. oMLX is Homebrew. oMLX and vLLM pair with Ollama for embeddings. The Hub downloads the models ticked on Ollama, Lemonade and oMLX (`downloadModelIds`), and pins only Ollama and Lemonade ones (`ollamaSelectedModelIds`): oMLX loads a model on its first request. A vLLM model the server does not serve opens its Hugging Face page instead. `InstallStep` saves oMLX's key from the runner result (or the one typed in the oMLX card) with the preferences, then asks the Hub to start the downloads. In the desktop app, while the oMLX on the Mac answers and neither the Hub nor oMLX's settings hold a key, the oMLX card (here and in Settings > AI) offers once to set one (`OmlxAdminKeyPrompt`). The new key is stored in the Hub at once and shown once with a copy button, since it also signs in to oMLX's page at `http://localhost:8000/admin`. The wizard starts the Ollama and Lemonade ones earlier, while the operator picks apps, but leaves oMLX's to `InstallStep`: oMLX refuses a download without its key, which the Hub holds only after that save. A plain browser build does not
 have a native process boundary, so it retains the manual setup and re-check flow.
+
+`recommendedInferenceBackend` decides where the step starts. In the desktop window
+(`isTauriDesktopApp`, which leaves out the iOS and Android app) the hardware's pick
+(`backends.recommended`) stands whenever the app installs that engine itself, which means
+`automaticRunnersForBackend` lists it and it isn't vLLM on Windows (the native installer skips
+that). This keeps oMLX on an Apple Silicon Mac. In a browser tab, in the phone app, or for an
+engine the desktop app can't install, the step starts on an engine that answers. One that already
+has models (`backends.available[].modelsLoaded`) comes first, the hardware's pick ahead of the
+rest. With no models anywhere it takes the hardware's pick if that answers, else any engine that
+answers. With nothing answering the hardware's pick stands, except vLLM in the Windows desktop
+window, which starts on Ollama because that is the engine the app installs there. The
+**Recommended** badge goes with the choice. Settings > AI uses the browser-tab rule when no engine
+is saved, even in the desktop window, because Settings installs no engine. The finish gate and the
+runner install use the same desktop check, so the phone app waits for a ready engine like a
+browser tab does.
+
+`InstallStep` runs in this order: runners, cloud keys, the preference save, the app install
+requests, then the wait for model downloads and the pins. The preferences go before the installs
+because an AI app gets its inference config when its install starts. The installs go before the
+downloads so that **Continue** cannot drop them: closing the step stops the waiting, the pins, and
+the progress polling, never a request that has not been sent yet. The Hub tracks a queued download
+only once its turn comes, so the first save leaves out a chosen model still in the queue. When the
+wait ends with a different answer, the step saves the model defaults again.
 
 `RecommendationsStep` uses the Alternatives chart treatment for its optional app discovery section:
 it shows a curated 20-app shortlist across ten categories, grouped in compact paired comparison rows. Category
@@ -143,8 +192,8 @@ optional section stays focused and compact. Portal or synced catalog metadata su
 and display name, including tiny Portal/fallback marks for the private apps being replaced; canonical
 CI Marketplace URNs keep every curated row selectable even before a local catalog refresh completes.
 The page owns the only vertical scroll on the chart, and each compact row exposes a keyboard-accessible
-checkbox with a category-colored fallback icon on mobile and desktop. The FTUE shell centers the official
-CI-Server e-brain mark in a centered squircle above its title, with the title block set down from the
+checkbox with a category-colored fallback icon on mobile and desktop. The FTUE shell centers the Companion
+Hub small mark (`/logo.svg`, the header's) in a squircle above its title, with the title block set down from the
 top edge so the page header remains legible at phone widths.
 Step 5 keeps Companion Memory as one keyboard-accessible checkbox on its option card; the step panel
 itself is informational and does not add a second selection layer.
@@ -153,7 +202,7 @@ itself is informational and does not add a second selection layer.
 
 `PoolSetupWizard` walks an operator through pairing Hubs. It is a Radix dialog, full screen on a phone, with four steps (`ready`, `find`, `connect`, `approve`) that the stepper labels **Check**, **Find**, **Connect**, and **Approve**. It adds no backend route: it calls the endpoints that **Settings → Network → Hub Pool** already uses, through the generated client. The one backend change is that `GET peers/discoverable` rows gained optional `os` and `online` fields, which the Hub cards show. The operator-facing description is [`hub-pool.md` → Set up a pool](../hub-pool.md#set-up-a-pool).
 
-The code is in `src/modules/settings/components/pool-setup-wizard/`. `pool-setup-model.ts` holds the pure logic (readiness checks, first-step choice, failure classes, per-peer progress, the Home invitation rule), and most of the unit tests target it. `src/modules/settings/helpers/hub-pool-shared.ts` holds the pool types and helpers (`peerLabel`, `isUnverifiedCandidate`, `mergePoolModels`) that the panel and the wizard share, so neither imports the other. `useTailscaleBrowserAuth` (`src/lib/hooks/`) is the **Connect Tailscale** action, shared with the Private VPN card so the two cannot disagree.
+The code is in `src/modules/settings/components/pool-setup-wizard/`. `pool-setup-model.ts` holds the pure logic (readiness checks, first-step choice, failure classes, per-peer progress, the Home invitation rule), and most of the unit tests target it. `src/modules/settings/helpers/hub-pool-shared.ts` holds the pool types and helpers (`peerLabel`, `isUnverifiedCandidate`, `isServablePeer`, `mergePoolModels`) that the panel and the wizard share, so neither imports the other. `useTailscaleBrowserAuth` (`src/lib/hooks/`) is the **Connect Tailscale** action, shared with the Private VPN card so the two cannot disagree.
 
 Two pieces of presentation are shared across steps. `pool-hub-card.tsx` renders a Hub as spans only (`PoolHubSummary`), so the same body sits inside a selectable label on **Find** and inside a plain card (`PoolHubCard`) on **Connect** and **Approve**. Every chip on it shows only what is known: before pairing, the OS and **Online** or **Offline** from the tailnet; after the first health read, the Hub's own hardware tier, running engines, and model count. An unknown tier or OS is dropped or shown as **Other**, never guessed. `pool-setup-footer.tsx` is the sticky action bar, with the primary action last in reading order and first on a phone, at a 44 px tap height. `PoolSetupStepper` is a list, not tabs: a step is entered only through that step's own buttons, so nobody can jump to **Connect** with nothing chosen. On a phone it collapses to "Step N of 4 · Label" over a progress bar, and the list stays in the page, visually hidden, for assistive technology. Focus moves to the new step's heading (`data-step-heading`) when the step changes.
 

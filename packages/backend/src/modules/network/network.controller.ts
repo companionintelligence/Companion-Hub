@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
 import { ApiResponse } from '@nestjs/swagger';
 import { AuthGuard } from '../auth/auth.guard';
+import { HubManagerGuard } from '../auth/hub-manager.guard';
 import { NetworkDiagnosticsService } from './network-diagnostics.service';
 
 @UseGuards(AuthGuard)
@@ -15,6 +16,7 @@ export class NetworkController {
   }
 
   @Post('repair-orphans')
+  @UseGuards(HubManagerGuard)
   @ApiResponse({ type: Object })
   async repairOrphans(@Body() _body?: Record<string, never>) {
     const repair = await this.networkDiagnostics.repairOrphanNetworks();

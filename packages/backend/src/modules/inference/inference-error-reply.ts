@@ -6,6 +6,7 @@ import {
   classifyRequestError,
   engineErrorMessage,
 } from '@/modules/hub-pool/hub-pool-request-error';
+import { arrivedThroughTunnel } from '@/common/helpers/hub-pool';
 
 /**
  * What the local (no-peer) `/v1` routes answer when a request fails, in OpenAI's error shape.
@@ -132,8 +133,17 @@ async function readUpstreamBody(data: unknown): Promise<{ text: string; parsed: 
   }
 }
 
-/** The status and OpenAI-shaped body a failed local `/v1` request answers with. Never throws. */
-export async function describeRouteError(err: unknown): Promise<{ status: number; body: OpenAiErrorBody }> {
+/**
+ * The status and OpenAI-shaped body a failed local `/v1` request answers with. Never throws.
+ *
+ * `hideAddresses` is for a reply that leaves through the tunnel. An axios failure with no answer
+ * reads `connect ECONNREFUSED 172.18.0.5:11434` or `getaddrinfo ENOTFOUND ci-hub-vllm`, the engine's
+ * address on this machine's network, so that reply names only the kind of failure.
+ */
+export async function describeRouteError(
+  err: unknown,
+  options: { hideAddresses?: boolean } = {},
+): Promise<{ status: number; body: OpenAiErrorBody }> {
   if (err instanceof InferenceRouteError) {
     return { status: err.status, body: { error: { message: err.message, type: err.type, ...(err.code ? { code: err.code } : {}) } } };
   }
@@ -153,7 +163,12 @@ export async function describeRouteError(err: unknown): Promise<{ status: number
     const message = engineErrorMessage(parsed) ?? (text.trim() || `Upstream returned HTTP ${upstreamStatus}`);
     return { status, body: { error: { message, type: status >= 500 ? 'server_error' : 'invalid_request_error' } } };
   }
-  const message = err instanceof Error ? err.message : String(err);
+  const message =
+    options.hideAddresses && axios.isAxiosError(err)
+      ? `The inference engine did not answer (${err.code ?? 'no response'}).`
+      : err instanceof Error
+        ? err.message
+        : String(err);
   return { status: 502, body: { error: { message, type: 'server_error' } } };
 }
 
@@ -163,7 +178,7 @@ export async function describeRouteError(err: unknown): Promise<{ status: number
  * `respondUncommitted`.
  */
 export async function sendRouteError(res: Response, err: unknown): Promise<void> {
-  const { status, body } = await describeRouteError(err);
+  const { status, body } = await describeRouteError(err, { hideAddresses: arrivedThroughTunnel(res.req) });
   if (res.headersSent || res.writableEnded) {
     res.destroy();
     return;

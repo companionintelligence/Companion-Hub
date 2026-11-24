@@ -1,5 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
 import { ComposeCliUnavailableError, DockerService } from '../docker.service';
+import { APP_CAME_UP_TIMING } from '../managed-app-containers';
 import { DockerReadFacade } from '../docker-read.facade';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -91,6 +93,9 @@ describe('DockerService', () => {
     }).compile();
 
     service = module.get<DockerService>(DockerService);
+    // The bind-mount check before a start runs `docker compose config`, its own spawn; these tests count
+    // the spawns of the command itself. The check has its own tests (docker.service.bind-mounts.test.ts).
+    vi.spyOn(service, 'readAppBindMounts').mockResolvedValue([]);
     dockerReadFacade = module.get(DockerReadFacade);
   });
 
@@ -102,6 +107,35 @@ describe('DockerService', () => {
     // mockImplementation from one test cannot leak into the next.
     (child_process.spawn as any).mockReset();
     vi.clearAllMocks();
+  });
+
+  describe('diagnoseAppContainers', () => {
+    it('does not count a clean one-shot exit as an unhealthy container', async () => {
+      (dockerReadFacade.diagnoseAppContainers as unknown as { mockRestore?: () => void }).mockRestore?.();
+      const listing = createMockSpawnProcess();
+      (child_process.spawn as any)
+        .mockImplementationOnce(() => listing)
+        .mockImplementationOnce(() => {
+          const logs = createMockSpawnProcess();
+          setImmediate(() => logs.emit('close', 0));
+          return logs;
+        });
+
+      const diagnosis = dockerReadFacade.diagnoseAppContainers('ghost:ci-marketplace' as any);
+      setImmediate(() => {
+        listing.stdout.emit(
+          'data',
+          Buffer.from(
+            'ghost_ci-marketplace-migrate-1|Exited (0) 2 seconds ago\nghost_ci-marketplace-app-1|Up 2 hours\nghost_ci-marketplace-setup-1|Exited (1) 5 minutes ago\n',
+          ),
+        );
+        listing.emit('close', 0);
+      });
+      const result = await diagnosis;
+
+      expect(result.unhealthy.map((container) => container.name)).toEqual(['ghost_ci-marketplace-setup-1']);
+      expect(result.healthy).toEqual(['ghost_ci-marketplace-migrate-1', 'ghost_ci-marketplace-app-1']);
+    });
   });
 
   describe('getBaseComposeArgsApp', () => {
@@ -266,6 +300,83 @@ describe('DockerService', () => {
     });
   });
 
+  describe('composeApp with a user config', () => {
+    const appUrn = 'test-app:_user' as any;
+    const REFUSED = 'services:\n  web:\n    not_a_known_key: 1\n';
+    const ALLOWED = 'services:\n  web:\n    environment:\n      FOO: bar\n';
+
+    const useUserConfig = (content: string | null, enabled = true, userEnv: string | null = null) => {
+      appFilesManager.getAppEnv.mockResolvedValue({ path: '/apps/test-app/.env', content: 'FOO=BAR' });
+      appFilesManager.getUserEnv.mockResolvedValue({ path: '/apps/test-app/user.env', content: userEnv });
+      appFilesManager.getDockerComposeYaml.mockResolvedValue({ path: '/apps/test-app/docker-compose.yml', content: 'services:' });
+      appFilesManager.getUserComposeFile.mockResolvedValue({ path: '/apps/test-app/user-compose.yml', content });
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 'test-app', userConfigEnabled: enabled } as any);
+      appsRepository.getApps.mockResolvedValue([] as any);
+    };
+
+    const composeRuns = () => {
+      const compose = createMockSpawnProcess();
+      compose.on = vi.fn().mockImplementation((event, handler) => {
+        if (event === 'close') {
+          queueMicrotask(() => handler(0));
+        }
+        return compose;
+      });
+      (child_process.spawn as any).mockImplementationOnce(() => createComposeProbeProcess(0)).mockImplementationOnce(() => compose);
+    };
+
+    it('refuses to create containers from a stored override the sandbox does not allow, and runs nothing', async () => {
+      useUserConfig(REFUSED);
+
+      await expect(service.composeApp(appUrn, 'up --detach')).rejects.toThrow(
+        /test-app.*services\.web\.not_a_known_key.*\[COMPOSE_OVERRIDE_SETTING_NOT_ALLOWED\]/,
+      );
+
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+
+    it('refuses to create containers from an override that cannot be read', async () => {
+      useUserConfig('services:\n  web: [');
+
+      await expect(service.composeApp(appUrn, 'up --detach')).rejects.toThrow(/COMPOSE_OVERRIDE_UNREADABLE/);
+
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+
+    it('checks the env file even when there is no compose override', async () => {
+      useUserConfig(null, true, 'APP_DATA_DIR=/elsewhere\n');
+
+      await expect(service.composeApp(appUrn, 'up --detach')).rejects.toThrow(/COMPOSE_OVERRIDE_ENV_NAME_RESERVED/);
+    });
+
+    it('still stops an app that has a refused override', async () => {
+      useUserConfig(REFUSED);
+      composeRuns();
+
+      await service.composeApp(appUrn, 'down --remove-orphans');
+
+      expect(child_process.spawn).toHaveBeenCalledWith('docker', expect.arrayContaining(['down', '--remove-orphans']), expect.anything());
+    });
+
+    it('does not read an override that is turned off', async () => {
+      useUserConfig(REFUSED, false);
+      composeRuns();
+
+      await service.composeApp(appUrn, 'up --detach');
+
+      expect(child_process.spawn).toHaveBeenCalledWith('docker', expect.arrayContaining(['up', '--detach']), expect.anything());
+    });
+
+    it('starts an app with an override the sandbox allows', async () => {
+      useUserConfig(ALLOWED);
+      composeRuns();
+
+      await service.composeApp(appUrn, 'up --detach');
+
+      expect(child_process.spawn).toHaveBeenCalledWith('docker', expect.arrayContaining(['up', '--detach']), expect.anything());
+    });
+  });
+
   describe('composeApp', () => {
     it('should spawn docker-compose with correct arguments', async () => {
       const appUrn = 'test-app' as any;
@@ -298,6 +409,31 @@ describe('DockerService', () => {
         expect.arrayContaining(['compose', '--project-name', 'test-app', 'up', '-d']),
         expect.objectContaining({ cwd: '/apps/test-app' }),
       );
+    });
+
+    it("runs an app's compose without the Hub's secrets in its environment", async () => {
+      mockComposeArgResolution();
+      const probeProcess = createComposeProbeProcess(0);
+      const mockSpawnProcess = createMockSpawnProcess();
+      mockSpawnProcess.on = vi.fn().mockImplementation((event, handler) => {
+        if (event === 'close') {
+          queueMicrotask(() => handler(0));
+        }
+        return mockSpawnProcess;
+      });
+      (child_process.spawn as any).mockImplementationOnce(() => probeProcess).mockImplementationOnce(() => mockSpawnProcess);
+      process.env.JWT_SECRET = 'hub-signing-key';
+
+      try {
+        await service.composeApp('test-app' as any, 'up -d');
+      } finally {
+        delete process.env.JWT_SECRET;
+      }
+
+      const [, , options] = (child_process.spawn as any).mock.calls[1];
+      expect(options.env).toBeDefined();
+      expect(options.env).not.toHaveProperty('JWT_SECRET');
+      expect(options.env.PATH).toBe(process.env.PATH);
     });
 
     it('detaches the Hub before compose down, and attaches it only after a successful up', async () => {
@@ -478,64 +614,153 @@ describe('DockerService', () => {
     });
   });
 
-  describe('snapshotAppImageIds', () => {
-    it('should return unique image IDs from compose project containers', async () => {
-      dockerode.listContainers.mockResolvedValue([{ ImageID: 'sha256:a' } as any, { ImageID: 'sha256:b' } as any, { ImageID: 'sha256:a' } as any]);
+  describe('waitForManagedAppContainersReady', () => {
+    const fast = { ...APP_CAME_UP_TIMING, lookEveryMs: 1, upAfterMs: 5, upAfterCrashMs: 10, settleWithinMs: 30, runningWithinMs: 10 };
+    const startedLongAgo = '2020-01-01T00:00:00.000Z';
 
-      const result = await service.snapshotAppImageIds('test:store' as any);
-
-      expect(dockerode.listContainers).toHaveBeenCalledWith({
-        all: true,
-        filters: { label: ['com.docker.compose.project=test_store'] },
+    function containers(list: Array<{ id: string; service: string; state: string; exit?: number; restarts?: number; startedAt?: string }>) {
+      dockerode.listContainers.mockResolvedValue(
+        list.map(({ id, service, state }) => ({
+          Id: id,
+          Names: [`/app-${service}-1`],
+          State: state,
+          Status: state,
+          Labels: { 'com.docker.compose.service': service },
+        })) as any,
+      );
+      dockerode.getContainer.mockImplementation((id: string) => {
+        const found = list.find((container) => container.id === id);
+        return {
+          inspect: vi.fn().mockResolvedValue({
+            Name: `/app-${found?.service}-1`,
+            RestartCount: found?.restarts ?? 0,
+            State: { Status: found?.state, ExitCode: found?.exit ?? 0, StartedAt: found?.startedAt ?? startedLongAgo },
+          }),
+        } as any;
       });
-      expect(result).toEqual(['sha256:a', 'sha256:b']);
-    });
-  });
+    }
 
-  describe('getManagedAppContainerVerification', () => {
-    it('returns ok when all labeled containers are running', async () => {
-      dockerode.listContainers.mockResolvedValue([{ State: 'running', Status: 'Up 1 second' }] as any);
+    it('looks for the Hub-labelled containers of the app, under both label spellings', async () => {
+      containers([{ id: 'a', service: 'web', state: 'running' }]);
 
-      const result = await service.getManagedAppContainerVerification('ghost:ci-marketplace' as any);
+      const result = await service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast);
 
       expect(dockerode.listContainers).toHaveBeenCalledWith({
         all: true,
-        filters: {
-          label: ['ci-hub.managed=true', 'ci-hub.appurn=ghost:ci-marketplace'],
-        },
+        filters: { label: ['ci-hub.managed=true', 'ci-hub.appurn=ghost:ci-marketplace'] },
       });
       expect(dockerode.listContainers).toHaveBeenCalledWith({
         all: true,
-        filters: {
-          label: ['ci-os-hub.managed=true', 'ci-os-hub.appurn=ghost:ci-marketplace'],
-        },
+        filters: { label: ['ci-os-hub.managed=true', 'ci-os-hub.appurn=ghost:ci-marketplace'] },
       });
       expect(result.ok).toBe(true);
-      expect(result.appStatus).toBe('running');
     });
 
-    it('returns missing when no labeled containers exist', async () => {
+    it('counts an app whose failed one-shot sits beside a running service as up and logs the one-shot', async () => {
+      appFilesManager.getOneShotServiceNames.mockResolvedValue(new Set(['sync']));
+      containers([
+        { id: 'a', service: 'web', state: 'running' },
+        { id: 'b', service: 'sync', state: 'exited', exit: 1 },
+      ]);
+
+      const result = await service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast);
+
+      expect(result.ok).toBe(true);
+      expect(loggerService.warn).toHaveBeenCalledWith(
+        expect.stringContaining('ghost:ci-marketplace came up, but a one-shot service failed: sync exited (exit 1)'),
+      );
+    });
+
+    it('reports nothing running when no labelled containers exist', async () => {
       dockerode.listContainers.mockResolvedValue([] as any);
 
-      const result = await service.getManagedAppContainerVerification('ghost:ci-marketplace' as any);
+      const result = await service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast);
 
       expect(result.ok).toBe(false);
-      expect(result.appStatus).toBe('missing');
-      expect(result.message).toContain('no Hub-managed containers');
+      expect(result.serviceFailure).toEqual({ kind: 'none_running' });
+      expect(result.errorDetail).toContain('no Hub-managed containers');
     });
 
-    it('returns stopped with container logs when containers exited', async () => {
-      dockerode.listContainers.mockResolvedValue([{ State: 'exited', Status: 'Exited (1) 2 seconds ago' }] as any);
-      vi.spyOn(dockerReadFacade, 'diagnoseAppContainers').mockResolvedValue({
-        unhealthy: [{ name: 'ghost', state: 'Exited (1)', logs: 'boot error' }],
-        healthy: [],
-      });
+    it('names the crash-looping service with its exit code and last log line', async () => {
+      containers([
+        { id: 'a', service: 'web', state: 'running' },
+        { id: 'b', service: 'summary-service', state: 'restarting', exit: 126, restarts: 9 },
+      ]);
+      const tail = vi.spyOn(dockerReadFacade, 'tailContainerLogs').mockResolvedValue('booting\nexec /app/run: permission denied\n');
 
-      const result = await service.getManagedAppContainerVerification('ghost:ci-marketplace' as any);
+      const result = await service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast);
 
       expect(result.ok).toBe(false);
-      expect(result.appStatus).toBe('stopped');
-      expect(result.errorDetail).toContain('boot error');
+      expect(result.message).toBe('summary-service keeps restarting (exit 126): exec /app/run: permission denied');
+      expect(result.serviceFailure).toEqual({
+        kind: 'restarting',
+        service: 'summary-service',
+        exitCode: 126,
+        logLine: 'exec /app/run: permission denied',
+      });
+      expect(result.errorDetail).toContain('app-summary-service-1 (restarting, exit 126): booting');
+      expect(tail).toHaveBeenCalledWith('app-summary-service-1', 20);
+    });
+
+    it('goes on watching after a look Docker did not answer, so a blip does not pass a crash loop', async () => {
+      containers([{ id: 'b', service: 'migrate', state: 'exited', exit: 1 }]);
+      dockerode.listContainers.mockRejectedValueOnce(new Error('socket hang up'));
+      vi.spyOn(dockerReadFacade, 'tailContainerLogs').mockResolvedValue('');
+
+      const result = await service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast);
+
+      expect(result).toMatchObject({ ok: false, message: 'migrate exited (exit 1)' });
+    });
+
+    it('gives up once Docker has not answered for the whole window', async () => {
+      dockerode.listContainers.mockRejectedValue(new Error('socket hang up'));
+
+      await expect(service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast)).rejects.toThrow('socket hang up');
+    });
+
+    it('does not hang on a Docker list that never answers', async () => {
+      vi.useFakeTimers();
+      try {
+        dockerode.listContainers.mockReturnValue(new Promise(() => undefined) as any);
+
+        const answer = expect(service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast)).rejects.toThrow('did not list');
+        await vi.advanceTimersByTimeAsync(5_100);
+        await answer;
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('takes no reason from a log Docker could not read', async () => {
+      containers([{ id: 'b', service: 'db', state: 'dead', exit: 137 }]);
+      vi.spyOn(dockerReadFacade, 'tailContainerLogs').mockResolvedValue('(failed to capture logs)');
+
+      const result = await service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast);
+
+      expect(result.message).toBe('db exited (exit 137)');
+      expect(result.serviceFailure?.logLine).toBeUndefined();
+    });
+
+    it('still names the service when its logs cannot be read', async () => {
+      containers([{ id: 'b', service: 'migrate', state: 'exited', exit: 1 }]);
+      vi.spyOn(dockerReadFacade, 'tailContainerLogs').mockRejectedValue(new Error('docker is gone'));
+
+      const result = await service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast);
+
+      expect(result.message).toBe('migrate exited (exit 1)');
+    });
+
+    it('counts a container it could not inspect by what the list said', async () => {
+      dockerode.listContainers.mockResolvedValue([
+        { Id: 'a', Names: ['/app-web-1'], State: 'running', Status: 'Up 2 hours', Labels: { 'com.docker.compose.service': 'web' } },
+        { Id: 'b', Names: ['/app-job-1'], State: 'exited', Status: 'Exited (3) 5 seconds ago', Labels: { 'com.docker.compose.service': 'job' } },
+      ] as any);
+      dockerode.getContainer.mockReturnValue({ inspect: vi.fn().mockRejectedValue(new Error('404 no such container')) } as any);
+      vi.spyOn(dockerReadFacade, 'tailContainerLogs').mockResolvedValue('');
+
+      const result = await service.waitForManagedAppContainersReady('ghost:ci-marketplace' as any, fast);
+
+      expect(result.message).toBe('job exited (exit 3)');
     });
   });
 
@@ -634,27 +859,71 @@ describe('DockerService', () => {
   });
 
   describe('removeAppImages', () => {
-    it('should remove snapshot and labeled images with dedupe', async () => {
+    it('removes only the recorded images and the compose builds of the app, each once and never forced', async () => {
       dockerode.listImages.mockResolvedValue([{ Id: 'sha256:b' }, { Id: 'sha256:c' }] as any);
 
       const removeA = vi.fn().mockResolvedValue(undefined);
       const removeB = vi.fn().mockResolvedValue(undefined);
       const removeC = vi.fn().mockResolvedValue(undefined);
 
+      const inspect = vi.fn().mockResolvedValue({ RepoTags: [] });
       dockerode.getImage.mockImplementation((id: string) => {
-        if (id === 'sha256:a') return { remove: removeA } as any;
-        if (id === 'sha256:b') return { remove: removeB } as any;
-        return { remove: removeC } as any;
+        if (id === 'sha256:a') return { remove: removeA, inspect } as any;
+        if (id === 'sha256:b') return { remove: removeB, inspect } as any;
+        return { remove: removeC, inspect } as any;
       });
 
-      await service.removeAppImages('test:store' as any, ['sha256:a', 'sha256:b']);
+      await service.removeAppImages('test:store' as any, ['sha256:a', 'sha256:b', 'sha256:a']);
 
       expect(dockerode.listImages).toHaveBeenCalledWith({
         filters: { label: ['com.docker.compose.project=test_store'] },
       });
-      expect(removeA).toHaveBeenCalledWith({ force: true });
-      expect(removeB).toHaveBeenCalledWith({ force: true });
-      expect(removeC).toHaveBeenCalledWith({ force: true });
+      // No options at all: a forced removal would take an image that another container still uses.
+      expect(removeA).toHaveBeenCalledTimes(1);
+      expect(removeA).toHaveBeenCalledWith();
+      expect(removeB).toHaveBeenCalledWith();
+      expect(removeC).toHaveBeenCalledWith();
+    });
+
+    it('removes nothing but the compose builds when the app recorded no pull', async () => {
+      dockerode.listImages.mockResolvedValue([{ Id: 'sha256:c' }] as any);
+
+      const removeBuilt = vi.fn().mockResolvedValue(undefined);
+      dockerode.getImage.mockReturnValue({ remove: removeBuilt } as any);
+
+      await service.removeAppImages('test:store' as any, []);
+
+      // An image that was on the computer before the app is not in the record, so it is never asked for.
+      expect(dockerode.getImage).toHaveBeenCalledTimes(1);
+      expect(dockerode.getImage).toHaveBeenCalledWith('sha256:c');
+      expect(removeBuilt).toHaveBeenCalledWith();
+    });
+
+    it('skips an image something still holds (a container, or another tag of it) and goes on with the rest', async () => {
+      dockerode.listImages.mockResolvedValue([] as any);
+
+      const removeStillUsed = vi
+        .fn()
+        .mockRejectedValue(new Error('conflict: unable to delete sha256:a (cannot be forced) - image is being used by stopped container 1f2e3d'));
+      const removeOtherTag = vi
+        .fn()
+        .mockRejectedValue(new Error('conflict: unable to delete sha256:b (must be forced) - image is referenced in multiple repositories'));
+      const removeFree = vi.fn().mockResolvedValue(undefined);
+
+      const inspect = vi.fn().mockResolvedValue({ RepoTags: [] });
+      dockerode.getImage.mockImplementation((id: string) => {
+        if (id === 'sha256:a') return { remove: removeStillUsed, inspect } as any;
+        if (id === 'sha256:b') return { remove: removeOtherTag, inspect } as any;
+        return { remove: removeFree, inspect } as any;
+      });
+
+      await expect(service.removeAppImages('test:store' as any, ['sha256:a', 'sha256:b', 'sha256:c'])).resolves.toBeUndefined();
+
+      expect(removeStillUsed).toHaveBeenCalledWith();
+      expect(removeOtherTag).toHaveBeenCalledWith();
+      expect(removeFree).toHaveBeenCalledWith();
+      expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('Skipping image removal for sha256:a'));
+      expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('Skipping image removal for sha256:b'));
     });
 
     it('should swallow not found and in use removal errors', async () => {
@@ -663,13 +932,129 @@ describe('DockerService', () => {
       const removeMissing = vi.fn().mockRejectedValue(new Error('No such image: sha256:a'));
       const removeInUse = vi.fn().mockRejectedValue(new Error('image is being used by running container'));
 
+      const inspect = vi.fn().mockResolvedValue({ RepoTags: [] });
       dockerode.getImage.mockImplementation((id: string) => {
-        if (id === 'sha256:a') return { remove: removeMissing } as any;
-        return { remove: removeInUse } as any;
+        if (id === 'sha256:a') return { remove: removeMissing, inspect } as any;
+        return { remove: removeInUse, inspect } as any;
       });
 
       await expect(service.removeAppImages('test:store' as any, ['sha256:a', 'sha256:b'])).resolves.toBeUndefined();
       expect(loggerService.warn).toHaveBeenCalled();
+    });
+
+    describe('the tags on a recorded image', () => {
+      const image = (repoTags: string[] | undefined) => ({
+        remove: vi.fn().mockResolvedValue(undefined),
+        inspect: vi.fn().mockResolvedValue({ RepoTags: repoTags }),
+      });
+
+      beforeEach(() => {
+        dockerode.listImages.mockResolvedValue([] as any);
+      });
+
+      it('keeps an image with a tag the app did not bring in: Docker would remove one tag without asking', async () => {
+        const handPulled = image(['postgres:16-alpine', 'postgres@sha256:d']);
+        dockerode.getImage.mockReturnValue(handPulled as any);
+
+        await service.removeAppImages('test:store' as any, ['sha256:a'], []);
+
+        expect(handPulled.remove).not.toHaveBeenCalled();
+        expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('postgres:16-alpine'));
+      });
+
+      it('removes an image that holds only the tags it arrived with', async () => {
+        const own = image(['app:1']);
+        dockerode.getImage.mockReturnValue(own as any);
+
+        await service.removeAppImages('test:store' as any, ['sha256:a'], ['app:1']);
+
+        expect(own.remove).toHaveBeenCalledWith();
+      });
+
+      it('removes an image with no tags: a digest name is not one', async () => {
+        const pinned = image(['postgres@sha256:d']);
+        dockerode.getImage.mockReturnValue(pinned as any);
+
+        await service.removeAppImages('test:store' as any, ['sha256:a'], []);
+
+        expect(pinned.remove).toHaveBeenCalledWith();
+      });
+
+      it('removes an image Docker reports no tags for at all', async () => {
+        const untagged = image(undefined);
+        dockerode.getImage.mockReturnValue(untagged as any);
+
+        await service.removeAppImages('test:store' as any, ['sha256:a'], []);
+
+        expect(untagged.remove).toHaveBeenCalledWith();
+      });
+
+      it('keeps an image whose tags cannot be read', async () => {
+        const unknown = { remove: vi.fn(), inspect: vi.fn().mockRejectedValue(new Error('connect EACCES /var/run/docker.sock')) };
+        dockerode.getImage.mockReturnValue(unknown as any);
+
+        await service.removeAppImages('test:store' as any, ['sha256:a'], []);
+
+        expect(unknown.remove).not.toHaveBeenCalled();
+        expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('could not read its tags'));
+      });
+
+      it('passes over an image that has already gone, without a warning', async () => {
+        const gone = { remove: vi.fn(), inspect: vi.fn().mockRejectedValue(new Error('No such image: sha256:a')) };
+        dockerode.getImage.mockReturnValue(gone as any);
+
+        await service.removeAppImages('test:store' as any, ['sha256:a'], []);
+
+        expect(gone.remove).not.toHaveBeenCalled();
+        expect(loggerService.warn).not.toHaveBeenCalled();
+      });
+
+      it("still removes the app's own compose build, whatever its tags", async () => {
+        dockerode.listImages.mockResolvedValue([{ Id: 'sha256:built' }] as any);
+        const built = image(['test_store-web:latest']);
+        dockerode.getImage.mockReturnValue(built as any);
+
+        await service.removeAppImages('test:store' as any, ['sha256:built'], []);
+
+        expect(built.remove).toHaveBeenCalledWith();
+        expect(loggerService.warn).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('imageIdsLocally and imageTagsLocally', () => {
+    it('lists the IDs of the images here', async () => {
+      dockerode.listImages.mockResolvedValue([{ Id: 'sha256:a' }, { Id: 'sha256:b' }] as any);
+
+      await expect(service.imageIdsLocally()).resolves.toEqual(new Set(['sha256:a', 'sha256:b']));
+    });
+
+    it('leaves digest names out of the tags, which the containerd image store lists among them', async () => {
+      dockerode.getImage.mockReturnValue({ inspect: vi.fn().mockResolvedValue({ RepoTags: ['app:1', 'app@sha256:d'] }) } as any);
+
+      await expect(service.imageTagsLocally('sha256:a')).resolves.toEqual(['app:1']);
+    });
+  });
+
+  describe('imageIdLocally', () => {
+    it('returns the ID of the image the reference names on this computer', async () => {
+      const inspect = vi.fn().mockResolvedValue({ Id: 'sha256:a' });
+      dockerode.getImage.mockReturnValue({ inspect } as any);
+
+      await expect(service.imageIdLocally('python:3.13-alpine')).resolves.toBe('sha256:a');
+      expect(dockerode.getImage).toHaveBeenCalledWith('python:3.13-alpine');
+    });
+
+    it('returns null for an image that is not on this computer', async () => {
+      dockerode.getImage.mockReturnValue({ inspect: vi.fn().mockRejectedValue(new Error('No such image: python:3.13-alpine')) } as any);
+
+      await expect(service.imageIdLocally('python:3.13-alpine')).resolves.toBeNull();
+    });
+
+    it('rethrows a failure that is not a missing image, so a Docker that cannot be reached is not read as no image', async () => {
+      dockerode.getImage.mockReturnValue({ inspect: vi.fn().mockRejectedValue(new Error('connect ECONNREFUSED /var/run/docker.sock')) } as any);
+
+      await expect(service.imageIdLocally('python:3.13-alpine')).rejects.toThrow('ECONNREFUSED');
     });
   });
 
@@ -713,9 +1098,13 @@ describe('DockerService', () => {
               'traefik.http.services.anything-llm-ci-marketplace.loadbalancer.server.port': '3001',
             },
           },
+          // On its own network, where the VPN sidecar joins it; a shared Hub network no longer counts.
           NetworkSettings: {
             Networks: {
               'ci-os-hub_network': {
+                IPAddress: '172.18.0.99',
+              },
+              'anything-llm_ci-marketplace_network': {
                 IPAddress: '172.18.0.10',
               },
             },
@@ -1085,6 +1474,8 @@ describe('DockerService', () => {
         [
           'run',
           '--rm',
+          '--name',
+          expect.stringMatching(/^ci-hub-helper-[0-9a-f]{12}$/),
           '--network',
           'none',
           '--user',
@@ -1124,6 +1515,438 @@ describe('DockerService', () => {
 
       expect(child_process.spawn).toHaveBeenCalledWith('docker', expect.arrayContaining(['busybox:1.36']), { stdio: 'pipe' });
     });
+
+    it('empties the data folder of a custom app in the reserved _user store, which is where reset and uninstall look for it', async () => {
+      (child_process.spawn as any).mockReturnValue(createComposeProbeProcess(0));
+      const customUrn = 'my-compose:_user' as any;
+      const hostDir = getAppDataHostPath(customUrn, inputs);
+
+      await expect(service.removeAppDataDirAsRoot(customUrn)).resolves.toBe(true);
+
+      expect(hostDir).toBe('/host/root/app-data/_user/my-compose');
+      expect(child_process.spawn).toHaveBeenCalledWith(
+        'docker',
+        expect.arrayContaining(['-v', `${hostDir}:/target:rw`, 'find', '/target', '-mindepth', '1', '-delete']),
+        { stdio: 'pipe' },
+      );
+    });
+
+    it('still refuses a store that starts with an underscore when it is not the reserved _user store', async () => {
+      await expect(service.removeAppDataDirAsRoot('my-compose:_other' as any)).resolves.toBe(false);
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+
+    it('still refuses a traversal in the app name of a _user app', async () => {
+      await expect(service.removeAppDataDirAsRoot('..:_user' as any)).resolves.toBe(false);
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('privileged snapshot helpers (restore and remove a root-owned data snapshot)', () => {
+    const urn = 'test-app:test-store' as any;
+    const snapshotId = 'pre-update-test-app-1792500000000';
+    const hostAppData = getAppDataHostPath(urn, { ciHubAppDataPath: undefined, appDataPath: undefined, rootFolderHost: '/host/root' });
+    const hostSnapshot = `/host/root/backups/.pre-update-snapshots/test-store/test-app/${snapshotId}`;
+
+    beforeEach(() => {
+      configService.getConfig.mockReturnValue({ userSettings: {}, rootFolderHost: '/host/root' } as any);
+      delete process.env.CI_HUB_APP_DATA_PATH;
+      delete process.env.CI_HUB_CLEANUP_IMAGE;
+      (child_process.spawn as any).mockReturnValue(createComposeProbeProcess(0));
+    });
+
+    it('copies the data of a custom app in the reserved _user store into its snapshot, the way a store app is copied', async () => {
+      const customUrn = 'my-compose:_user' as any;
+      const customSnapshot = 'pre-update-my-compose-1792500000000';
+
+      await expect(service.copyAppDataDirAsRoot(customUrn, customSnapshot)).resolves.toBe(true);
+
+      expect(child_process.spawn).toHaveBeenCalledWith(
+        'docker',
+        expect.arrayContaining([
+          '-v',
+          '/host/root/app-data/_user/my-compose:/src:ro',
+          '-v',
+          `/host/root/backups/.pre-update-snapshots/_user/my-compose/${customSnapshot}/app-data:/dest:rw`,
+          'cp',
+          '-a',
+          '/src/.',
+          '/dest/',
+        ]),
+        { stdio: 'pipe' },
+      );
+    });
+
+    it('restores by emptying the data folder and copying the snapshot over it, both mounts confined to this app', async () => {
+      await expect(service.restoreAppDataDirAsRoot(urn, snapshotId)).resolves.toBe(true);
+
+      expect(child_process.spawn).toHaveBeenCalledWith(
+        'docker',
+        [
+          'run',
+          '--rm',
+          '--name',
+          expect.stringMatching(/^ci-hub-helper-[0-9a-f]{12}$/),
+          '--network',
+          'none',
+          '--user',
+          '0:0',
+          '-v',
+          `${hostSnapshot}/app-data:/src:ro`,
+          '-v',
+          `${hostAppData}:/dest:rw`,
+          'alpine:3.20',
+          'sh',
+          '-c',
+          'find /dest -mindepth 1 -delete && cp -a /src/. /dest/',
+        ],
+        { stdio: 'pipe' },
+      );
+    });
+
+    it('removes a snapshot by emptying only its own folder', async () => {
+      await expect(service.removeSnapshotDirAsRoot(urn, snapshotId)).resolves.toBe(true);
+
+      expect(child_process.spawn).toHaveBeenCalledWith(
+        'docker',
+        [
+          'run',
+          '--rm',
+          '--name',
+          expect.stringMatching(/^ci-hub-helper-[0-9a-f]{12}$/),
+          '--network',
+          'none',
+          '--user',
+          '0:0',
+          '-v',
+          `${hostSnapshot}:/target:rw`,
+          'alpine:3.20',
+          'find',
+          '/target',
+          '-mindepth',
+          '1',
+          '-delete',
+        ],
+        { stdio: 'pipe' },
+      );
+    });
+
+    it('reports a helper that exits non-zero as a failure', async () => {
+      (child_process.spawn as any).mockReturnValue(createComposeProbeProcess(1));
+
+      await expect(service.restoreAppDataDirAsRoot(urn, snapshotId)).resolves.toBe(false);
+    });
+
+    it('honours the CI_HUB_CLEANUP_IMAGE override', async () => {
+      process.env.CI_HUB_CLEANUP_IMAGE = 'busybox:1.36';
+
+      await service.copyAppDataDirAsRoot(urn, snapshotId);
+
+      expect(child_process.spawn).toHaveBeenCalledWith('docker', expect.arrayContaining(['busybox:1.36']), { stdio: 'pipe' });
+    });
+
+    // The ids are recomputed from the URN and the snapshot id; nothing a caller sends reaches a mount.
+    it.each([
+      ['a snapshot id that climbs out of the snapshot folder', urn, 'pre-update-x-1/../../../etc'],
+      ['a snapshot id that is not one this service made', urn, 'anything'],
+      ['an app name that is not a plain name', '..:test-store' as any, snapshotId],
+      ['a store that is not a plain name', 'test-app:..' as any, snapshotId],
+    ])('refuses (and never spawns) for %s', async (_name, u, id) => {
+      await expect(service.copyAppDataDirAsRoot(u, id)).resolves.toBe(false);
+      await expect(service.restoreAppDataDirAsRoot(u, id)).resolves.toBe(false);
+      await expect(service.removeSnapshotDirAsRoot(u, id)).resolves.toBe(false);
+
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+
+    it('refuses when the Hub has no absolute root folder on the host to put the snapshot under', async () => {
+      configService.getConfig.mockReturnValue({ userSettings: {}, rootFolderHost: '' } as any);
+
+      await expect(service.copyAppDataDirAsRoot(urn, snapshotId)).resolves.toBe(false);
+
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+  });
+
+  // A backup of a database's data: the Hub cannot read it, so root archives it with its owners, and a
+  // restore of that backup puts them back as root.
+  describe('backup and restore of data the Hub cannot read', () => {
+    const urn = 'kimai:ci-marketplace' as any;
+    const hostAppData = getAppDataHostPath(urn, { ciHubAppDataPath: undefined, appDataPath: undefined, rootFolderHost: '/host/root' });
+    const hostStaging = '/host/root/backups/.backup-staging/ci-marketplace/kimai/backup-kimai-1792500000000';
+    const helperName = expect.stringMatching(/^ci-hub-helper-[0-9a-f]{12}$/);
+
+    beforeEach(() => {
+      configService.getConfig.mockReturnValue({ userSettings: {}, rootFolderHost: '/host/root' } as any);
+      delete process.env.CI_HUB_APP_DATA_PATH;
+      delete process.env.CI_HUB_CLEANUP_IMAGE;
+      filesystemService.createDirectory.mockResolvedValue(true);
+      vi.spyOn(process, 'getuid').mockReturnValue(1000);
+      vi.spyOn(process, 'getgid').mockReturnValue(1000);
+      vi.spyOn(Date, 'now').mockReturnValue(1792500000000);
+      (child_process.spawn as any).mockReturnValue(createComposeProbeProcess(0));
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('makes the staging folder and its data mount point as the Hub', async () => {
+      await expect(service.createBackupStagingDir(urn)).resolves.toEqual({
+        id: 'backup-kimai-1792500000000',
+        dir: '/data/backups/.backup-staging/ci-marketplace/kimai/backup-kimai-1792500000000',
+      });
+      expect(filesystemService.createDirectory).toHaveBeenCalledWith(
+        '/data/backups/.backup-staging/ci-marketplace/kimai/backup-kimai-1792500000000/stage/app-data',
+      );
+      expect(filesystemService.createDirectory).toHaveBeenCalledWith(
+        '/data/backups/.backup-staging/ci-marketplace/kimai/backup-kimai-1792500000000/out',
+      );
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+
+    it('archives as root with numeric owners, the data read-only, special files and backups folders left out', async () => {
+      await expect(service.archiveBackupAsRoot(urn, 'backup-kimai-1792500000000')).resolves.toBe(
+        '/data/backups/.backup-staging/ci-marketplace/kimai/backup-kimai-1792500000000/out/backup.tar.gz',
+      );
+
+      const args = (child_process.spawn as any).mock.calls[0][1] as string[];
+      expect(args.slice(0, 15)).toEqual([
+        'run',
+        '--rm',
+        '--name',
+        helperName,
+        '--network',
+        'none',
+        '--user',
+        '0:0',
+        '-v',
+        `${hostStaging}/stage:/stage:ro`,
+        '-v',
+        `${hostAppData}:/stage/app-data:ro`,
+        '-v',
+        `${hostStaging}/out:/out:rw`,
+        'alpine:3.20',
+      ]);
+      const script = args[17] as string;
+      expect(script).toContain('! -type b ! -type c ! -type p ! -type s');
+      expect(script).toContain('-path "./app-data/*backups*" -prune');
+      expect(script).toContain('tar -czf /out/backup.tar.gz --numeric-owner --no-recursion -T /tmp/entries');
+      expect(script).toContain('chown "$1" /out/backup.tar.gz');
+      expect(args.slice(18)).toEqual(['sh', '1000:1000']);
+    });
+
+    // tar keeps hard links as links and a restore refuses them, so such a backup could never go back.
+    it('fails the backup on hard-linked data instead of writing one a restore refuses', async () => {
+      await service.archiveBackupAsRoot(urn, 'backup-kimai-1792500000000');
+
+      const script = ((child_process.spawn as any).mock.calls[0][1] as string[])[17] as string;
+      expect(script).toContain('\\( -type f -o -type l \\) -links +1 -print');
+      expect(script.indexOf('-links +1')).toBeLessThan(script.indexOf('tar -czf'));
+    });
+
+    it('SECURITY: keeps the archive of data closed to other users closed to them too', async () => {
+      await service.archiveBackupAsRoot(urn, 'backup-kimai-1792500000000');
+
+      const script = ((child_process.spawn as any).mock.calls[0][1] as string[])[17] as string;
+      expect(script).toContain('chmod 600 /out/backup.tar.gz');
+    });
+
+    it('says the helper cannot run for an app whose host folders cannot be worked out, without asking Docker', async () => {
+      configService.getConfig.mockReturnValue({ userSettings: {}, rootFolderHost: '' } as any);
+
+      await expect(service.privilegedHelperAvailable(urn)).resolves.toBe(false);
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+
+    it('makes a restore staging folder for the archive root will read', async () => {
+      await expect(service.createRestoreStagingDir(urn)).resolves.toEqual({
+        id: 'backup-kimai-1792500000000',
+        dir: '/data/backups/.backup-staging/ci-marketplace/kimai/backup-kimai-1792500000000',
+        archive: '/data/backups/.backup-staging/ci-marketplace/kimai/backup-kimai-1792500000000/in/backup.tar.gz',
+      });
+      expect(filesystemService.createDirectory).toHaveBeenCalledWith(
+        '/data/backups/.backup-staging/ci-marketplace/kimai/backup-kimai-1792500000000/in',
+      );
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+
+    it('extracts only the data member of the staged archive as root, keeping owners and dropping setuid, setgid and special files', async () => {
+      await expect(service.extractBackupAppDataAsRoot(urn, 'backup-kimai-1792500000000', './app-data')).resolves.toBe(true);
+
+      expect(child_process.spawn).toHaveBeenCalledWith(
+        'docker',
+        [
+          'run',
+          '--rm',
+          '--name',
+          helperName,
+          '--network',
+          'none',
+          '--user',
+          '0:0',
+          '-v',
+          `${hostStaging}/in:/in:ro`,
+          '-v',
+          `${hostAppData}:/x/app-data:rw`,
+          'alpine:3.20',
+          'sh',
+          '-c',
+          'tar -C /x -xpf /in/backup.tar.gz --numeric-owner "$1"; status=$?; ' +
+            'find /x/app-data \\( -type b -o -type c -o -type p -o -type s \\) -delete || status=1; ' +
+            'find /x/app-data -type f \\( -perm -4000 -o -perm -2000 \\) -exec chmod ug-s {} + || status=1; ' +
+            // The folder and app.env are the Hub's, whatever uid the archive gave them.
+            'chown "$2" /x/app-data || status=1; ' +
+            'if [ -f /x/app-data/app.env ] && [ ! -L /x/app-data/app.env ]; then chown "$2" /x/app-data/app.env || status=1; fi; ' +
+            'exit $status',
+          'sh',
+          './app-data',
+          '1000:1000',
+        ],
+        { stdio: 'pipe' },
+      );
+    });
+
+    it.each([
+      ['a member that is not the data folder', 'backup-kimai-1792500000000', 'app'],
+      ['a member that climbs', 'backup-kimai-1792500000000', '../app-data'],
+      ['a staging id that climbs out of the staging folder', 'backup-kimai-1/../../../kimai', 'app-data'],
+      ['a staging id that is not one this service made', 'anything', 'app-data'],
+    ])('refuses to extract %s, and never spawns', async (_name, stagingId, member) => {
+      await expect(service.extractBackupAppDataAsRoot(urn, stagingId, member)).resolves.toBe(false);
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+
+    it('refuses (and never spawns) for an app name that is not a plain name', async () => {
+      await expect(service.createBackupStagingDir('..:ci-marketplace' as any)).resolves.toBeNull();
+      await expect(service.createRestoreStagingDir('..:ci-marketplace' as any)).resolves.toBeNull();
+      await expect(service.archiveBackupAsRoot('..:ci-marketplace' as any, 'backup-x-1')).resolves.toBeNull();
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+
+    it('removes the helper container when the CLI hits its time limit', async () => {
+      vi.useFakeTimers();
+      const hung = createMockSpawnProcess();
+      hung.on = vi.fn().mockReturnValue(hung);
+      (child_process.spawn as any).mockReturnValueOnce(hung).mockReturnValue(createComposeProbeProcess(0));
+
+      const pending = service.archiveBackupAsRoot(urn, 'backup-kimai-1792500000000');
+      await vi.advanceTimersByTimeAsync(30 * 60_000 + 1);
+      vi.useRealTimers();
+
+      await expect(pending).resolves.toBeNull();
+      const name = ((child_process.spawn as any).mock.calls[0][1] as string[])[3];
+      expect(child_process.spawn).toHaveBeenLastCalledWith('docker', ['rm', '-f', name], { stdio: 'pipe' });
+    });
+
+    // The helpers of one restore share a budget that ends inside the app queue's wait.
+    it('gives a helper only what is left of the command budget, and removes it when that runs out', async () => {
+      vi.useFakeTimers();
+      const hung = createMockSpawnProcess();
+      hung.on = vi.fn().mockReturnValue(hung);
+      (child_process.spawn as any).mockReturnValueOnce(hung).mockReturnValue(createComposeProbeProcess(0));
+
+      const pending = service.removeAppDataDirAsRoot(urn, AppCommandDeadline.after(10_000));
+      await vi.advanceTimersByTimeAsync(10_001);
+      vi.useRealTimers();
+
+      await expect(pending).resolves.toBe(false);
+      const name = ((child_process.spawn as any).mock.calls[0][1] as string[])[3];
+      expect(child_process.spawn).toHaveBeenLastCalledWith('docker', ['rm', '-f', name], { stdio: 'pipe' });
+    });
+
+    // Removed at the limit, the extract never got to its own strip of what it had written.
+    it('strips setuid and setgid bits and special files from what an extract wrote before its budget ran out', async () => {
+      vi.useFakeTimers();
+      const hung = createMockSpawnProcess();
+      hung.on = vi.fn().mockReturnValue(hung);
+      (child_process.spawn as any).mockReturnValueOnce(hung).mockReturnValue(createComposeProbeProcess(0));
+
+      const pending = service.extractBackupAppDataAsRoot(urn, 'backup-kimai-1792500000000', './app-data', AppCommandDeadline.after(10_000));
+      await vi.advanceTimersByTimeAsync(10_001);
+      vi.useRealTimers();
+
+      await expect(pending).resolves.toBe(false);
+      const calls = (child_process.spawn as any).mock.calls.map((call: unknown[]) => call[1] as string[]);
+      expect(calls[1]).toEqual(['rm', '-f', calls[0][3]]);
+      const strip = calls[2];
+      expect(strip).toEqual(expect.arrayContaining(['-v', `${hostAppData}:/x/app-data:rw`]));
+      expect(strip).not.toContain(`${hostStaging}/in:/in:ro`);
+      expect(strip.at(-1)).toContain('-perm -4000 -o -perm -2000');
+      expect(strip.at(-1)).toContain('-type b -o -type c -o -type p -o -type s');
+    });
+
+    it('runs no second helper after an extract that failed in time', async () => {
+      (child_process.spawn as any).mockReset();
+      (child_process.spawn as any).mockReturnValue(createComposeProbeProcess(1));
+
+      await expect(
+        service.extractBackupAppDataAsRoot(urn, 'backup-kimai-1792500000000', './app-data', AppCommandDeadline.after(60_000)),
+      ).resolves.toBe(false);
+
+      expect(child_process.spawn).toHaveBeenCalledTimes(1);
+    });
+
+    // An update's rollback from a snapshot passes the update's deadline: a copy that ran its own 30
+    // minutes went on writing data after the reply was due.
+    it('gives a snapshot restore only what is left of the deadline, removes it then and says why', async () => {
+      vi.useFakeTimers();
+      const hung = createMockSpawnProcess();
+      hung.on = vi.fn().mockReturnValue(hung);
+      (child_process.spawn as any).mockReturnValueOnce(hung).mockReturnValue(createComposeProbeProcess(0));
+
+      const pending = service.restoreAppDataDirAsRoot(urn, 'pre-update-kimai-1792500000000', AppCommandDeadline.after(10_000));
+      await vi.advanceTimersByTimeAsync(10_001);
+      vi.useRealTimers();
+
+      await expect(pending).resolves.toBe(false);
+      const name = ((child_process.spawn as any).mock.calls[0][1] as string[])[3];
+      expect(child_process.spawn).toHaveBeenLastCalledWith('docker', ['rm', '-f', name], { stdio: 'pipe' });
+      expect(loggerService.error).toHaveBeenCalledWith(expect.stringContaining('ran out of time restoring'));
+      expect(loggerService.error).toHaveBeenCalledWith(expect.stringContaining('The snapshot is kept at'));
+    });
+
+    it('starts no snapshot helper once the deadline is used up and keeps 30 minutes without one', async () => {
+      const deadline = AppCommandDeadline.after(0);
+
+      await expect(service.restoreAppDataDirAsRoot(urn, 'pre-update-kimai-1792500000000', deadline)).resolves.toBe(false);
+      await expect(service.removeSnapshotDirAsRoot(urn, 'pre-update-kimai-1792500000000', deadline)).resolves.toBe(false);
+      await expect(service.copyAppDataDirAsRoot(urn, 'pre-update-kimai-1792500000000', deadline)).resolves.toBe(false);
+      expect(child_process.spawn).not.toHaveBeenCalled();
+
+      vi.useFakeTimers();
+      const hung = createMockSpawnProcess();
+      hung.on = vi.fn().mockReturnValue(hung);
+      (child_process.spawn as any).mockReturnValueOnce(hung).mockReturnValue(createComposeProbeProcess(0));
+      let settled = false;
+      const pending = service.restoreAppDataDirAsRoot(urn, 'pre-update-kimai-1792500000000').then((ok) => {
+        settled = true;
+        return ok;
+      });
+      await vi.advanceTimersByTimeAsync(29 * 60_000);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(60_001);
+      vi.useRealTimers();
+      await expect(pending).resolves.toBe(false);
+    });
+
+    it('starts no helper once the command budget is used up', async () => {
+      const deadline = AppCommandDeadline.after(0);
+
+      await expect(service.removeAppDataDirAsRoot(urn, deadline)).resolves.toBe(false);
+      await expect(service.extractBackupAppDataAsRoot(urn, 'backup-kimai-1792500000000', './app-data', deadline)).resolves.toBe(false);
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+
+    it('says the helper can run when its image is here, and pulls it when it is not', async () => {
+      await expect(service.privilegedHelperAvailable()).resolves.toBe(true);
+      expect(child_process.spawn).toHaveBeenCalledWith('docker', ['image', 'inspect', 'alpine:3.20'], { stdio: 'pipe' });
+
+      (child_process.spawn as any).mockReset();
+      (child_process.spawn as any).mockReturnValueOnce(createComposeProbeProcess(1)).mockReturnValueOnce(createComposeProbeProcess(1));
+      await expect(service.privilegedHelperAvailable()).resolves.toBe(false);
+      expect(child_process.spawn).toHaveBeenLastCalledWith('docker', ['pull', 'alpine:3.20'], { stdio: 'pipe' });
+    });
   });
 
   describe('createPreUpdateVolumeSnapshot', () => {
@@ -1136,6 +1959,11 @@ describe('DockerService', () => {
       } as any);
       dockerode.listContainers.mockResolvedValue([]);
       dockerode.listVolumes.mockResolvedValue({ Volumes: [] } as any);
+      // The data folder goes through copyDirectoryDetailed so a permission failure can be told from a full disk.
+      filesystemService.copyDirectoryDetailed.mockResolvedValue({ copied: true, permissionDenied: false });
+      configService.getConfig.mockReturnValue({ userSettings: {}, rootFolderHost: '/host/root' } as any);
+      delete process.env.CI_HUB_APP_DATA_PATH;
+      delete process.env.CI_HUB_CLEANUP_IMAGE;
     });
 
     it('snapshots app data directory and registers docker volumes when data exists', async () => {
@@ -1172,7 +2000,10 @@ describe('DockerService', () => {
       expect(result.appUrn).toBe(testUrn);
       expect(result.snapshotPath).toContain('snapshots');
       expect(filesystemService.createDirectory).toHaveBeenCalled();
-      expect(filesystemService.copyDirectory).toHaveBeenCalledWith('/data/app-data/test-store/test-app', expect.stringContaining('snapshots'));
+      expect(filesystemService.copyDirectoryDetailed).toHaveBeenCalledWith(
+        '/data/app-data/test-store/test-app',
+        expect.stringContaining('snapshots'),
+      );
       expect(result.volumes.some((v) => v.type === 'bind')).toBe(true);
       expect(result.volumes.some((v) => v.name === 'test-app_dbdata')).toBe(true);
     });
@@ -1234,6 +2065,10 @@ describe('DockerService', () => {
       filesystemService.createDirectory.mockResolvedValue(true);
       filesystemService.removeDirectory.mockResolvedValue(true);
       filesystemService.copyDirectory.mockImplementation(async (source: string) => source !== failingSource);
+      filesystemService.copyDirectoryDetailed.mockImplementation(async (source: string) => ({
+        copied: source !== failingSource,
+        permissionDenied: false,
+      }));
 
       const result = await service.createPreUpdateVolumeSnapshot(testUrn);
 
@@ -1241,6 +2076,93 @@ describe('DockerService', () => {
       expect(result.error).toContain('Could not copy');
       expect(result.appFilesSnapshotPath).toBeUndefined();
       expect(filesystemService.removeDirectory).toHaveBeenCalledWith(expect.stringContaining('snapshots'));
+      // Not a permission failure, so root would not fix it and no privileged helper is started.
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+
+    // The failure that stopped every app update on a native-Linux Hub: /data is root-owned and only its
+    // subfolders are mounted, so a folder made directly under it was refused. `backups` is mounted.
+    it('writes the snapshot under backups/.pre-update-snapshots, a folder the Hub can create', async () => {
+      filesystemService.pathExists.mockResolvedValue(true);
+      filesystemService.createDirectory.mockResolvedValue(true);
+      filesystemService.copyDirectory.mockResolvedValue(true);
+
+      const result = await service.createPreUpdateVolumeSnapshot(testUrn);
+
+      expect(result.snapshotBaseDir).toMatch(/^\/data\/backups\/\.pre-update-snapshots\/test-store\/test-app\/pre-update-test-app-\d+$/);
+      expect(result.snapshotBaseDir).not.toMatch(/^\/data\/snapshots/);
+    });
+
+    describe('data the Hub cannot read (a database owned by another user)', () => {
+      const hostAppData = getAppDataHostPath(testUrn, { ciHubAppDataPath: undefined, appDataPath: undefined, rootFolderHost: '/host/root' });
+
+      beforeEach(() => {
+        filesystemService.pathExists.mockResolvedValue(true);
+        filesystemService.createDirectory.mockResolvedValue(true);
+        filesystemService.removeDirectory.mockResolvedValue(true);
+        filesystemService.copyDirectory.mockResolvedValue(true);
+        filesystemService.copyDirectoryDetailed.mockResolvedValue({ copied: false, permissionDenied: true });
+      });
+
+      it('copies the data as root through the hardened helper, keeping owners, and records that it did', async () => {
+        (child_process.spawn as any).mockReturnValue(createComposeProbeProcess(0));
+
+        const result = await service.createPreUpdateVolumeSnapshot(testUrn);
+
+        expect(result.success).toBe(true);
+        expect(result.dataSnapshotCopiedAsRoot).toBe(true);
+        expect(result.snapshotPath).toBeDefined();
+        expect(child_process.spawn).toHaveBeenCalledTimes(1);
+        expect(child_process.spawn).toHaveBeenCalledWith(
+          'docker',
+          [
+            'run',
+            '--rm',
+            '--name',
+            expect.stringMatching(/^ci-hub-helper-[0-9a-f]{12}$/),
+            '--network',
+            'none',
+            '--user',
+            '0:0',
+            '-v',
+            `${hostAppData}:/src:ro`,
+            '-v',
+            `/host/root/backups/.pre-update-snapshots/test-store/test-app/${result.snapshotId}/app-data:/dest:rw`,
+            'alpine:3.20',
+            'cp',
+            '-a',
+            '/src/.',
+            '/dest/',
+          ],
+          { stdio: 'pipe' },
+        );
+      });
+
+      it('is not a success when the helper fails too, and removes what it wrote', async () => {
+        (child_process.spawn as any).mockReturnValue(createComposeProbeProcess(1));
+
+        const result = await service.createPreUpdateVolumeSnapshot(testUrn);
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('Could not copy');
+        expect(result.dataSnapshotCopiedAsRoot).toBeUndefined();
+        expect(filesystemService.removeDirectory).toHaveBeenCalledWith(expect.stringContaining('.pre-update-snapshots'));
+      });
+
+      it('empties the root-owned copy with a helper, then removes the folder, when a later step fails', async () => {
+        (child_process.spawn as any).mockReturnValue(createComposeProbeProcess(0));
+        // The data copy needed root; the installed-files copy then fails.
+        filesystemService.copyDirectory.mockResolvedValue(false);
+
+        const result = await service.createPreUpdateVolumeSnapshot(testUrn);
+
+        expect(result.success).toBe(false);
+        const calls = (child_process.spawn as any).mock.calls.map((c: any[]) => c[1] as string[]);
+        expect(calls).toHaveLength(2);
+        expect(calls[1]).toEqual(expect.arrayContaining(['find', '/target', '-mindepth', '1', '-delete']));
+        expect(calls[1].join(' ')).toContain(`${result.snapshotId}:/target:rw`);
+        expect(filesystemService.removeDirectory).toHaveBeenCalledWith(expect.stringContaining('.pre-update-snapshots'));
+      });
     });
 
     it('handles container listing errors without throwing', async () => {
@@ -1450,135 +2372,247 @@ describe('DockerService', () => {
       expect(result.message).toContain('Health probe failed');
     });
 
-    describe('healthchecks that are still starting', () => {
-      const SECOND_NS = 1_000_000_000;
-      // docassemble's manifest healthcheck: 600 s start_period, then 5 × (30 s + 10 s) to unhealthy.
-      const docassembleHealthcheck = {
-        Test: ['CMD-SHELL', 'curl -fsS http://127.0.0.1/health_check?ready=1'],
-        Interval: 30 * SECOND_NS,
-        Timeout: 10 * SECOND_NS,
-        StartPeriod: 600 * SECOND_NS,
-        Retries: 5,
+    // After an update the Hub probes 5 times, 2 s apart. An app whose health check still said
+    // `starting` then (Uptime Kuma 2 takes 7 to 10 s on a busy machine) used to count as broken and
+    // was rolled back, although Docker had not decided anything yet.
+    describe('with waitWhileStarting, as after an update', () => {
+      const updateProbe = { maxAttempts: 5, delayMs: 2_000, waitWhileStarting: true };
+      const s = (seconds: number) => seconds * 1_000;
+      // Docker reports health check durations in nanoseconds.
+      const ns = (seconds: number) => seconds * 1_000_000_000;
+      // Uptime Kuma 2.5.6's health check in the catalog: start period 180 s, interval 60 s, timeout 30 s, 5 retries.
+      const uptimeKumaHealthcheck = { Test: ['CMD-SHELL', 'extra/healthcheck'], StartPeriod: ns(180), Interval: ns(60), Timeout: ns(30), Retries: 5 };
+
+      type Snapshot = { state: 'running' | 'exited'; health?: 'starting' | 'healthy' | 'unhealthy'; exitCode?: number };
+      type FakeContainer = { id: string; name: string; healthcheck?: Dockerode.HealthConfig; at: (elapsedMs: number) => Snapshot };
+
+      let probeStartedAt: number;
+
+      // Each container's state follows `at(ms since the probe started)`, read on every inspect.
+      const withContainers = (containers: FakeContainer[]) => {
+        dockerode.listContainers.mockImplementation(async () => {
+          const elapsed = Date.now() - probeStartedAt;
+          return containers.map((c) => ({ Id: c.id, Names: [`/${c.name}`], State: c.at(elapsed).state, Status: '' })) as any;
+        });
+        dockerode.getContainer.mockImplementation((id: string) => {
+          const container = containers.find((c) => c.id === id);
+          return {
+            inspect: vi.fn(async () => {
+              if (!container) {
+                throw new Error(`no such container: ${id}`);
+              }
+              const now = container.at(Date.now() - probeStartedAt);
+              return {
+                State: {
+                  Status: now.state,
+                  Running: now.state === 'running',
+                  ExitCode: now.exitCode ?? 0,
+                  ...(now.health ? { Health: { Status: now.health, FailingStreak: 0, Log: [] } } : {}),
+                },
+                Config: { Healthcheck: container.healthcheck },
+              };
+            }),
+          } as any;
+        });
       };
 
-      const inspectOf = (
-        health: string,
-        opts: { startedSecondsAgo?: number; restartCount?: number; healthcheck?: Record<string, unknown> } = {},
-      ) => ({
-        RestartCount: opts.restartCount ?? 0,
-        Config: { Healthcheck: opts.healthcheck ?? docassembleHealthcheck },
-        State: {
-          Status: 'running',
-          Running: true,
-          StartedAt: new Date(Date.now() - (opts.startedSecondsAgo ?? 5) * 1000).toISOString(),
-          Health: { Status: health, FailingStreak: 0, Log: [] },
-        },
+      // Runs the probe on fake time and reports when it settled.
+      const probe = async (options: Parameters<DockerService['verifyContainerHealthProbe']>[1] = updateProbe) => {
+        let settledAfterMs = -1;
+        const pending = service.verifyContainerHealthProbe(testUrn, options).then((result) => {
+          settledAfterMs = Date.now() - probeStartedAt;
+          return result;
+        });
+        await vi.advanceTimersByTimeAsync(s(30 * 60));
+        // Still -1 here means the probe was still waiting after half an hour.
+        expect(settledAfterMs).toBeGreaterThanOrEqual(0);
+        return { result: await pending, settledAfterMs };
+      };
+
+      beforeEach(() => {
+        vi.useFakeTimers();
+        probeStartedAt = Date.now();
       });
 
-      /** One running container whose successive inspects return `inspects` (the last one repeats). */
-      const probeSequence = (inspects: ReturnType<typeof inspectOf>[]) => {
-        dockerode.listContainers.mockResolvedValue([
-          { Id: 'web', Names: ['/test-app-web'], State: 'running', Status: 'Up 5 seconds (health: starting)' } as any,
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('keeps checking a container that is starting for 15 s and passes once it is healthy', async () => {
+        withContainers([
+          {
+            id: 'kuma',
+            name: 'uptime-kuma',
+            healthcheck: uptimeKumaHealthcheck,
+            at: (elapsed) => ({ state: 'running', health: elapsed < s(15) ? 'starting' : 'healthy' }),
+          },
         ]);
-        const inspect = vi.fn();
-        for (const value of inspects) inspect.mockResolvedValueOnce(value);
-        inspect.mockResolvedValue(inspects[inspects.length - 1]);
-        dockerode.getContainer.mockReturnValue({ inspect } as any);
-        return inspect;
-      };
 
-      it('waits through a start_period instead of failing a container that is about to be healthy', async () => {
-        const inspect = probeSequence([inspectOf('starting'), inspectOf('starting'), inspectOf('starting'), inspectOf('healthy')]);
-
-        const result = await service.verifyContainerHealthProbe(testUrn, { maxAttempts: 2, delayMs: 1, maxStartingWaitMs: 60_000 });
+        const { result, settledAfterMs } = await probe();
 
         expect(result.healthy).toBe(true);
-        // Three `starting` polls on a budget of two attempts: none of them counted.
-        expect(inspect).toHaveBeenCalledTimes(4);
-        expect(loggerService.info).toHaveBeenCalledWith(expect.stringContaining('still starting'));
+        expect(settledAfterMs).toBe(s(16));
+        expect(result.message).toBe(`All containers for ${testUrn} passed health probes after 16 s`);
+        expect(loggerService.info).toHaveBeenCalledWith(expect.stringMatching(/still starting after 8 s \(uptime-kuma\); waiting up to 630 s/));
       });
 
-      it('keeps the old fail-after-maxAttempts behaviour when maxStartingWaitMs is not given', async () => {
-        const inspect = probeSequence([inspectOf('starting'), inspectOf('starting'), inspectOf('healthy')]);
-
-        const result = await service.verifyContainerHealthProbe(testUrn, { maxAttempts: 2, delayMs: 1 });
-
-        expect(result.healthy).toBe(false);
-        expect(result.message).toContain('test-app-web (starting)');
-        expect(inspect).toHaveBeenCalledTimes(2);
-      });
-
-      it('does not wait once the healthcheck window has passed (Docker should already have said unhealthy)', async () => {
-        // 600 s start_period + 5 × (30 s + 10 s) = 800 s, and the container started 1000 s ago.
-        const inspect = probeSequence([inspectOf('starting', { startedSecondsAgo: 1000 })]);
-
-        const result = await service.verifyContainerHealthProbe(testUrn, { maxAttempts: 2, delayMs: 1, maxStartingWaitMs: 60_000 });
-
-        expect(result.healthy).toBe(false);
-        expect(inspect).toHaveBeenCalledTimes(2);
-      });
-
-      it.each([
-        { startedSecondsAgo: 170, waits: true },
-        { startedSecondsAgo: 190, waits: false },
-      ])(
-        'takes Docker defaults for unset fields: window 3 × (30 s + 30 s) = 180 s, started $startedSecondsAgo s ago → waits: $waits',
-        async ({ startedSecondsAgo, waits }) => {
-          // An image HEALTHCHECK with only a command: Docker stores 0 for every duration and for retries.
-          const healthcheck = { Test: ['CMD-SHELL', 'true'], Interval: 0, Timeout: 0, StartPeriod: 0, Retries: 0 };
-          probeSequence([inspectOf('starting', { startedSecondsAgo, healthcheck }), inspectOf('healthy', { startedSecondsAgo, healthcheck })]);
-
-          const result = await service.verifyContainerHealthProbe(testUrn, { maxAttempts: 1, delayMs: 1, maxStartingWaitMs: 60_000 });
-
-          expect(result.healthy).toBe(waits);
-        },
-      );
-
-      it('stops waiting at maxStartingWaitMs and says how long it waited', async () => {
-        probeSequence([inspectOf('starting')]);
-
-        const result = await service.verifyContainerHealthProbe(testUrn, { maxAttempts: 2, delayMs: 5, maxStartingWaitMs: 40 });
-
-        expect(result.healthy).toBe(false);
-        expect(result.message).toMatch(/test-app-web \(starting\) after waiting \d+s for healthchecks to settle/);
-      });
-
-      it('stops waiting when the healthcheck turns unhealthy', async () => {
-        const inspect = probeSequence([inspectOf('starting'), inspectOf('unhealthy')]);
-
-        const result = await service.verifyContainerHealthProbe(testUrn, { maxAttempts: 2, delayMs: 1, maxStartingWaitMs: 60_000 });
-
-        expect(result.healthy).toBe(false);
-        expect(result.message).toContain('test-app-web (unhealthy)');
-        // One free `starting` poll, then the two attempts.
-        expect(inspect).toHaveBeenCalledTimes(3);
-      });
-
-      it('does not wait for a container that restarted during the probe (a crash loop reads `starting` after every restart)', async () => {
-        const inspect = probeSequence([inspectOf('starting', { restartCount: 0 }), inspectOf('starting', { restartCount: 1, startedSecondsAgo: 0 })]);
-
-        const result = await service.verifyContainerHealthProbe(testUrn, { maxAttempts: 2, delayMs: 1, maxStartingWaitMs: 60_000 });
-
-        expect(result.healthy).toBe(false);
-        expect(inspect).toHaveBeenCalledTimes(3);
-      });
-
-      it('does not wait while another container of the app has already failed', async () => {
-        dockerode.listContainers.mockResolvedValue([
-          { Id: 'web', Names: ['/test-app-web'], State: 'running', Status: 'Up 5 seconds (health: starting)' } as any,
-          { Id: 'worker', Names: ['/test-app-worker'], State: 'exited', Status: 'Exited (1) 2 seconds ago' } as any,
+      it('fails as soon as Docker reports the container unhealthy, without waiting out its start period', async () => {
+        withContainers([
+          {
+            id: 'kuma',
+            name: 'uptime-kuma',
+            healthcheck: uptimeKumaHealthcheck,
+            at: (elapsed) => ({ state: 'running', health: elapsed < s(20) ? 'starting' : 'unhealthy' }),
+          },
         ]);
-        const inspects = {
-          web: vi.fn().mockResolvedValue(inspectOf('starting')),
-          worker: vi.fn().mockResolvedValue({ State: { Status: 'exited', Running: false, ExitCode: 1 } }),
-        };
-        dockerode.getContainer.mockImplementation((id: string) => ({ inspect: inspects[id as 'web' | 'worker'] }) as any);
 
-        const result = await service.verifyContainerHealthProbe(testUrn, { maxAttempts: 2, delayMs: 1, maxStartingWaitMs: 60_000 });
+        const { result, settledAfterMs } = await probe();
 
         expect(result.healthy).toBe(false);
-        expect(result.message).toContain('test-app-worker (exited)');
-        expect(inspects.web).toHaveBeenCalledTimes(2);
+        expect(settledAfterMs).toBe(s(20));
+        expect(result.message).toBe(`Health probe failed for ${testUrn}: uptime-kuma (unhealthy)`);
+      });
+
+      it('gives up on a container that never leaves starting after its start period plus its retries checks', async () => {
+        withContainers([
+          { id: 'kuma', name: 'uptime-kuma', healthcheck: uptimeKumaHealthcheck, at: () => ({ state: 'running', health: 'starting' }) },
+        ]);
+
+        const { result, settledAfterMs } = await probe();
+
+        // 180 s + 5 × (60 s interval + 30 s timeout): each check may run for its timeout before the next interval starts.
+        expect(result.healthy).toBe(false);
+        expect(settledAfterMs).toBe(s(630));
+        expect(result.message).toBe(`Health probe failed for ${testUrn}: uptime-kuma (still starting after 630 s)`);
+      });
+
+      it('gives a health check without a start period two minutes', async () => {
+        withContainers([
+          {
+            id: 'web',
+            name: 'app-web',
+            healthcheck: { Test: ['CMD', 'true'], Interval: ns(5), Retries: 3 },
+            at: () => ({ state: 'running', health: 'starting' }),
+          },
+        ]);
+
+        const { result, settledAfterMs } = await probe();
+
+        expect(result.healthy).toBe(false);
+        expect(settledAfterMs).toBe(s(120));
+        expect(result.message).toContain('app-web (still starting after 120 s)');
+      });
+
+      it('never waits longer than 15 minutes, whatever start period the app declares', async () => {
+        withContainers([
+          {
+            id: 'tts',
+            name: 'slow-tts',
+            healthcheck: { Test: ['CMD', 'true'], StartPeriod: ns(30 * 60), Interval: ns(30), Retries: 3 },
+            at: () => ({ state: 'running', health: 'starting' }),
+          },
+        ]);
+
+        const { result, settledAfterMs } = await probe();
+
+        expect(result.healthy).toBe(false);
+        expect(settledAfterMs).toBe(s(15 * 60));
+      });
+
+      it('fails when another container exits while one is still starting', async () => {
+        withContainers([
+          { id: 'web', name: 'app-web', healthcheck: uptimeKumaHealthcheck, at: () => ({ state: 'running', health: 'starting' }) },
+          { id: 'worker', name: 'app-worker', at: (elapsed) => (elapsed < s(20) ? { state: 'running' } : { state: 'exited', exitCode: 1 }) },
+        ]);
+
+        const { result, settledAfterMs } = await probe();
+
+        expect(result.healthy).toBe(false);
+        expect(settledAfterMs).toBe(s(20));
+        expect(result.message).toBe(`Health probe failed for ${testUrn}: app-worker (exited)`);
+      });
+
+      it('does not wait for a container that stopped although its health status still says starting', async () => {
+        withContainers([
+          { id: 'web', name: 'app-web', healthcheck: uptimeKumaHealthcheck, at: () => ({ state: 'exited', health: 'starting', exitCode: 1 }) },
+        ]);
+
+        const { result, settledAfterMs } = await probe();
+
+        expect(result.healthy).toBe(false);
+        expect(settledAfterMs).toBe(s(8));
+      });
+
+      it("counts each check's own timeout in the wait, as Docker spends it", async () => {
+        withContainers([
+          {
+            id: 'web',
+            name: 'app-web',
+            healthcheck: { Test: ['CMD', 'true'], StartPeriod: ns(60), Interval: ns(10), Timeout: ns(20), Retries: 5 },
+            at: () => ({ state: 'running', health: 'starting' }),
+          },
+        ]);
+
+        const { result, settledAfterMs } = await probe();
+
+        // 60 s + 5 × (10 s + 20 s); without the timeouts it was the 2-minute floor.
+        expect(result.healthy).toBe(false);
+        expect(settledAfterMs).toBe(s(210));
+      });
+
+      it('stops at once with cancelled set when its signal is aborted', async () => {
+        withContainers([
+          { id: 'kuma', name: 'uptime-kuma', healthcheck: uptimeKumaHealthcheck, at: () => ({ state: 'running', health: 'starting' }) },
+        ]);
+        const controller = new AbortController();
+        setTimeout(() => controller.abort(), s(21));
+
+        const { result, settledAfterMs } = await probe({ ...updateProbe, signal: controller.signal });
+
+        expect(result).toMatchObject({ healthy: false, cancelled: true });
+        expect(settledAfterMs).toBe(s(21));
+      });
+
+      it('ends the wait at waitUntil when the caller has to be done before the health check allows', async () => {
+        withContainers([
+          { id: 'kuma', name: 'uptime-kuma', healthcheck: uptimeKumaHealthcheck, at: () => ({ state: 'running', health: 'starting' }) },
+        ]);
+
+        const { result, settledAfterMs } = await probe({ ...updateProbe, waitUntil: probeStartedAt + s(100) });
+
+        expect(result.healthy).toBe(false);
+        expect(result.cancelled).toBeUndefined();
+        expect(settledAfterMs).toBe(s(100));
+        expect(loggerService.info).toHaveBeenCalledWith(
+          expect.stringContaining('waiting up to 100 s for its health check to pass, all the time the update has left'),
+        );
+      });
+
+      it('passes an app without a health check on the first look, as before', async () => {
+        withContainers([{ id: 'web', name: 'app-web', at: () => ({ state: 'running' }) }]);
+
+        const { result, settledAfterMs } = await probe();
+
+        expect(result.healthy).toBe(true);
+        expect(settledAfterMs).toBe(0);
+        expect(dockerode.listContainers).toHaveBeenCalledTimes(1);
+      });
+
+      it('still counts starting as failing after the attempts when the caller did not ask to wait', async () => {
+        withContainers([
+          {
+            id: 'kuma',
+            name: 'uptime-kuma',
+            healthcheck: uptimeKumaHealthcheck,
+            at: (elapsed) => ({ state: 'running', health: elapsed < s(15) ? 'starting' : 'healthy' }),
+          },
+        ]);
+
+        const { result, settledAfterMs } = await probe({ maxAttempts: 5, delayMs: 2_000 });
+
+        expect(result.healthy).toBe(false);
+        expect(settledAfterMs).toBe(s(8));
+        expect(result.message).toBe(`Health probe failed for ${testUrn}: uptime-kuma (starting)`);
       });
     });
   });

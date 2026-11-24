@@ -1,9 +1,14 @@
+import { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
 import { HUB_ACTIONS, type HubAction } from '@/core/portal/hub-actions';
-import type { ActorCheckContext, LifecycleActor } from '@/core/portal/lifecycle-actor';
+import type { ActorCheckContext, LifecycleActor, SystemLifecycleReason } from '@/core/portal/lifecycle-actor';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ModuleRef } from '@nestjs/core';
+import { PortExposeService } from '@/modules/custom-apps/port-expose.service';
 import { AppLifecycleService } from '../app-lifecycle.service';
+import { buildRestoreInstallForm } from '../app-rehydration';
+import { HubAccessService } from '../hub-access.service';
+import { ForwardAuthSecretResolver } from '@/modules/auth/forward-auth-secret.resolver';
 import { AppInstallValidator } from '../app-install-validator.service';
 import { ExposureSyncService } from '../exposure-sync.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -42,6 +47,12 @@ import { HttpStatus } from '@nestjs/common';
 import { assertHostDevicesAvailable } from '../commands/host-device-preflight';
 import { PortManagerService } from '@/modules/network/port-manager.service';
 import { EnvUtils } from '@/modules/env/env.utils';
+import type { Request } from 'express';
+import type { ApiKeyContext, ApiKeyService } from '@/modules/api-keys/api-key.service';
+import { mcpCallContext } from '@/modules/mcp/mcp-call-context';
+import { McpToolRegistry } from '@/modules/mcp/mcp-tool-registry.service';
+import { AppLifecycleTools } from '@/modules/mcp/tools/app-lifecycle.tools';
+import { AppLifecycleController } from '../app-lifecycle.controller';
 
 // buildInstallPlan's image listing goes through extractComposeImages -> parseComposeJson; the
 // schema itself has its own coverage elsewhere, so keep this suite focused on plan orchestration.
@@ -59,6 +70,9 @@ vi.mock('../commands/host-device-preflight', () => ({
 
 /** Install mechanics, not authorization, are under test here — the gate itself is covered in its own block. */
 const TEST_ACTOR: LifecycleActor = { kind: 'exempt', principal: 'cli' };
+
+/** The Start a reinstall dispatches under the install's own claim on the app. */
+type ReinstallStart = { dispatchStart: (params: { appUrn: AppUrn }) => Promise<{ requestId: string }> };
 
 describe('AppLifecycleService', () => {
   let service: AppLifecycleService;
@@ -194,6 +208,89 @@ describe('AppLifecycleService', () => {
   });
 
   describe('invokeCommand', () => {
+    // RabbitMQ redelivers an install the restart cut off before bootstrap has loaded the stores (#2286).
+    it('waits for the app stores before running a redelivered command', async () => {
+      const data = { appUrn: 'test-app', command: 'install', requestId: '00000000-0000-4000-8000-000000000002', form: {} } as any;
+      const command = { execute: vi.fn().mockResolvedValue({ success: true, message: 'OK' }) };
+      commandFactory.createCommand.mockReturnValue(command as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'installing' } as any);
+      let storesLoaded: () => void = () => undefined;
+      marketplaceService.whenInitialized.mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          storesLoaded = resolve;
+        }),
+      );
+
+      const running = service.invokeCommand(data, vi.fn());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(command.execute).not.toHaveBeenCalled();
+
+      storesLoaded();
+      await running;
+      expect(command.execute).toHaveBeenCalledWith('test-app', expect.anything(), expect.anything());
+    });
+
+    // Startup recovery fails an install still waiting its turn. Its message still comes (#2286).
+    it.each([
+      ['install_failed', { id: 1, status: 'install_failed' }],
+      ['gone', null],
+    ])('does not run a redelivered install whose row is %s', async (_name, row) => {
+      const data = { appUrn: 'test-app', command: 'install', requestId: '00000000-0000-4000-8000-000000000004', form: {} } as any;
+      const command = { execute: vi.fn() };
+      commandFactory.createCommand.mockReturnValue(command as any);
+      appsRepository.getAppByUrn.mockResolvedValue(row as any);
+      const reply = vi.fn().mockResolvedValue(undefined);
+
+      await service.invokeCommand(data, reply);
+
+      expect(command.execute).not.toHaveBeenCalled();
+      expect(reply).toHaveBeenCalledWith(expect.objectContaining({ success: false, cancelled: true }));
+      expect(installPipelineTracker.getActive()).toBeNull();
+    });
+
+    // Recovery failed the install and the operator retried it while the old message waited its turn.
+    it('does not run a redelivered install once a retry of the app has registered', async () => {
+      const appUrn = 'test-app' as any;
+      const data = { appUrn, command: 'install', requestId: '00000000-0000-4000-8000-000000000005', form: {} } as any;
+      const retryRequestId = '00000000-0000-4000-8000-000000000006';
+      operationRegistry.register(appUrn, { requestId: retryRequestId, command: 'install', tier: 'safe' });
+      const command = { execute: vi.fn() };
+      commandFactory.createCommand.mockReturnValue(command as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'installing' } as any);
+      const reply = vi.fn().mockResolvedValue(undefined);
+
+      await service.invokeCommand(data, reply);
+
+      expect(command.execute).not.toHaveBeenCalled();
+      expect(reply).toHaveBeenCalledWith(expect.objectContaining({ success: false, cancelled: true }));
+      expect(operationRegistry.get(appUrn)?.requestId).toBe(retryRequestId);
+    });
+
+    it('lets Cancel reach an install that resumes after a restart', async () => {
+      const appUrn = 'test-app' as any;
+      const data = { appUrn, command: 'install', requestId: '00000000-0000-4000-8000-000000000007', form: {} } as any;
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'installing' } as any);
+      let finish: (result: { success: boolean; cancelled?: boolean; message: string }) => void = () => undefined;
+      const command = {
+        execute: vi.fn().mockReturnValue(
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+        ),
+      };
+      commandFactory.createCommand.mockReturnValue(command as any);
+
+      const running = service.invokeCommand(data, vi.fn().mockResolvedValue(undefined));
+      await vi.waitFor(() => expect(command.execute).toHaveBeenCalled());
+
+      expect(await service.cancelOperation({ actor: TEST_ACTOR, appUrn })).toMatchObject({ outcome: 'cancelling' });
+      expect(command.execute.mock.calls[0][2].signal.aborted).toBe(true);
+
+      finish({ success: false, cancelled: true, message: 'cancelled' });
+      await running;
+      expect(operationRegistry.get(appUrn)).toBeUndefined();
+    });
+
     it('should execute command and sync cloudflare on success', async () => {
       const data = {
         appUrn: 'test-app',
@@ -205,6 +302,7 @@ describe('AppLifecycleService', () => {
       const command = { execute: vi.fn().mockResolvedValue({ success: true, message: 'OK' }) };
 
       commandFactory.createCommand.mockReturnValue(command as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'installing' } as any);
 
       registrationService.getDeviceRegistrationInfo.mockResolvedValue({
         id: 'org-id',
@@ -219,7 +317,7 @@ describe('AppLifecycleService', () => {
 
       expect(mutex.acquire).toHaveBeenCalledWith('__install-pipeline__');
       expect(mutex.acquire).toHaveBeenCalledWith('test-app');
-      expect(command.execute).toHaveBeenCalledWith('test-app', expect.anything());
+      expect(command.execute).toHaveBeenCalledWith('test-app', expect.anything(), expect.anything());
       expect(cloudflareClientService.syncState).toHaveBeenCalled();
       expect(reply).toHaveBeenCalledWith({ success: true, message: 'OK' });
     });
@@ -343,6 +441,102 @@ describe('AppLifecycleService', () => {
 
       const syncedApps = cloudflareClientService.syncState.mock.calls[0]?.[1] as any[];
       expect(syncedApps.filter((entry) => entry.privilegedKind !== 'hub').map((entry) => entry.name)).toEqual(['n8n', 'nextcloud']);
+    });
+
+    // A reinstalled Hub can only put an exposed port back if the Portal knows it was one and its port (#2131).
+    it('marks an exposed port in the sync, with the port it forwards to', async () => {
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        id: 'org-id',
+        tunnelId: 'tunnel-id',
+        slug: 'acme',
+        hubSubdomain: 'hub1-acme',
+      } as any);
+      appsRepository.getApps.mockResolvedValue([
+        {
+          appName: 'game',
+          appStoreSlug: '_user',
+          status: 'running',
+          exposureMode: 'cloudflare',
+          exposedLocal: true,
+          localSubdomain: 'game',
+          port: 3080,
+          config: { kind: 'port-expose', port: 3080, exposureMode: 'cloudflare', localSubdomain: 'game', exposedLocal: true, openPort: true },
+        },
+        {
+          appName: 'nextcloud',
+          appStoreSlug: 'ci-marketplace',
+          status: 'running',
+          exposureMode: 'cloudflare',
+          exposedLocal: true,
+          port: 8443,
+          config: { exposureMode: 'cloudflare', openPort: true },
+        },
+      ] as any);
+      configService.getConfig.mockReturnValue({ userSettings: { domain: 'ci.computer', localDomain: 'lan' }, domain: 'ci.computer' } as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 2 });
+
+      await service.triggerCloudflareSync();
+
+      const synced = cloudflareClientService.syncState.mock.calls[0]?.[1] as any[];
+      expect(synced.find((entry) => entry.name === 'game')).toMatchObject({ kind: 'port-expose', upstreamPort: 3080, localPort: 80 });
+      expect(synced.find((entry) => entry.name === 'nextcloud')).not.toHaveProperty('kind');
+    });
+
+    // A save through the generic config route rewrites the stored form without `kind`, so config.json is asked too.
+    it('marks an exposed port whose stored form lost its kind, from its config.json', async () => {
+      const files = { getInstalledAppInfo: vi.fn().mockResolvedValue({ kind: 'port-expose' }) };
+      vi.mocked((exposureSyncService as any).moduleRef.get).mockImplementation((token: unknown) => (token === AppFilesManager ? files : undefined));
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        id: 'org-id',
+        tunnelId: 'tunnel-id',
+        slug: 'acme',
+        hubSubdomain: 'hub1-acme',
+      } as any);
+      appsRepository.getApps.mockResolvedValue([
+        {
+          appName: 'game',
+          appStoreSlug: '_user',
+          status: 'running',
+          exposureMode: 'cloudflare',
+          exposedLocal: true,
+          localSubdomain: 'game',
+          port: 3080,
+          config: { exposureMode: 'cloudflare', localSubdomain: 'game', exposedLocal: true, openPort: true },
+        },
+      ] as any);
+      configService.getConfig.mockReturnValue({ userSettings: { domain: 'ci.computer', localDomain: 'lan' }, domain: 'ci.computer' } as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1 });
+
+      await service.triggerCloudflareSync();
+
+      const synced = cloudflareClientService.syncState.mock.calls[0]?.[1] as any[];
+      expect(files.getInstalledAppInfo).toHaveBeenCalledWith('game:_user');
+      expect(synced.find((entry) => entry.name === 'game')).toMatchObject({ kind: 'port-expose', upstreamPort: 3080 });
+    });
+
+    /*
+     * The registry is written only when a This Machine Only or Private VPN port is created or changed,
+     * so one exposed before it carried the kind and mode would never get them (#2131).
+     */
+    it('sends the Portal its This Machine Only and Private VPN ports once per start, after a sync it answered', async () => {
+      const portExpose = { syncAllPortalRegistryEntries: vi.fn().mockRejectedValueOnce(new Error('Portal busy')).mockResolvedValue(undefined) };
+      vi.mocked((exposureSyncService as any).moduleRef.get).mockImplementation((token: unknown) =>
+        token === PortExposeService ? portExpose : undefined,
+      );
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({ id: 'org-id', tunnelId: 'tunnel-id', slug: 'acme' } as any);
+      appsRepository.getApps.mockResolvedValue([]);
+      configService.getConfig.mockReturnValue({ userSettings: { localDomain: 'lan' } } as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 0 });
+
+      await service.triggerCloudflareSync();
+      await vi.waitFor(() => expect(portExpose.syncAllPortalRegistryEntries).toHaveBeenCalledTimes(1));
+
+      // The first attempt failed, so the next sync tries again; after that, no more.
+      await service.triggerCloudflareSync();
+      await vi.waitFor(() => expect(portExpose.syncAllPortalRegistryEntries).toHaveBeenCalledTimes(2));
+      await service.triggerCloudflareSync();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(portExpose.syncAllPortalRegistryEntries).toHaveBeenCalledTimes(2);
     });
 
     it('should not include Hub route when hubSubdomain is not set', async () => {
@@ -648,6 +842,23 @@ describe('AppLifecycleService', () => {
 
       expect(mutex.acquire).not.toHaveBeenCalledWith('__install-pipeline__');
       expect(mutex.acquire).toHaveBeenCalledWith('test-app');
+    });
+
+    it('records why a command failed on its job, where the app page reads it after a reload', async () => {
+      const failJob = vi.fn().mockResolvedValue(null);
+      (service as any).lifecycleJobService = { createJob: vi.fn().mockResolvedValue({ id: 'job-1' }), failJob };
+      const serviceFailure = { kind: 'restarting', service: 'summary-service', exitCode: 126 };
+      const result = { success: false, message: 'summary-service keeps restarting (exit 126)', errorDetail: 'the logs', serviceFailure };
+      commandFactory.createCommand.mockReturnValue({ execute: vi.fn().mockResolvedValue(result) } as any);
+
+      await service.invokeCommand(
+        { appUrn: 'test-app:ci-marketplace', command: 'start', requestId: '00000000-0000-4000-8000-000000000009', form: {} } as any,
+        vi.fn(),
+      );
+
+      expect(failJob).toHaveBeenCalledWith('job-1', 'summary-service keeps restarting (exit 126)', {
+        failure: expect.objectContaining({ errorDetail: 'the logs', serviceFailure }),
+      });
     });
 
     it('should handle errors during execution', async () => {
@@ -1185,6 +1396,145 @@ describe('AppLifecycleService', () => {
         });
       });
 
+      /*
+       * The install route no longer asks WhoIs itself (#2102); the service's gate is the only one. These
+       * go in through the real route and the real MCP tool, so the actor each names is the one checked.
+       * The member here may install the app and is no organization owner or admin.
+       */
+      describe('behind the install route and hub_install_app', () => {
+        const people = { has: vi.fn(), hasManagingRole: vi.fn() };
+        const portalStore = { slug: 'ci-marketplace', url: 'http://portal/api', type: 'ci_cloud_api' };
+        const MEMBER_KEY: ApiKeyContext = { id: 3, name: 'member key', capability: 'full', ownerAppUrn: null, createdByUserId: 7 };
+        let controller: AppLifecycleController;
+        let tools: AppLifecycleTools;
+
+        const viaRoute = (form: Record<string, unknown>) =>
+          controller.installApp(appUrn, form as never, { hubPrincipal: 'session', user: { id: 7 } } as unknown as Request);
+        const viaMcp = (form: Record<string, unknown>) => mcpCallContext.run(MEMBER_KEY, () => tools.installApp({ appUrn, form }));
+        const transports = [
+          ['the install route', viaRoute],
+          ['hub_install_app', viaMcp],
+        ] as const;
+
+        /** Nothing an install does after its gate: no Portal, no registry, no row, no queue, no page told. */
+        const expectNothingReached = () => {
+          expect(reposHelpers.downloadAppFiles).not.toHaveBeenCalled();
+          expect(imageSizeService.listAppImages).not.toHaveBeenCalled();
+          expect(imageSizeService.verifyAppArchitecture).not.toHaveBeenCalled();
+          expect(appsRepository.createApp).not.toHaveBeenCalled();
+          expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+          expect(appEventsQueue.publish).not.toHaveBeenCalled();
+          expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'operation_change' }));
+        };
+
+        beforeEach(() => {
+          people.has.mockReset().mockImplementation(async (_userId: number, _urn: string, action: string) => action === 'install');
+          people.hasManagingRole.mockReset().mockResolvedValue(false);
+          vi.mocked((service as any).moduleRef.get).mockImplementation((token: unknown) => (token === MarketplaceWhoIsService ? people : undefined));
+          appStoreService.getAppStoreBySlug.mockResolvedValue(portalStore as any);
+          // `lifecycleActor` reads only the request, so the Portal, database and repositories are never reached.
+          const whois = new MarketplaceWhoIsService({} as never, {} as never, logger, {} as never, {} as never, {} as never);
+          controller = new AppLifecycleController(service, {} as never, {} as never, whois);
+          tools = new AppLifecycleTools(service, mock<McpToolRegistry>());
+        });
+
+        it.each(transports)('%s refuses a member without the install grant before anything else', async (_label, install) => {
+          people.has.mockResolvedValue(false);
+
+          const error = await install({ exposureMode: 'local' }).then(
+            () => null,
+            (e: TranslatableError) => e,
+          );
+
+          expect(error?.message).toBe('APP_ACTION_GRANT_DENIED');
+          expect(error?.status).toBe(HttpStatus.FORBIDDEN);
+          expect(people.has).toHaveBeenCalledWith(7, appUrn, 'install');
+          expectNothingReached();
+        });
+
+        it.each(transports)('%s refuses a member a form that moves the custom domain', async (_label, install) => {
+          const error = await install({ exposureMode: 'cloudflare', customDomain: 'shop.acme.com' }).then(
+            () => null,
+            (e: TranslatableError) => e,
+          );
+
+          expect(error?.message).toBe('CUSTOM_DOMAIN_ROLE_REQUIRED');
+          expect(error?.status).toBe(HttpStatus.FORBIDDEN);
+          expect(people.hasManagingRole).toHaveBeenCalledWith(7, appUrn);
+          expectNothingReached();
+        });
+
+        it.each(transports)(
+          '%s installs for that member when the form changes nothing it needs a role for, asking WhoIs once',
+          async (_label, install) => {
+            reposHelpers.downloadAppFiles.mockResolvedValue({ success: true, message: 'App files downloaded' });
+
+            await install({ exposureMode: 'local' });
+
+            expect(people.has).toHaveBeenCalledTimes(1);
+            expect(people.has).toHaveBeenCalledWith(7, appUrn, 'install');
+            expect(people.hasManagingRole).not.toHaveBeenCalled();
+            expect(appsRepository.createApp).toHaveBeenCalled();
+          },
+        );
+      });
+
+      /*
+       * Creating a custom app takes an organization owner or admin, the rule a custom app's `install`
+       * follows. HTTP and MCP both ask here, so a key answers to its creator's role, and a key with no
+       * person behind it gets nothing that takes one.
+       */
+      describe('creating a custom app', () => {
+        const people = { customAppActionsFor: vi.fn() };
+        const OWNER_ACTIONS = ['view', 'start', 'stop', 'restart', 'install', 'update', 'uninstall', 'reset', 'backup', 'restore', 'configure'];
+
+        beforeEach(() => {
+          people.customAppActionsFor.mockReset();
+          vi.mocked((service as any).moduleRef.get).mockImplementation((token: unknown) => (token === MarketplaceWhoIsService ? people : undefined));
+        });
+
+        it('lets an organization owner or admin create one', async () => {
+          people.customAppActionsFor.mockResolvedValue(OWNER_ACTIONS);
+
+          await expect(service.assertActorMayCreateCustomApp(OPERATOR)).resolves.toBeUndefined();
+          expect(people.customAppActionsFor).toHaveBeenCalledWith(7);
+        });
+
+        it.each([
+          ['a member', ['view']],
+          ['an operator with no linked Portal identity', ['view', 'start', 'stop', 'restart']],
+          ['anyone whose role could not be read', ['view']],
+        ])('refuses %s', async (_label, actions) => {
+          people.customAppActionsFor.mockResolvedValue(actions);
+
+          await expect(service.assertActorMayCreateCustomApp(OPERATOR)).rejects.toThrow('CUSTOM_APP_CREATE_ROLE_REQUIRED');
+        });
+
+        it("decides a key created by a person on its creator's role", async () => {
+          people.customAppActionsFor.mockResolvedValue(OWNER_ACTIONS);
+
+          await service.assertActorMayCreateCustomApp({ kind: 'mcp', ownerAppUrn: null, createdByUserId: 9, capability: 'write' });
+
+          expect(people.customAppActionsFor).toHaveBeenCalledWith(9);
+        });
+
+        it.each([
+          ['a key nobody is recorded as creating', { kind: 'mcp', ownerAppUrn: null, createdByUserId: null, capability: 'full' }],
+          ['a managed app key at full', { kind: 'mcp', ownerAppUrn: 'importer:ci-marketplace', createdByUserId: 9, capability: 'full' }],
+        ] as Array<[string, LifecycleActor]>)('refuses %s, with no person to ask', async (_label, actor) => {
+          await expect(service.assertActorMayCreateCustomApp(actor)).rejects.toThrow('CUSTOM_APP_CREATE_ROLE_REQUIRED');
+          expect(people.customAppActionsFor).not.toHaveBeenCalled();
+        });
+
+        it.each([
+          ['a grant-exempt principal', { kind: 'exempt', principal: 'cli' }],
+          ['the Hub itself', { kind: 'system', reason: 'debug-seed' }],
+        ] as Array<[string, LifecycleActor]>)('admits %s by name', async (_label, actor) => {
+          await expect(service.assertActorMayCreateCustomApp(actor)).resolves.toBeUndefined();
+          expect(people.customAppActionsFor).not.toHaveBeenCalled();
+        });
+      });
+
       describe('the sweeps', () => {
         const IMPORTER = 'importer:ci-marketplace';
         const importerKeyAt = (capability: 'read' | 'write' | 'full'): LifecycleActor => ({
@@ -1399,6 +1749,552 @@ describe('AppLifecycleService', () => {
       }
     });
 
+    describe('an app whose listing says it is not exposable', () => {
+      const notExposable = { ...baseAppInfo, exposable: false, dynamic_config: true };
+
+      beforeEach(() => {
+        marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(notExposable as any);
+      });
+
+      it.each([
+        [
+          'the form the install dialog sends on a paired Hub',
+          { exposureMode: 'cloudflare', exposedLocal: false, openPort: false, enableAuth: false },
+        ],
+        ['Public Web with a name and a domain', { exposureMode: 'cloudflare', exposedLocal: true, localSubdomain: 'myapp', publicDomain: 'ci0.pw' }],
+        ['Public Web by the older flag alone', { exposedLocal: true, localSubdomain: 'myapp' }],
+        ['the Private VPN', { exposureMode: 'tailscale', exposedLocal: false }],
+      ])('installs on This Machine Only from %s', async (_label, form) => {
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form });
+
+        const row = appsRepository.createApp.mock.calls[0]?.[0] as any;
+        expect(row).toMatchObject({ exposureMode: 'local', exposedLocal: false, openPort: true, enableAuth: false, publicDomain: null });
+        expect(row.config).toMatchObject({ exposureMode: 'local', exposedLocal: false, openPort: true, enableAuth: false });
+        expect(row.config.publicDomain).toBeUndefined();
+        expect(appEventsQueue.publish).toHaveBeenCalledWith(
+          expect.objectContaining({
+            command: 'install',
+            form: expect.objectContaining({ exposureMode: 'local', exposedLocal: false, openPort: true }),
+          }),
+        );
+      });
+
+      it('records what it applied, not what the request asked for', async () => {
+        await service.installApp({
+          actor: TEST_ACTOR,
+          appUrn,
+          form: { exposed: true, domain: 'app.example.com', exposedLocal: true, localSubdomain: 'myapp', exposureMode: 'cloudflare' },
+        });
+
+        expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ exposed: false, domain: null, exposedLocal: false }));
+      });
+
+      it('says so in the log when it moves a form off a route', async () => {
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'cloudflare', exposedLocal: false, enableAuth: false } });
+
+        expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('not exposable, resetting proxy settings'));
+      });
+
+      it('puts a reinstall of an app stored on Public Web on This Machine Only', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue({
+          id: 1,
+          status: 'stopped',
+          port: 3101,
+          exposureMode: 'cloudflare',
+          config: { exposureMode: 'cloudflare', exposedLocal: false, openPort: false, port: 3101 },
+        } as any);
+
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'cloudflare', exposedLocal: false, openPort: false } });
+
+        expect(appsRepository.updateAppById).toHaveBeenCalledWith(
+          1,
+          expect.objectContaining({
+            exposureMode: 'local',
+            exposedLocal: false,
+            openPort: true,
+            publicDomain: null,
+            domain: null,
+            config: expect.objectContaining({ exposureMode: 'local', exposedLocal: false, openPort: true }),
+          }),
+        );
+      });
+
+      it('releases the route right after a reinstall moves the app off it', async () => {
+        const syncSpy = vi.spyOn(exposureSyncService, 'syncExposurePublic').mockResolvedValue(undefined);
+        appsRepository.getAppByUrn.mockResolvedValue({
+          id: 1,
+          status: 'stopped',
+          port: 3101,
+          exposureMode: 'cloudflare',
+          config: { exposureMode: 'cloudflare', exposedLocal: false, openPort: false, port: 3101 },
+        } as any);
+
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'cloudflare', exposedLocal: false, openPort: false } });
+
+        expect(syncSpy).toHaveBeenCalled();
+      });
+
+      it('does not refuse to move a reinstalled app off its route over a host port another app publishes', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue({
+          id: 1,
+          status: 'stopped',
+          port: 3101,
+          exposureMode: 'cloudflare',
+          config: { exposureMode: 'cloudflare', exposedLocal: false, openPort: false, port: 3101 },
+        } as any);
+        appsRepository.getAppsByPort.mockResolvedValue([{ id: 2, appName: 'other' }] as any);
+
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'cloudflare', exposedLocal: false, port: 3101 } });
+
+        expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ exposureMode: 'local' }));
+      });
+
+      it('still refuses a fresh install on a host port another app publishes', async () => {
+        appsRepository.getAppsByPort.mockResolvedValue([{ id: 2, appName: 'other' }] as any);
+
+        await expect(service.installApp({ actor: TEST_ACTOR, appUrn, form: { port: 3101 } })).rejects.toMatchObject({
+          message: 'APP_ERROR_PORT_ALREADY_IN_USE',
+        });
+      });
+
+      it('puts a retried install on This Machine Only', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue({
+          id: 1,
+          status: 'install_failed',
+          port: 3101,
+          exposedLocal: false,
+          exposureMode: 'cloudflare',
+          config: { exposureMode: 'cloudflare' },
+        } as any);
+
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'cloudflare', exposedLocal: false, openPort: false } });
+
+        expect(appsRepository.updateAppById).toHaveBeenCalledWith(
+          1,
+          expect.objectContaining({
+            exposureMode: 'local',
+            exposedLocal: false,
+            openPort: true,
+            config: expect.objectContaining({ exposureMode: 'local' }),
+          }),
+        );
+      });
+
+      it('puts an app the restore after a pairing brings back on This Machine Only', async () => {
+        const form = buildRestoreInstallForm({ name: 'testapp', slug: 'testapp', port: 3101, publicDomain: 'ci0.pw' } as any);
+        expect(form.exposureMode).toBe('cloudflare');
+
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form });
+
+        expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'local', publicDomain: null }));
+      });
+    });
+
+    // The answer to the app's request for the Hub MCP tools lives on the row, written by a person; the
+    // route checked they may give it (`AppLifecycleController.installApp`).
+    describe('the installer’s answer about MCP access', () => {
+      it('is recorded on the row, and kept out of the stored form', async () => {
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: { mcpAccess: 'read' } });
+
+        const row = appsRepository.createApp.mock.calls[0]?.[0] as Record<string, unknown>;
+        expect(row.mcpAccess).toBe('read');
+        expect(row.config).not.toHaveProperty('mcpAccess');
+      });
+
+      it('SECURITY: is ignored from a key, which may install an app but not give it reach', async () => {
+        await service.installApp({
+          actor: { kind: 'mcp', ownerAppUrn: null, createdByUserId: null, capability: 'full' },
+          appUrn,
+          form: { mcpAccess: 'full' },
+        });
+
+        const row = appsRepository.createApp.mock.calls[0]?.[0] as Record<string, unknown>;
+        expect(row).not.toHaveProperty('mcpAccess');
+        expect(row.config).not.toHaveProperty('mcpAccess');
+      });
+
+      it('is left as it was when an install gives none', async () => {
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+
+        expect(appsRepository.createApp.mock.calls[0]?.[0]).not.toHaveProperty('mcpAccess');
+      });
+
+      /*
+       * The install route asks this of the request, but the MCP tool runner (`hub_install_app` from
+       * `/api/mcp-admin`) hands the form straight here as the signed-in operator, whose answer is written.
+       */
+      describe('SECURITY: `full` from an operator, as the MCP tool runner sends it', () => {
+        const operator: LifecycleActor = { kind: 'operator', userId: 7 };
+        const people = { has: vi.fn(), isClaimingOperator: vi.fn(), isOrgManager: vi.fn() };
+
+        beforeEach(() => {
+          people.has.mockReset().mockResolvedValue(true);
+          people.isClaimingOperator.mockReset().mockResolvedValue(false);
+          people.isOrgManager.mockReset().mockResolvedValue(false);
+          vi.mocked((service as any).moduleRef.get).mockImplementation((token: unknown) => (token === MarketplaceWhoIsService ? people : undefined));
+        });
+
+        it('refuses a member, before anything is written', async () => {
+          await expect(service.installApp({ actor: operator, appUrn, form: { mcpAccess: 'full' } })).rejects.toThrow('API_KEY_FULL_ROLE_REQUIRED');
+
+          expect(people.isOrgManager).toHaveBeenCalledWith(7);
+          expect(appsRepository.createApp).not.toHaveBeenCalled();
+          expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+        });
+
+        it('refuses when WhoIs cannot be resolved', async () => {
+          vi.mocked((service as any).moduleRef.get).mockImplementation(() => undefined);
+
+          await expect(service.installApp({ actor: operator, appUrn, form: { mcpAccess: 'full' } })).rejects.toThrow();
+          expect(appsRepository.createApp).not.toHaveBeenCalled();
+        });
+
+        it('records it for an organization owner or admin', async () => {
+          people.isOrgManager.mockResolvedValue(true);
+
+          await service.installApp({ actor: operator, appUrn, form: { mcpAccess: 'full' } });
+
+          expect(appsRepository.createApp.mock.calls[0]?.[0]).toMatchObject({ mcpAccess: 'full' });
+        });
+
+        it('records it for the operator who claimed the Hub', async () => {
+          people.isClaimingOperator.mockResolvedValue(true);
+
+          await service.installApp({ actor: operator, appUrn, form: { mcpAccess: 'full' } });
+
+          expect(appsRepository.createApp.mock.calls[0]?.[0]).toMatchObject({ mcpAccess: 'full' });
+        });
+
+        it('asks nothing more of a member for a lower level', async () => {
+          await service.installApp({ actor: operator, appUrn, form: { mcpAccess: 'write' } });
+
+          expect(people.isOrgManager).not.toHaveBeenCalled();
+          expect(appsRepository.createApp.mock.calls[0]?.[0]).toMatchObject({ mcpAccess: 'write' });
+        });
+      });
+    });
+
+    it('records what the production guard applied, not what the request asked for', async () => {
+      configService.getConfig.mockReturnValue({ ...configService.getConfig(), isProduction: true } as any);
+
+      await service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposed: true, domain: 'app.example.com', exposureMode: 'local' } });
+
+      expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ exposed: false, domain: null }));
+    });
+
+    describe('a form with no openPort, which the queue serves on an open port', () => {
+      it('is recorded open on a first install', async () => {
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'cloudflare', exposedLocal: true } });
+
+        expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ openPort: true }));
+      });
+
+      it('is recorded open on a save', async () => {
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(baseAppInfo as any);
+        appsRepository.getAppByUrn.mockResolvedValue({
+          id: 1,
+          status: 'stopped',
+          port: 8080,
+          openPort: false,
+          config: { exposureMode: 'tailscale', exposedLocal: false },
+          appName: 'myapp',
+          appStoreSlug: 'ci-marketplace',
+        } as any);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'tailscale', exposedLocal: false, port: 9090 } });
+
+        expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ openPort: true }));
+      });
+
+      it('keeps a closed port recorded closed', async () => {
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'cloudflare', exposedLocal: true, openPort: false } });
+
+        expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ openPort: false }));
+      });
+
+      it('is not offered a custom domain, which its env would never name', async () => {
+        await service.installApp({
+          actor: TEST_ACTOR,
+          appUrn,
+          form: { exposureMode: 'cloudflare', exposedLocal: true, customDomain: 'shop.example.com' },
+        });
+
+        expect(appsRepository.createApp.mock.calls[0]?.[0]).not.toMatchObject({ customDomainIntent: 'shop.example.com' });
+      });
+    });
+
+    describe('an exposable app keeps the mode it asks for', () => {
+      it.each([
+        [
+          'cloudflare',
+          { exposureMode: 'cloudflare', exposedLocal: true, openPort: false, enableAuth: true },
+          { exposedLocal: true, openPort: false, enableAuth: true },
+        ],
+        ['tailscale', { exposureMode: 'tailscale', exposedLocal: false, openPort: false }, { exposedLocal: false, openPort: false }],
+        ['local', { exposureMode: 'local', exposedLocal: false, openPort: false }, { exposedLocal: false, openPort: true }],
+      ] as const)('%s', async (mode, form, row) => {
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form });
+
+        expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: mode, ...row }));
+      });
+    });
+
+    describe('an app whose listing needs a public address', () => {
+      const hubHasTunnel = (token: string | null) =>
+        vi
+          .mocked((service as any).moduleRef.get)
+          .mockImplementation((wanted: unknown) => (wanted === CloudflareClientService ? { getTunnelToken: () => token } : undefined));
+
+      beforeEach(() => {
+        marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({ ...baseAppInfo, force_expose: true } as any);
+        hubHasTunnel('tunnel-token');
+      });
+
+      it('installs on Public Web', async () => {
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'cloudflare', exposedLocal: true, openPort: false } });
+
+        expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'cloudflare' }));
+      });
+
+      // Env generation names the public hostname only for `exposedLocal` with a closed host port, and
+      // the queue serves a form that says nothing about the port on an open one.
+      it.each([
+        ['names only the mode', { exposureMode: 'cloudflare' }],
+        ['is public through the legacy flag', { exposedLocal: true }],
+        ['asks for an open host port', { exposureMode: 'cloudflare', exposedLocal: true, openPort: true }],
+      ])('starts under its public name from a form that %s, with the login on', async (_form, form) => {
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form });
+
+        const row = expect.objectContaining({ exposureMode: 'cloudflare', exposedLocal: true, openPort: false, enableAuth: true });
+        expect(appsRepository.createApp).toHaveBeenCalledWith(row);
+        expect(appEventsQueue.publish).toHaveBeenCalledWith(
+          expect.objectContaining({ command: 'install', form: expect.objectContaining({ exposedLocal: true, openPort: false, enableAuth: true }) }),
+        );
+      });
+
+      it('leaves the login off when the form closed the port and turned it off', async () => {
+        await service.installApp({
+          actor: TEST_ACTOR,
+          appUrn,
+          form: { exposureMode: 'cloudflare', exposedLocal: true, openPort: false, enableAuth: false },
+        });
+
+        expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ enableAuth: false }));
+      });
+
+      it('refuses a first install where this Hub has no tunnel', async () => {
+        hubHasTunnel(null);
+
+        await expect(
+          service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'cloudflare', exposedLocal: true, openPort: false } }),
+        ).rejects.toThrow('APP_INSTALL_FORM_NEEDS_PUBLIC_WEB');
+        expect(appsRepository.createApp).not.toHaveBeenCalled();
+      });
+
+      it('refuses a retry of a failed install where this Hub has no tunnel', async () => {
+        hubHasTunnel(null);
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'install_failed', config: {} } as any);
+
+        await expect(
+          service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'cloudflare', exposedLocal: true, openPort: false } }),
+        ).rejects.toThrow('APP_INSTALL_FORM_NEEDS_PUBLIC_WEB');
+      });
+
+      it('lets an installed app reinstall while the tunnel is gone, since it keeps the name it has', async () => {
+        hubHasTunnel(null);
+        appsRepository.getAppByUrn.mockResolvedValue({
+          id: 1,
+          status: 'stopped',
+          config: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false, enableAuth: true },
+        } as any);
+
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'cloudflare', exposedLocal: true, openPort: false } });
+
+        expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'start', appUrn }));
+      });
+
+      it('answers a refusal as a bad request, since nothing went wrong on the Hub', async () => {
+        await expect(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} })).rejects.toMatchObject({ status: HttpStatus.BAD_REQUEST });
+      });
+
+      it.each([
+        ['This machine only', { exposureMode: 'local', exposedLocal: false }],
+        ['Private VPN', { exposureMode: 'tailscale', exposedLocal: false }],
+        ['a form that names no mode', {}],
+      ])('refuses %s', async (_mode, form) => {
+        await expect(service.installApp({ actor: TEST_ACTOR, appUrn, form })).rejects.toThrow('APP_ERROR_APP_FORCE_EXPOSED');
+        expect(appsRepository.createApp).not.toHaveBeenCalled();
+      });
+
+      it('refuses a named domain in production, where the Hub drops it before the app is stored', async () => {
+        configService.getConfig.mockReturnValue({
+          isProduction: true,
+          architecture: 'amd64',
+          version: '1.0.0',
+          userSettings: { localDomain: 'lan', guestDashboard: false },
+        } as any);
+
+        await expect(
+          service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposed: true, domain: 'chat.example.com', exposureMode: 'local' } }),
+        ).rejects.toThrow('APP_ERROR_APP_FORCE_EXPOSED');
+      });
+
+      it('accepts a named domain where the Hub still allows one, with or without a tunnel', async () => {
+        hubHasTunnel(null);
+        configService.getConfig.mockReturnValue({
+          isProduction: false,
+          architecture: 'amd64',
+          version: '1.0.0',
+          userSettings: { localDomain: 'lan', guestDashboard: false },
+        } as any);
+
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposed: true, domain: 'chat.example.com', exposureMode: 'local' } });
+
+        expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ exposed: true, domain: 'chat.example.com' }));
+      });
+    });
+
+    it('keeps the port an installed app is on when the reinstall names none', async () => {
+      /*
+       * The app was moved to 10000 (or saved there). A reinstall form that names no port replaced the
+       * stored config, so the Start it queued rebuilt APP_PORT from the manifest and the app came back
+       * on a port its row no longer matched.
+       */
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 10000 }, port: 10000 } as any);
+
+      await service.installApp({
+        actor: TEST_ACTOR,
+        appUrn,
+        form: { exposureMode: 'cloudflare', exposedLocal: true, openPort: false },
+      } as any);
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ config: expect.objectContaining({ port: 10000 }) }));
+      expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'start', appUrn }));
+    });
+
+    it('records open a reinstall form that moves the app off a closed port and names no openPort', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        status: 'stopped',
+        openPort: false,
+        config: { exposureMode: 'cloudflare', exposedLocal: true, openPort: false },
+      } as any);
+
+      await service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'tailscale', exposedLocal: false } } as any);
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ openPort: true }));
+    });
+
+    describe('a reinstall form that names no mode', () => {
+      const lastPatch = () => appsRepository.updateAppById.mock.calls.find(([, patch]) => 'config' in patch)?.[1] as Record<string, any>;
+      const publicWeb = {
+        port: 8080,
+        exposureMode: 'cloudflare',
+        exposedLocal: true,
+        openPort: false,
+        enableAuth: true,
+        localSubdomain: 'shop',
+        publicDomain: 'example.com',
+      };
+      const onAppStored = (config: Record<string, unknown>) =>
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config, exposureMode: config.exposureMode ?? 'local' } as any);
+
+      it('leaves an app on Public Web under its name, with its closed host port and its login', async () => {
+        onAppStored(publicWeb);
+
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: { port: 9090 } } as any);
+
+        const expected = {
+          exposureMode: 'cloudflare',
+          exposedLocal: true,
+          openPort: false,
+          enableAuth: true,
+          localSubdomain: 'shop',
+          publicDomain: 'example.com',
+        };
+        expect(lastPatch()).toMatchObject(expected);
+        expect(lastPatch().config).toMatchObject({ ...expected, port: 9090 });
+      });
+
+      it('leaves an app on the Private VPN', async () => {
+        onAppStored({ port: 8080, exposureMode: 'tailscale', exposedLocal: false, openPort: false });
+
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} } as any);
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'tailscale', openPort: false });
+        expect(lastPatch().config).toMatchObject({ exposureMode: 'tailscale' });
+      });
+
+      it('leaves an app on This Machine Only', async () => {
+        onAppStored({ port: 8080 });
+
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} } as any);
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'local', openPort: true });
+        expect(lastPatch().config.exposureMode).toBeUndefined();
+      });
+
+      it('still moves the app when the form names another mode', async () => {
+        onAppStored(publicWeb);
+
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'local' } } as any);
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'local', openPort: true });
+        expect(lastPatch().config.localSubdomain).toBeUndefined();
+        expect(lastPatch().config.publicDomain).toBeUndefined();
+      });
+
+      it('has no mode to keep on an app that is not exposable', async () => {
+        marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({ ...baseAppInfo, exposable: false } as any);
+        onAppStored({ port: 8080, exposureMode: 'tailscale', openPort: false });
+
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} } as any);
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'local' });
+      });
+
+      it('is not kept for a retry of a failed install, which goes through the form it was given', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'install_failed', config: publicWeb, exposureMode: 'cloudflare' } as any);
+
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} } as any);
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'local' });
+      });
+    });
+
+    it('gives a first install of a legacy form with a closed host port the Hub login it always had', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue(null as any);
+
+      await service.installApp({ actor: TEST_ACTOR, appUrn, form: { port: 8080, exposedLocal: true, openPort: false } } as any);
+
+      expect(appsRepository.createApp).toHaveBeenCalledWith(
+        expect.objectContaining({ exposureMode: 'cloudflare', openPort: false, enableAuth: true }),
+      );
+    });
+
+    it('records the mode compose runs when a reinstall form is public through exposedLocal alone', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 }, exposureMode: 'local' } as any);
+
+      await service.installApp({ actor: TEST_ACTOR, appUrn, form: { port: 8080, exposedLocal: true, openPort: false } } as any);
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ exposureMode: 'cloudflare' }));
+    });
+
+    it('keeps the public domain of an install form that is public through exposedLocal alone', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 }, exposureMode: 'local' } as any);
+
+      await service.installApp({
+        actor: TEST_ACTOR,
+        appUrn,
+        form: { port: 8080, exposedLocal: true, openPort: false, publicDomain: 'example.com' },
+      } as any);
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({ config: expect.objectContaining({ publicDomain: 'example.com' }) }),
+      );
+    });
+
     it('refuses the reinstall before it parks anything when another app holds the subdomain', async () => {
       /*
        * The release reaches CI-Cloud and writes the row, so it has to run AFTER
@@ -1591,6 +2487,7 @@ describe('AppLifecycleService', () => {
         ...baseAppInfo,
         supported_architectures: ['arm64'],
       } as any);
+      imageSizeService.listAppImages.mockResolvedValue(['ghcr.io/companionintelligence/ci-openclaw:2026.6.1']);
       imageSizeService.verifyAppArchitecture.mockResolvedValue({
         ok: false,
         image: 'ghcr.io/companionintelligence/ci-openclaw:2026.6.1',
@@ -1599,7 +2496,7 @@ describe('AppLifecycleService', () => {
 
       await expect(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} })).rejects.toThrow('APP_ERROR_ARCHITECTURE_NOT_SUPPORTED');
 
-      expect(imageSizeService.verifyAppArchitecture).toHaveBeenCalledWith(appUrn, 'arm64');
+      expect(imageSizeService.verifyAppArchitecture).toHaveBeenCalledWith(appUrn, 'arm64', ['ghcr.io/companionintelligence/ci-openclaw:2026.6.1']);
       expect(appsRepository.createApp).not.toHaveBeenCalled();
     });
 
@@ -1626,12 +2523,622 @@ describe('AppLifecycleService', () => {
     });
 
     it('does not block install when manifest architecture inspection is unavailable', async () => {
+      imageSizeService.listAppImages.mockResolvedValue(['testapp/web:1.0']);
       imageSizeService.verifyAppArchitecture.mockResolvedValue(null);
 
       await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
 
-      expect(imageSizeService.verifyAppArchitecture).toHaveBeenCalledWith(appUrn, 'amd64');
+      expect(imageSizeService.verifyAppArchitecture).toHaveBeenCalledWith(appUrn, 'amd64', ['testapp/web:1.0']);
       expect(appsRepository.createApp).toHaveBeenCalled();
+    });
+
+    /*
+     * The page offers Cancel from the moment Install is clicked, but the operation used to
+     * register only after the Portal bundle download and the architecture check. A cancel in
+     * those seconds got `not_found` ("This install can no longer be cancelled.") and the app
+     * installed anyway.
+     */
+    describe('a cancel that arrives before the install is queued', () => {
+      /** A promise the test settles, to hold installApp at one of its awaits. */
+      const held = <T>() => {
+        let release!: (value: T) => void;
+        const promise = new Promise<T>((resolve) => {
+          release = resolve;
+        });
+        return { promise, release };
+      };
+      /** Lets installApp run up to the await the test is holding. */
+      const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+      const cancelledEvents = () => sseService.emit.mock.calls.filter(([, data]) => (data as { event?: string }).event === 'install_cancelled');
+
+      // The page offers Cancel from the click; the grant check is the first thing the install waits on.
+      it('is held while the install still checks the grant, and nothing is fetched, written or queued', async () => {
+        const grant = held<void>();
+        vi.spyOn(service as unknown as { assertActorMayApplyForm: () => Promise<void> }, 'assertActorMayApplyForm').mockReturnValueOnce(
+          grant.promise,
+        );
+
+        const install = service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+        await settle();
+        const cancel = await service.cancelOperation({ actor: TEST_ACTOR, appUrn });
+        grant.release();
+        await install;
+
+        expect(cancel.outcome).toBe('cancelling');
+        expect(reposHelpers.downloadAppFiles).not.toHaveBeenCalled();
+        expect(appsRepository.createApp).not.toHaveBeenCalled();
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+        expect(cancelledEvents()).toEqual([['app', expect.objectContaining({ event: 'install_cancelled', appUrn })]]);
+      });
+
+      it('drops a cancel held for an install whose grant check refused it', async () => {
+        const grant = held<void>();
+        vi.spyOn(service as unknown as { assertActorMayApplyForm: () => Promise<void> }, 'assertActorMayApplyForm').mockReturnValueOnce(
+          grant.promise.then(() => {
+            throw new TranslatableError('APP_ACTION_GRANT_DENIED', { action: 'install' }, 403);
+          }),
+        );
+
+        const install = service.installApp({ actor: TEST_ACTOR, appUrn, form: {} }).catch((error: unknown) => error);
+        await settle();
+        await service.cancelOperation({ actor: TEST_ACTOR, appUrn });
+        grant.release();
+        await install;
+
+        // The next install is not cancelled by it.
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+        expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'install', appUrn }));
+      });
+
+      it('is held while the Portal bundle downloads, and nothing is written or queued', async () => {
+        appStoreService.getAppStoreBySlug.mockResolvedValue({ slug: 'ci-marketplace', url: 'http://portal/api', type: 'ci_cloud_api' } as any);
+        const download = held<unknown>();
+        reposHelpers.downloadAppFiles.mockReturnValue(download.promise as any);
+
+        const install = service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+        await settle();
+        const cancel = await service.cancelOperation({ actor: TEST_ACTOR, appUrn });
+        download.release({ success: true, files: {} });
+        await install;
+
+        expect(cancel.outcome).toBe('cancelling');
+        // The image check runs beside the download and only reads; nothing is written or queued.
+        expect(appsRepository.createApp).not.toHaveBeenCalled();
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+        expect(cancelledEvents()).toEqual([['app', expect.objectContaining({ event: 'install_cancelled', appUrn })]]);
+      });
+
+      it('is held through the architecture check', async () => {
+        const archCheck = held<null>();
+        imageSizeService.verifyAppArchitecture.mockReturnValue(archCheck.promise);
+
+        const install = service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+        await settle();
+        const cancel = await service.cancelOperation({ actor: TEST_ACTOR, appUrn });
+        archCheck.release(null);
+        await install;
+
+        expect(cancel.outcome).toBe('cancelling');
+        expect(appsRepository.createApp).not.toHaveBeenCalled();
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+        expect(cancelledEvents()).toHaveLength(1);
+      });
+
+      it('removes the row when it lands while the row is being written', async () => {
+        const created = held<unknown>();
+        appsRepository.createApp.mockImplementation(() => created.promise as any);
+        appsRepository.getAppByUrn.mockResolvedValueOnce(null as any).mockResolvedValue({ id: 1, status: 'installing' } as any);
+
+        const install = service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+        await settle();
+        const cancel = await service.cancelOperation({ actor: TEST_ACTOR, appUrn });
+        created.release({ id: 1, status: 'installing', port: 8080, exposedLocal: true });
+        await install;
+
+        expect(cancel.outcome).toBe('cancelling');
+        expect(appsRepository.deleteAppById).toHaveBeenCalledWith(1);
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+        expect(operationRegistry.get(appUrn)).toBeUndefined();
+        expect(cancelledEvents()).toHaveLength(1);
+      });
+
+      it('is answered by the queue once the install is queued', async () => {
+        // The worker has not taken it yet.
+        appEventsQueue.publish.mockReturnValue(new Promise(() => {}));
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+
+        const cancel = await service.cancelOperation({ actor: TEST_ACTOR, appUrn });
+
+        expect(cancel.outcome).toBe('cancelled_queued');
+      });
+
+      // The app is still installed, so `install_cancelled` would tell every tab it is gone.
+      it('is not held for a reinstall of an installed app, which goes ahead', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 3, status: 'running', config: {} } as any);
+        const startApp = vi.spyOn(service as unknown as ReinstallStart, 'dispatchStart').mockResolvedValue({ requestId: 'start-1' });
+        const archCheck = held<null>();
+        imageSizeService.verifyAppArchitecture.mockReturnValue(archCheck.promise);
+
+        const install = service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+        await settle();
+        const cancel = await service.cancelOperation({ actor: TEST_ACTOR, appUrn });
+        archCheck.release(null);
+        await install;
+
+        expect(cancel.outcome).toBe('not_found');
+        expect(startApp).toHaveBeenCalled();
+        expect(appsRepository.deleteAppById).not.toHaveBeenCalled();
+        expect(cancelledEvents()).toEqual([]);
+      });
+
+      /*
+       * Nothing compensates here, so deleting the failed row would leave the failed attempt's files,
+       * port allocations and containers with no app to remove them through.
+       */
+      it('leaves a failed install it was retrying as it was', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 4, status: 'install_failed', config: {} } as any);
+        const archCheck = held<null>();
+        imageSizeService.verifyAppArchitecture.mockReturnValue(archCheck.promise);
+
+        const install = service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+        await settle();
+        const cancel = await service.cancelOperation({ actor: TEST_ACTOR, appUrn });
+        archCheck.release(null);
+        await install;
+
+        expect(cancel.outcome).toBe('cancelling');
+        expect(appsRepository.deleteAppById).not.toHaveBeenCalled();
+        expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+        expect(cancelledEvents()).toEqual([['app', expect.objectContaining({ event: 'install_cancelled', appUrn, appStatus: 'install_failed' })]]);
+      });
+
+      it('puts a retried install back to failed when the cancel lands while its row is rewritten', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 4, status: 'install_failed', port: 8080, exposedLocal: true, config: {} } as any);
+        const rewrite = held<unknown>();
+        appsRepository.updateAppById.mockReturnValueOnce(rewrite.promise as any).mockResolvedValue(undefined as any);
+
+        const install = service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+        await settle();
+        const cancel = await service.cancelOperation({ actor: TEST_ACTOR, appUrn });
+        rewrite.release(undefined);
+        await install;
+
+        expect(cancel.outcome).toBe('cancelling');
+        expect(appsRepository.updateAppById).toHaveBeenNthCalledWith(1, 4, expect.objectContaining({ status: 'installing' }));
+        expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(4, { status: 'install_failed' });
+        expect(appsRepository.deleteAppById).not.toHaveBeenCalled();
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+        expect(operationRegistry.get(appUrn)).toBeUndefined();
+        expect(cancelledEvents()).toEqual([['app', expect.objectContaining({ event: 'install_cancelled', appUrn, appStatus: 'install_failed' })]]);
+      });
+    });
+
+    /*
+     * An install sent while the app's install or uninstall was still running was taken as a
+     * reinstall: the row was patched and a Start queued. The Start replaced the running operation in
+     * the registry, so a second install restarted the new app right after it installed, and an
+     * uninstall never finished and left a row that "started" with no containers.
+     */
+    describe('while the same app is still installing or uninstalling', () => {
+      const held = <T>() => {
+        let release!: (value: T) => void;
+        const promise = new Promise<T>((resolve) => {
+          release = resolve;
+        });
+        return { promise, release };
+      };
+      const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+      const refusal = (promise: Promise<unknown>) =>
+        promise.then(
+          () => null,
+          (error: unknown) => error as TranslatableError,
+        );
+
+      it('refuses with 409 while the uninstall is still finishing, and leaves the uninstall to finish', async () => {
+        appStoreService.getAppStoreBySlug.mockResolvedValue({ slug: 'ci-marketplace', url: 'http://portal/api', type: 'ci_cloud_api' } as any);
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 5, status: 'uninstalling', config: {} } as any);
+        operationRegistry.register(appUrn, { requestId: 'uninstall-1', command: 'uninstall', tier: 'non_cancellable' });
+        const startApp = vi.spyOn(service as unknown as ReinstallStart, 'dispatchStart');
+
+        const error = await refusal(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} }));
+
+        expect(error).toBeInstanceOf(TranslatableError);
+        expect(error?.message).toBe('APP_ERROR_UNINSTALL_IN_PROGRESS');
+        expect(error?.getStatus()).toBe(409);
+        expect(error?.getResponse()).toEqual({ message: 'APP_ERROR_UNINSTALL_IN_PROGRESS', intlParams: { id: 'testapp' } });
+        expect(reposHelpers.downloadAppFiles).not.toHaveBeenCalled();
+        expect(startApp).not.toHaveBeenCalled();
+        expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+        // The uninstall still owns its outcome, so its completion deletes the row.
+        expect(operationRegistry.ownsOutcome(appUrn, 'uninstall-1')).toBe(true);
+        // The next install, once the uninstall is done, is not held up by this one.
+        expect(operationRegistry.beginInstallCall(appUrn)).toBe(true);
+      });
+
+      it('refuses an uninstall that began while the Portal bundle downloaded', async () => {
+        appStoreService.getAppStoreBySlug.mockResolvedValue({ slug: 'ci-marketplace', url: 'http://portal/api', type: 'ci_cloud_api' } as any);
+        appsRepository.getAppByUrn
+          .mockResolvedValueOnce({ id: 5, status: 'running', config: {} } as any)
+          .mockResolvedValue({ id: 5, status: 'uninstalling', config: {} } as any);
+        reposHelpers.downloadAppFiles.mockResolvedValue({ success: true, files: {} } as any);
+        const startApp = vi.spyOn(service as unknown as ReinstallStart, 'dispatchStart');
+
+        const error = await refusal(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} }));
+
+        expect(error?.message).toBe('APP_ERROR_UNINSTALL_IN_PROGRESS');
+        expect(reposHelpers.downloadAppFiles).toHaveBeenCalled();
+        expect(startApp).not.toHaveBeenCalled();
+        expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      });
+
+      it('refuses a reinstall when the uninstall began during the image check', async () => {
+        const archCheck = held<null>();
+        imageSizeService.verifyAppArchitecture.mockReturnValue(archCheck.promise);
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 5, status: 'running', port: 8080, exposedLocal: true, config: {} } as any);
+        const startApp = vi.spyOn(service as unknown as ReinstallStart, 'dispatchStart');
+
+        const install = refusal(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} }));
+        await settle();
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 5, status: 'uninstalling', config: {} } as any);
+        archCheck.release(null);
+        const error = await install;
+
+        expect(imageSizeService.verifyAppArchitecture).toHaveBeenCalled();
+        expect(error?.message).toBe('APP_ERROR_UNINSTALL_IN_PROGRESS');
+        expect(startApp).not.toHaveBeenCalled();
+        expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      });
+
+      it('refuses a second install once the first has written its row', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 6, status: 'installing', config: {} } as any);
+        operationRegistry.register(appUrn, { requestId: 'install-1', command: 'install', tier: 'safe' });
+        const startApp = vi.spyOn(service as unknown as ReinstallStart, 'dispatchStart');
+
+        const error = await refusal(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} }));
+
+        expect(error?.message).toBe('APP_ERROR_INSTALL_IN_PROGRESS');
+        expect(error?.getStatus()).toBe(409);
+        expect(startApp).not.toHaveBeenCalled();
+        expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+        expect(operationRegistry.ownsOutcome(appUrn, 'install-1')).toBe(true);
+      });
+
+      it('refuses a second install sent while the first is still in its checks, and the first goes on', async () => {
+        const archCheck = held<null>();
+        imageSizeService.verifyAppArchitecture.mockReturnValue(archCheck.promise);
+        const startApp = vi.spyOn(service as unknown as ReinstallStart, 'dispatchStart');
+
+        const first = service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+        await settle();
+        const error = await refusal(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} }));
+        archCheck.release(null);
+        await first;
+
+        expect(error?.message).toBe('APP_ERROR_INSTALL_IN_PROGRESS');
+        expect(appsRepository.createApp).toHaveBeenCalledTimes(1);
+        expect(appEventsQueue.publish).toHaveBeenCalledTimes(1);
+        expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'install', appUrn }));
+        expect(startApp).not.toHaveBeenCalled();
+      });
+
+      it('takes the next install once the first has left its checks', async () => {
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+
+        expect(operationRegistry.beginInstallCall(appUrn)).toBe(true);
+      });
+
+      // A reinstall leaves its cancel window early, and its row says `running` until the Start.
+      it('refuses a second reinstall sent while the first is still in its checks', async () => {
+        const archCheck = held<null>();
+        imageSizeService.verifyAppArchitecture.mockReturnValue(archCheck.promise);
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 5, status: 'running', port: 8080, exposedLocal: true, config: {} } as any);
+        const startApp = vi.spyOn(service as unknown as ReinstallStart, 'dispatchStart').mockResolvedValue({ requestId: 'start-1' });
+
+        const first = service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+        await settle();
+        const error = await refusal(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} }));
+        archCheck.release(null);
+        await first;
+
+        expect(error?.message).toBe('APP_ERROR_INSTALL_IN_PROGRESS');
+        expect(appsRepository.updateAppById).toHaveBeenCalledTimes(1);
+        expect(startApp).toHaveBeenCalledTimes(1);
+      });
+
+      it('refuses a retry of a failed install when the uninstall began during the image check', async () => {
+        const archCheck = held<null>();
+        imageSizeService.verifyAppArchitecture.mockReturnValue(archCheck.promise);
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 5, status: 'install_failed', port: 8080, exposedLocal: true, config: {} } as any);
+        operationRegistry.register(appUrn, { requestId: 'uninstall-1', command: 'uninstall', tier: 'non_cancellable' });
+
+        const install = refusal(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} }));
+        await settle();
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 5, status: 'uninstalling', config: {} } as any);
+        archCheck.release(null);
+        const error = await install;
+
+        expect(error?.message).toBe('APP_ERROR_UNINSTALL_IN_PROGRESS');
+        expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+        expect(operationRegistry.ownsOutcome(appUrn, 'uninstall-1')).toBe(true);
+      });
+
+      it('refuses a reinstall whose row an uninstall removed during the image check', async () => {
+        const archCheck = held<null>();
+        imageSizeService.verifyAppArchitecture.mockReturnValue(archCheck.promise);
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 5, status: 'running', port: 8080, exposedLocal: true, config: {} } as any);
+        const startApp = vi.spyOn(service as unknown as ReinstallStart, 'dispatchStart');
+
+        const install = refusal(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} }));
+        await settle();
+        appsRepository.getAppByUrn.mockResolvedValue(null as any);
+        archCheck.release(null);
+        const error = await install;
+
+        expect(error?.message).toBe('APP_ERROR_UNINSTALL_IN_PROGRESS');
+        expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+        expect(startApp).not.toHaveBeenCalled();
+      });
+
+      // The release reaches CI-Cloud and clears the binding, so it must follow every refusal.
+      it('does not release a custom domain for a reinstall it then refuses', async () => {
+        const archCheck = held<null>();
+        imageSizeService.verifyAppArchitecture.mockReturnValue(archCheck.promise);
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 5, status: 'stopped', config: { port: 8080 }, customDomain: 'comfy.acme.com' } as any);
+        const release = vi.spyOn(exposureSyncService, 'releaseCustomDomain').mockResolvedValue({ ok: true });
+
+        const install = refusal(
+          service.installApp({
+            actor: TEST_ACTOR,
+            appUrn,
+            form: {
+              port: 8080,
+              exposureMode: 'cloudflare',
+              exposedLocal: true,
+              openPort: false,
+              customDomain: '',
+              customDomainExpected: 'comfy.acme.com',
+            },
+          } as any),
+        );
+        await settle();
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 5, status: 'uninstalling', config: {}, customDomain: 'comfy.acme.com' } as any);
+        archCheck.release(null);
+        const error = await install;
+
+        expect(error?.message).toBe('APP_ERROR_UNINSTALL_IN_PROGRESS');
+        expect(release).not.toHaveBeenCalled();
+      });
+
+      it.each(['running', 'stopped', 'install_failed'] as const)('still takes an install of an app that is %s', async (status) => {
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 7, status, port: 8080, exposedLocal: true, config: {} } as any);
+        vi.spyOn(service as unknown as ReinstallStart, 'dispatchStart').mockResolvedValue({ requestId: 'start-1' });
+
+        await expect(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} })).resolves.toBeDefined();
+      });
+    });
+
+    // #2101: the install's own busy states, by what is under way rather than by the row alone.
+    describe('while another operation runs on the app', () => {
+      const refusal = (promise: Promise<unknown>) =>
+        promise.then(
+          () => null,
+          (error: unknown) => error as TranslatableError,
+        );
+
+      it.each([
+        { command: 'update', status: 'updating', message: 'APP_ERROR_UPDATE_IN_PROGRESS' },
+        { command: 'restore', status: 'restoring', message: 'APP_ERROR_RESTORE_IN_PROGRESS' },
+        { command: 'backup', status: 'backing_up', message: 'APP_ERROR_BACKUP_IN_PROGRESS' },
+        { command: 'reset', status: 'resetting', message: 'APP_ERROR_RESET_IN_PROGRESS' },
+        { command: 'start', status: 'starting', message: 'APP_ERROR_START_IN_PROGRESS' },
+        { command: 'stop', status: 'stopping', message: 'APP_ERROR_STOP_IN_PROGRESS' },
+        { command: 'restart', status: 'restarting', message: 'APP_ERROR_RESTART_IN_PROGRESS' },
+      ] as const)('refuses an install while the app is $status, instead of taking it as a reinstall', async ({ command, status, message }) => {
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 8, status, port: 8080, exposedLocal: true, config: {} } as any);
+        operationRegistry.register(appUrn, { requestId: 'in-flight', command, tier: 'safe' });
+        const dispatchStart = vi.spyOn(service as unknown as ReinstallStart, 'dispatchStart');
+
+        const error = await refusal(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} }));
+
+        expect(error?.getStatus()).toBe(409);
+        expect(error?.message).toBe(message);
+        expect(dispatchStart).not.toHaveBeenCalled();
+        expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+        expect(operationRegistry.ownsOutcome(appUrn, 'in-flight')).toBe(true);
+      });
+
+      // Its worker died, or the Hub restarted before it finished: nothing is installing it any more.
+      it('retries an install whose row says installing when no install is under way', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 9, status: 'installing', port: 8080, exposedLocal: true, config: {} } as any);
+        const dispatchStart = vi.spyOn(service as unknown as ReinstallStart, 'dispatchStart');
+
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+
+        expect(dispatchStart).not.toHaveBeenCalled();
+        expect(appsRepository.createApp).not.toHaveBeenCalled();
+        expect(appsRepository.updateAppById).toHaveBeenCalledWith(9, expect.objectContaining({ status: 'installing' }));
+        expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'install', appUrn }));
+      });
+
+      // Queued behind other installs, it is still the worker's to run once the stale window has passed.
+      it('refuses an install on a row left installing while that install is still queued or running', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 9, status: 'installing', port: 8080, exposedLocal: true, config: {} } as any);
+        operationRegistry.register(appUrn, { requestId: 'install-1', command: 'install', tier: 'safe' });
+        const entry = operationRegistry.get(appUrn);
+        if (entry) {
+          entry.createdAt = Date.now() - 46 * 60 * 1000;
+        }
+
+        const error = await refusal(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} }));
+
+        expect(error?.message).toBe('APP_ERROR_INSTALL_IN_PROGRESS');
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+        expect(operationRegistry.get(appUrn)?.requestId).toBe('install-1');
+      });
+
+      it('refuses an install on a row left installing while the install pipeline runs it', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 9, status: 'installing', port: 8080, exposedLocal: true, config: {} } as any);
+        installPipelineTracker.setActive(appUrn);
+
+        const error = await refusal(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} }));
+
+        expect(error?.message).toBe('APP_ERROR_INSTALL_IN_PROGRESS');
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+        installPipelineTracker.setActive(null);
+      });
+
+      it('puts a row left installing back to failed when its retry is cancelled before anything is written', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 9, status: 'installing', port: 8080, exposedLocal: true, config: {} } as any);
+        appsRepository.updateAppById.mockResolvedValue({} as any);
+        appStoreService.getAppStoreBySlug.mockResolvedValue({ slug: 'ci-marketplace', url: 'http://portal/api', type: 'ci_cloud_api' } as any);
+        let finishDownload!: (result: unknown) => void;
+        reposHelpers.downloadAppFiles.mockReturnValue(new Promise((resolve) => (finishDownload = resolve)) as any);
+
+        const install = service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+        await vi.waitFor(() => expect(reposHelpers.downloadAppFiles).toHaveBeenCalled());
+        await service.cancelOperation({ actor: TEST_ACTOR, appUrn });
+        finishDownload({ success: true, files: {} });
+        await install;
+
+        expect(appsRepository.updateAppById).toHaveBeenCalledWith(9, { status: 'install_failed' });
+        expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_cancelled', appStatus: 'install_failed' }));
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      });
+
+      it('still refuses an install on a row left uninstalling, with no uninstall under way', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 10, status: 'uninstalling', config: {} } as any);
+
+        const error = await refusal(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} }));
+
+        expect(error?.message).toBe('APP_ERROR_UNINSTALL_IN_PROGRESS');
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      });
+
+      // An MCP caller reaches the service without the HTTP route's check. Told the app was busy, a
+      // caller without the grant learned what the app was doing.
+      it('refuses a caller without the install grant for that, before it says the app is busy', async () => {
+        const otherAppsKey: LifecycleActor = {
+          kind: 'mcp',
+          ownerAppUrn: 'ci-hermes:ci-marketplace' as AppUrn,
+          createdByUserId: null,
+          capability: 'write',
+        };
+        operationRegistry.beginInstallCall(appUrn);
+        operationRegistry.register(appUrn, { requestId: 'uninstall-1', command: 'uninstall', tier: 'non_cancellable' });
+
+        const error = await refusal(service.installApp({ actor: otherAppsKey, appUrn, form: {} }));
+
+        expect(error?.getStatus()).toBe(403);
+        expect(error?.message).toBe('APP_ACTION_GRANT_DENIED');
+      });
+
+      it('takes an install from a caller with the grant once the app is free again', async () => {
+        operationRegistry.register(appUrn, { requestId: 'uninstall-1', command: 'uninstall', tier: 'non_cancellable' });
+        expect((await refusal(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} })))?.message).toBe('APP_ERROR_UNINSTALL_IN_PROGRESS');
+
+        operationRegistry.claimCompletion(appUrn, 'uninstall-1');
+
+        await expect(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} })).resolves.toBeDefined();
+      });
+
+      // Other open pages read the app again when its install begins and ends its checks.
+      it('tells every page when an install begins and ends its checks', async () => {
+        // Queued, and the worker has not taken it yet.
+        appEventsQueue.publish.mockReturnValue(new Promise(() => {}));
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+
+        const changes = sseService.emit.mock.calls.filter(([, data]) => (data as { event?: string }).event === 'operation_change');
+        // The second names the install the Hub has now queued.
+        expect(changes).toEqual([
+          ['app', { event: 'operation_change', appUrn, operation: 'install' }],
+          ['app', { event: 'operation_change', appUrn, operation: 'install' }],
+        ]);
+      });
+
+      it('tells every page that nothing is under way when the install gave up', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 10, status: 'uninstalling', config: {} } as any);
+
+        await expect(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} })).rejects.toThrow('APP_ERROR_UNINSTALL_IN_PROGRESS');
+
+        const changes = sseService.emit.mock.calls.filter(([, data]) => (data as { event?: string }).event === 'operation_change');
+        expect(changes.at(-1)).toEqual(['app', { event: 'operation_change', appUrn, operation: null }]);
+      });
+    });
+
+    // #2102: the checks an install runs before it registers, and how long each took.
+    describe('the checks before an install registers', () => {
+      const held = <T>() => {
+        let release!: (value: T) => void;
+        const promise = new Promise<T>((resolve) => {
+          release = resolve;
+        });
+        return { promise, release };
+      };
+      const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+      beforeEach(() => {
+        appStoreService.getAppStoreBySlug.mockResolvedValue({ slug: 'ci-marketplace', url: 'http://portal/api', type: 'ci_cloud_api' } as any);
+        imageSizeService.listAppImages.mockResolvedValue(['testapp/web:1.0']);
+        reposHelpers.downloadAppFiles.mockResolvedValue({ success: true, files: {} } as any);
+      });
+
+      it('checks the images while the bundle downloads, not after it', async () => {
+        const download = held<unknown>();
+        reposHelpers.downloadAppFiles.mockReturnValue(download.promise as any);
+        imageSizeService.verifyAppArchitecture.mockResolvedValue({ ok: true });
+
+        const install = service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+        await settle();
+
+        // On the images read before the download, not on a second read of the compose it rewrites.
+        expect(imageSizeService.verifyAppArchitecture).toHaveBeenCalledWith(appUrn, 'amd64', ['testapp/web:1.0']);
+        download.release({ success: true, files: {} });
+        await install;
+
+        expect(imageSizeService.verifyAppArchitecture).toHaveBeenCalledTimes(1);
+        expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'install', appUrn }));
+      });
+
+      it('checks the images again when the downloaded compose names other ones', async () => {
+        imageSizeService.listAppImages.mockResolvedValueOnce(['testapp/web:1.0']).mockResolvedValue(['testapp/web:2.0']);
+        imageSizeService.verifyAppArchitecture
+          .mockResolvedValueOnce({ ok: true })
+          .mockResolvedValueOnce({ ok: false, image: 'testapp/web:2.0', available: ['arm64'] });
+
+        const install = service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+
+        await expect(install).rejects.toThrow('APP_ERROR_ARCHITECTURE_NOT_SUPPORTED');
+        expect(imageSizeService.verifyAppArchitecture).toHaveBeenCalledTimes(2);
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      });
+
+      it('asks nothing of the Portal or a registry for a caller without the grant', async () => {
+        const otherAppsKey: LifecycleActor = {
+          kind: 'mcp',
+          ownerAppUrn: 'ci-hermes:ci-marketplace' as AppUrn,
+          createdByUserId: null,
+          capability: 'write',
+        };
+
+        await expect(service.installApp({ actor: otherAppsKey, appUrn, form: {} })).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+
+        expect(reposHelpers.downloadAppFiles).not.toHaveBeenCalled();
+        expect(imageSizeService.verifyAppArchitecture).not.toHaveBeenCalled();
+      });
+
+      it('logs how long each check took', async () => {
+        imageSizeService.verifyAppArchitecture.mockResolvedValue({ ok: true });
+
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+
+        // One line per install, the checks in the order they finished.
+        expect(logger.info).toHaveBeenCalledWith(
+          expect.stringMatching(/^\[install\] testapp:ci-marketplace took \d+ ms \(grant \d+ ms, (?=.*bundle \d+ ms)(?=.*architecture \d+ ms)/),
+        );
+      });
     });
 
     // ── production port fallback ──────────────────────────────────────────
@@ -1759,10 +3266,27 @@ describe('AppLifecycleService', () => {
       });
     });
 
+    // `testapp-ci-marketplace` is also the id of app `testapp-ci` from a store `marketplace`.
+    it('refuses an app whose id another installed app already has, before anything is written', async () => {
+      appsRepository.getApps.mockResolvedValue([{ appName: 'testapp-ci', appStoreSlug: 'marketplace' }] as any);
+
+      await expect(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} })).rejects.toThrow('APP_ERROR_APP_ID_IN_USE');
+      expect(appsRepository.createApp).not.toHaveBeenCalled();
+    });
+
     it('MUST normalize local exposure to openPort=true before duplicate-port checks', async () => {
       appsRepository.getAppsByPort.mockResolvedValue([{ appName: 'taken-port' }] as any);
 
       await expect(service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'local', openPort: false, port: 8080 } })).rejects.toThrow(
+        'APP_ERROR_PORT_ALREADY_IN_USE',
+      );
+    });
+
+    // The queue serves a form with no `openPort` on an open port, so another app's port is no more free to it.
+    it('MUST reject duplicate port for a cloudflare form with no openPort', async () => {
+      appsRepository.getAppsByPort.mockResolvedValue([{ appName: 'taken-port' }] as any);
+
+      await expect(service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'cloudflare', port: 8080 } })).rejects.toThrow(
         'APP_ERROR_PORT_ALREADY_IN_USE',
       );
     });
@@ -1781,6 +3305,280 @@ describe('AppLifecycleService', () => {
       await service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'cloudflare', exposedLocal: false, openPort: false, port: 8080 } });
 
       expect(appsRepository.getAppsByPort).not.toHaveBeenCalled();
+    });
+  });
+
+  /*
+   * Update and a reinstall write the port to the row. The port manager's table has to follow. If it
+   * doesn't, the busy-port move can't tell the refused port is the app's own, while another app can be handed it.
+   */
+  describe('keeping the port allocation on the port a person set', () => {
+    const appUrn = 'port-test:_user' as AppUrn;
+    const storeUrn = 'testapp:ci-marketplace' as AppUrn;
+    const row = {
+      id: 1,
+      appName: 'port-test',
+      appStoreSlug: '_user',
+      status: 'stopped',
+      port: 10000,
+      config: { port: 10000, exposureMode: 'local', openPort: true },
+    };
+    let portManager: MockProxy<PortManagerService>;
+
+    beforeEach(() => {
+      portManager = mock<PortManagerService>();
+      portManager.setMainPort.mockResolvedValue(true);
+      portManager.getPortHolder.mockResolvedValue(undefined);
+      const moduleRef = (service as unknown as { moduleRef: { get: ReturnType<typeof vi.fn> } }).moduleRef;
+      moduleRef.get.mockImplementation((token: unknown) => (token === PortManagerService ? portManager : undefined));
+      appsRepository.getAppByUrn.mockResolvedValue(row as any);
+      appsRepository.getAppsByPort.mockResolvedValue([]);
+      appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
+      appsRepository.getApps.mockResolvedValue([]);
+      appsRepository.updateAppById.mockResolvedValue(row as any);
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'port-test', urn: appUrn, port: 80, exposable: true } as any);
+      appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK' } as any);
+    });
+
+    const save = (port: number | undefined, urn: AppUrn = appUrn) =>
+      service.updateAppConfig({
+        actor: TEST_ACTOR,
+        appUrn: urn,
+        form: { exposureMode: 'local', openPort: true, ...(port === undefined ? {} : { port }) },
+      });
+    const conflictOf = (promise: Promise<unknown>) =>
+      promise.then(
+        () => undefined,
+        (error: TranslatableError) => ({
+          message: error.message,
+          status: error.getStatus(),
+          params: (error.getResponse() as { intlParams?: unknown }).intlParams,
+        }),
+      );
+
+    it('records the port an Update names, in the table as on the row', async () => {
+      await save(18558);
+
+      expect(portManager.setMainPort).toHaveBeenCalledWith(appUrn, 18558);
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ port: 18558 }));
+    });
+
+    it('answers 409 and writes nothing when another app holds the port in the table only', async () => {
+      // An `addPorts` port, or the port of an app not publishing it now: no row names it as published.
+      portManager.getPortHolder.mockResolvedValue({ appUrn: 'holder:_user', hostPort: 10001 } as any);
+
+      expect(await conflictOf(save(10001))).toEqual({
+        message: 'APP_ERROR_PORT_ALREADY_IN_USE',
+        status: 409,
+        params: { port: '10001', id: 'holder' },
+      });
+
+      expect(portManager.setMainPort).not.toHaveBeenCalled();
+      expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      expect(appsRepository.updateAppById).not.toHaveBeenCalledWith(1, expect.objectContaining({ port: 10001 }));
+    });
+
+    // A boot leaves such an app on its row's port. Every save sends that port again.
+    it('still saves an app on a port it has already when another app holds that port in the table', async () => {
+      portManager.getPortHolder.mockResolvedValue({ appUrn: 'holder:_user', hostPort: 10000 } as any);
+      portManager.setMainPort.mockResolvedValue(false);
+
+      await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'local', openPort: true, port: 10000, maxBackups: 5 } });
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ port: 10000, maxBackups: 5 }));
+    });
+
+    it('still saves and logs it when the table cannot be written', async () => {
+      portManager.setMainPort.mockRejectedValue(new Error('connection lost'));
+
+      await save(18558);
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ port: 18558 }));
+    });
+
+    it('answers 409 when another app publishes the port', async () => {
+      appsRepository.getAppsByPort.mockResolvedValue([{ appName: 'holder' }] as any);
+
+      expect(await conflictOf(save(10001))).toEqual({
+        message: 'APP_ERROR_PORT_ALREADY_IN_USE',
+        status: 409,
+        params: { port: '10001', id: 'holder' },
+      });
+    });
+
+    it('answers 409 for a public app whose stored form has no openPort, which is served on an open port', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        appName: 'myapp',
+        appStoreSlug: 'ci-marketplace',
+        status: 'stopped',
+        port: 10000,
+        exposureMode: 'cloudflare',
+        exposedLocal: false,
+        config: { exposureMode: 'cloudflare', exposedLocal: false, port: 10000 },
+      } as any);
+      appsRepository.getAppsByPort.mockResolvedValue([{ appName: 'holder' }] as any);
+
+      expect(
+        await conflictOf(
+          service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'cloudflare', exposedLocal: false, port: 10001 } }),
+        ),
+      ).toEqual({
+        message: 'APP_ERROR_PORT_ALREADY_IN_USE',
+        status: 409,
+        params: { port: '10001', id: 'holder' },
+      });
+      expect(portManager.setMainPort).not.toHaveBeenCalled();
+    });
+
+    // An uninstall that could not give its ports back leaves an allocation under a name no app has.
+    it('does not refuse a port left allocated to an app that is gone', async () => {
+      portManager.getPortHolder.mockResolvedValue({ appUrn: 'gone:_user', hostPort: 18558 } as any);
+      appsRepository.getAppByUrn.mockImplementation(async (urn: string) => (urn === appUrn ? row : undefined) as any);
+
+      await save(18558);
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ port: 18558 }));
+    });
+
+    // An exposed port's save leaves the table behind until the next boot, so the allocation names a port its app left.
+    it('does not refuse a port the holding app has left', async () => {
+      portManager.getPortHolder.mockResolvedValue({ appUrn: 'exposed:_user', hostPort: 18558, label: 'main' } as any);
+      appsRepository.getAppByUrn.mockImplementation(async (urn: string) => (urn === appUrn ? row : { appName: 'exposed', port: 9500 }) as any);
+
+      await save(18558);
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ port: 18558 }));
+    });
+
+    it('refuses a port the holding app still publishes as its main port', async () => {
+      portManager.getPortHolder.mockResolvedValue({ appUrn: 'holder:_user', hostPort: 18558, label: 'main' } as any);
+      appsRepository.getAppByUrn.mockImplementation(async (urn: string) => (urn === appUrn ? row : { appName: 'holder', port: 18558 }) as any);
+
+      expect(await conflictOf(save(18558))).toMatchObject({ status: 409, params: { port: '18558', id: 'holder' } });
+    });
+
+    // A mapping's port is not the row's, so the row saying another port doesn't free it.
+    it('refuses a port the holding app has as a mapping', async () => {
+      portManager.getPortHolder.mockResolvedValue({ appUrn: 'holder:_user', hostPort: 18558, label: 'web-8443' } as any);
+      appsRepository.getAppByUrn.mockImplementation(async (urn: string) => (urn === appUrn ? row : { appName: 'holder', port: 10005 }) as any);
+
+      expect(await conflictOf(save(18558))).toMatchObject({ status: 409, params: { port: '18558', id: 'holder' } });
+    });
+
+    it('does not count the port the app holds itself as taken', async () => {
+      portManager.getPortHolder.mockResolvedValue({ appUrn, hostPort: 18558 } as any);
+
+      await save(18558);
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ port: 18558 }));
+    });
+
+    it('still saves and logs it when another app takes the port just after the check', async () => {
+      portManager.setMainPort.mockResolvedValue(false);
+
+      await save(18558);
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ port: 18558 }));
+      expect(warnings().some((line) => line.includes('18558'))).toBe(true);
+    });
+
+    it('leaves the table alone when the save could not be published', async () => {
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'queue down' } as any);
+
+      await expect(save(18558)).rejects.toThrow('APP_ERROR_APP_FAILED_TO_UPDATE');
+
+      expect(portManager.setMainPort).not.toHaveBeenCalled();
+    });
+
+    // The app moved to 10001 because another program holds 8080, so the listing's port is the one it left.
+    it('keeps a store app on the port it moved to when a save names none', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({
+        ...row,
+        appName: 'testapp',
+        appStoreSlug: 'ci-marketplace',
+        port: 10001,
+        config: { port: 10001 },
+      } as any);
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'testapp', urn: storeUrn, port: 8080, exposable: true } as any);
+
+      await save(undefined, storeUrn);
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({ port: 10001, config: expect.objectContaining({ port: 10001 }) }),
+      );
+      expect(portManager.setMainPort).toHaveBeenCalledWith(storeUrn, 10001);
+    });
+
+    it('still lets a save move a store app back to the listing by naming its port', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({
+        ...row,
+        appName: 'testapp',
+        appStoreSlug: 'ci-marketplace',
+        port: 10001,
+        config: { port: 10001 },
+      } as any);
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'testapp', urn: storeUrn, port: 8080, exposable: true } as any);
+
+      await save(8080, storeUrn);
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ port: 8080 }));
+    });
+
+    it('records the port a reinstall form names', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ ...row, appName: 'testapp', appStoreSlug: 'ci-marketplace' } as any);
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({ id: 'testapp', urn: storeUrn, port: 8080, exposable: true } as any);
+      vi.spyOn(service, 'validateAppConfig').mockResolvedValue({ valid: true, errors: [] });
+
+      await service.installApp({ actor: TEST_ACTOR, appUrn: storeUrn, form: { exposureMode: 'local', openPort: true, port: 18558 } });
+
+      expect(portManager.setMainPort).toHaveBeenCalledWith(storeUrn, 18558);
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ port: 18558 }));
+    });
+
+    it('refuses a reinstall onto a port another app holds in the table, before anything is written', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ ...row, appName: 'testapp', appStoreSlug: 'ci-marketplace' } as any);
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({ id: 'testapp', urn: storeUrn, port: 8080, exposable: true } as any);
+      vi.spyOn(service, 'validateAppConfig').mockResolvedValue({ valid: true, errors: [] });
+      portManager.getPortHolder.mockResolvedValue({ appUrn: 'holder:_user', hostPort: 10001 } as any);
+
+      const refusal = await conflictOf(
+        service.installApp({ actor: TEST_ACTOR, appUrn: storeUrn, form: { exposureMode: 'local', openPort: true, port: 10001 } }),
+      );
+
+      expect(refusal).toMatchObject({ message: 'APP_ERROR_PORT_ALREADY_IN_USE', status: 409 });
+      expect(portManager.setMainPort).not.toHaveBeenCalled();
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+    });
+
+    // Drizzle's message holds the query. The driver's code is on `cause`.
+    it('takes over the row a racing install wrote, though Drizzle wrapped the unique violation', async () => {
+      const raced = { ...row, id: 7, appName: 'testapp', appStoreSlug: 'ci-marketplace', status: 'install_failed' };
+      appsRepository.getAppByUrn.mockResolvedValue(undefined as any);
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({ id: 'testapp', urn: storeUrn, port: 8080, exposable: true } as any);
+      vi.spyOn(service, 'validateAppConfig').mockResolvedValue({ valid: true, errors: [] });
+      appsRepository.createApp.mockImplementation(async () => {
+        appsRepository.getAppByUrn.mockResolvedValue(raced as any);
+        throw Object.assign(new Error('Failed query: insert into "app"'), { cause: { code: '23505' } });
+      });
+
+      await service.installApp({ actor: TEST_ACTOR, appUrn: storeUrn, form: { exposureMode: 'local', openPort: true, port: 18558 } });
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, expect.objectContaining({ status: 'installing', port: 18558 }));
+    });
+
+    it('leaves a first install to the allocator, which takes a free port when this one is held', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue(undefined as any);
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({ id: 'testapp', urn: storeUrn, port: 8080, exposable: true } as any);
+      vi.spyOn(service, 'validateAppConfig').mockResolvedValue({ valid: true, errors: [] });
+      appsRepository.createApp.mockResolvedValue({ id: 2, status: 'installing', port: 10001, exposedLocal: false } as any);
+      portManager.getPortHolder.mockResolvedValue({ appUrn: 'holder:_user', hostPort: 10001 } as any);
+
+      await service.installApp({ actor: TEST_ACTOR, appUrn: storeUrn, form: { exposureMode: 'local', openPort: true, port: 10001 } });
+
+      expect(appsRepository.createApp).toHaveBeenCalled();
+      expect(portManager.setMainPort).not.toHaveBeenCalled();
     });
   });
 
@@ -1966,11 +3764,13 @@ describe('AppLifecycleService', () => {
       });
 
       it("lets a managed app's key at full cancel an operation on another app", async () => {
+        const entry = operationRegistry.get(appUrn);
+
         await expect(service.cancelOperation({ actor: MANAGED_NEIGHBOUR_FULL, appUrn, requestId })).resolves.toMatchObject({
           outcome: 'cancelled_queued',
         });
 
-        expect(operationRegistry.get(appUrn)?.abortController.signal.aborted).toBe(true);
+        expect(entry?.abortController.signal.aborted).toBe(true);
         expect(whois.has).not.toHaveBeenCalled();
       });
 
@@ -2200,6 +4000,45 @@ describe('AppLifecycleService', () => {
       expect(published.form).toMatchObject({ port: 8080 });
     });
 
+    describe('whether a start that does not come up takes the containers down', () => {
+      const publishedForm = () => (appEventsQueue.publish.mock.calls.at(-1)?.[0] as { form?: Record<string, unknown> } | undefined)?.form ?? {};
+
+      const storedConfig = (config: Record<string, unknown>) =>
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 1, name: 'test-app', status: 'stopped', config } as any);
+
+      beforeEach(() => {
+        storedConfig({ port: 8080 });
+        appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK' } as any);
+      });
+
+      it('asks for it when someone asked for the start', async () => {
+        await service.startApp({ actor: TEST_ACTOR, appUrn: 'test-app' as any });
+
+        expect(publishedForm()).toMatchObject({ stopIfNotUp: true, port: 8080 });
+      });
+
+      it('leaves the containers alone for the Hub own start, even when the stored config carries the flag', async () => {
+        storedConfig({ stopIfNotUp: true, port: 8080 });
+        await service.startApp({ actor: { kind: 'system', reason: 'bootstrap-restart' }, appUrn: 'test-app' as any });
+
+        expect(publishedForm()).not.toHaveProperty('stopIfNotUp');
+        expect(publishedForm()).toMatchObject({ port: 8080 });
+      });
+
+      it('asks for it on a restart someone asked for', async () => {
+        await service.restartApp({ actor: TEST_ACTOR, appUrn: 'test-app' as any });
+
+        expect(publishedForm()).toMatchObject({ stopIfNotUp: true, port: 8080 });
+      });
+
+      it('leaves the containers alone for the Hub own restart, even when the stored config carries the flag', async () => {
+        storedConfig({ stopIfNotUp: true, port: 8080 });
+        await service.restartApp({ actor: { kind: 'system', reason: 'inference-env-refresh' }, appUrn: 'test-app' as any });
+
+        expect(publishedForm()).not.toHaveProperty('stopIfNotUp');
+      });
+    });
+
     it('should throw if app not found', async () => {
       appsRepository.getAppByUrn.mockResolvedValue(null as any);
       await expect(service.startApp({ actor: TEST_ACTOR, appUrn: 'missing' as any })).rejects.toThrow('APP_ERROR_APP_NOT_FOUND');
@@ -2288,6 +4127,43 @@ describe('AppLifecycleService', () => {
       expect(logger.error).toHaveBeenCalledTimes(4);
     });
 
+    // The app page asks this instead of calling the missing record "DNS propagating" (#2312).
+    it('remembers which apps the last answered sync refused, until a sync stops refusing them', async () => {
+      expect(exposureSyncService.publicDnsRefusalFor(N8N)).toBeNull();
+
+      await syncAfter(0, { n8n: 'subdomain_quota_exceeded' });
+      expect(exposureSyncService.publicDnsRefusalFor(N8N)).toBe('subdomain_quota_exceeded');
+      expect(exposureSyncService.publicDnsRefusalFor(EXCALIDRAW)).toBeNull();
+
+      // A pass the Portal didn't answer says nothing about which apps it refuses.
+      await syncUnanswered(6);
+      expect(exposureSyncService.publicDnsRefusalFor(N8N)).toBe('subdomain_quota_exceeded');
+
+      await syncAfter(6);
+      expect(exposureSyncService.publicDnsRefusalFor(N8N)).toBeNull();
+    });
+
+    it('forgets the refusals once the Hub has no organization to sync with', async () => {
+      await syncAfter(0, { n8n: 'subdomain_quota_exceeded' });
+      expect(exposureSyncService.publicDnsRefusalFor(N8N)).toBe('subdomain_quota_exceeded');
+
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue(null as any);
+      await service.triggerCloudflareSync();
+
+      expect(exposureSyncService.publicDnsRefusalFor(N8N)).toBeNull();
+    });
+
+    // Another store's app of the same name that this sync left out must not take the refusal.
+    it('gives a refusal to the synced app when another store ships an app of the same name', async () => {
+      const failedN8n = { ...n8n, appStoreSlug: 'other-store', status: 'install_failed' };
+      appsRepository.getApps.mockResolvedValue([failedN8n, n8n, excalidraw] as any);
+
+      await syncAfter(0, { n8n: 'subdomain_quota_exceeded' });
+
+      expect(exposureSyncService.publicDnsRefusalFor(N8N)).toBe('subdomain_quota_exceeded');
+      expect(exposureSyncService.publicDnsRefusalFor('n8n:other-store' as any)).toBeNull();
+    });
+
     it('shows it again when the reason changes', async () => {
       await syncAfter(0, { n8n: 'subdomain_quota_exceeded' });
       await syncAfter(6, { n8n: 'duplicate_subdomain' });
@@ -2312,7 +4188,7 @@ describe('AppLifecycleService', () => {
 
     it('shows it again when the app fails after it left the sync', async () => {
       await syncAfter(0, { n8n: 'subdomain_quota_exceeded' });
-      appsRepository.getApps.mockResolvedValue([{ ...n8n, status: 'stopped' }, excalidraw] as any);
+      appsRepository.getApps.mockResolvedValue([{ ...n8n, status: 'install_failed' }, excalidraw] as any);
       await syncAfter(6);
       appsRepository.getApps.mockResolvedValue([n8n, excalidraw] as any);
       await syncAfter(6, { n8n: 'subdomain_quota_exceeded' });
@@ -2457,10 +4333,14 @@ describe('AppLifecycleService', () => {
       await syncAfter(0, { n8n: 'subdomain_quota_exceeded' });
       await syncAfter(1, { excalidraw: 'api_error' });
 
-      expect(errorReportingService.captureMessage).toHaveBeenCalledTimes(1);
-      expect(errorReportingService.captureMessage).toHaveBeenCalledWith(expect.stringContaining('excalidraw: Cloudflare rejected'), 'error', {
-        failedApps: ['excalidraw'],
-      });
+      // A refusal Cloudflare may clear on a later pass is a warning, not an error; the quota one reports nothing.
+      expect(errorReportingService.captureMessage).not.toHaveBeenCalled();
+      expect(errorReportingService.captureWarning).toHaveBeenCalledTimes(1);
+      expect(errorReportingService.captureWarning).toHaveBeenCalledWith(
+        expect.stringContaining('excalidraw: Cloudflare rejected'),
+        { failedApps: ['excalidraw'] },
+        expect.objectContaining({ debounceKey: 'cloudflare:public-dns:transient' }),
+      );
     });
 
     it('still reports a sync that did not complete', async () => {
@@ -2725,9 +4605,11 @@ describe('AppLifecycleService', () => {
           },
         ],
       ]);
-      expect(errorReportingService.captureMessage).toHaveBeenCalledWith(expect.stringContaining('NOT created for 1 app(s)'), 'error', {
-        failedApps: ['docmost'],
-      });
+      expect(errorReportingService.captureWarning).toHaveBeenCalledWith(
+        expect.stringContaining('NOT created for 1 app(s)'),
+        { failedApps: ['docmost'] },
+        expect.objectContaining({ debounceKey: 'cloudflare:public-dns:transient' }),
+      );
       expect(errorReportingService.captureMessage).not.toHaveBeenCalledWith(expect.stringContaining('n8n:'), expect.anything(), expect.anything());
     });
   });
@@ -3110,9 +4992,9 @@ describe('AppLifecycleService', () => {
       });
 
       it('does not start the minute on answers that were not about the app holding the domain', async () => {
-        // Stopped, so absent from the payload: an empty answer is exactly what CI-Cloud should say.
+        // A failed install, so absent from the payload: an empty answer is exactly what CI-Cloud should say.
         const domainless = runningComfy({ id: 8, appName: 'immich', localSubdomain: 'immich' });
-        appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com', status: 'stopped' }), domainless] as any);
+        appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com', status: 'install_failed' }), domainless] as any);
         await service.triggerCloudflareSync();
         now += 61_000;
 
@@ -3555,16 +5437,60 @@ describe('AppLifecycleService', () => {
     });
 
     it('leaves a stopped app bound rather than flapping it off and back on', async () => {
-      // A stopped app is not in the sync payload, so Companion Portal produced no ingress
-      // rule for it and cannot report its domain as delivered. Reading that as
-      // "unbound" would unbind on stop, regenerate its env without the custom
-      // hostname on start, and demand a second restart right after.
+      // A stopped app stays in the sync payload, so Companion Portal keeps its ingress rule and
+      // reports its domain as delivered. Unbinding on stop would regenerate its env without the
+      // custom hostname on start, and demand a second restart right after.
       appsRepository.getApps.mockResolvedValue([runningComfy({ status: 'stopped', customDomain: 'comfy.acme.com' })] as any);
-      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 0, customDomains: [] });
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: [],
+        failures: [],
+        synced: 1,
+        customDomains: [{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: TARGET }],
+      });
 
       await service.triggerCloudflareSync();
 
       expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+    });
+
+    it('keeps a stopped app in the payload, so Companion Portal keeps its public DNS record', async () => {
+      // Left out, its record was deleted and its address gave a DNS error instead of the Hub's
+      // page for a stopped app. An app being uninstalled still goes.
+      appsRepository.getApps.mockResolvedValue([
+        runningComfy({ status: 'stopped' }),
+        runningComfy({ id: 8, appName: 'wordpress', localSubdomain: 'wordpress', status: 'stopping' }),
+        runningComfy({ id: 9, appName: 'immich', localSubdomain: 'immich', status: 'uninstalling' }),
+      ] as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 2, customDomains: [] });
+
+      await service.triggerCloudflareSync();
+
+      const published = (cloudflareClientService.syncState.mock.calls.at(-1)?.[1] ?? []) as Array<{ name: string }>;
+      expect(published.map((entry) => entry.name)).toEqual(expect.arrayContaining(['comfyui', 'wordpress']));
+      expect(published.map((entry) => entry.name)).not.toContain('immich');
+    });
+
+    it.each(['updating', 'resetting', 'backing_up', 'restoring'])('keeps an app in the payload while it is %s', async (status) => {
+      // A sync in that window (the five-minute poll, another app's Start) deleted the record of an
+      // app whose backup or update had its containers down, while Traefik kept its route to the page.
+      appsRepository.getApps.mockResolvedValue([runningComfy({ status })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains: [] });
+
+      await service.triggerCloudflareSync();
+
+      const published = (cloudflareClientService.syncState.mock.calls.at(-1)?.[1] ?? []) as Array<{ name: string }>;
+      expect(published.map((entry) => entry.name)).toContain('comfyui');
+    });
+
+    it.each(['installing', 'install_failed', 'missing', 'uninstalling'])('leaves an app out of the payload while it is %s', async (status) => {
+      appsRepository.getApps.mockResolvedValue([runningComfy({ status })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 0, customDomains: [] });
+
+      await service.triggerCloudflareSync();
+
+      const published = (cloudflareClientService.syncState.mock.calls.at(-1)?.[1] ?? []) as Array<{ name: string }>;
+      expect(published.map((entry) => entry.name)).not.toContain('comfyui');
     });
 
     it('drops the binding of an app that no longer publishes a public route', async () => {
@@ -3596,12 +5522,12 @@ describe('AppLifecycleService', () => {
       expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
     });
 
-    it('does not unbind a stopped app that merely shares an app name with a running one', async () => {
+    it('does not unbind an app left out of the payload that merely shares an app name with a running one', async () => {
       // `app` is unique on (app_name, app_store_slug), so two stores can both
       // ship an app called `comfyui`. The sync payload carries only the NAME.
       appsRepository.getApps.mockResolvedValue([
         runningComfy({ id: 7, appStoreSlug: 'ci-marketplace', localSubdomain: 'comfyui' }),
-        runningComfy({ id: 8, appStoreSlug: 'other-store', localSubdomain: 'comfyui-alt', status: 'stopped', customDomain: 'art.acme.com' }),
+        runningComfy({ id: 8, appStoreSlug: 'other-store', localSubdomain: 'comfyui-alt', status: 'install_failed', customDomain: 'art.acme.com' }),
       ] as any);
       cloudflareClientService.syncState.mockResolvedValue({
         ok: true,
@@ -3615,7 +5541,7 @@ describe('AppLifecycleService', () => {
 
       // The running one binds...
       expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { customDomain: 'comfy.acme.com', pendingRestart: true });
-      // ...and the stopped one, which was never in the payload, keeps its domain.
+      // ...and the failed one, which was never in the payload, keeps its domain.
       expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalledWith(8, expect.anything(), expect.anything());
     });
 
@@ -3983,9 +5909,9 @@ describe('AppLifecycleService', () => {
     });
 
     it('does not ask for an app CI-Cloud was never told about', async () => {
-      // Stopped, so it is not in this sync's payload — Companion Portal cannot wire a
-      // domain to an app it was not asked about, and the choice waits.
-      appsRepository.getApps.mockResolvedValue([wantsComfy({ status: 'stopped' })] as any);
+      // Its install failed, so it is not in this sync's payload. Companion Portal cannot wire a
+      // domain to an app it was not asked about, so the choice waits.
+      appsRepository.getApps.mockResolvedValue([wantsComfy({ status: 'install_failed' })] as any);
 
       await service.triggerCloudflareSync();
 
@@ -4801,6 +6727,284 @@ describe('AppLifecycleService', () => {
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ enableAuth: false }));
     });
 
+    describe('a form that names no exposure mode', () => {
+      const lastPatch = () => appsRepository.updateAppById.mock.calls.find(([, patch]) => 'config' in patch)?.[1] as Record<string, unknown>;
+      const publicWeb = {
+        port: 8080,
+        exposureMode: 'cloudflare',
+        exposedLocal: true,
+        openPort: false,
+        enableAuth: true,
+        localSubdomain: 'shop',
+        publicDomain: 'example.com',
+      };
+      const onAppStored = (config: Record<string, unknown>, status = 'stopped') =>
+        appsRepository.getAppByUrn.mockResolvedValue({
+          id: 1,
+          appName: 'myapp',
+          appStoreSlug: 'ci-marketplace',
+          status,
+          config,
+          exposureMode: config.exposureMode ?? 'local',
+          localSubdomain: config.localSubdomain ?? null,
+          publicDomain: config.publicDomain ?? null,
+        } as any);
+
+      it('leaves an app on Public Web under the name it has', async () => {
+        onAppStored(publicWeb);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090 } });
+
+        expect(lastPatch()).toMatchObject({
+          exposureMode: 'cloudflare',
+          exposedLocal: true,
+          openPort: false,
+          localSubdomain: 'shop',
+          publicDomain: 'example.com',
+          port: 9090,
+        });
+        expect(lastPatch().config).toMatchObject({
+          exposureMode: 'cloudflare',
+          exposedLocal: true,
+          openPort: false,
+          localSubdomain: 'shop',
+          publicDomain: 'example.com',
+        });
+        expect(logger.info).not.toHaveBeenCalledWith(expect.stringContaining('Public routing changed'));
+      });
+
+      it('leaves an app on the Private VPN', async () => {
+        onAppStored({ port: 8080, exposureMode: 'tailscale', exposedLocal: false, openPort: false });
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090 } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'tailscale', exposedLocal: false, openPort: false });
+      });
+
+      it('leaves a form that never named one on This Machine Only, port open', async () => {
+        onAppStored({ port: 8080 });
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090 } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'local', exposedLocal: false, openPort: true, port: 9090 });
+        expect((lastPatch().config as Record<string, unknown>).exposureMode).toBeUndefined();
+      });
+
+      it('changes and restarts nothing when it repeats what the app already has', async () => {
+        onAppStored(publicWeb, 'running');
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080 } });
+
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+        expect(lastPatch()).toBeUndefined();
+      });
+
+      it('lets a renamed subdomain through on the app it was', async () => {
+        onAppStored(publicWeb);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { localSubdomain: 'store' } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'cloudflare', localSubdomain: 'store', publicDomain: 'example.com', openPort: false });
+      });
+
+      it('still moves the app when the form does name a mode', async () => {
+        onAppStored(publicWeb);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080, exposureMode: 'local' } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'local', openPort: true, publicDomain: null, localSubdomain: null });
+      });
+
+      it('takes exposedLocal: false as the decision a legacy client meant by it', async () => {
+        onAppStored(publicWeb);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080, exposedLocal: false } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'local', exposedLocal: false, publicDomain: null });
+      });
+
+      it('leaves a Private VPN app there when exposedLocal: false only repeats that it is not public', async () => {
+        onAppStored({ port: 8080, exposureMode: 'tailscale', exposedLocal: false, openPort: false });
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090, exposedLocal: false } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'tailscale', exposedLocal: false, openPort: false, port: 9090 });
+      });
+
+      it('records a legacy form the way compose runs it and keeps its domain', async () => {
+        // A version bump re-submits the stored form verbatim. This one is public through `exposedLocal`.
+        onAppStored({ port: 8080, exposedLocal: true, openPort: false, localSubdomain: 'shop', publicDomain: 'example.com' });
+
+        await service.updateAppConfig({
+          actor: TEST_ACTOR,
+          appUrn,
+          form: { port: 9090, exposedLocal: true, openPort: false, localSubdomain: 'shop', publicDomain: 'example.com' },
+        });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'cloudflare', exposedLocal: true, publicDomain: 'example.com', openPort: false });
+      });
+
+      it('does not restart an app on Public Web whose form never had an openPort', async () => {
+        const { openPort: _openPort, ...noOpenPort } = publicWeb;
+        onAppStored(noOpenPort, 'running');
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080 } });
+
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+        expect(lastPatch()).toBeUndefined();
+      });
+
+      it('keeps the host port open on This Machine Only when a form asks to close it', async () => {
+        onAppStored({ port: 8080 });
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090, openPort: false } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'local', openPort: true });
+      });
+
+      it('does not restart an app on This Machine Only whose stored form says the port is closed', async () => {
+        onAppStored({ port: 8080, exposureMode: 'local', openPort: false }, 'running');
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080 } });
+
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      });
+
+      it('does not read a jsonb reordering of a nested setting as a change', async () => {
+        onAppStored({ ...publicWeb, nested: { a: 1, b: 2 } }, 'running');
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { ...publicWeb, nested: { b: 2, a: 1 } } });
+
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      });
+
+      it('records the mode compose runs when a version bump re-submits a legacy form and changes nothing', async () => {
+        const legacy = { port: 8080, exposedLocal: true, openPort: true, localSubdomain: 'shop' };
+        onAppStored(legacy, 'running');
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: legacy });
+
+        expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, { exposureMode: 'cloudflare' });
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      });
+
+      it('keeps the name and the closed host port when a form only repeats the mode the app is in', async () => {
+        onAppStored(publicWeb);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090, exposureMode: 'cloudflare' } });
+
+        expect(lastPatch()).toMatchObject({
+          exposureMode: 'cloudflare',
+          localSubdomain: 'shop',
+          publicDomain: 'example.com',
+          openPort: false,
+          port: 9090,
+        });
+      });
+
+      it('does not read a subdomain stored before it was canonicalized as a change', async () => {
+        onAppStored({ ...publicWeb, localSubdomain: 'My-App' }, 'running');
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080 } });
+
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      });
+
+      it('has no mode to keep on an app that is not exposable', async () => {
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, exposable: false } as any);
+        onAppStored({ port: 8080, exposureMode: 'tailscale', openPort: false });
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090 } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'local', exposedLocal: false });
+      });
+
+      it('lets an app that needs a public address save settings on Public Web', async () => {
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, force_expose: true } as any);
+        onAppStored(publicWeb);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090, exposureMode: 'cloudflare' } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'cloudflare' });
+      });
+
+      it('keeps the host port closed on an app that needs a public address, so its name does not change', async () => {
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, force_expose: true } as any);
+        onAppStored(publicWeb);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090, exposureMode: 'cloudflare', openPort: true } });
+
+        expect(lastPatch()).toMatchObject({ exposedLocal: true, openPort: false, port: 9090 });
+      });
+
+      it('refuses to move an app that needs a public address off Public Web', async () => {
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, force_expose: true } as any);
+        onAppStored(publicWeb);
+
+        await expect(
+          service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090, exposureMode: 'local', exposedLocal: false } }),
+        ).rejects.toThrow('APP_ERROR_APP_FORCE_EXPOSED');
+      });
+
+      it('keeps exposedLocal when a form only repeats the mode the app is in', async () => {
+        onAppStored(publicWeb);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090, exposureMode: 'cloudflare' } });
+
+        expect(lastPatch()).toMatchObject({ exposedLocal: true });
+      });
+
+      it('leaves the Hub login on when a form closes the host port of a public app that never chose one', async () => {
+        const { enableAuth: _enableAuth, openPort: _openPort, ...servedOpen } = publicWeb;
+        onAppStored(servedOpen);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { openPort: false } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'cloudflare', openPort: false, enableAuth: true });
+      });
+
+      it('honors a login turned off in the form that closes the host port', async () => {
+        const { enableAuth: _enableAuth, openPort: _openPort, ...servedOpen } = publicWeb;
+        onAppStored(servedOpen);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { openPort: false, enableAuth: false } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'cloudflare', openPort: false, enableAuth: false });
+      });
+
+      it('gives a legacy form that goes public with a closed host port the Hub login it always had', async () => {
+        onAppStored({ port: 8080 });
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080, exposedLocal: true, openPort: false } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'cloudflare', openPort: false, enableAuth: true });
+      });
+
+      it('does not restart a legacy Public Web app with a closed host port and no login on a save that changes nothing', async () => {
+        onAppStored({ port: 8080, exposedLocal: true, openPort: false, localSubdomain: 'shop' }, 'running');
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080 } });
+
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      });
+
+      it('opens the host port of a form public through exposedLocal that says nothing about it, as the queue will', async () => {
+        onAppStored({ port: 8080 });
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080, exposedLocal: true } });
+
+        expect(lastPatch()).toMatchObject({ exposureMode: 'cloudflare', openPort: true });
+      });
+
+      it('does not restart a legacy Public Web app whose form never had an openPort', async () => {
+        onAppStored({ port: 8080, exposedLocal: true }, 'running');
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080 } });
+
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      });
+    });
+
     it('warns about the reset using the RESOLVED settings, not the ones the request arrived with', async () => {
       // The non-exposable reset runs after the edge-auth defaulting has already mutated the form,
       // so the warning must read the resolved values. Reading the destructured copies taken at the
@@ -4825,6 +7029,135 @@ describe('AppLifecycleService', () => {
       await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080, exposed: true, domain: 'app.example.com' } });
 
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ exposed: false, domain: null }));
+    });
+
+    describe('saving an app whose listing says it is not exposable', () => {
+      const notExposable = { ...baseAppInfo, exposable: false, dynamic_config: true };
+      const publicForm = { exposureMode: 'cloudflare', exposedLocal: false, openPort: false, enableAuth: false, port: 3101 };
+
+      beforeEach(() => {
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(notExposable as any);
+      });
+
+      it('moves an app stored on Public Web to This Machine Only when the form repeats what is stored', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', exposureMode: 'cloudflare', port: 3101, config: publicForm } as any);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: publicForm });
+
+        expect(appsRepository.updateAppById).toHaveBeenCalledWith(
+          1,
+          expect.objectContaining({
+            exposureMode: 'local',
+            exposedLocal: false,
+            openPort: true,
+            enableAuth: false,
+            publicDomain: null,
+            config: expect.objectContaining({ exposureMode: 'local', exposedLocal: false, openPort: true }),
+          }),
+        );
+        expect(appEventsQueue.publish).toHaveBeenCalledWith(
+          expect.objectContaining({ command: 'generate_env', form: expect.objectContaining({ exposureMode: 'local' }) }),
+        );
+      });
+
+      it('moves an app the older flag put on Public Web when a version bump resubmits its form', async () => {
+        const legacy = { exposedLocal: true, port: 3101 };
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', port: 3101, config: legacy } as any);
+
+        await service.updateAppConfig({ actor: { kind: 'system', reason: 'update-reapply' }, appUrn, form: legacy });
+
+        expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ exposureMode: 'local', exposedLocal: false }));
+      });
+
+      it('moves a version bump off the route over a host port another app publishes, so the update can finish', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue({
+          id: 1,
+          status: 'updating',
+          exposureMode: 'cloudflare',
+          port: 3101,
+          config: publicForm,
+        } as any);
+        appsRepository.getAppsByPort.mockResolvedValue([{ id: 2, appName: 'other' }] as any);
+
+        await service.updateAppConfig({ actor: { kind: 'system', reason: 'update-reapply' }, appUrn, form: publicForm });
+
+        expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ exposureMode: 'local' }));
+      });
+
+      it('still refuses a port another app publishes once the app is on This Machine Only', async () => {
+        const local = { exposureMode: 'local', exposedLocal: false, openPort: true, enableAuth: false, port: 3101 };
+        appsRepository.getAppByUrn.mockResolvedValue({
+          id: 1,
+          status: 'stopped',
+          exposureMode: 'local',
+          port: 3100,
+          config: { ...local, port: 3100 },
+        } as any);
+        appsRepository.getAppsByPort.mockResolvedValue([{ id: 2, appName: 'other' }] as any);
+
+        await expect(service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: local })).rejects.toMatchObject({
+          message: 'APP_ERROR_PORT_ALREADY_IN_USE',
+        });
+      });
+
+      it.each([
+        ['Public Web', { exposureMode: 'cloudflare', exposedLocal: true, localSubdomain: 'myapp', publicDomain: 'ci0.pw' }],
+        ['the Private VPN', { exposureMode: 'tailscale', exposedLocal: false }],
+      ])('keeps an app on This Machine Only when a form names %s', async (_label, form) => {
+        appsRepository.getAppByUrn.mockResolvedValue({
+          id: 1,
+          status: 'stopped',
+          exposureMode: 'local',
+          config: { exposureMode: 'local', openPort: true },
+        } as any);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form });
+
+        expect(appsRepository.updateAppById).toHaveBeenCalledWith(
+          1,
+          expect.objectContaining({
+            exposureMode: 'local',
+            exposedLocal: false,
+            publicDomain: null,
+            config: expect.objectContaining({ exposureMode: 'local' }),
+          }),
+        );
+      });
+
+      it('does nothing when a form on This Machine Only repeats what is stored', async () => {
+        const local = { exposureMode: 'local', exposedLocal: false, openPort: true, enableAuth: false, port: 3101 };
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'running', exposureMode: 'local', port: 3101, config: local } as any);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: local });
+
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('saving an exposable app', () => {
+      it.each([
+        ['cloudflare', { exposureMode: 'cloudflare', exposedLocal: true, openPort: false, enableAuth: true, port: 8080 }],
+        ['tailscale', { exposureMode: 'tailscale', exposedLocal: false, openPort: false, port: 8080 }],
+        ['local', { exposureMode: 'local', exposedLocal: false, openPort: true, port: 8080 }],
+      ] as const)('keeps %s', async (mode, form) => {
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', exposureMode: 'local', config: { port: 9999 } } as any);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form });
+
+        expect(appsRepository.updateAppById).toHaveBeenCalledWith(
+          1,
+          expect.objectContaining({ exposureMode: mode, config: expect.objectContaining({ exposureMode: mode }) }),
+        );
+      });
+
+      it('does nothing when a form on Public Web repeats what is stored', async () => {
+        const form = { exposureMode: 'cloudflare', exposedLocal: true, openPort: false, enableAuth: true, port: 8080 };
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'running', exposureMode: 'cloudflare', port: 8080, config: form } as any);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form });
+
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      });
     });
 
     it('stays silent when a non-exposable app has nothing to reset', async () => {
@@ -4924,6 +7257,80 @@ describe('AppLifecycleService', () => {
       );
     });
 
+    /*
+     * A custom app's config.json keeps its internal port, and the host port the Hub gave it lives on the
+     * row. A save that leaves `port` out (a partial update through the API or MCP) fell back to config.json
+     * and wrote the internal port back: 80, which Traefik holds, for the app this host port exists for.
+     */
+    it('keeps a custom app on the host port its row holds when a save leaves the port out', async () => {
+      const customUrn = 'my-nginx:_user' as any;
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, id: 'my-nginx', port: 80 } as any);
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        status: 'stopped',
+        port: 10000,
+        config: { port: 10000 },
+        appName: 'my-nginx',
+        appStoreSlug: '_user',
+      } as any);
+
+      await service.updateAppConfig({ actor: TEST_ACTOR, appUrn: customUrn, form: { exposureMode: 'cloudflare', exposedLocal: true } });
+
+      expect(appEventsQueue.publish).toHaveBeenCalledWith(
+        expect.objectContaining({ command: 'generate_env', form: expect.objectContaining({ port: 10000 }) }),
+      );
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({ port: 10000, config: expect.objectContaining({ port: 10000 }) }),
+      );
+    });
+
+    it('keeps the port a store app is on when a save names none', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        status: 'stopped',
+        port: 10007,
+        config: { port: 10007 },
+        appName: 'myapp',
+        appStoreSlug: 'ci-marketplace',
+      } as any);
+
+      await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'cloudflare', exposedLocal: true } });
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ port: 10007 }));
+    });
+
+    it('does not restart a running store app for a save that repeats its form and leaves out the port', async () => {
+      const form = { exposureMode: 'local', exposedLocal: false, openPort: true, enableAuth: false };
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        status: 'running',
+        port: 10007,
+        config: { ...form, port: 10007 },
+        appName: 'myapp',
+        appStoreSlug: 'ci-marketplace',
+      } as any);
+
+      await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form });
+
+      expect(appEventsQueue.publish).not.toHaveBeenCalled();
+    });
+
+    it('lets a form that never named a port follow its listing', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        status: 'stopped',
+        port: 7000,
+        config: { exposureMode: 'cloudflare', exposedLocal: true },
+        appName: 'myapp',
+        appStoreSlug: 'ci-marketplace',
+      } as any);
+
+      await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'cloudflare', exposedLocal: true, enableAuth: true } });
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ port: 8080 }));
+    });
+
     it('releases previous public DNS before syncing a subdomain change', async () => {
       appsRepository.getAppByUrn.mockResolvedValue({
         id: 1,
@@ -4975,6 +7382,37 @@ describe('AppLifecycleService', () => {
         skipAutoRestartAppUrns: ['myapp:ci-marketplace'],
       });
       expect(syncSpy).toHaveBeenNthCalledWith(2, { skipAutoRestartAppUrns: ['myapp:ci-marketplace'] });
+    });
+
+    it("releases nothing when a save names the Hub's own domain for a row that stores none", async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        status: 'running',
+        appName: 'myapp',
+        appStoreSlug: 'ci-marketplace',
+        config: { exposureMode: 'cloudflare', localSubdomain: 'sub', port: 8080 },
+        exposureMode: 'cloudflare',
+        exposedLocal: true,
+        localSubdomain: 'sub',
+        publicDomain: null,
+        port: 8080,
+      } as any);
+      configService.getConfig.mockReturnValue({
+        isProduction: false,
+        userSettings: { domain: 'example.com', localDomain: 'ci.lan' },
+        domain: 'example.com',
+      } as any);
+      vi.spyOn(service, 'restartApp').mockResolvedValue({ requestId: crypto.randomUUID() });
+      const syncSpy = vi.spyOn(exposureSyncService, 'triggerCloudflareSync').mockResolvedValue(undefined);
+
+      await service.updateAppConfig({
+        actor: TEST_ACTOR,
+        appUrn,
+        form: { exposureMode: 'cloudflare', exposedLocal: true, localSubdomain: 'sub', publicDomain: 'example.com', port: 8080 },
+      });
+
+      expect(syncSpy).toHaveBeenCalledTimes(1);
+      expect(syncSpy).toHaveBeenCalledWith({ skipAutoRestartAppUrns: ['myapp:ci-marketplace'] });
     });
 
     it('judges the saved row by its stored form, as the sync published it', async () => {
@@ -5145,6 +7583,80 @@ describe('AppLifecycleService', () => {
       expect(errorReportingService.reportAppFailure).toHaveBeenCalledWith(expect.objectContaining({ phase: 'start', errorCode: 'rocm_kfd_missing' }));
     });
 
+    it('startApp error: the failing service reaches the emitted SSE event and the app is stopped', async () => {
+      const serviceFailure = { kind: 'restarting', service: 'summary-service', exitCode: 126, logLine: 'permission denied' };
+      appEventsQueue.publish.mockResolvedValue({
+        success: false,
+        message: 'summary-service keeps restarting (exit 126): permission denied',
+        errorDetail: 'app-summary-service-1 (restarting, exit 126): permission denied',
+        serviceFailure,
+      } as any);
+
+      await service.startApp({ actor: TEST_ACTOR, appUrn });
+      await flushMicrotasks();
+
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({
+          event: 'start_error',
+          appStatus: 'stopped',
+          error: 'summary-service keeps restarting (exit 126)',
+          serviceFailure: { kind: 'restarting', service: 'summary-service', exitCode: 126 },
+        }),
+      );
+      expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(expect.anything(), { status: 'stopped' });
+    });
+
+    it.each([
+      ['start_error', (s: AppLifecycleService) => s.startApp({ actor: TEST_ACTOR, appUrn })],
+      ['restart_error', (s: AppLifecycleService) => s.restartApp({ actor: TEST_ACTOR, appUrn })],
+    ])('%s carries no log text, since the app topic reaches every signed-in session', async (event, send) => {
+      appEventsQueue.publish.mockResolvedValue({
+        success: false,
+        message: 'web keeps restarting (exit 1): API_KEY=sk-live-abc is invalid',
+        errorCode: 'app_service_failed',
+        errorDetail: 'app-web-1 (restarting, exit 1): API_KEY=sk-live-abc is invalid',
+        serviceFailure: { kind: 'restarting', service: 'web', exitCode: 1, logLine: 'API_KEY=sk-live-abc is invalid' },
+      } as any);
+
+      await send(service);
+      await flushMicrotasks();
+
+      const emitted = sseService.emit.mock.calls.find(([, data]) => (data as { event?: string }).event === event);
+      expect(emitted).toBeDefined();
+      expect(JSON.stringify(emitted)).not.toContain('sk-live-abc');
+      expect(errorReportingService.reportAppFailure).toHaveBeenCalledWith({
+        appUrn,
+        phase: event === 'start_error' ? 'start' : 'restart',
+        message: 'web keeps restarting (exit 1)',
+        errorCode: 'app_service_failed',
+      });
+      expect(JSON.stringify(errorReportingService.reportAppFailure.mock.calls)).not.toContain('sk-live-abc');
+    });
+
+    it('a failure with no service keeps its message and detail on the event', async () => {
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'compose failed', errorDetail: 'port is taken' } as any);
+
+      await service.startApp({ actor: TEST_ACTOR, appUrn });
+      await flushMicrotasks();
+
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({ event: 'start_error', error: 'compose failed', errorDetail: 'port is taken' }),
+      );
+    });
+
+    it('startApp error: a failed install stays one when a start sent to it through the API fails too', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'install_failed', config: {} } as any);
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'summary-service keeps restarting (exit 126)' } as any);
+
+      await service.startApp({ actor: TEST_ACTOR, appUrn });
+      await flushMicrotasks();
+
+      expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(1, { status: 'install_failed' });
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'start_error', appStatus: 'install_failed' }));
+    });
+
     it('startApp: transitional status_change emitted after DB commit', async () => {
       await service.startApp({ actor: TEST_ACTOR, appUrn });
 
@@ -5302,6 +7814,16 @@ describe('AppLifecycleService', () => {
       );
     });
 
+    it('restartApp error: the failing service reaches the emitted SSE event', async () => {
+      const serviceFailure = { kind: 'exited', service: 'migrate', exitCode: 1 };
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'migrate exited (exit 1)', serviceFailure } as any);
+
+      await service.restartApp({ actor: TEST_ACTOR, appUrn });
+      await flushMicrotasks();
+
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'restart_error', serviceFailure }));
+    });
+
     it('restartApp: transitional status_change emitted after DB commit', async () => {
       await service.restartApp({ actor: TEST_ACTOR, appUrn });
 
@@ -5336,6 +7858,45 @@ describe('AppLifecycleService', () => {
           settingsPath: '/settings?tab=ai&section=rocm',
         }),
       );
+    });
+
+    it('startAppAndWait and restartAppAndWait answer false for a crash loop and name the service', async () => {
+      const serviceFailure = { kind: 'restarting', service: 'summary-service', exitCode: 126 };
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'summary-service keeps restarting (exit 126)', serviceFailure } as any);
+
+      await expect(service.startAppAndWait({ appUrn })).resolves.toBe(false);
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'start_error', serviceFailure }));
+
+      await expect(service.restartAppAndWait({ appUrn })).resolves.toBe(false);
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'restart_error', serviceFailure }));
+    });
+
+    it('startAppAndWait recreates the containers unless asked to leave unchanged ones running', async () => {
+      await service.startAppAndWait({ appUrn, skipPull: true });
+      await service.startAppAndWait({ appUrn, skipPull: true, onlyRecreateChanged: true });
+
+      const forms = appEventsQueue.publish.mock.calls.map(([message]) => (message as any).form);
+      expect(forms[0]).not.toHaveProperty('onlyRecreateChanged');
+      expect(forms[1]).toMatchObject({ skipPull: true, onlyRecreateChanged: true });
+    });
+
+    it('startAppAndWait ignores an onlyRecreateChanged left in the stored config', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, config: { onlyRecreateChanged: true } } as any);
+
+      await service.startAppAndWait({ appUrn, skipPull: true });
+
+      const [form] = appEventsQueue.publish.mock.calls.map(([message]) => (message as any).form);
+      expect(form).not.toHaveProperty('onlyRecreateChanged');
+    });
+
+    it('restartAppAndWait ignores a stopIfNotUp left in the stored config', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, config: { stopIfNotUp: true } } as any);
+
+      await service.restartAppAndWait({ appUrn, skipPull: true });
+
+      const [form] = appEventsQueue.publish.mock.calls.map(([message]) => (message as any).form);
+      expect(form).not.toHaveProperty('stopIfNotUp');
+      expect(form).toMatchObject({ skipPull: true });
     });
 
     it('restartAppAndWait error: errorCode/errorDetail/settingsPath reach the emitted SSE event', async () => {
@@ -5607,7 +8168,12 @@ describe('AppLifecycleService', () => {
       appsRepository.getAppsByDomain.mockResolvedValue([]);
       appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
       appsRepository.getAppsByPort.mockResolvedValue([]);
-      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail' } as any);
+      appEventsQueue.publish.mockResolvedValue({
+        success: false,
+        message: 'summary-service keeps restarting (exit 126): private app log',
+        errorCode: 'app_service_failed',
+        serviceFailure: { kind: 'restarting', service: 'summary-service', exitCode: 126, logLine: 'private app log' },
+      } as any);
 
       await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
       await flushMicrotasks();
@@ -5618,6 +8184,13 @@ describe('AppLifecycleService', () => {
       expect(updateIdx).toBeGreaterThanOrEqual(0);
       expect(sseIdx).toBeGreaterThan(updateIdx);
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'install_failed' }));
+      expect(errorReportingService.reportAppFailure).toHaveBeenCalledWith({
+        appUrn,
+        phase: 'install',
+        message: 'summary-service keeps restarting (exit 126)',
+        errorCode: 'app_service_failed',
+      });
+      expect(JSON.stringify(errorReportingService.reportAppFailure.mock.calls)).not.toContain('private app log');
     });
 
     it('installApp error: still emits install_error when install_failed status write fails', async () => {
@@ -5646,6 +8219,25 @@ describe('AppLifecycleService', () => {
         expect.objectContaining({ event: 'install_error', appUrn, appStatus: 'install_failed', error: 'fail' }),
       );
       expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("Failed to persist 'install_failed' status"));
+    });
+
+    it('installApp error: says where the app is now when the install failed after moving it', async () => {
+      const baseAppInfo = { id: 'myapp', port: 8080, cihub_app_version: 1, exposable: true, supported_architectures: ['amd64'] };
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
+      appsRepository.getAppByUrn.mockResolvedValue(null as any);
+      appsRepository.getApps.mockResolvedValue([]);
+      appsRepository.getAppsByDomain.mockResolvedValue([]);
+      appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
+      appsRepository.getAppsByPort.mockResolvedValue([]);
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail', movedHostPort: { from: 8080, to: 10003 } } as any);
+
+      await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+      await flushMicrotasks();
+
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({ event: 'install_error', appUrn, appStatus: 'install_failed', movedHostPort: { from: 8080, to: 10003 } }),
+      );
     });
 
     it('installApp retry: re-queues install when status is install_failed', async () => {
@@ -5752,6 +8344,55 @@ describe('AppLifecycleService', () => {
       );
     });
 
+    describe('when the update is in but re-applying its settings is refused', () => {
+      const refused = new TranslatableError('APP_ERROR_PORT_ALREADY_IN_USE', { port: '8080', id: 'other' });
+
+      beforeEach(() => {
+        vi.spyOn(service, 'updateAppConfig').mockRejectedValue(refused);
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ cihub_app_version: 2 } as any);
+      });
+
+      it('records the new version and says the settings stayed as they were', async () => {
+        vi.spyOn(service, 'startApp').mockResolvedValue({ requestId: crypto.randomUUID() });
+
+        await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
+        await flushMicrotasks();
+
+        expect(logger.warn).toHaveBeenCalledWith(
+          expect.stringContaining('its settings were not re-applied'),
+          expect.objectContaining({ intlParams: { port: '8080', id: 'other' } }),
+        );
+
+        expect(appsRepository.updateAppById).toHaveBeenCalledWith(fakeApp.id, expect.objectContaining({ version: 2, status: 'stopped' }));
+        expect(sseService.emit).toHaveBeenCalledWith(
+          'app',
+          expect.objectContaining({ event: 'update_success', appStatus: 'stopped', warningCode: 'APP_UPDATE_SETTINGS_NOT_REAPPLIED' }),
+        );
+      });
+
+      it('still starts the app if it was running', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, status: 'running' } as any);
+        const start = vi.spyOn(service, 'startAppAndWait').mockResolvedValue(true);
+
+        await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
+        await flushMicrotasks();
+
+        expect(start).toHaveBeenCalledWith(expect.objectContaining({ appUrn, onlyRecreateChanged: true }));
+      });
+    });
+
+    it('updateApp success carries no warning when the settings re-applied', async () => {
+      vi.spyOn(service, 'updateAppConfig').mockResolvedValue({ requestId: crypto.randomUUID() });
+      vi.spyOn(service, 'startApp').mockResolvedValue({ requestId: crypto.randomUUID() });
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ cihub_app_version: 2 } as any);
+
+      await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
+      await flushMicrotasks();
+
+      const success = sseService.emit.mock.calls.find(([, payload]) => (payload as { event?: string }).event === 'update_success');
+      expect(success?.[1]).not.toHaveProperty('warningCode');
+    });
+
     it('updateApp success restores stopped state before emitting update_success', async () => {
       vi.spyOn(service, 'updateAppConfig').mockResolvedValue({ requestId: crypto.randomUUID() });
       vi.spyOn(service, 'startApp').mockResolvedValue({ requestId: crypto.randomUUID() });
@@ -5806,7 +8447,37 @@ describe('AppLifecycleService', () => {
       await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
       await flushMicrotasks();
 
-      expect(start).toHaveBeenCalledWith({ appUrn, skipPull: true });
+      expect(start).toHaveBeenCalledWith({ appUrn, skipPull: true, onlyRecreateChanged: true });
+    });
+
+    // The command starts the new version of these too, so the row has to be brought to `running` as well.
+    it.each(['starting', 'restarting'])('updateApp success records an app that was %s as running', async (status) => {
+      appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, status } as any);
+      vi.spyOn(service, 'updateAppConfig').mockResolvedValue({ requestId: crypto.randomUUID() });
+      const start = vi.spyOn(service, 'startAppAndWait').mockResolvedValue(true);
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ cihub_app_version: 2 } as any);
+
+      await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
+      await flushMicrotasks();
+
+      expect(start).toHaveBeenCalledWith({ appUrn, skipPull: true, onlyRecreateChanged: true });
+    });
+
+    // The update command has already started the new version and waited for its health check. A
+    // start that recreated it restarted the app a few seconds into its first start: Uptime Kuma 2,
+    // converting its data on that start, then crash-looped on "Aggregate table migration is already
+    // in progress" (#2106).
+    it('updateApp success does not recreate the containers the update command already started', async () => {
+      vi.spyOn(service, 'updateAppConfig').mockResolvedValue({ requestId: crypto.randomUUID() });
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ cihub_app_version: 2 } as any);
+
+      await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
+      await flushMicrotasks();
+
+      const starts = appEventsQueue.publish.mock.calls.map(([message]) => message as any).filter((message) => message.command === 'start');
+      expect(starts).toHaveLength(1);
+      expect(starts[0].form).toMatchObject({ skipPull: true, onlyRecreateChanged: true });
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'start_success', appStatus: 'running' }));
     });
 
     it('updateApp success leaves a stopped app stopped and does not start it', async () => {
@@ -5822,6 +8493,31 @@ describe('AppLifecycleService', () => {
       expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'update_success', appStatus: 'stopped' }));
     });
 
+    it('updateApp tells the command the status the app had, for a cancel to put it back on', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, status: 'restarting' } as any);
+
+      await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
+      await flushMicrotasks();
+
+      expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'update', statusBeforeUpdate: 'restarting' }));
+    });
+
+    it('updateApp leaves a cancelled update to the worker, which settled it', async () => {
+      appEventsQueue.publish.mockResolvedValue({
+        success: false,
+        cancelled: true,
+        rolledBack: true,
+        cancelledStatus: 'running',
+        message: 'cancelled',
+      } as any);
+
+      await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
+      await flushMicrotasks();
+
+      expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'update_error' }));
+      expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'update_success' }));
+    });
+
     it('updateApp failure after the previous version was put back leaves a running app running', async () => {
       appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail', rolledBack: true } as any);
 
@@ -5832,6 +8528,17 @@ describe('AppLifecycleService', () => {
     });
 
     it('updateApp failure with no rollback still reports a previously running app as stopped', async () => {
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail' } as any);
+
+      await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
+      await flushMicrotasks();
+
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'update_error', appStatus: 'stopped' }));
+    });
+
+    // The command started the new version of these too, so with no rollback they are no more running than a running one.
+    it.each(['starting', 'restarting'])('updateApp failure with no rollback reports an app that was %s as stopped', async (status) => {
+      appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, status } as any);
       appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail' } as any);
 
       await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
@@ -6005,14 +8712,72 @@ describe('AppLifecycleService', () => {
     });
 
     it('returns cancelled_queued and aborts when the op is still queued', async () => {
-      operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
+      appsRepository.getAppByUrn.mockResolvedValue(null as any);
+      const entry = operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
       const abortSpy = vi.spyOn(operationRegistry, 'abort');
 
       const res = await service.cancelOperation({ actor: TEST_ACTOR, appUrn });
 
       expect(res.outcome).toBe('cancelled_queued');
       expect(abortSpy).toHaveBeenCalledWith(appUrn, undefined);
-      expect(operationRegistry.get(appUrn)?.abortController.signal.aborted).toBe(true);
+      expect(entry.abortController.signal.aborted).toBe(true);
+    });
+
+    /*
+     * A queued install used to stay in `installing`, and in the queue list, until the worker
+     * reached it after the install ahead of it, and nothing said the cancel had worked.
+     */
+    describe('a queued install', () => {
+      beforeEach(() => {
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 7, status: 'installing' } as any);
+        appsRepository.deleteAppById.mockResolvedValue(undefined as any);
+      });
+
+      it('is settled at once: the row goes, the page hears install_cancelled, and the queue is sent again', async () => {
+        operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
+
+        const res = await service.cancelOperation({ actor: TEST_ACTOR, appUrn });
+
+        expect(res.outcome).toBe('cancelled_queued');
+        expect(appsRepository.deleteAppById).toHaveBeenCalledWith(7);
+        expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_cancelled', appUrn }));
+        expect(appsService.getInstallQueueState).toHaveBeenCalled();
+      });
+
+      it('is skipped by the worker, even after the app was installed again', async () => {
+        operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
+        await service.cancelOperation({ actor: TEST_ACTOR, appUrn });
+        // The operator installs the app again before the worker reaches the cancelled message.
+        const reinstallRequestId = '00000000-0000-4000-8000-000000000def';
+        operationRegistry.register(appUrn, { requestId: reinstallRequestId, command: 'install', tier: 'safe' });
+        appsRepository.deleteAppById.mockClear();
+        sseService.emit.mockClear();
+        const execute = vi.fn();
+        commandFactory.createCommand.mockReturnValue({ execute } as any);
+        const reply = vi.fn();
+
+        await service.invokeCommand({ appUrn, command: 'install', requestId, form: {} } as any, reply);
+
+        expect(execute).not.toHaveBeenCalled();
+        expect(appsRepository.deleteAppById).not.toHaveBeenCalled();
+        expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_cancelled' }));
+        expect(reply).toHaveBeenCalledWith(expect.objectContaining({ cancelled: true }));
+        expect(operationRegistry.get(appUrn)?.requestId).toBe(reinstallRequestId);
+      });
+
+      // The failure path reads the app's row by URN, and that row now belongs to the reinstall.
+      it('leaves the reinstall alone when the reply to the skipped message fails', async () => {
+        operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
+        await service.cancelOperation({ actor: TEST_ACTOR, appUrn });
+        operationRegistry.register(appUrn, { requestId: '00000000-0000-4000-8000-000000000def', command: 'install', tier: 'safe' });
+        sseService.emit.mockClear();
+        const reply = vi.fn().mockRejectedValue(new Error('reply channel closed'));
+
+        await service.invokeCommand({ appUrn, command: 'install', requestId, form: {} } as any, reply);
+
+        expect(appsRepository.updateAppById).not.toHaveBeenCalledWith(7, expect.objectContaining({ status: 'install_failed' }));
+        expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_error' }));
+      });
     });
 
     it('returns cancelling and aborts when the op is in flight', async () => {
@@ -6044,6 +8809,159 @@ describe('AppLifecycleService', () => {
 
       expect(res.outcome).toBe('not_found');
       expect(abortSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  // A cancelled update used to have nothing settling it: the worker cleared the operation, so the
+  // publisher's handler had no claim left and the app stayed `updating` (#2107).
+  describe('invokeCommand with a cancelled update', () => {
+    const appUrn = 'uptime-kuma:ci-marketplace' as any;
+    const requestId = '00000000-0000-4000-8000-000000000def';
+    const update = { appUrn, command: 'update', requestId, form: {}, performBackup: true, wasRunning: true } as any;
+
+    beforeEach(() => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 9, status: 'updating' } as any);
+      appsRepository.updateAppByIdIfStatus.mockResolvedValue(true);
+    });
+
+    it('puts the app back where the command says it landed and tells the page it was cancelled', async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'update', tier: 'before_ponr' });
+      const execute = vi
+        .fn()
+        .mockResolvedValue({ success: false, cancelled: true, rolledBack: true, cancelledStatus: 'running', message: 'cancelled' });
+      commandFactory.createCommand.mockReturnValue({ execute } as any);
+
+      await service.invokeCommand(update, vi.fn());
+
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(9, 'updating', { status: 'running' });
+      expect(sseService.emit).toHaveBeenCalledWith('app', { event: 'update_cancelled', appUrn, appStatus: 'running' });
+      expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'update_error' }));
+    });
+
+    it('reports a cancel whose rollback failed as the failure it is', async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'update', tier: 'before_ponr' });
+      const execute = vi
+        .fn()
+        .mockResolvedValue({ success: false, cancelled: true, rolledBack: false, cancelledStatus: 'stopped', message: 'could not be put back' });
+      commandFactory.createCommand.mockReturnValue({ execute } as any);
+
+      await service.invokeCommand(update, vi.fn());
+
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(9, 'updating', { status: 'stopped' });
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'update_error', appStatus: 'stopped' }));
+      expect(errorReportingService.reportAppFailure).toHaveBeenCalledWith(expect.objectContaining({ appUrn, phase: 'update' }));
+    });
+
+    // A cancel whose row had already left `updating` sends no event for the app, so the step the
+    // update last reported would be replayed to every new tab as if it were still running.
+    it('drops the replayed step however the update ended', async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'update', tier: 'before_ponr' });
+      appsRepository.updateAppByIdIfStatus.mockResolvedValue(false);
+      const execute = vi
+        .fn()
+        .mockResolvedValue({ success: false, cancelled: true, rolledBack: true, cancelledStatus: 'running', message: 'cancelled' });
+      commandFactory.createCommand.mockReturnValue({ execute } as any);
+
+      await service.invokeCommand(update, vi.fn());
+
+      expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'update_cancelled' }));
+      expect(sseService.forgetInstallProgress).toHaveBeenCalledWith(appUrn);
+    });
+
+    it('puts a running app back to running when the update is cancelled before a worker took it', async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'update', tier: 'before_ponr' });
+      operationRegistry.abort(appUrn);
+      const execute = vi.fn();
+      commandFactory.createCommand.mockReturnValue({ execute } as any);
+
+      await service.invokeCommand(update, vi.fn());
+
+      expect(execute).not.toHaveBeenCalled();
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(9, 'updating', { status: 'running' });
+      expect(sseService.emit).toHaveBeenCalledWith('app', { event: 'update_cancelled', appUrn, appStatus: 'running' });
+    });
+
+    // Emptying an update's old snapshot can take minutes; the reply must not wait for it.
+    it("runs the command's tidying up after its reply, without waiting for it", async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'update', tier: 'before_ponr' });
+      const execute = vi.fn().mockResolvedValue({ success: true, message: 'ok' });
+      const afterReply = vi.fn(() => new Promise<void>(() => undefined));
+      commandFactory.createCommand.mockReturnValue({ execute, afterReply } as any);
+      const reply = vi.fn();
+
+      await service.invokeCommand(update, reply);
+
+      expect(reply).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+      expect(afterReply).toHaveBeenCalledTimes(1);
+      expect(afterReply.mock.invocationCallOrder[0]).toBeGreaterThan(reply.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY);
+    });
+
+    // A reply that fails (the queue's channel closed) must not leave the old snapshot on disk for good.
+    it("runs the command's tidying up when its reply failed", async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'update', tier: 'before_ponr' });
+      const execute = vi.fn().mockResolvedValue({ success: true, message: 'ok' });
+      const afterReply = vi.fn().mockResolvedValue(undefined);
+      commandFactory.createCommand.mockReturnValue({ execute, afterReply } as any);
+      const reply = vi.fn().mockRejectedValueOnce(new Error('channel closed')).mockResolvedValue(undefined);
+
+      await service.invokeCommand(update, reply);
+
+      expect(afterReply).toHaveBeenCalledTimes(1);
+    });
+
+    // The tidying up can take the helper's 30 minutes; the app's next operation must not wait for it.
+    it("frees the app before the command's tidying up has finished", async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'update', tier: 'before_ponr' });
+      const afterReply = vi.fn(() => new Promise<void>(() => undefined));
+      commandFactory.createCommand.mockReturnValueOnce({ execute: vi.fn().mockResolvedValue({ success: true, message: 'ok' }), afterReply } as any);
+      await service.invokeCommand(update, vi.fn());
+
+      const nextRequestId = '00000000-0000-4000-8000-000000000fed';
+      operationRegistry.register(appUrn, { requestId: nextRequestId, command: 'start', tier: 'safe' });
+      const next = vi.fn().mockResolvedValue({ success: true, message: 'started' });
+      commandFactory.createCommand.mockReturnValueOnce({ execute: next } as any);
+      await service.invokeCommand({ appUrn, command: 'start', requestId: nextRequestId, form: {} } as any, vi.fn());
+
+      expect(afterReply).toHaveBeenCalledTimes(1);
+      expect(next).toHaveBeenCalledTimes(1);
+    });
+
+    it('gives the command a deadline that ends five minutes before the publisher stops waiting for its reply', async () => {
+      const entry = operationRegistry.register(appUrn, { requestId, command: 'update', tier: 'before_ponr' });
+      const execute = vi.fn().mockResolvedValue({ success: true, message: 'ok' });
+      commandFactory.createCommand.mockReturnValue({ execute } as any);
+
+      await service.invokeCommand(update, vi.fn());
+
+      const ctx = execute.mock.calls[0]?.[2];
+      // No events timeout configured here: the app events queue waits the 45 minutes an image pull may
+      // take, counted from when the update was queued. The reply needs the last five.
+      expect(ctx?.deadline).toBeInstanceOf(AppCommandDeadline);
+      expect(ctx?.deadline?.endsAt).toBe(entry.createdAt + 40 * 60_000);
+      expect(ctx?.signal).toBe(entry.abortController.signal);
+    });
+
+    // A failed update that put the previous version back leaves the app on the status it had (see
+    // updateApp); a cancelled one lands on the same.
+    it('puts a rolled-back app back on the status it had before the update', async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'update', tier: 'before_ponr' });
+      const execute = vi.fn().mockResolvedValue({ success: false, cancelled: true, rolledBack: true, message: 'cancelled' });
+      commandFactory.createCommand.mockReturnValue({ execute } as any);
+
+      await service.invokeCommand({ ...update, statusBeforeUpdate: 'restarting' }, vi.fn());
+
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(9, 'updating', { status: 'restarting' });
+      expect(sseService.emit).toHaveBeenCalledWith('app', { event: 'update_cancelled', appUrn, appStatus: 'restarting' });
+    });
+
+    it('leaves a stopped app stopped when its cancelled update could not be put back', async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'update', tier: 'before_ponr' });
+      const execute = vi.fn().mockResolvedValue({ success: false, cancelled: true, rolledBack: false, message: 'could not be put back' });
+      commandFactory.createCommand.mockReturnValue({ execute } as any);
+
+      await service.invokeCommand({ ...update, wasRunning: false, statusBeforeUpdate: 'stopped' }, vi.fn());
+
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(9, 'updating', { status: 'stopped' });
     });
   });
 
@@ -6088,6 +9006,29 @@ describe('AppLifecycleService', () => {
       // A cancellation must not be reported as a failure or a success.
       expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_error' }));
       expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_success' }));
+    });
+
+    it('passes on what a cancelled install could not remove, for the page to say', async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
+      const execute = vi.fn().mockResolvedValue({
+        success: false,
+        cancelled: true,
+        message: 'cancelled, some left',
+        warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT',
+        warningDetail: '/srv/app-data/store/app',
+      });
+      commandFactory.createCommand.mockReturnValue({ execute } as any);
+
+      await service.invokeCommand(data, vi.fn());
+
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({
+          event: 'install_cancelled',
+          warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT',
+          warningDetail: '/srv/app-data/store/app',
+        }),
+      );
     });
 
     it('finalizes a FAILED install worker-side so a post-RPC-timeout failure is not stranded in installing', async () => {
@@ -6208,41 +9149,567 @@ describe('AppLifecycleService', () => {
       appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK' } as any);
     });
 
-    it('overlapping restarts: the first success does not win when a second restart superseded it', async () => {
-      const resolvePublish = deferPublishResults({ success: true, message: 'OK' }, { success: false, message: 'compose failed' });
+    describe('a command that moved the app off a busy port', () => {
+      const movedHostPort = { from: 10000, to: 10001 };
 
-      await service.restartApp({ actor: TEST_ACTOR, appUrn });
-      await service.restartApp({ actor: TEST_ACTOR, appUrn });
-      resolvePublish();
-      await flushMicrotasks();
+      it.each([
+        ['start', 'start_success', () => service.startApp({ actor: TEST_ACTOR, appUrn })],
+        ['restart', 'restart_success', () => service.restartApp({ actor: TEST_ACTOR, appUrn })],
+        ['start and wait', 'start_success', () => service.startAppAndWait({ appUrn })],
+        ['restart and wait', 'restart_success', () => service.restartAppAndWait({ appUrn })],
+      ])('%s tells the page where it moved the app', async (_name, event, run) => {
+        appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK', movedHostPort } as any);
 
-      expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'restart_success' }));
-      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'restart_error', appUrn, appStatus: 'stopped' }));
+        await run();
+
+        await vi.waitFor(() => {
+          expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event, appUrn, appStatus: 'running', movedHostPort }));
+        });
+      });
+
+      // The move rewrote `config`, which read as settings saved during the start, so the "restart needed" badge stayed.
+      it('clears the restart a save was owed, though the move changed the stored config', async () => {
+        const config = { port: 10000, SITE_URL: 'http://localhost:10000' };
+        appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, config } as any);
+        appsRepository.getAppById.mockResolvedValue({ ...fakeApp, config: { port: 10001, SITE_URL: 'http://localhost:10001' } } as any);
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ form_fields: [{ type: 'app_base_url', env_variable: 'SITE_URL' }] } as any);
+        appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK', movedHostPort } as any);
+
+        await service.startApp({ actor: TEST_ACTOR, appUrn });
+
+        await vi.waitFor(() => {
+          expect(appsRepository.updateAppById).toHaveBeenCalledWith(fakeApp.id, { status: 'running', pendingRestart: false });
+        });
+      });
+
+      it('keeps the restart owed when another URL setting changes to the new port during the start', async () => {
+        const config = { port: 10000, CALLBACK_URL: 'http://localhost:10000/callback' };
+        appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, config } as any);
+        appsRepository.getAppById.mockResolvedValue({
+          ...fakeApp,
+          config: { port: 10001, CALLBACK_URL: 'http://localhost:10001/callback' },
+          pendingRestart: true,
+        } as any);
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ form_fields: [{ type: 'url', env_variable: 'CALLBACK_URL' }] } as any);
+        appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK', movedHostPort } as any);
+
+        await service.startApp({ actor: TEST_ACTOR, appUrn });
+
+        await vi.waitFor(() => expect(appsRepository.updateAppById).toHaveBeenCalledWith(fakeApp.id, { status: 'running' }));
+        expect(appsRepository.updateAppById).not.toHaveBeenCalledWith(fakeApp.id, expect.objectContaining({ pendingRestart: false }));
+      });
+
+      it('keeps the restart owed for settings saved during a start that also moved the app', async () => {
+        appsRepository.getAppById.mockResolvedValue({
+          ...fakeApp,
+          config: { ...(fakeApp.config as object), port: 10001, saved: 'meanwhile' },
+        } as any);
+        appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK', movedHostPort } as any);
+
+        await service.startApp({ actor: TEST_ACTOR, appUrn });
+
+        await vi.waitFor(() => {
+          expect(appsRepository.updateAppById).toHaveBeenCalledWith(fakeApp.id, { status: 'running' });
+        });
+      });
+
+      // The move writes the port it moved to. Any other port is a save the running app never took up.
+      it('keeps the restart owed for a port saved during a start that also moved the app', async () => {
+        appsRepository.getAppById.mockResolvedValue({ ...fakeApp, config: { ...(fakeApp.config as object), port: 20000 } } as any);
+        appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK', movedHostPort } as any);
+
+        await service.startApp({ actor: TEST_ACTOR, appUrn });
+
+        await vi.waitFor(() => {
+          expect(appsRepository.updateAppById).toHaveBeenCalledWith(fakeApp.id, { status: 'running' });
+        });
+      });
+
+      it('tells the page about a move the failed start left behind', async () => {
+        appEventsQueue.publish.mockResolvedValue({ success: false, message: 'mount failed', movedHostPort } as any);
+
+        await service.startApp({ actor: TEST_ACTOR, appUrn });
+
+        await vi.waitFor(() => {
+          expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'start_error', appUrn, movedHostPort }));
+        });
+      });
+
+      it('tells the page about the move and the failing service when both happened', async () => {
+        const serviceFailure = { kind: 'restarting', service: 'summary-service', exitCode: 126 };
+        appEventsQueue.publish.mockResolvedValue({
+          success: false,
+          message: 'summary-service keeps restarting (exit 126)',
+          serviceFailure,
+          movedHostPort,
+        } as any);
+
+        await service.startApp({ actor: TEST_ACTOR, appUrn });
+
+        await vi.waitFor(() => {
+          expect(sseService.emit).toHaveBeenCalledWith(
+            'app',
+            expect.objectContaining({ event: 'start_error', appUrn, serviceFailure, movedHostPort }),
+          );
+        });
+      });
+
+      it('sends nothing about a move when the app kept its port', async () => {
+        await service.startApp({ actor: TEST_ACTOR, appUrn });
+
+        await vi.waitFor(() => {
+          expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'start_success', movedHostPort: undefined }));
+        });
+      });
     });
 
-    it('stop-then-restart interleave: the surviving restart outcome wins over a superseded stop', async () => {
-      const resolvePublish = deferPublishResults({ success: true, message: 'OK' }, { success: true, message: 'OK' });
+    // A second command no longer supersedes the first: it is refused while the first is under way.
+    it('overlapping restarts: the second is refused and the first one settles the app', async () => {
+      const resolvePublish = deferPublishResults({ success: true, message: 'OK' });
+
+      await service.restartApp({ actor: TEST_ACTOR, appUrn });
+      await expect(service.restartApp({ actor: TEST_ACTOR, appUrn })).rejects.toThrow('APP_ERROR_RESTART_IN_PROGRESS');
+      resolvePublish();
+
+      await vi.waitFor(() => {
+        expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'restart_success', appUrn, appStatus: 'running' }));
+      });
+      expect(appEventsQueue.publish).toHaveBeenCalledTimes(1);
+    });
+
+    it('stop then restart: the restart is refused while the stop runs, and the stop settles the app', async () => {
+      const resolvePublish = deferPublishResults({ success: true, message: 'OK' });
 
       await service.stopApp({ actor: TEST_ACTOR, appUrn });
-      await service.restartApp({ actor: TEST_ACTOR, appUrn });
+      await expect(service.restartApp({ actor: TEST_ACTOR, appUrn })).rejects.toThrow('APP_ERROR_STOP_IN_PROGRESS');
       resolvePublish();
       await flushMicrotasks();
 
-      expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'stop_success' }));
-      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'restart_success', appUrn, appStatus: 'running' }));
+      expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ appStatus: 'restarting' }));
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'stop_success', appUrn, appStatus: 'stopped' }));
     });
 
+    // A force stop still registers over a stop or restart hung on Docker, which is what it is for.
     it('superseded restart failure does not fire phantom failure alerts', async () => {
-      const resolvePublish = deferPublishResults({ success: false, message: 'compose interrupted' }, { success: true, message: 'OK' });
+      const resolvePublish = deferPublishResults({ success: false, message: 'compose interrupted' });
 
       await service.restartApp({ actor: TEST_ACTOR, appUrn });
-      await service.stopApp({ actor: TEST_ACTOR, appUrn });
+      operationRegistry.register(appUrn, { requestId: 'force-stop-1', command: 'stop', tier: 'safe' });
       resolvePublish();
       await flushMicrotasks();
 
       expect(agentNotifyService.notify).not.toHaveBeenCalledWith('restart_error', expect.anything(), expect.anything());
       expect(errorReportingService.reportAppFailure).not.toHaveBeenCalledWith(expect.objectContaining({ phase: 'restart' }));
-      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'stop_success', appUrn, appStatus: 'stopped' }));
+      expect(operationRegistry.ownsOutcome(appUrn, 'force-stop-1')).toBe(true);
+    });
+  });
+
+  /*
+   * #2101: every entry method registered over whatever held the app. A start, stop, restart, reset
+   * or update sent during an uninstall (by an agent through MCP, say) took the uninstall's slot, its
+   * completion was dropped as superseded, and the row stayed behind with no containers.
+   */
+  describe('one lifecycle operation per app', () => {
+    const appUrn = 'myapp:ci-marketplace' as AppUrn;
+    const fakeApp = { id: 42, appName: 'myapp', appStoreSlug: 'ci-marketplace', status: 'running', config: {}, exposedLocal: false };
+    const held = <T>() => {
+      let release!: (value: T) => void;
+      const promise = new Promise<T>((resolve) => {
+        release = resolve;
+      });
+      return { promise, release };
+    };
+    const commands = {
+      start: () => service.startApp({ actor: TEST_ACTOR, appUrn }),
+      stop: () => service.stopApp({ actor: TEST_ACTOR, appUrn }),
+      restart: () => service.restartApp({ actor: TEST_ACTOR, appUrn }),
+      reset: () => service.resetApp({ actor: TEST_ACTOR, appUrn }),
+      update: () => service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false }),
+      uninstall: () => service.uninstallApp({ actor: TEST_ACTOR, appUrn, deleteAllData: true }),
+    };
+
+    beforeEach(() => {
+      appsRepository.getAppByUrn.mockResolvedValue(fakeApp as any);
+      appsRepository.updateAppById.mockResolvedValue(fakeApp as any);
+      appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK' } as any);
+    });
+
+    it.each(['start', 'stop', 'restart', 'reset', 'update'] as const)(
+      'refuses a %s while the app is being removed, and the uninstall still removes the row',
+      async (command) => {
+        const uninstall = held<{ success: boolean; message: string }>();
+        appEventsQueue.publish.mockReturnValueOnce(uninstall.promise as any);
+        await commands.uninstall();
+        appsRepository.updateAppById.mockClear();
+        appEventsQueue.publish.mockClear();
+
+        await expect(commands[command]()).rejects.toMatchObject({
+          status: 409,
+          response: { message: 'APP_ERROR_UNINSTALL_IN_PROGRESS', intlParams: { id: 'myapp' } },
+        });
+        expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+
+        uninstall.release({ success: true, message: 'OK' });
+
+        await vi.waitFor(() => {
+          expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'uninstall_success', appUrn }));
+        });
+        expect(appsRepository.deleteAppById).toHaveBeenCalledWith(42);
+      },
+    );
+
+    it('names what the app is busy with', async () => {
+      const restart = held<{ success: boolean; message: string }>();
+      appEventsQueue.publish.mockReturnValueOnce(restart.promise as any);
+      await commands.restart();
+
+      await expect(commands.uninstall()).rejects.toThrow('APP_ERROR_RESTART_IN_PROGRESS');
+      await expect(commands.update()).rejects.toThrow('APP_ERROR_RESTART_IN_PROGRESS');
+      restart.release({ success: true, message: 'OK' });
+    });
+
+    // The entry methods read and write the row before they register, so a busy check alone let a
+    // second command through while the first was still on its way.
+    it('refuses the second of two starts sent together, before it writes anything', async () => {
+      const read = held<unknown>();
+      appsRepository.getAppByUrn.mockReturnValueOnce(read.promise as any);
+
+      const first = commands.start();
+      const second = commands.start().then(
+        () => null,
+        (error: unknown) => error,
+      );
+      read.release(fakeApp);
+      await first;
+
+      expect(await second).toMatchObject({ status: 409, message: 'APP_ERROR_START_IN_PROGRESS' });
+      expect(appEventsQueue.publish).toHaveBeenCalledTimes(1);
+    });
+
+    it('frees the app when a command fails before it is dispatched', async () => {
+      appsRepository.getAppByUrn.mockResolvedValueOnce(null as any);
+
+      await expect(commands.start()).rejects.toThrow('APP_ERROR_APP_NOT_FOUND');
+
+      expect(operationRegistry.liveOperation(appUrn)).toBeUndefined();
+      await expect(commands.start()).resolves.toBeDefined();
+    });
+
+    // A stop hung on Docker never clears its entry. Past the queue's own timeout it is not one.
+    it('lets a command through once the operation that held the app is older than the queue waits', async () => {
+      operationRegistry.register(appUrn, { requestId: 'hung-stop', command: 'stop', tier: 'safe' });
+      const entry = operationRegistry.get(appUrn);
+      if (entry) {
+        entry.createdAt = Date.now() - 46 * 60 * 1000;
+      }
+
+      await expect(commands.start()).resolves.toBeDefined();
+      expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'start', appUrn }));
+    });
+
+    it('refuses a backup or a restore through the same claim', async () => {
+      operationRegistry.register(appUrn, { requestId: 'uninstall-1', command: 'uninstall', tier: 'non_cancellable' });
+      const run = vi.fn();
+
+      await expect(service.withOperationClaim(appUrn, 'backup', run)).rejects.toThrow('APP_ERROR_UNINSTALL_IN_PROGRESS');
+      expect(run).not.toHaveBeenCalled();
+    });
+
+    // The worker marks the app running before it syncs exposure, which reaches the Portal and takes seconds.
+    it('frees an installed app before the exposure sync that follows its install', async () => {
+      const requestId = '00000000-0000-4000-8000-0000000000aa';
+      const heldDuringSync: unknown[] = [];
+      vi.spyOn(exposureSyncService, 'syncExposurePublic').mockImplementation(async () => {
+        heldDuringSync.push(operationRegistry.liveOperation(appUrn));
+      });
+      operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
+      commandFactory.createCommand.mockReturnValue({ execute: vi.fn().mockResolvedValue({ success: true, message: 'OK' }) } as any);
+
+      await service.invokeCommand({ appUrn, command: 'install', requestId, form: {} } as any, vi.fn());
+
+      expect(heldDuringSync).toEqual([undefined]);
+    });
+
+    // A command sent while the update reapplied its config took the app, and the start was refused.
+    it('holds the app from an update settling until the start that brings it back', async () => {
+      const update = held<{ success: boolean; message: string }>();
+      appEventsQueue.publish.mockReturnValueOnce(update.promise as any);
+      const reapplied = held<{ requestId: string }>();
+      vi.spyOn(service, 'updateAppConfig').mockReturnValue(reapplied.promise);
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ cihub_app_version: 2 } as any);
+      const start = vi.spyOn(service, 'startAppAndWait').mockResolvedValue(true);
+
+      await commands.update();
+      update.release({ success: true, message: 'OK' });
+      await vi.waitFor(() => expect(service.updateAppConfig).toHaveBeenCalled());
+
+      await expect(commands.stop()).rejects.toThrow('APP_ERROR_UPDATE_IN_PROGRESS');
+      reapplied.release({ requestId: 'r' });
+      await vi.waitFor(() => expect(start).toHaveBeenCalledWith({ appUrn, skipPull: true, onlyRecreateChanged: true }));
+      expect(operationRegistry.liveOperation(appUrn)).toBeUndefined();
+    });
+
+    /*
+     * A restart the Hub owes the app (fresh credentials after a rotate, a device key, a Companion
+     * Memory connection, settings just saved) was refused while the app was starting. The rotate left
+     * the app on credentials it had just revoked, and the device-key refresh never retried.
+     */
+    describe('system restarts that wait for the operation under way', () => {
+      const systemRestart = (reason: SystemLifecycleReason) => service.restartApp({ appUrn, skipPull: true, actor: { kind: 'system', reason } });
+
+      it.each(['device-key-refresh', 'restart-after-config-update'] as const)(
+        'a %s restart waits for the start under way, then restarts the app',
+        async (reason) => {
+          const start = held<{ success: boolean; message: string }>();
+          appEventsQueue.publish.mockReturnValueOnce(start.promise as any);
+          await commands.start();
+
+          let settled = false;
+          const restart = systemRestart(reason).finally(() => {
+            settled = true;
+          });
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          expect(settled).toBe(false);
+          expect(appEventsQueue.publish).toHaveBeenCalledTimes(1);
+
+          start.release({ success: true, message: 'OK' });
+
+          await expect(restart).resolves.toMatchObject({ requestId: expect.any(String) });
+          expect(appEventsQueue.publish).toHaveBeenLastCalledWith(expect.objectContaining({ command: 'restart', appUrn }));
+        },
+      );
+
+      it('lets the start write its outcome before the waiting restart writes its own', async () => {
+        const start = held<{ success: boolean; message: string }>();
+        appEventsQueue.publish.mockReturnValueOnce(start.promise as any);
+        await commands.start();
+        const restart = systemRestart('device-key-refresh');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        appsRepository.updateAppById.mockClear();
+
+        start.release({ success: true, message: 'OK' });
+        await restart;
+
+        const statuses = appsRepository.updateAppById.mock.calls.map(([, data]) => (data as { status?: string }).status).filter(Boolean);
+        expect(statuses.slice(0, 2)).toEqual(['running', 'restarting']);
+      });
+
+      it('still refuses a restart a person asks for while the app starts', async () => {
+        const start = held<{ success: boolean; message: string }>();
+        appEventsQueue.publish.mockReturnValueOnce(start.promise as any);
+        await commands.start();
+
+        await expect(commands.restart()).rejects.toThrow('APP_ERROR_START_IN_PROGRESS');
+        start.release({ success: true, message: 'OK' });
+      });
+
+      // A sync restarts from inside other lifecycle work, which can be the very command holding the app.
+      it.each(['custom-domain-apply', 'sweep'] as const)('still refuses a %s restart rather than wait', async (reason) => {
+        const start = held<{ success: boolean; message: string }>();
+        appEventsQueue.publish.mockReturnValueOnce(start.promise as any);
+        await commands.start();
+
+        await expect(systemRestart(reason)).rejects.toThrow('APP_ERROR_START_IN_PROGRESS');
+        start.release({ success: true, message: 'OK' });
+      });
+
+      it('lets restartAppAndWait wait when asked to, and refuses it otherwise', async () => {
+        const start = held<{ success: boolean; message: string }>();
+        appEventsQueue.publish.mockReturnValueOnce(start.promise as any);
+        await commands.start();
+
+        await expect(service.restartAppAndWait({ appUrn, skipPull: true })).rejects.toThrow('APP_ERROR_START_IN_PROGRESS');
+        const waiting = service.restartAppAndWait({ appUrn, skipPull: true, waitForApp: true });
+        start.release({ success: true, message: 'OK' });
+
+        await expect(waiting).resolves.toBe(true);
+      });
+
+      // Decided while the app ran, then a person stopped it: the restart must not bring it back.
+      it.each([
+        ['restartApp', () => systemRestart('restart-after-config-update')],
+        ['restartAppAndWait', () => service.restartAppAndWait({ appUrn, skipPull: true, waitForApp: true })],
+      ] as const)('%s does not restart an app the operation it waited for left stopped', async (_label, restart) => {
+        const stop = held<{ success: boolean; message: string }>();
+        appEventsQueue.publish.mockReturnValueOnce(stop.promise as any);
+        await commands.stop();
+        const waiting = restart();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+
+        appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, status: 'stopped' } as any);
+        stop.release({ success: true, message: 'OK' });
+        await waiting;
+
+        expect(appEventsQueue.publish).toHaveBeenCalledTimes(1);
+        expect(appsRepository.updateAppById).not.toHaveBeenCalledWith(fakeApp.id, { status: 'restarting' });
+        expect(operationRegistry.liveOperation(appUrn)).toBeUndefined();
+      });
+
+      it('restarts an app it did not wait for whatever its status, as a restart always has', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, status: 'stopped' } as any);
+
+        await systemRestart('restart-after-config-update');
+
+        expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'restart', appUrn }));
+      });
+    });
+
+    // A credential change holds the app before it revokes anything and restarts it under that hold.
+    describe('a change held through its restart', () => {
+      const apiKeys = mock<ApiKeyService>();
+      const hubAppFiles = mock<AppFilesManager>();
+      const forwardAuth = mock<ForwardAuthSecretResolver>();
+      let hubAccess: HubAccessService;
+      /** How a call stands 50 ms in: answered, refused (the error), or still open. */
+      const after50ms = (call: Promise<unknown>) =>
+        Promise.race([
+          call.then(
+            () => 'answered',
+            (error: unknown) => error,
+          ),
+          new Promise((resolve) => setTimeout(() => resolve('still open'), 50)),
+        ]);
+
+      beforeEach(() => {
+        apiKeys.revokeManagedByApp.mockReset();
+        hubAppFiles.getInstalledAppInfo.mockResolvedValue({ urn: appUrn } as any);
+        hubAppFiles.getAppEnv.mockResolvedValue({ path: '/x', content: 'CI_HUB_FORWARD_AUTH_SECRET=old\nOTHER=1\n' });
+        hubAppFiles.writeAppEnv.mockReset();
+        forwardAuth.invalidateApp.mockReset();
+        const moduleRef = mock<ModuleRef>();
+        moduleRef.get.mockReturnValue(forwardAuth);
+        hubAccess = new HubAccessService(apiKeys, hubAppFiles, service, new EnvUtils(), mock<LoggerService>(), moduleRef, mock<AppsRepository>());
+      });
+
+      it("refuses a rotate while the app starts, with the start's 409, and leaves the old credentials working", async () => {
+        const start = held<{ success: boolean; message: string }>();
+        appEventsQueue.publish.mockReturnValueOnce(start.promise as any);
+        await commands.start();
+
+        const outcome = await after50ms(hubAccess.rotate(appUrn));
+
+        expect(outcome).toMatchObject({ status: 409, response: { message: 'APP_ERROR_START_IN_PROGRESS' } });
+        expect(apiKeys.revokeManagedByApp).not.toHaveBeenCalled();
+        expect(hubAppFiles.writeAppEnv).not.toHaveBeenCalled();
+        expect(forwardAuth.invalidateApp).not.toHaveBeenCalled();
+        start.release({ success: true, message: 'OK' });
+      });
+
+      it('keeps every other command out while the rotate revokes, then restarts the app under the same hold', async () => {
+        const revoke = held<void>();
+        apiKeys.revokeManagedByApp.mockReturnValueOnce(revoke.promise);
+
+        const rotation = hubAccess.rotate(appUrn);
+        await vi.waitFor(() => expect(apiKeys.revokeManagedByApp).toHaveBeenCalledWith(appUrn));
+        await expect(commands.start()).rejects.toThrow('APP_ERROR_RESTART_IN_PROGRESS');
+
+        revoke.release();
+        await expect(rotation).resolves.toMatchObject({ requestId: expect.any(String) });
+        expect(appEventsQueue.publish).toHaveBeenCalledTimes(1);
+        expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'restart', appUrn }));
+      });
+
+      it('rotates an idle app: revokes the key, clears the secret and restarts it', async () => {
+        await expect(hubAccess.rotate(appUrn)).resolves.toMatchObject({ requestId: expect.any(String) });
+
+        expect(apiKeys.revokeManagedByApp).toHaveBeenCalledWith(appUrn);
+        expect(hubAppFiles.writeAppEnv).toHaveBeenCalledWith(appUrn, expect.not.stringContaining('CI_HUB_FORWARD_AUTH_SECRET'));
+        expect(forwardAuth.invalidateApp).toHaveBeenCalledWith(appUrn);
+        expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'restart', appUrn }));
+      });
+
+      it('frees the app when the change fails before its restart', async () => {
+        apiKeys.revokeManagedByApp.mockRejectedValueOnce(new Error('db down'));
+
+        await expect(hubAccess.rotate(appUrn)).rejects.toThrow('db down');
+
+        expect(operationRegistry.liveOperation(appUrn)).toBeUndefined();
+        await expect(commands.start()).resolves.toMatchObject({ requestId: expect.any(String) });
+      });
+
+      it('answers busy without running anything when the app is held, for work that can wait for its next round', async () => {
+        const start = held<{ success: boolean; message: string }>();
+        appEventsQueue.publish.mockReturnValueOnce(start.promise as any);
+        await commands.start();
+        const run = vi.fn();
+
+        await expect(service.withAppHeldUnlessBusy(appUrn, run)).resolves.toEqual({ busy: 'start' });
+
+        expect(run).not.toHaveBeenCalled();
+        start.release({ success: true, message: 'OK' });
+      });
+
+      it('waits for a held restart to settle and frees the app after it', async () => {
+        await expect(service.withAppHeldUnlessBusy(appUrn, (app) => app.restartAndWait({ skipPull: true }))).resolves.toEqual({ result: true });
+
+        expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'restart', appUrn }));
+        expect(operationRegistry.liveOperation(appUrn)).toBeUndefined();
+      });
+
+      it('refuses a second restart under one hold, which would register over the first', async () => {
+        await expect(
+          service.withAppHeld(appUrn, async (app) => {
+            await app.restart({ reason: 'memory-connect' });
+            return app.restart({ reason: 'memory-connect' });
+          }),
+        ).rejects.toThrow('already restarted under this hold');
+
+        expect(appEventsQueue.publish).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    // Settings saved while the app was starting: the start ran the old config, so the restart is still owed.
+    it('keeps the restart owed when settings were saved while the start ran', async () => {
+      const start = held<{ success: boolean; message: string }>();
+      appEventsQueue.publish.mockReturnValueOnce(start.promise as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, config: { port: 8080 } } as any);
+      await commands.start();
+      appsRepository.getAppById.mockResolvedValue({ ...fakeApp, config: { port: 9090 }, pendingRestart: true } as any);
+
+      start.release({ success: true, message: 'OK' });
+
+      await vi.waitFor(() => expect(appsRepository.updateAppById).toHaveBeenCalledWith(42, { status: 'running' }));
+      expect(appsRepository.updateAppById).not.toHaveBeenCalledWith(42, expect.objectContaining({ pendingRestart: false }));
+    });
+
+    it('clears the restart owed when the start ran the config the app has', async () => {
+      const start = held<{ success: boolean; message: string }>();
+      appEventsQueue.publish.mockReturnValueOnce(start.promise as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, config: { port: 8080 } } as any);
+      await commands.start();
+      appsRepository.getAppById.mockResolvedValue({ ...fakeApp, config: { port: 8080 }, pendingRestart: true } as any);
+
+      start.release({ success: true, message: 'OK' });
+
+      await vi.waitFor(() => expect(appsRepository.updateAppById).toHaveBeenCalledWith(42, { status: 'running', pendingRestart: false }));
+    });
+
+    // An event the queue refuses never reaches a worker, so nothing would settle its entry.
+    it.each(['start', 'stop', 'restart', 'reset', 'uninstall'] as const)('frees the app when the %s cannot be published', async (command) => {
+      appEventsQueue.publish.mockRejectedValueOnce(new Error('Invalid event data'));
+
+      await commands[command]();
+      await vi.waitFor(() => expect(operationRegistry.liveOperation(appUrn)).toBeUndefined());
+
+      await expect(commands.start()).resolves.toBeDefined();
+    });
+
+    it('frees the app when a restartAppAndWait cannot be published', async () => {
+      appEventsQueue.publish.mockRejectedValueOnce(new Error('Invalid event data'));
+
+      await expect(service.restartAppAndWait({ appUrn })).rejects.toThrow('Invalid event data');
+
+      expect(operationRegistry.liveOperation(appUrn)).toBeUndefined();
+    });
+
+    it("registers a force stop without taking another caller's claim", async () => {
+      appRuntimeMonitor.getAppRuntimeHealth.mockResolvedValue({ forceStopEligible: true } as any);
+      const register = vi.spyOn(operationRegistry, 'register');
+
+      await service.forceStopApp({ appUrn }).catch(() => undefined);
+
+      expect(register).toHaveBeenCalledWith(appUrn, expect.objectContaining({ command: 'stop' }), { takesOverClaim: false });
     });
   });
 
@@ -6330,31 +9797,39 @@ describe('AppLifecycleService', () => {
       },
     );
 
-    // A backup resumes its app with a start while the row says `backing_up`, and the
-    // public-route repair restarts apps that are still `starting`. The new command
-    // replaces that operation in the registry, so its completion is dropped as
-    // superseded and nothing would ever move the row off a restored spinner.
+    // A backup resumes its app with a start once it has settled its own outcome, while the row still
+    // says `backing_up`, and the public-route repair restarts apps whose row still says `starting`.
+    // Nothing but this command would ever move the row off that spinner again.
     it.each([
-      { command: 'start', statusBefore: 'backing_up', inFlight: 'backup' },
-      { command: 'restart', statusBefore: 'starting', inFlight: 'start' },
-    ] as const)(
-      'a $command the queue never took does not put back $statusBefore, which the $inFlight it replaced can no longer settle',
-      async ({ command, statusBefore, inFlight }) => {
-        givenApp(statusBefore);
-        operationRegistry.register(appUrn, { requestId: 'req-in-flight', command: inFlight, tier: 'safe' });
-        appEventsQueue.publish.mockResolvedValue({
-          success: false,
-          message: 'channel creation failed; connection is closing',
-          errorCode: QUEUE_UNAVAILABLE_CODE,
-        } as any);
+      { command: 'start', statusBefore: 'backing_up' },
+      { command: 'restart', statusBefore: 'starting' },
+    ] as const)('a $command the queue never took does not put back $statusBefore', async ({ command, statusBefore }) => {
+      givenApp(statusBefore);
+      appEventsQueue.publish.mockResolvedValue({
+        success: false,
+        message: 'channel creation failed; connection is closing',
+        errorCode: QUEUE_UNAVAILABLE_CODE,
+      } as any);
 
-        await run(command);
-        await flushMicrotasks();
+      await run(command);
+      await flushMicrotasks();
 
-        expect(operationRegistry.claimCompletion(appUrn, 'req-in-flight')).toBe(false);
-        expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(7, { status: 'stopped' });
-      },
-    );
+      expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(7, { status: 'stopped' });
+    });
+
+    it.each([
+      { command: 'start', inFlight: 'backup' },
+      { command: 'restart', inFlight: 'start' },
+    ] as const)('a $command sent while a $inFlight is still under way is refused before it writes anything', async ({ command, inFlight }) => {
+      givenApp('running');
+      operationRegistry.register(appUrn, { requestId: 'req-in-flight', command: inFlight, tier: 'safe' });
+
+      await expect(run(command)).rejects.toMatchObject({ status: 409 });
+
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      expect(operationRegistry.ownsOutcome(appUrn, 'req-in-flight')).toBe(true);
+    });
 
     it.each([
       { waitFor: 'startAppAndWait', event: 'start_error' },
@@ -6388,15 +9863,45 @@ describe('AppLifecycleService', () => {
     // is connecting". All three were marked stopped while running until the status sync put them
     // back at 08:50:00.
     it('the boot-time start of running apps leaves them running while the queue is still connecting', async () => {
-      appsRepository.getApps.mockResolvedValue([{ id: 7, appName: 'ci-hermes', appStoreSlug: 'ci-marketplace', status: 'running' }] as any);
-      givenApp('running');
-      appEventsQueue.unavailableReason.mockReturnValue("Queue 'app-events-queue' is unavailable while RabbitMQ is connecting.");
+      vi.useFakeTimers();
+      try {
+        appsRepository.getApps.mockResolvedValue([{ id: 7, appName: 'ci-hermes', appStoreSlug: 'ci-marketplace', status: 'running' }] as any);
+        givenApp('running');
+        appEventsQueue.unavailableReason.mockReturnValue("Queue 'app-events-queue' is unavailable while RabbitMQ is connecting.");
 
-      await service.restartRunningApps();
+        await service.restartRunningApps();
+        await vi.advanceTimersByTimeAsync(11 * 60_000);
 
-      await vi.waitFor(() => expect(logger.error).toHaveBeenCalledWith('Failed to start app 7', expect.any(TranslatableError)));
-      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
-      expect(appEventsQueue.publish).not.toHaveBeenCalled();
+        expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('were not restarted'));
+        expect(logger.error).not.toHaveBeenCalledWith('Failed to start app 7', expect.anything());
+        expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('the boot-time start of running apps starts them once RabbitMQ connects during that wait', async () => {
+      vi.useFakeTimers();
+      try {
+        appsRepository.getApps.mockResolvedValue([{ id: 7, appName: 'ci-hermes', appStoreSlug: 'ci-marketplace', status: 'running' }] as any);
+        givenApp('running');
+        let connected = false;
+        appEventsQueue.unavailableReason.mockImplementation(() =>
+          connected ? undefined : "Queue 'app-events-queue' is unavailable while RabbitMQ is connecting.",
+        );
+        appEventsQueue.publish.mockResolvedValue({ success: true, message: 'started' } as any);
+        setTimeout(() => {
+          connected = true;
+        }, 2_500);
+
+        await service.restartRunningApps();
+        await vi.advanceTimersByTimeAsync(5_000);
+
+        expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'start', appUrn }));
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('refreshing inference apps logs a refused restart for that app instead of rejecting the whole refresh', async () => {
@@ -6408,6 +9913,123 @@ describe('AppLifecycleService', () => {
       await expect(service.restartAiApps()).resolves.toBeUndefined();
 
       expect(logger.error).toHaveBeenCalledWith('Failed to restart AI app 7', expect.any(TranslatableError));
+    });
+
+    // 6P (2026-09-17): the Hub booted while RabbitMQ was still connecting. The queue passed the start's
+    // pre-check, then refused its publish as the connection dropped, so the start was reported to Sentry as
+    // an error. The queue refuses such a publish before it sends anything, so the start is published again.
+    describe('a start the queue refuses because RabbitMQ is still connecting', () => {
+      const connecting = "Queue 'app-events-queue' is unavailable while RabbitMQ is connecting.";
+      const refused = { success: false, message: connecting, errorCode: QUEUE_UNAVAILABLE_CODE } as any;
+
+      beforeEach(() => {
+        vi.useFakeTimers();
+      });
+
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('publishes the same start again once the queue is back, and the app runs', async () => {
+        givenApp('stopped');
+        let connected = true;
+        appEventsQueue.unavailableReason.mockImplementation(() => (connected ? undefined : connecting));
+        appEventsQueue.publish
+          .mockImplementationOnce(async () => {
+            connected = false;
+            setTimeout(() => {
+              connected = true;
+            }, 2_500);
+            return refused;
+          })
+          .mockResolvedValueOnce({ success: true, message: 'started' } as any);
+
+        await service.startApp({ actor: TEST_ACTOR, appUrn });
+        await vi.advanceTimersByTimeAsync(5_000);
+
+        expect(appEventsQueue.publish).toHaveBeenCalledTimes(2);
+        expect(appEventsQueue.publish.mock.calls[1][0]).toEqual(appEventsQueue.publish.mock.calls[0][0]);
+        expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(7, expect.objectContaining({ status: 'running' }));
+        expect(errorReportingService.reportAppFailure).not.toHaveBeenCalled();
+        expect(logger.error).not.toHaveBeenCalledWith(expect.stringContaining('Failed to start app'));
+      });
+
+      it('gives up after the bound with a warning rather than an error, and settles the app on the status it had', async () => {
+        givenApp('running');
+        appEventsQueue.unavailableReason.mockReturnValueOnce(undefined).mockReturnValue(connecting);
+        appEventsQueue.publish.mockResolvedValue(refused);
+
+        await service.startApp({ actor: TEST_ACTOR, appUrn });
+        await vi.advanceTimersByTimeAsync(30 * 60_000);
+
+        // While the queue is down it is polled, not published to: the one publish is the refusal.
+        expect(appEventsQueue.publish).toHaveBeenCalledTimes(1);
+        expect(logger.warn).toHaveBeenCalledWith(`Failed to start app ${appUrn}: ${connecting}`);
+        expect(logger.error).not.toHaveBeenCalledWith(expect.stringContaining('Failed to start app'));
+        expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(7, { status: 'running' });
+        expect(errorReportingService.reportAppFailure).toHaveBeenCalledWith({
+          appUrn,
+          phase: 'start',
+          message: connecting,
+          errorCode: QUEUE_UNAVAILABLE_CODE,
+        });
+      });
+    });
+  });
+
+  // CI-Hub#2376: a restart the host-device check refused left the container running and the row on `stopped`.
+  describe('a start or restart refused before it touched the containers', () => {
+    const appUrn = createAppUrn('ci-hermes', 'ci-marketplace');
+    const flushMicrotasks = () => new Promise<void>((r) => setTimeout(r, 0));
+    const givenApp = (status: string) => appsRepository.getAppByUrn.mockResolvedValue({ id: 7, name: 'ci-hermes', status, config: {} } as any);
+    const refusal = { success: false, message: 'KVM is not available on this machine', errorCode: 'kvm_missing' };
+
+    it.each([
+      { command: 'restartApp', event: 'restart_error' },
+      { command: 'startApp', event: 'start_error' },
+    ] as const)('$command settles a running app back on running', async ({ command, event }) => {
+      givenApp('running');
+      appEventsQueue.publish.mockResolvedValue({ ...refusal, rolledBack: true } as any);
+
+      await service[command]({ actor: TEST_ACTOR, appUrn });
+      await flushMicrotasks();
+
+      expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(7, { status: 'running' });
+      expect(sseService.emit).toHaveBeenLastCalledWith('app', expect.objectContaining({ event, appStatus: 'running', errorCode: 'kvm_missing' }));
+    });
+
+    it.each([
+      { command: 'restartAppAndWait', event: 'restart_error' },
+      { command: 'startAppAndWait', event: 'start_error' },
+    ] as const)('$command reports failure and settles a running app back on running', async ({ command, event }) => {
+      givenApp('running');
+      appEventsQueue.publish.mockResolvedValue({ ...refusal, rolledBack: true } as any);
+
+      await expect(service[command]({ appUrn })).resolves.toBe(false);
+
+      expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(7, { status: 'running' });
+      expect(sseService.emit).toHaveBeenLastCalledWith('app', expect.objectContaining({ event, appStatus: 'running', errorCode: 'kvm_missing' }));
+    });
+
+    it('a restart that failed after taking the app down still settles on stopped', async () => {
+      givenApp('running');
+      appEventsQueue.publish.mockResolvedValue(refusal as any);
+
+      await service.restartApp({ actor: TEST_ACTOR, appUrn });
+      await flushMicrotasks();
+
+      expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(7, { status: 'stopped' });
+    });
+
+    // As for a command the queue never took: a transitional status belongs to an operation now superseded.
+    it('does not put back a transitional status', async () => {
+      givenApp('starting');
+      appEventsQueue.publish.mockResolvedValue({ ...refusal, rolledBack: true } as any);
+
+      await service.restartApp({ actor: TEST_ACTOR, appUrn });
+      await flushMicrotasks();
+
+      expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(7, { status: 'stopped' });
     });
   });
 });

@@ -24,12 +24,16 @@ vi.mock('../../registration/public-reachability', async (importOriginal) => {
   };
 });
 
+// The target a Serve entry forwards a Private VPN port to is dialled over the Docker network. Tests set what it does.
+vi.mock('../app-port-probe', () => ({ probeAppPort: vi.fn() }));
+
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import type { AppUrn } from '@ci-hub/common/types';
+import { probeAppPort } from '../app-port-probe';
 import { AppsReadService } from '../apps-read.service';
 import { AppsService } from '../apps.service';
 import { InstallPipelineTracker } from '../install-pipeline.tracker';
@@ -42,6 +46,7 @@ import { ModuleRef } from '@nestjs/core';
 import { CloudflareClientService } from '../../cloudflare/cloudflare-client.service';
 import { TailscaleService } from '../../tailscale/tailscale.service';
 import { LifecycleJobService } from '../../app-lifecycle/lifecycle-job.service';
+import { SSEService } from '@/core/sse/sse.service';
 
 describe('AppsService', () => {
   let service: AppsService;
@@ -57,6 +62,7 @@ describe('AppsService', () => {
 
   beforeEach(async () => {
     mockAxiosGet.mockReset();
+    vi.mocked(probeAppPort).mockReset();
     installPipelineTracker = new InstallPipelineTracker();
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -101,6 +107,8 @@ describe('AppsService', () => {
             tailnet: 'example.ts.net',
             supportsServices: true,
           }),
+          getServePermission: vi.fn().mockReturnValue({ denied: false, remedy: null, deniedSince: null }),
+          getServeStatus: vi.fn().mockResolvedValue({ entries: [] }),
         } as any;
       }
       return undefined as any;
@@ -467,12 +475,12 @@ describe('AppsService', () => {
       expect(result.resolvable).toBe(true);
     });
 
-    it("MUST return errorCode 'PROXY_UPSTREAM_ERROR' for non-Cloudflare 502/503", async () => {
+    it('MUST NOT call an app available when its public route answers a 5xx of its own', async () => {
       setupApp({ exposureMode: 'cloudflare' });
       mockAxiosGet.mockResolvedValue({ status: 502, data: '<html>Bad Gateway</html>' });
       const result = await service.checkAppAvailability(appUrn);
-      // Non-CF 502 is now treated as available (any HTTP response = reachable)
-      expect(result.available).toBe(true);
+      expect(result.available).toBe(false);
+      expect(result.errorCode).toBe('CF_UPSTREAM_ERROR');
       expect(result.httpStatus).toBe(502);
     });
 
@@ -549,14 +557,72 @@ describe('AppsService', () => {
     it('MUST attempt container restart for PROXY_UPSTREAM_ERROR', async () => {
       const mockRestart = vi.fn().mockResolvedValue(undefined);
       moduleRef.get.mockImplementation((() => ({
+        getRoutedContainerNames: vi.fn().mockResolvedValue(['test-app_test-store-web-1']),
         restartContainer: mockRestart,
+        assertBindMountsSafe: vi.fn().mockResolvedValue(undefined),
         syncExposurePublic: vi.fn(),
         getTunnelToken: () => 'token',
       })) as any);
 
       setupForResolve('proxy502');
-      await service.resolveAppAvailability(appUrn);
-      expect(mockRestart).toHaveBeenCalledWith('test-app');
+      const result = await service.resolveAppAvailability(appUrn);
+      expect(mockRestart).toHaveBeenCalledWith('test-app_test-store-web-1');
+      expect(result.detail).toContain('Restarted container: test-app_test-store-web-1');
+    });
+
+    it('MUST NOT restart a container whose bind mounts the sandbox refuses, and says why', async () => {
+      const mockRestart = vi.fn().mockResolvedValue(undefined);
+      moduleRef.get.mockImplementation((() => ({
+        getRoutedContainerNames: vi.fn().mockResolvedValue(['test-app_test-store-web-1']),
+        restartContainer: mockRestart,
+        assertBindMountsSafe: vi.fn().mockRejectedValue(new Error('"data/db" in its data folder is a symbolic link')),
+        syncExposurePublic: vi.fn(),
+        getTunnelToken: () => 'token',
+      })) as any);
+
+      setupForResolve('proxy502');
+      const result = await service.resolveAppAvailability(appUrn);
+      expect(mockRestart).not.toHaveBeenCalled();
+      expect(result.detail).toContain('symbolic link');
+    });
+
+    it('MUST say so instead of restarting a guessed name when the app has no routed container', async () => {
+      const mockRestart = vi.fn().mockResolvedValue(undefined);
+      moduleRef.get.mockImplementation((() => ({
+        getRoutedContainerNames: vi.fn().mockResolvedValue([]),
+        restartContainer: mockRestart,
+        assertBindMountsSafe: vi.fn().mockResolvedValue(undefined),
+        syncExposurePublic: vi.fn(),
+        getTunnelToken: () => 'token',
+      })) as any);
+
+      setupForResolve('proxy502');
+      const result = await service.resolveAppAvailability(appUrn);
+      expect(mockRestart).not.toHaveBeenCalled();
+      expect(result.detail).toContain('no container found');
+      expect(result.success).toBe(false);
+    });
+
+    it('MUST go on to the next container when one restart fails', async () => {
+      const mockRestart = vi
+        .fn()
+        .mockRejectedValueOnce(new Error('Failed to restart container test-app_test-store-web-1'))
+        .mockResolvedValue(undefined);
+      moduleRef.get.mockImplementation((() => ({
+        getRoutedContainerNames: vi.fn().mockResolvedValue(['test-app_test-store-web-1', 'test-app_test-store-sidecar-1']),
+        restartContainer: mockRestart,
+        assertBindMountsSafe: vi.fn().mockResolvedValue(undefined),
+        syncExposurePublic: vi.fn(),
+        getTunnelToken: () => 'token',
+      })) as any);
+
+      setupForResolve('proxy502');
+      const result = await service.resolveAppAvailability(appUrn);
+
+      expect(mockRestart).toHaveBeenCalledWith('test-app_test-store-sidecar-1');
+      expect(result.success).toBe(true);
+      expect(result.detail).toContain('Restarted container: test-app_test-store-sidecar-1');
+      expect(result.detail).toContain('Failed to restart container test-app_test-store-web-1');
     });
 
     it('SHOULD call syncExposurePublic for tailscale + CONNECTION_REFUSED', async () => {
@@ -572,6 +638,8 @@ describe('AppsService', () => {
               tailnet: 'example.ts.net',
               supportsServices: true,
             }),
+            getServePermission: vi.fn().mockReturnValue({ denied: false, remedy: null, deniedSince: null }),
+            getServeStatus: vi.fn().mockResolvedValue({ entries: [] }),
           };
         }
         if ((token as { name?: string } | undefined)?.name === 'AppLifecycleService') {
@@ -580,6 +648,7 @@ describe('AppsService', () => {
           };
         }
         return {
+          getRoutedContainerNames: vi.fn().mockResolvedValue(['test-app_test-store-web-1']),
           restartContainer: vi.fn().mockResolvedValue(undefined),
         };
       }) as any);
@@ -587,6 +656,180 @@ describe('AppsService', () => {
       setupForResolve('connrefused', { exposureMode: 'tailscale' });
       await service.resolveAppAvailability(appUrn);
       expect(mockSync).toHaveBeenCalled();
+    });
+
+    describe('tailscale + CONNECTION_REFUSED', () => {
+      function wireTailscaleResolve(downContainers: string[], serveEntries: Record<string, unknown>[] = []) {
+        const calls: string[] = [];
+        const getRoutedContainerNames = vi.fn().mockResolvedValue(downContainers);
+        const restartContainer = vi.fn(async (name: string) => {
+          calls.push(`restart:${name}`);
+        });
+        const syncExposurePublic = vi.fn(async () => {
+          calls.push('sync');
+        });
+        moduleRef.get.mockImplementation(((token: unknown) => {
+          if (token === TailscaleService) {
+            return {
+              getStatus: vi
+                .fn()
+                .mockResolvedValue({ installed: true, connected: true, nodeFqdn: 'hub-tailscale-1.example.ts.net', supportsServices: true }),
+              getServePermission: vi.fn().mockReturnValue({ denied: false, remedy: null, deniedSince: null }),
+              getServeStatus: vi.fn().mockResolvedValue({ entries: serveEntries }),
+            };
+          }
+          if ((token as { name?: string } | undefined)?.name === 'AppLifecycleService') {
+            return { syncExposurePublic };
+          }
+          return { getRoutedContainerNames, restartContainer, assertBindMountsSafe: vi.fn().mockResolvedValue(undefined) };
+        }) as any);
+        return { calls, getRoutedContainerNames, restartContainer };
+      }
+
+      // With no Serve entry for the port, a refusal over the Private VPN means nothing is published, whatever the app is doing.
+      it('MUST leave a running app alone and only re-sync', async () => {
+        const { getRoutedContainerNames, restartContainer } = wireTailscaleResolve([]);
+
+        setupForResolve('connrefused', { exposureMode: 'tailscale' });
+        const result = await service.resolveAppAvailability(appUrn);
+
+        expect(getRoutedContainerNames).toHaveBeenCalledWith(appUrn, { downOnly: true });
+        expect(restartContainer).not.toHaveBeenCalled();
+        expect(result.detail).toContain('Re-synced Private VPN publishing');
+        expect(result.detail).not.toContain('no container found');
+      });
+
+      it('MUST restart a stopped container before re-syncing, because the sync skips an app with none running', async () => {
+        const { calls } = wireTailscaleResolve(['test-app_test-store-web-1']);
+
+        setupForResolve('connrefused', { exposureMode: 'tailscale' });
+        await service.resolveAppAvailability(appUrn);
+
+        expect(calls).toEqual(['restart:test-app_test-store-web-1', 'sync']);
+      });
+
+      // tailscaled binds its Serve listeners to the tailscale device, so the Hub is refused at an address every
+      // peer reaches. `tailscale serve status` shows what the port forwards to, and the probe asks that. Only an
+      // answer changes the verdict, so for any other outcome the repair stays what it was.
+      describe('when Serve forwards the port to an app', () => {
+        const servedEntry = {
+          service: '8080',
+          proto: 'https',
+          mountPoint: '/',
+          dest: 'http://172.22.0.8:8080',
+          listenPort: 8080,
+          host: 'hub-tailscale-1.example.ts.net',
+        };
+
+        it('MUST change nothing for an app that answers behind it, since only the Hub failed to dial the address', async () => {
+          const { calls, getRoutedContainerNames } = wireTailscaleResolve([], [servedEntry]);
+          vi.mocked(probeAppPort).mockResolvedValue('answered');
+
+          setupForResolve('connrefused', { exposureMode: 'tailscale' });
+          const result = await service.resolveAppAvailability(appUrn);
+
+          expect(result).toEqual({ success: true, action: 'none', detail: 'App is already available.' });
+          expect(calls).toEqual([]);
+          expect(getRoutedContainerNames).not.toHaveBeenCalled();
+        });
+
+        it('MUST restart a stopped container and then re-sync when the app behind it does not answer', async () => {
+          const { calls, getRoutedContainerNames } = wireTailscaleResolve(['test-app_test-store-web-1'], [servedEntry]);
+          vi.mocked(probeAppPort).mockResolvedValue('refused');
+
+          setupForResolve('connrefused', { exposureMode: 'tailscale' });
+          const result = await service.resolveAppAvailability(appUrn);
+
+          expect(getRoutedContainerNames).toHaveBeenCalledWith(appUrn, { downOnly: true });
+          expect(calls).toEqual(['restart:test-app_test-store-web-1', 'sync']);
+          expect(result.success).toBe(true);
+        });
+
+        // Restarting it publishes nothing and would cut off an app that is still starting.
+        it.each<[string, 'refused' | 'silent']>([
+          ['refuses', 'refused'],
+          ['takes the connection and never answers', 'silent'],
+        ])('MUST leave a running app alone and only re-sync when the target %s', async (_name, answer) => {
+          const { calls, restartContainer } = wireTailscaleResolve([], [servedEntry]);
+          vi.mocked(probeAppPort).mockResolvedValue(answer);
+
+          setupForResolve('connrefused', { exposureMode: 'tailscale' });
+          const result = await service.resolveAppAvailability(appUrn);
+
+          expect(restartContainer).not.toHaveBeenCalled();
+          expect(calls).toEqual(['sync']);
+          expect(result.detail).toContain('Re-synced Private VPN publishing');
+        });
+      });
+    });
+  });
+
+  // #2422: a guest dashboard switch in Settings. A save through the app's Settings dialog rewrites its
+  // routing and can restart it; this changes only what the guest list and that dialog read.
+  describe('setGuestVisibility', () => {
+    it('saves through the one statement that merges the key, and nothing else', async () => {
+      appsRepository.setGuestVisibility.mockResolvedValue(true);
+
+      await service.setGuestVisibility('immich:ci-marketplace' as AppUrn, true);
+
+      expect(appsRepository.setGuestVisibility).toHaveBeenCalledWith('immich:ci-marketplace', true);
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+    });
+
+    it('says the app is not found when it is not installed', async () => {
+      appsRepository.setGuestVisibility.mockResolvedValue(false);
+
+      await expect(service.setGuestVisibility('nope:ci-marketplace' as AppUrn, false)).rejects.toThrow('APP_ERROR_APP_NOT_FOUND');
+    });
+  });
+
+  // CI-Hub#2376: an ignore left the update in Home's "Update all" for the cached count's minute, and
+  // another tab, or an ignore through the MCP tool, never heard of it.
+  describe.each([
+    { method: 'ignoreAppVersion', ignoredVersion: 5 },
+    { method: 'unignoreAppVersion', ignoredVersion: null },
+  ] as const)('$method', ({ method, ignoredVersion }) => {
+    const appUrn = 'uptime-kuma:ci-marketplace' as AppUrn;
+    let sseService: MockProxy<SSEService>;
+    let readService: AppsReadService;
+
+    beforeEach(() => {
+      sseService = mock<SSEService>();
+      const others = moduleRef.get.getMockImplementation();
+      moduleRef.get.mockImplementation(((token: unknown, options: unknown) =>
+        token === SSEService ? sseService : others?.(token as never, options as never)) as never);
+      readService = (service as unknown as { appsReadService: AppsReadService }).appsReadService;
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 3, appName: 'uptime-kuma', appStoreSlug: 'ci-marketplace' } as any);
+      marketplaceService.getAppUpdateInfo.mockResolvedValue({ latestVersion: 5 } as any);
+    });
+
+    it('saves the ignored version, drops the cached update count and tells every page', async () => {
+      const count = vi.spyOn(readService, 'countUpdatesAvailable').mockResolvedValueOnce(1).mockResolvedValueOnce(0);
+      await service.getUpdatesAvailableCached();
+
+      await service[method](appUrn);
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(3, { ignoredVersion });
+      await expect(service.getUpdatesAvailableCached()).resolves.toBe(0);
+      expect(count).toHaveBeenCalledTimes(2);
+      expect(sseService.emit).toHaveBeenCalledWith('app', { event: 'ignored_version_changed', appUrn });
+    });
+
+    it('announces nothing for an app that is not installed', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue(undefined as any);
+
+      await expect(service[method](appUrn)).rejects.toThrow('APP_ERROR_APP_NOT_FOUND');
+
+      expect(sseService.emit).not.toHaveBeenCalled();
+    });
+
+    it('still succeeds when the event cannot be sent, since the change is saved', async () => {
+      sseService.emit.mockImplementation(() => {
+        throw new Error('no topic');
+      });
+
+      await expect(service[method](appUrn)).resolves.toBeUndefined();
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(3, { ignoredVersion });
     });
   });
 });

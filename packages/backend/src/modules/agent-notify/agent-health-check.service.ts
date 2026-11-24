@@ -41,7 +41,7 @@ export class AgentHealthCheckService implements OnApplicationBootstrap, OnModule
         this.healthDebounceMap.set('system.high_memory', Date.now());
         await this.agentNotifyService.notify(
           'system.high_memory',
-          { usagePercent: load.percentUsedMemory, availableMb: load.memoryTotal * (1 - load.percentUsedMemory / 100) },
+          { usagePercent: load.percentUsedMemory, availableMb: Math.round(load.memoryTotal * 1024 * (1 - load.percentUsedMemory / 100)) },
           'medium',
         );
       }

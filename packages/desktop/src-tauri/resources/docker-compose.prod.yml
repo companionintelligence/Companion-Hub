@@ -31,7 +31,9 @@ services:
       timeout: 20s
       retries: 120
     networks:
-      - ci_hub_internal
+      # A fixed address the Hub pins its name to (`extra_hosts` on ci-hub).
+      ci_hub_internal:
+        ipv4_address: ${HUB_INFRA_DB_IP:-10.128.0.11}
 
   ci-hub-queue:
     container_name: ci-hub-queue
@@ -45,7 +47,7 @@ services:
       - "127.0.0.1:${RABBITMQ_PORT:-5001}:5672"
     environment:
       RABBITMQ_DEFAULT_USER: companion
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-admin}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD must be set in the Hub env file}
       # Disable khepri_db to speed up startup (uses classic Mnesia instead)
       RABBITMQ_FEATURE_FLAGS: ""
     healthcheck:
@@ -55,11 +57,13 @@ services:
       retries: 20
       start_period: 180s
     networks:
-      # Internal only. Every installed app's main container joins ci_hub_network,
-      # so a broker on it was one leaked password away from every app being able
-      # to install, reset or uninstall anything on the Hub. Only the Hub itself
-      # needs the broker; the legacy alias stays for pre-rename RABBITMQ_HOST values.
+      # Internal only: a broker an app could reach was one leaked password
+      # away from every app being able to install, reset or uninstall anything
+      # on the Hub. Only the Hub itself needs the broker; the legacy alias stays
+      # for pre-rename RABBITMQ_HOST values. A fixed address, which the Hub pins
+      # both names to (`extra_hosts` on ci-hub).
       ci_hub_internal:
+        ipv4_address: ${HUB_INFRA_QUEUE_IP:-10.128.0.12}
         aliases:
           - ci-os-hub-queue
 
@@ -179,6 +183,15 @@ services:
       - ${TAILSCALE_BINARY:-/usr/bin/tailscale}:/usr/bin/tailscale:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
+      # The Hub's own services by fixed address, never by Docker DNS. The Hub
+      # joins every app's network so the app can reach it as `ci-hub`, and on a
+      # container with several networks Docker answers a name from whichever
+      # network claims it first: an app with a service called `ci-hub-queue`
+      # would otherwise be handed the broker password. /etc/hosts is read
+      # before DNS. Must match the ipv4_address of ci-hub-db and ci-hub-queue.
+      - "ci-hub-db:${HUB_INFRA_DB_IP:-10.128.0.11}"
+      - "ci-hub-queue:${HUB_INFRA_QUEUE_IP:-10.128.0.12}"
+      - "ci-os-hub-queue:${HUB_INFRA_QUEUE_IP:-10.128.0.12}"
     # Resolver patience (#933): the Hub resolves sibling containers (ci-hub-db, ci-hub-queue,
     # per-app services) through Docker's embedded DNS, which drops queries under network churn —
     # every app install/uninstall recreates networks. Default musl/glibc behavior gives up after
@@ -203,6 +216,11 @@ services:
           - ci-os-hub
           - host.docker.internal
       ci_hub_internal:
+        ipv4_address: ${HUB_INFRA_HUB_IP:-10.128.0.10}
+      # A fixed address on the edge, which Traefik pins `ci-hub` to for its
+      # Hub login check (see traefik's `extra_hosts`). Not a trusted hop.
+      ci_hub_edge:
+        ipv4_address: ${HUB_EDGE_HUB_IP:-10.128.0.5}
     environment:
       # Runtime marker: if absent, a new image detects the pre-rename compose
       # from its legacy queue host and keeps writing ci-os-hub DNS/network names.
@@ -262,7 +280,7 @@ services:
       POSTGRES_DBNAME: companiondb
       POSTGRES_PORT: 6543
       RABBITMQ_USERNAME: companion
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-admin}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD must be set in the Hub env file}
       RABBITMQ_HOST: ci-hub-queue
       RABBITMQ_PORT: 5672
       INTERNAL_IP: ${INTERNAL_IP:-127.0.0.1}
@@ -293,7 +311,9 @@ services:
       # listed here onto the forwarded request, and consumers verifying the signature fail
       # closed on a missing timestamp/signature (CI-Engineering#74). Listing a name also strips
       # a visitor's own copy, which keeps the stable-id trio from ever arriving unsigned.
-      traefik.http.middlewares.ci-hub.forwardauth.authResponseHeaders: "X-CI-Hub-User,X-CI-Hub-User-Timestamp,X-CI-Hub-User-Signature,X-CI-Hub-User-Issuer,X-CI-Hub-User-Id,X-CI-Hub-User-Id-Signature,X-CI-Hub-User-Assertion"
+      # The last three names (AID, AID, KEL digest) are reserved: the Hub never sets them and no
+      # signature covers them. They are listed only so a visitor's own copy is deleted too.
+      traefik.http.middlewares.ci-hub.forwardauth.authResponseHeaders: "X-CI-Hub-User,X-CI-Hub-User-Timestamp,X-CI-Hub-User-Signature,X-CI-Hub-User-Issuer,X-CI-Hub-User-Id,X-CI-Hub-User-Id-Signature,X-CI-Hub-User-Assertion,X-CI-Hub-User-AID,X-CI-Hub-AID,X-CI-Hub-KEL-Digest"
       # Prevent Traefik from creating a default router on websecure (which triggers ACME)
       traefik.http.routers.ci-hub.entrypoints: "web"
       traefik.http.routers.ci-hub.rule: "Host(`ci-hub.local`)"
@@ -356,6 +376,12 @@ services:
         ipv4_address: ${HUB_EDGE_TRAEFIK_IP:-10.128.0.2}
     extra_hosts:
       - "host.docker.internal:host-gateway"
+      # The Hub by its fixed edge address, never by Docker DNS: Traefik joins
+      # every exposed app's network, and an app with a service called `ci-hub`
+      # would otherwise answer the Hub login check for every app. Must match
+      # ci-hub's ci_hub_edge ipv4_address.
+      - "ci-hub:${HUB_EDGE_HUB_IP:-10.128.0.5}"
+      - "ci-os-hub:${HUB_EDGE_HUB_IP:-10.128.0.5}"
     depends_on:
       - ci-hub
     labels:
@@ -365,7 +391,7 @@ services:
   # Cloudflare tunnel — opt-in. Requires a token file at ./tunnel/token.
   # Enable with: docker compose --profile cloudflare up -d cloudflared
   cloudflared:
-    image: cloudflare/cloudflared:2026.2.0
+    image: cloudflare/cloudflared:2026.10.5
     pull_policy: if_not_present
     container_name: cloudflared
     logging: *default-logging
@@ -475,11 +501,27 @@ networks:
   # joins it. Apps never see this network — it is not offered to app containers
   # by the compose builder — so the Hub's own infrastructure is unreachable from
   # a marketplace container by design rather than by password.
+  #
+  # Fixed subnet and addresses, as for the edge below, so the Hub can pin the
+  # names of its database and broker in /etc/hosts rather than ask Docker DNS
+  # (see ci-hub's `extra_hosts`). Its `ip_range` holds only the network
+  # address and the gateway, so nothing joins at an address Docker picks.
+  # Compose recreates the network with this subnet on the first `up` after an
+  # upgrade: only this project's containers are ever on it, and each of them is
+  # recreated too. (An app network the Hub has joined cannot be changed that
+  # way, which is why app networks keep the subnet they were made with.)
+  # Inside 10.128.0.0–10.128.9.0, reserved for Hub infrastructure; override the
+  # HUB_INFRA_* values together.
   ci_hub_internal:
     driver: bridge
     name: ci-hub_internal
+    ipam:
+      config:
+        - subnet: ${HUB_INFRA_SUBNET:-10.128.0.8/29}
+          ip_range: ${HUB_INFRA_IP_RANGE:-10.128.0.8/31}
   # The edge: Traefik plus the two proxies that carry public traffic to it,
-  # cloudflared and the Tailscale sidecar, on a bridge with a FIXED subnet and
+  # cloudflared and the Tailscale sidecar (and the Hub, at a fixed address
+  # that is not trusted as a hop), on a bridge with a FIXED subnet and
   # fixed addresses. That is what lets Traefik trust the client address those
   # two forward (traefik.yml `forwardedHeaders.trustedIPs`) while stripping it
   # from everything else, and what lets the Hub and each app trust Traefik's

@@ -99,6 +99,7 @@ function connect(url: string, body: unknown): { firstChunk: Promise<string>; end
  * Nest leaves on a `@Res()` response, which only a real dispatch shows.
  */
 describe('InferenceController — local /v1 path answers with the engine, not a 502', () => {
+  const apiKeys = mock<ApiKeyService>();
   let app: INestApplication;
   let baseUrl: string;
   let engine: http.Server;
@@ -216,7 +217,7 @@ describe('InferenceController — local /v1 path answers with the engine, not a 
         { provide: BackendObserverService, useValue: mock<BackendObserverService>() },
         { provide: PoolProxyService, useValue: mock<PoolProxyService>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
-        { provide: ApiKeyService, useValue: mock<ApiKeyService>() },
+        { provide: ApiKeyService, useValue: apiKeys },
       ],
     }).compile();
 
@@ -249,8 +250,8 @@ describe('InferenceController — local /v1 path answers with the engine, not a 
     await new Promise<void>((resolve) => engine?.close(() => resolve()));
   });
 
-  const post = (path: string, body: unknown) =>
-    fetch(`${baseUrl}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const post = (path: string, body: unknown, headers: Record<string, string> = {}) =>
+    fetch(`${baseUrl}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
 
   const chatWithTools = {
     model: 'gemma3:4b',
@@ -290,9 +291,51 @@ describe('InferenceController — local /v1 path answers with the engine, not a 
     expect(body.error.message).toMatch(/ECONNREFUSED/);
   });
 
-  it('keeps 502 for a refused connection on a streamed request too', async () => {
+  // Cloudflare replaces a 502, 503 or 504 body with its own `error code: 502` text (#2274).
+  describe('through the public address', () => {
+    // A tunnel caller needs an inference key, as it does in production.
+    const tunnel = { 'cf-ray': '8f00000000000000-LHR', authorization: `Bearer ${'a'.repeat(64)}` };
+
+    beforeEach(() => {
+      apiKeys.resolve.mockResolvedValue({ id: 1, scopes: ['inference'] } as never);
+    });
+
+    it("answers 500 with the Hub's own body where a refused connection is a 502 from inside", async () => {
+      ollamaBackend.getBaseUrl.mockReturnValue(deadEngineUrl);
+      const res = await post('/v1/chat/completions', { model: 'gemma3:4b', messages: [{ role: 'user', content: 'hi' }] }, tunnel);
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { error: { message: string; type: string } };
+      expect(body.error.type).toBe('server_error');
+      expect(body.error.message).toBe('The inference engine did not answer (ECONNREFUSED).');
+    });
+
+    it('reads an empty marker as no marker, so the status and the engine address stay as they are from inside', async () => {
+      ollamaBackend.getBaseUrl.mockReturnValue(deadEngineUrl);
+      const res = await post('/v1/chat/completions', { model: 'gemma3:4b', messages: [{ role: 'user', content: 'hi' }] }, { 'cf-ray': '' });
+      expect(res.status).toBe(502);
+      const body = (await res.json()) as { error: { message: string } };
+      expect(body.error.message).toMatch(/ECONNREFUSED 127\.0\.0\.1:/);
+    });
+
+    it('answers 500 with its reason when there is no image backend', async () => {
+      const res = await post('/v1/images/generations', { model: 'some-image-model', prompt: 'a cat' }, tunnel);
+      expect(res.status).toBe(500);
+      await expect(res.json()).resolves.toEqual({ error: { message: 'No image generation backend available', type: 'server_error' } });
+    });
+
+    it("leaves an engine's own refusal as it was", async () => {
+      const res = await post('/v1/chat/completions', chatWithTools, tunnel);
+      expect(res.status).toBe(400);
+      await expect(res.json()).resolves.toEqual(TOOLS_REFUSAL);
+    });
+  });
+
+  it.each([
+    ['/v1/chat/completions', { model: 'gemma3:4b', messages: [{ role: 'user', content: 'hi' }], stream: true }],
+    ['/v1/completions', { model: 'gemma3:4b', prompt: 'def f(', stream: true }],
+  ])('keeps 502 for a refused connection on a streamed %s request too', async (path, body) => {
     ollamaBackend.getBaseUrl.mockReturnValue(deadEngineUrl);
-    const res = await post('/v1/chat/completions', { model: 'gemma3:4b', messages: [{ role: 'user', content: 'hi' }], stream: true });
+    const res = await post(path, body);
     expect(res.status).toBe(502);
     expect(((await res.json()) as { error: { type: string } }).error.type).toBe('server_error');
   });
@@ -346,11 +389,20 @@ describe('InferenceController — local /v1 path answers with the engine, not a 
       await within(heldClosed[0], TEARDOWN_MS, "the engine's connection closing");
     });
 
+    // Both routes: the mid-stream test above cannot tell whether a route handed `clientClosed` to the
+    // router, because relaying the stream cancels the upstream body on close anyway. Only a client that
+    // leaves BEFORE the engine has answered depends on the signal reaching the upstream request.
     it.each([
-      ['a streamed', true],
-      ['a whole-answer', false],
-    ])('closes the engine connection when the client leaves %s request before the engine answered', async (_label, stream) => {
-      const client = connect(`${baseUrl}/v1/chat/completions`, { model: 'gemma3:4b', messages: [{ role: 'user', content: HOLD_SILENT }], stream });
+      ['/v1/chat/completions', 'a streamed', true],
+      ['/v1/chat/completions', 'a whole-answer', false],
+      ['/v1/completions', 'a streamed', true],
+      ['/v1/completions', 'a whole-answer', false],
+    ])('closes the engine connection when the client leaves %s %s request before the engine answered', async (path, _label, stream) => {
+      const body =
+        path === '/v1/completions'
+          ? { model: 'gemma3:4b', prompt: HOLD_SILENT, stream }
+          : { model: 'gemma3:4b', messages: [{ role: 'user', content: HOLD_SILENT }], stream };
+      const client = connect(`${baseUrl}${path}`, body);
       await within(heldArrived, TEARDOWN_MS, 'the request reaching the engine');
 
       client.hangUp();
@@ -358,12 +410,11 @@ describe('InferenceController — local /v1 path answers with the engine, not a 
       await within(heldClosed[0], TEARDOWN_MS, "the engine's connection closing");
     });
 
-    it("ends the client's response when the engine drops mid-stream, instead of leaving it open", async () => {
-      const client = connect(`${baseUrl}/v1/chat/completions`, {
-        model: 'gemma3:4b',
-        messages: [{ role: 'user', content: DROP_AFTER_FRAME }],
-        stream: true,
-      });
+    it.each([
+      ['/v1/chat/completions', { model: 'gemma3:4b', messages: [{ role: 'user', content: DROP_AFTER_FRAME }], stream: true }],
+      ['/v1/completions', { model: 'gemma3:4b', prompt: DROP_AFTER_FRAME, stream: true }],
+    ])("ends the client's response when the engine drops mid-%s stream, instead of leaving it open", async (path, body) => {
+      const client = connect(`${baseUrl}${path}`, body);
       await within(client.firstChunk, TEARDOWN_MS, 'the first frame');
 
       // Cut, not complete: the client learns the answer was lost instead of waiting on it for good.

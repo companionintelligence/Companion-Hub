@@ -131,7 +131,7 @@ export const RocmSetupCard = ({ hardware, onRescan, rescanning = false, id = 'ro
         <div className="flex items-start gap-3">
           <Download className="h-5 w-5 text-primary shrink-0 mt-0.5" />
           <div className="flex-1 min-w-0">
-            <div className="text-sm font-semibold">{installHintNotice?.title ?? t('AI_ROCM_AMD_DETECTED_TITLE')}</div>
+            <div className="text-sm font-medium">{installHintNotice?.title ?? t('AI_ROCM_AMD_DETECTED_TITLE')}</div>
             <p className="mt-1 text-xs text-muted-foreground">
               {installHintNotice?.body ??
                 (isAmdApu(hardware) ? t('AI_ROCM_AMD_DETECTED_APU_BODY', { model: hardware.gpu.model }) : t('AI_ROCM_AMD_DETECTED_BODY'))}
@@ -139,7 +139,7 @@ export const RocmSetupCard = ({ hardware, onRescan, rescanning = false, id = 'ro
 
             {rebootRequired && (
               <div className="mt-3 rounded-md border border-warning/30 bg-warning/10 p-3 text-xs text-warning" data-testid="rocm-reboot-required">
-                <p className="font-semibold">{t('AI_ROCM_REBOOT_REQUIRED_TITLE')}</p>
+                <p className="font-medium">{t('AI_ROCM_REBOOT_REQUIRED_TITLE')}</p>
                 <p className="mt-1">{t('AI_ROCM_REBOOT_REQUIRED_BODY')}</p>
               </div>
             )}
@@ -182,7 +182,7 @@ export const RocmSetupCard = ({ hardware, onRescan, rescanning = false, id = 'ro
 
             {showWindowsGuidance && (
               <div className="mt-4 rounded-md border border-border bg-background/60 p-3 text-xs" data-testid="rocm-windows-guidance">
-                <p className="font-semibold">{t('AI_ROCM_WINDOWS_TITLE')}</p>
+                <p className="font-medium">{t('AI_ROCM_WINDOWS_TITLE')}</p>
                 <p className="mt-1 text-muted-foreground">{t('AI_ROCM_WINDOWS_BODY')}</p>
                 <div className="mt-2 flex flex-wrap gap-3">
                   <button type="button" className="font-medium underline underline-offset-2" onClick={() => openExternal(AMD_DRIVERS_URL)}>
@@ -209,18 +209,18 @@ export const RocmSetupCard = ({ hardware, onRescan, rescanning = false, id = 'ro
                 {manualOpen && (
                   <div className="mt-2 space-y-2 text-xs">
                     <div className="rounded bg-muted p-2.5 font-mono text-[11px] leading-6">
-                      <p className="font-semibold font-sans">{t('AI_ROCM_MANUAL_UBUNTU')}</p>
+                      <p className="font-medium font-sans">{t('AI_ROCM_MANUAL_UBUNTU')}</p>
                       <p>. /etc/os-release</p>
                       <p>wget https://repo.radeon.com/amdgpu-install/latest/ubuntu/${'{VERSION_CODENAME}'}/amdgpu-install_*_all.deb</p>
                       <p>sudo apt install ./amdgpu-install_*_all.deb</p>
                       <p>sudo amdgpu-install -y --usecase=rocm</p>
                     </div>
                     <div className="rounded bg-muted p-2.5 font-mono text-[11px] leading-6">
-                      <p className="font-semibold font-sans">{t('AI_ROCM_MANUAL_FEDORA')}</p>
+                      <p className="font-medium font-sans">{t('AI_ROCM_MANUAL_FEDORA')}</p>
                       <p>sudo dnf install rocm</p>
                     </div>
                     <div className="rounded bg-muted p-2.5 font-mono text-[11px] leading-6">
-                      <p className="font-semibold font-sans">{t('ONBOARDING_DISTRO_ARCH_MANJARO')}</p>
+                      <p className="font-medium font-sans">{t('ONBOARDING_DISTRO_ARCH_MANJARO')}</p>
                       <p>sudo pacman -S rocm-smi-lib rocm-opencl-runtime</p>
                     </div>
                     <p className="text-muted-foreground">{t('AI_ROCM_MANUAL_POST')}</p>

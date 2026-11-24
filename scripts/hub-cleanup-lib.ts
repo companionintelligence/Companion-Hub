@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -33,7 +33,8 @@ export type CleanupOptions = {
   platform?: NodeJS.Platform;
   dryRun?: boolean;
   logger?: CleanupLogger;
-  execCommand?: (command: string, cwd?: string) => ExecResult;
+  /** Runs a program with an argv. No shell sits in between, so a docker template arrives as written. */
+  execFile?: (file: string, args: string[], cwd?: string) => ExecResult;
   exists?: (targetPath: string) => boolean;
   removeDir?: (targetPath: string) => void;
 };
@@ -55,21 +56,15 @@ function defaultLogger(): CleanupLogger {
   };
 }
 
-function defaultExecCommand(command: string, cwd = process.cwd()): ExecResult {
-  try {
-    const stdout = execSync(command, {
-      cwd,
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim();
-    return { ok: true, stdout };
-  } catch (error) {
-    return {
-      ok: false,
-      stdout: '',
-      error: String(error),
-    };
+function defaultExecFile(file: string, args: string[], cwd = process.cwd()): ExecResult {
+  const result = spawnSync(file, args, { cwd, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+  if (result.error) {
+    return { ok: false, stdout: '', error: String(result.error) };
   }
+  if (result.status !== 0) {
+    return { ok: false, stdout: '', error: `exit ${result.status ?? result.signal}: ${(result.stderr ?? '').trim()}` };
+  }
+  return { ok: true, stdout: (result.stdout ?? '').trim() };
 }
 
 export function isWithinPath(targetPath: string, basePath: string, platform: NodeJS.Platform = process.platform): boolean {
@@ -117,33 +112,16 @@ export function parseNames(output: string): string[] {
  */
 export const HUB_STACK_PROJECT_NAMES = ['ci-os-hub', 'ci-hub', 'runtipi', 'runcihub'] as const;
 const HUB_STACK_PROJECTS = new Set<string>(HUB_STACK_PROJECT_NAMES);
-const COMPOSE_PROJECT_LABEL_PREFIX = 'com.docker.compose.project=';
+
+/** The Hub sets both on every app container. Apps installed before the rename carry only the second. */
+const MANAGED_LABEL_FILTERS = ['label=ci-hub.managed=true', 'label=ci-os-hub.managed=true'] as const;
 
 /**
- * Compose project names of marketplace apps, from `docker ps --format "{{.Labels}}"` lines of
- * containers filtered by `ci-hub.managed=true` or `ci-os-hub.managed=true`.
- *
- * `{{.Labels}}` is a comma-joined `key=value` list; parsing it here avoids a quoted Go-template
- * argument (`'{{.Label "..."}}'`), which cmd.exe mishandles on Windows.
+ * The compose project label on its own. `{{.Labels}}` joins every `key=value` with commas and
+ * escapes none, so it cannot be split back into labels. Pass it in an argv: in a shell string
+ * cmd.exe strips the inner quotes.
  */
-export function managedAppProjectsFromLabelLines(lines: string[]): string[] {
-  const projects = new Set<string>();
-  for (const line of lines) {
-    for (const pair of line.split(',')) {
-      const trimmed = pair.trim();
-      if (!trimmed.startsWith(COMPOSE_PROJECT_LABEL_PREFIX)) {
-        continue;
-      }
-      const project = trimmed.slice(COMPOSE_PROJECT_LABEL_PREFIX.length);
-      // Defense-in-depth: only act on values matching Docker's compose-project charset
-      // before interpolating them into a shell command string.
-      if (!HUB_STACK_PROJECTS.has(project) && /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(project)) {
-        projects.add(project);
-      }
-    }
-  }
-  return [...projects];
-}
+const COMPOSE_PROJECT_FORMAT = '{{.Label "com.docker.compose.project"}}';
 
 export type DockerCliRunner = (args: string[]) => { ok: boolean; stdout: string };
 
@@ -155,6 +133,34 @@ export const HUB_NETWORK_NAMES = ['ci-hub_network', 'ci_hub_network', 'ci-os-hub
 
 /** Docker's container, network, and compose-project charset. Nothing else reaches a docker argv. */
 const DOCKER_OBJECT_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+
+/** The `docker` filter for one compose project's containers, networks, volumes, or images. */
+function byComposeProject(project: string): string[] {
+  return ['--filter', `label=com.docker.compose.project=${project}`];
+}
+
+/** `{{.Names}}` joins legacy link aliases with commas; the first entry is the container itself. */
+function containerNameOf(names: string): string {
+  return names.split(',')[0] ?? names;
+}
+
+/**
+ * The compose projects of Hub-installed apps, read from the containers that carry a managed label.
+ * `list` runs `docker` with an argv and returns the output lines.
+ *
+ * An app's whole project goes with it, including services the user added in the app's user-config
+ * docker-compose.yml, which lack the managed labels. Compose sets the project label itself, over
+ * any the service declares, so an app cannot name another project there.
+ */
+export function findManagedAppProjects(list: (args: string[]) => string[]): string[] {
+  const projects = new Set<string>();
+  for (const filter of MANAGED_LABEL_FILTERS) {
+    for (const project of list(['ps', '-a', '--filter', filter, '--format', COMPOSE_PROJECT_FORMAT])) {
+      if (!HUB_STACK_PROJECTS.has(project) && DOCKER_OBJECT_NAME.test(project)) projects.add(project);
+    }
+  }
+  return [...projects];
+}
 
 export type AppProjectTeardown = {
   project: string;
@@ -178,16 +184,6 @@ export type AppTeardownPlan = {
    */
   unmanaged: string[];
 };
-
-function composeProjectOf(labels: string): string | undefined {
-  for (const pair of labels.split(',')) {
-    const trimmed = pair.trim();
-    if (trimmed.startsWith(COMPOSE_PROJECT_LABEL_PREFIX)) {
-      return trimmed.slice(COMPOSE_PROJECT_LABEL_PREFIX.length);
-    }
-  }
-  return undefined;
-}
 
 /**
  * Lists what {@link executeAppTeardown} would remove, without changing anything.
@@ -214,34 +210,32 @@ export function planAppTeardown(docker: DockerCliRunner, options: { removeVolume
     return ok ? parseNames(stdout) : [];
   };
 
-  const labelLines = ['ci-hub.managed=true', 'ci-os-hub.managed=true'].flatMap((label) =>
-    list(['ps', '-a', '--filter', `label=${label}`, '--format', '{{.Labels}}']),
-  );
-  const byProject = (project: string) => ['--filter', `label=com.docker.compose.project=${project}`];
-  const projects = managedAppProjectsFromLabelLines(labelLines).map((project) => ({
+  const projects = findManagedAppProjects(list).map((project) => ({
     project,
-    containers: listIfOk(['ps', '-a', ...byProject(project), '--format', '{{.Names}}']).filter((name) => DOCKER_OBJECT_NAME.test(name)),
-    networks: listIfOk(['network', 'ls', ...byProject(project), '--format', '{{.Name}}']).filter((name) => DOCKER_OBJECT_NAME.test(name)),
-    volumes: options.removeVolumes ? listIfOk(['volume', 'ls', '-q', ...byProject(project)]).filter((name) => DOCKER_OBJECT_NAME.test(name)) : [],
+    containers: listIfOk(['ps', '-a', ...byComposeProject(project), '--format', '{{.Names}}'])
+      .map(containerNameOf)
+      .filter((name) => DOCKER_OBJECT_NAME.test(name)),
+    networks: listIfOk(['network', 'ls', ...byComposeProject(project), '--format', '{{.Name}}']).filter((name) => DOCKER_OBJECT_NAME.test(name)),
+    volumes: options.removeVolumes
+      ? listIfOk(['volume', 'ls', '-q', ...byComposeProject(project)]).filter((name) => DOCKER_OBJECT_NAME.test(name))
+      : [],
   }));
 
-  // Repeated `network` filters match a container on ANY of them. `{{.Labels}}` rather than a quoted
-  // `{{.Label "…"}}` template for the reason given at managedAppProjectsFromLabelLines. A container
-  // name has no spaces, so everything after the first one is its label list.
+  // Repeated `network` filters match a container on ANY of them. A container name has no spaces,
+  // so everything after the first one is its compose project, empty when it has none.
   const onHubNetwork = list([
     'ps',
     '-a',
     ...HUB_NETWORK_NAMES.flatMap((network) => ['--filter', `network=${network}`]),
     '--format',
-    '{{.Names}} {{.Labels}}',
+    `{{.Names}} ${COMPOSE_PROJECT_FORMAT}`,
   ]);
   const owned = new Set<string>([...HUB_STACK_PROJECT_NAMES, ...projects.map((entry) => entry.project)]);
   const unmanaged = new Set<string>();
   for (const line of onHubNetwork) {
     const space = line.indexOf(' ');
-    // `{{.Names}}` joins legacy link aliases with commas; the first entry is the container itself.
-    const name = (space === -1 ? line : line.slice(0, space)).split(',')[0];
-    const project = space === -1 ? undefined : composeProjectOf(line.slice(space + 1));
+    const name = containerNameOf(space === -1 ? line : line.slice(0, space));
+    const project = space === -1 ? undefined : line.slice(space + 1);
     if (project !== undefined && owned.has(project)) continue;
     if (DOCKER_OBJECT_NAME.test(name)) unmanaged.add(name);
   }
@@ -437,22 +431,24 @@ function isSafeDeletionTarget(targetPath: string, cwd: string, homeDir: string, 
 }
 
 function runCommand(
-  command: string,
+  file: string,
+  args: string[],
   options: {
     dryRun: boolean;
     logger: CleanupLogger;
     cwd: string;
-    execCommand: (cmd: string, cwd?: string) => ExecResult;
+    execFile: (file: string, args: string[], cwd?: string) => ExecResult;
     summary: CleanupSummary;
   },
 ): string {
+  const command = [file, ...args].join(' ');
   options.summary.attemptedCommands += 1;
   if (options.dryRun) {
     options.logger.info(`[dry-run] ${command}`);
     return '';
   }
 
-  const result = options.execCommand(command, options.cwd);
+  const result = options.execFile(file, args, options.cwd);
   if (!result.ok) {
     options.summary.failedCommands += 1;
     options.logger.warn(`Command failed: ${command}`);
@@ -515,7 +511,7 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
   const pathLib = platform === 'win32' ? path.win32 : path.posix;
   const dryRun = options?.dryRun ?? false;
   const logger = options?.logger ?? defaultLogger();
-  const execCommand = options?.execCommand ?? defaultExecCommand;
+  const execFile = options?.execFile ?? defaultExecFile;
   const exists = options?.exists ?? existsSync;
   const removeDirImpl = options?.removeDir ?? ((targetPath: string) => rmSync(targetPath, { recursive: true, force: true }));
 
@@ -534,38 +530,41 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
     dryRun,
     logger,
     cwd,
-    execCommand,
+    execFile,
     summary,
   };
+  const docker = (...args: string[]) => runCommand('docker', args, commandContext);
 
-  // Collect the unique image IDs used by a compose project (pulled or built). Must be
-  // called before the project's containers are removed — refs can't be recovered after.
-  const snapshotProjectImages = (project: string): string[] => {
-    const containerIds = parseNames(runCommand(`docker ps -a --filter label=com.docker.compose.project=${project} -q`, commandContext));
-    const fromContainers = containerIds.flatMap((id) => parseNames(runCommand(`docker inspect --format "{{.Image}}" ${id}`, commandContext)));
-    const labeled = parseNames(runCommand(`docker images --filter label=com.docker.compose.project=${project} -q`, commandContext));
+  // Collect the unique image IDs used by a compose project's containers (pulled or built). Must be
+  // called before those containers are removed, because the refs can't be recovered after.
+  const snapshotProjectImages = (project: string, containerIds: string[]): string[] => {
+    const fromContainers = containerIds.flatMap((id) => parseNames(docker('inspect', '--format', '{{.Image}}', id)));
+    const labeled = parseNames(docker('images', ...byComposeProject(project), '-q'));
     return [...new Set([...fromContainers, ...labeled])];
   };
 
   const containerNames = new Set<string>();
-  const containerCommands = [
-    'docker ps -a --filter network=ci_hub_network --format "{{.Names}}"',
-    'docker ps -a --filter network=ci-hub_network --format "{{.Names}}"',
-    'docker ps -a --filter network=ci_os_hub_network --format "{{.Names}}"',
-    'docker ps -a --filter network=ci-os-hub_network --format "{{.Names}}"',
-    ...HUB_STACK_PROJECT_NAMES.map((project) => `docker ps -a --filter label=com.docker.compose.project=${project} --format "{{.Names}}"`),
-    'docker ps -a --filter "name=e2e-" --format "{{.Names}}"',
+  const containerListings = [
+    ...HUB_NETWORK_NAMES.map((network) => ['ps', '-a', '--filter', `network=${network}`, '--format', '{{.Names}}']),
+    ...HUB_STACK_PROJECT_NAMES.map((project) => ['ps', '-a', ...byComposeProject(project), '--format', '{{.Names}}']),
+    ['ps', '-a', '--filter', 'name=e2e-', '--format', '{{.Names}}'],
   ];
 
-  for (const command of containerCommands) {
-    const output = runCommand(command, commandContext);
-    for (const name of parseNames(output)) {
-      containerNames.add(name);
+  for (const args of containerListings) {
+    const output = docker(...args);
+    for (const names of parseNames(output)) {
+      containerNames.add(containerNameOf(names));
     }
   }
 
   // Snapshot Hub stack image IDs before any containers are removed.
-  const hubImages = [...new Set(HUB_STACK_PROJECT_NAMES.flatMap(snapshotProjectImages))];
+  const hubImages = [
+    ...new Set(
+      HUB_STACK_PROJECT_NAMES.flatMap((project) =>
+        snapshotProjectImages(project, parseNames(docker('ps', '-a', ...byComposeProject(project), '-q'))),
+      ),
+    ),
+  ];
 
   // Marketplace apps installed by Hub run as their own compose projects (<app>_<store>),
   // separate from the Hub stack. Hub stamps every managed app container with canonical and
@@ -573,69 +572,62 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
   // below: main app services attach to those networks, so removing either while an app
   // container is still attached would fail. The Hub stack projects are excluded here; the
   // dedicated Hub teardown (which also snapshots Hub images) handles them.
-  const managedLabelLines = parseNames(
-    [
-      runCommand('docker ps -a --filter label=ci-hub.managed=true --format "{{.Labels}}"', commandContext),
-      runCommand('docker ps -a --filter label=ci-os-hub.managed=true --format "{{.Labels}}"', commandContext),
-    ].join('\n'),
-  );
-  const managedProjects = managedAppProjectsFromLabelLines(managedLabelLines);
+  const managedProjects = findManagedAppProjects((args) => parseNames(docker(...args)));
 
-  const sharedNetworks = new Set(['bridge', 'host', 'none', 'ci_hub_network', 'ci-hub_network', 'ci_os_hub_network', 'ci-os-hub_network']);
+  const sharedNetworks = new Set<string>(['bridge', 'host', 'none', ...HUB_NETWORK_NAMES]);
   for (const project of managedProjects) {
-    const projectImages = snapshotProjectImages(project);
+    const containerIds = parseNames(docker('ps', '-a', ...byComposeProject(project), '-q'));
+    const projectImages = snapshotProjectImages(project, containerIds);
 
-    const projectContainers = runCommand(`docker ps -a --filter label=com.docker.compose.project=${project} --format "{{.ID}}"`, commandContext);
-    for (const containerId of parseNames(projectContainers)) {
-      runCommand(`docker rm -f ${containerId}`, commandContext);
+    for (const containerId of containerIds) {
+      docker('rm', '-f', containerId);
     }
 
-    const projectNetworks = runCommand(`docker network ls --filter label=com.docker.compose.project=${project} --format "{{.Name}}"`, commandContext);
+    const projectNetworks = docker('network', 'ls', ...byComposeProject(project), '--format', '{{.Name}}');
     for (const networkName of parseNames(projectNetworks).filter((name) => !sharedNetworks.has(name))) {
-      runCommand(`docker network rm ${networkName}`, commandContext);
+      docker('network', 'rm', networkName);
     }
 
-    const projectVolumes = runCommand(`docker volume ls --filter label=com.docker.compose.project=${project} --format "{{.Name}}"`, commandContext);
+    const projectVolumes = docker('volume', 'ls', ...byComposeProject(project), '--format', '{{.Name}}');
     for (const volumeName of parseNames(projectVolumes)) {
-      runCommand(`docker volume rm ${volumeName}`, commandContext);
+      docker('volume', 'rm', volumeName);
     }
 
     for (const imageId of projectImages) {
-      runCommand(`docker image rm -f ${imageId}`, commandContext);
+      docker('image', 'rm', '-f', imageId);
     }
   }
 
   // Hub stack teardown — safe to remove the shared networks now that app containers are gone.
   for (const name of containerNames) {
-    runCommand(`docker rm -f ${name}`, commandContext);
+    docker('rm', '-f', name);
   }
 
-  const volumeOutput = runCommand('docker volume ls --format "{{.Name}}"', commandContext);
+  const volumeOutput = docker('volume', 'ls', '--format', '{{.Name}}');
   for (const volumeName of parseNames(volumeOutput).filter(isRelatedVolume)) {
-    runCommand(`docker volume rm ${volumeName}`, commandContext);
+    docker('volume', 'rm', volumeName);
   }
 
-  runCommand('docker network rm ci_hub_network', commandContext);
-  runCommand('docker network rm ci-hub_network', commandContext);
-  runCommand('docker network rm ci_os_hub_network', commandContext);
-  runCommand('docker network rm ci-os-hub_network', commandContext);
+  for (const network of HUB_NETWORK_NAMES) {
+    docker('network', 'rm', network);
+  }
 
-  const networkOutput = runCommand('docker network ls --format "{{.Name}}"', commandContext);
+  const networkOutput = docker('network', 'ls', '--format', '{{.Name}}');
   for (const networkName of parseNames(networkOutput).filter((name) => name.includes('e2e'))) {
-    runCommand(`docker network rm ${networkName}`, commandContext);
+    docker('network', 'rm', networkName);
   }
 
   for (const imageId of hubImages) {
-    runCommand(`docker image rm -f ${imageId}`, commandContext);
+    docker('image', 'rm', '-f', imageId);
   }
 
   for (const project of HUB_STACK_PROJECT_NAMES) {
-    runCommand(`docker compose --project-name ${project} -f docker-compose.prod.yml down -v`, commandContext);
+    docker('compose', '--project-name', project, '-f', 'docker-compose.prod.yml', 'down', '-v');
   }
-  runCommand('docker compose --project-name ci-hub -f docker-compose.local.yml down -v', commandContext);
+  docker('compose', '--project-name', 'ci-hub', '-f', 'docker-compose.local.yml', 'down', '-v');
 
   if (platform !== 'win32' && exists('/tmp/.buildx-cache')) {
-    runCommand('rm -rf /tmp/.buildx-cache', commandContext);
+    runCommand('rm', ['-rf', '/tmp/.buildx-cache'], commandContext);
   }
 
   const stateDirs = getHubStateDirs({ cwd, homeDir, platform });

@@ -1,7 +1,11 @@
 import { client } from '@/api-client/client.gen';
 import { openExternalWithHubSession } from '@/lib/hub-browser-handoff';
 import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
+import { isTauriMobileSync } from '@/lib/mobile-connection';
+import { returnToAppNext } from '@/lib/return-to-hub-app';
 import { isMemoryProviderUrn } from '@/modules/app/helpers/memory-provider';
+import { isI18nKey } from '@/lib/format-api-error';
+import { TranslatableError } from '@/types/error.types';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
@@ -17,7 +21,9 @@ export type ConnectBlockedReason =
   | 'memory_offline'
   | 'hub_not_provisioned'
   | 'hub_unreachable'
-  | 'provider_local_only';
+  | 'provider_local_only'
+  | 'memory_loopback_only'
+  | 'memory_address_refused';
 
 /**
  * Why the Connect action is unavailable, as user-facing copy. Without this a
@@ -31,6 +37,8 @@ const BLOCKED_REASON_KEYS: Record<ConnectBlockedReason, string> = {
   hub_not_provisioned: 'MEMORY_CONNECT_BLOCKED_HUB_NOT_PROVISIONED',
   hub_unreachable: 'MEMORY_CONNECT_BLOCKED_HUB_UNREACHABLE',
   provider_local_only: 'MEMORY_CONNECT_BLOCKED_PROVIDER_LOCAL_ONLY',
+  memory_loopback_only: 'MEMORY_CONNECT_BLOCKED_LOOPBACK_ONLY',
+  memory_address_refused: 'MEMORY_CONNECT_BLOCKED_ADDRESS_REFUSED',
 };
 
 /**
@@ -39,6 +47,21 @@ const BLOCKED_REASON_KEYS: Record<ConnectBlockedReason, string> = {
  */
 export function resolveBlockedReasonKey(reason: ConnectBlockedReason | null | undefined): string | null {
   return reason ? (BLOCKED_REASON_KEYS[reason] ?? null) : null;
+}
+
+/**
+ * What a failed Disconnect says. The Hub names its own refusals with a translation key: another
+ * person's connection runs the app (`MEMORY_CONNECT_DISCONNECT_REFUSED`), CI Memory didn't confirm
+ * the revoke, or a 403 from anything else (`SYSTEM_ERROR_FORBIDDEN` and the like). Only the first
+ * talks about another person. A failure with no key of its own gets the plain "try again".
+ * Exported for tests.
+ */
+export function disconnectErrorKey(error: unknown): string {
+  if (error instanceof TranslatableError && isI18nKey(error.message) && error.message !== 'COMMON_AN_ERROR_OCCURRED') {
+    return error.message;
+  }
+
+  return 'MEMORY_CONNECT_DISCONNECT_ERROR';
 }
 
 /** Mirrors the backend MemoryConnectUiStatus (GET /api/memory-connect/apps/:urn/status). */
@@ -61,11 +84,36 @@ export interface MemoryConnectionStatus {
   reason: ConnectBlockedReason | null;
   /** ISO instant the key expires (when connected); the Hub auto-rotates before this. */
   keyExpiresAt: string | null;
+  /** The app runs with another Hub person's connection; `state` is this person's own. */
+  connectedByOther: boolean;
 }
 
 /** Query-key prefix, shared with the SSE cache so ci-memory events can invalidate every consumer's status. */
 export const MEMORY_STATUS_QUERY_PREFIX = 'memory-connection-status';
 export const memoryStatusQueryKey = (appUrn: string) => [MEMORY_STATUS_QUERY_PREFIX, appUrn];
+
+/**
+ * How often to re-read the status, or false when an event will say it changed. Exported for tests.
+ *
+ * While Companion Memory is actively coming up ('starting': installing / booting / mid-maintenance), poll so the
+ * badge + Connect button flip to ready shortly after it does. The status is keyed by THIS app's urn, so ci-memory's
+ * own status change doesn't refetch it on its own. The SSE cache also invalidates this on ci-memory lifecycle events
+ * (instant); this is the safety net if one is missed. A refused address is lifted by an exposure sync, which no event
+ * announces, so that wait polls too, unless the app is connected: there the button doesn't depend on it and every
+ * read checks the key with Companion Memory. 'offline' (stopped/failed) and any other 'ready' are settled states:
+ * offline to ready is driven by a start event the SSE cache already catches, so polling them would just burn requests.
+ */
+export function memoryStatusPollMs(status: MemoryConnectionStatus | null | undefined): number | false {
+  if (!status?.applicable) {
+    return false;
+  }
+
+  if (status.providerStatus === 'starting') {
+    return 10_000;
+  }
+
+  return status.reason === 'memory_address_refused' && status.state !== 'connected' ? 30_000 : false;
+}
 
 /** An installed app still holding a live Companion Memory connection. */
 export interface MemoryConsumer {
@@ -166,18 +214,7 @@ export function useMemoryConnection(appUrn: string) {
       return (data ?? null) as MemoryConnectionStatus | null;
     },
     staleTime: 15_000,
-    // While Companion Memory is actively coming up ('starting': installing / booting
-    // / mid-maintenance), poll so the badge + Connect button flip to ready shortly
-    // after it does — the status is keyed by THIS app's urn, so ci-memory's own
-    // status change doesn't refetch it on its own. The SSE cache also invalidates
-    // this on ci-memory lifecycle events (instant); this is the safety net if one is
-    // missed. Deliberately NOT polling while 'offline' (stopped/failed) or 'ready':
-    // those are settled states, and offline→ready is driven by a start event the SSE
-    // cache already catches, so polling them would just burn requests indefinitely.
-    refetchInterval: (q) => {
-      const data = q.state.data as MemoryConnectionStatus | null | undefined;
-      return data?.applicable && data.providerStatus === 'starting' ? 10_000 : false;
-    },
+    refetchInterval: (q) => memoryStatusPollMs(q.state.data as MemoryConnectionStatus | null | undefined),
   });
 
   const disconnect = useMutation({
@@ -188,7 +225,10 @@ export function useMemoryConnection(appUrn: string) {
       toast.success(t('MEMORY_CONNECT_DISCONNECTED_TOAST'));
       await queryClient.invalidateQueries({ queryKey: memoryStatusQueryKey(appUrn) });
     },
-    onError: () => toast.error(t('MEMORY_CONNECT_DISCONNECT_ERROR')),
+    onError: async (error) => {
+      toast.error(t(disconnectErrorKey(error), (error instanceof TranslatableError ? error.intlParams : undefined) ?? {}));
+      await queryClient.invalidateQueries({ queryKey: memoryStatusQueryKey(appUrn) });
+    },
   });
 
   const status = query.data ?? null;
@@ -225,7 +265,15 @@ export function useMemoryConnection(appUrn: string) {
         return;
       }
 
-      void openExternalWithHubSession(desktopLauncher);
+      // On the phone, end the flow on a Hub page whose button brings this app back (the
+      // consent finishes in Chrome, and otherwise left the person on the app's web page there).
+      // The desktop keeps the backend's default: the app's own public URL.
+      const returnNext = isTauriMobileSync() ? returnToAppNext(desktopLauncher, appUrn) : null;
+      const launcher = returnNext
+        ? `${desktopLauncher}${desktopLauncher.includes('?') ? '&' : '?'}next=${encodeURIComponent(returnNext)}`
+        : desktopLauncher;
+
+      void openExternalWithHubSession(launcher);
 
       // The consent completes in that separate browser, so this webview never
       // reloads (unlike the web path's full-page return to `next`). Refetch this
@@ -264,6 +312,8 @@ export function useMemoryConnection(appUrn: string) {
     applicable: !query.isLoading && !!status?.applicable,
     isLoading: query.isLoading,
     connected: status?.state === 'connected',
+    /** Another Hub person's connection is the one the app runs with (see the backend's MemoryConnectUiStatus). */
+    connectedByOther: !!status?.connectedByOther,
     memoryInstalled: !!status?.memoryInstalled,
     /** ci-memory is running — a connect can succeed now. */
     memoryReady: !!status?.memoryReady,

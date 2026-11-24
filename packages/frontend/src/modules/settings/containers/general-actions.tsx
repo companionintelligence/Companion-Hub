@@ -2,6 +2,7 @@ import {
   checkForUpdates as checkHubForUpdates,
   factoryReset,
   getAutoUpdates,
+  getUpdateBlocks,
   restartOnboarding,
   setAutoUpdates as updateAutoUpdatesSetting,
 } from '@/api-client/sdk.gen';
@@ -9,23 +10,29 @@ import { sdkResult, unwrapSdkOrNull } from '@/lib/sdk-unwrap';
 import { Markdown } from '@/components/markdown/markdown';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
+import { Checkbox } from '@/components/ui/Checkbox/Checkbox';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { useAppContext } from '@/context/app-context';
 import { useDemoMode } from '@/lib/hooks/use-demo-mode';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card';
 import { ArrowUpCircle, Loader2, Smartphone, Star, TriangleAlert, Wand2 } from 'lucide-react';
 import { clearHubConnection, getHubBaseUrlSync, isTauriMobileSync, usesCloudConnect } from '@/lib/mobile-connection';
+import type { TFunction } from 'i18next';
 import { Trans, useTranslation } from 'react-i18next';
 import { UpdateRepoModal } from '../components/update-repo-modal/update-repo-modal';
-import { useState, useEffect, useCallback, useId } from 'react';
+import { useState, useEffect, useCallback, useId, useRef } from 'react';
 import { clearClientHubState } from '@/lib/clear-client-hub-state';
 import {
   clearHubSteadySession,
+  clearKeptStackUpdateOutcome,
   clearStackUpdatePending,
   isStackUpdatePending,
   markStackUpdatePending,
+  readKeptStackUpdateOutcome,
+  type StackUpdateOutcome,
   subscribeStackUpdate,
 } from '@/lib/desktop-stack-session';
+import { TranslatableError } from '@/types/error.types';
 import { toast } from 'sonner';
 import {
   checkForUpdates,
@@ -33,6 +40,7 @@ import {
   type DesktopUpdateOutcome,
   type DesktopUpdateProgress,
   fetchHostListenerStatus,
+  type HostListenerStatus,
   getDesktopRestartState,
   getInstalledDesktopVersion,
   installDesktopUpdate,
@@ -40,12 +48,28 @@ import {
   isTauri,
   manualUpdateArtifactKind,
   manualUpdateFileName,
+  openDesktopDownloadPage,
   performStackUpdate,
   performUpdate,
   restartDesktopApp,
   type UpdateActionResult,
   type UpdateInfo,
 } from '@/lib/update-service';
+
+/**
+ * Why the Hub would refuse an update, from `GET /api/system/update/blocked` or the same fields of
+ * `GET /api/system/update/check`, whose body the generated client leaves untyped.
+ */
+type HubUpdateBlocks = {
+  /** Why the Hub will refuse an update started here, even when a newer release exists. */
+  updateBlockedReason?: string | null;
+  /** Why the daily auto-update cannot move this Hub. */
+  autoUpdateBlockedReason?: string | null;
+  /** The desktop app on the Hub's computer is what updates it. */
+  desktopAppUpdatesHub?: boolean;
+};
+
+type HubUpdateCheck = HubUpdateBlocks & { updateAvailable?: boolean; latest?: string };
 
 /** The one-click desktop app update, in the desktop window. */
 type ShellInstallState =
@@ -69,7 +93,26 @@ const SHELL_INSTALL_PHASE_KEYS: Record<string, string> = {
   relaunch: 'SETTINGS_ACTIONS_SHELL_INSTALL_RESTARTING_APP',
 };
 
-export const GeneralActionsContainer = () => {
+const stackUpdateOutcomeMessage = (t: TFunction, outcome: StackUpdateOutcome) =>
+  outcome.state === 'completed'
+    ? t('SETTINGS_ACTIONS_UPDATE_COMPLETE', { version: outcome.version })
+    : t('SETTINGS_ACTIONS_UPDATE_NOT_CONFIRMED', { version: outcome.version });
+
+/**
+ * A `cihub` install has no desktop app, so the card says that instead of offering one. Unknown keeps the card.
+ * The desktop window is the app itself, whatever the Hub can see of it. A Hub that says its desktop app
+ * updates it has one, even when it can't read the app's token.
+ */
+function hubHasNoDesktopApp(listener: HostListenerStatus | null | undefined, desktopWindow: boolean, desktopAppUpdatesHub: boolean): boolean {
+  return !desktopWindow && !desktopAppUpdatesHub && listener?.desktopApp === false;
+}
+
+/**
+ * `manageHub`: whether this person may change the whole Hub (`useHubAccess`). A member doesn't see the
+ * Hub update, auto-updates, app store repository, setup wizard or factory reset; the desktop app's own
+ * update and the phone app's Hub switch act on this device, so they stay.
+ */
+export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: boolean } = {}) => {
   const { t } = useTranslation();
   const { version, refreshAppContext, userSettings } = useAppContext();
   const deviceName = userSettings?.ciHubDeviceSlug?.trim() ?? '';
@@ -81,7 +124,12 @@ export const GeneralActionsContainer = () => {
   // resolves it (see `lib/hub-hello.ts`) and the subscription below turns that into UI.
   const [updating, setUpdating] = useState<boolean>(() => isStackUpdatePending());
   const [checking, setChecking] = useState(false);
-  const [stackMessage, setStackMessage] = useState<string | null>(() => (isStackUpdatePending() ? t('SETTINGS_ACTIONS_UPDATE_RESTARTING') : null));
+  const [stackMessage, setStackMessage] = useState<string | null>(() => {
+    if (isStackUpdatePending()) return t('SETTINGS_ACTIONS_UPDATE_RESTARTING');
+    // An update that ended while no panel was mounted has only this left to say so.
+    const kept = readKeptStackUpdateOutcome();
+    return kept ? stackUpdateOutcomeMessage(t, kept) : null;
+  });
   const [shellMessage, setShellMessage] = useState<string | null>(null);
   const [autoUpdates, setAutoUpdates] = useState(true);
   const [autoUpdatesLoading, setAutoUpdatesLoading] = useState(false);
@@ -92,25 +140,44 @@ export const GeneralActionsContainer = () => {
   const [factoryResetOpen, setFactoryResetOpen] = useState(false);
   const [factoryResetPhrase, setFactoryResetPhrase] = useState('');
   const [factoryResetting, setFactoryResetting] = useState(false);
+  // Off by default: the apps stay listed in Companion Portal, so pairing this Hub again reinstalls them.
+  const [factoryResetRemovePortalApps, setFactoryResetRemovePortalApps] = useState(false);
+  // The reset ran, but the Portal couldn't be told to drop the apps. The dialog stays to say so.
+  const [factoryResetPortalAppsLeft, setFactoryResetPortalAppsLeft] = useState(false);
   const [shellUpdate, setShellUpdate] = useState<UpdateInfo | null>(null);
   const [shellVersion, setShellVersion] = useState<string | null>(null);
   const [updatingShell, setUpdatingShell] = useState(false);
   const [shellRestart, setShellRestart] = useState<DesktopRestartState | null>(null);
   const [restartingShell, setRestartingShell] = useState(false);
   const [shellInstall, setShellInstall] = useState<ShellInstallState>({ state: 'idle' });
-  const [hostListenerReachable, setHostListenerReachable] = useState<boolean | null>(null);
+  // `undefined` until the Hub answers, so the Desktop app card doesn't offer a download and then take
+  // it back on a Hub without one. `null` when it couldn't say.
+  const [hostListener, setHostListener] = useState<HostListenerStatus | null | undefined>(undefined);
+  const hostListenerReachable = hostListener?.reachable ?? null;
+  // The app context offers a stack update whenever the registry has a newer tag. Only the Hub knows
+  // whether it will take it (a Windows desktop install, a node whose compose env file isn't the one
+  // it mounts). Without its answer the button ends in "Update failed".
+  const [stackBlock, setStackBlock] = useState<{ update: string | null; auto: string | null; desktopApp: boolean }>({
+    update: null,
+    auto: null,
+    desktopApp: false,
+  });
+  // Bumped when a newer update check starts, so the slower answer of an older one is dropped.
+  const stackCheckSeq = useRef(0);
+  const autoUpdatesBlockedId = `${autoUpdatesId}-blocked`;
   const [switchHubOpen, setSwitchHubOpen] = useState(false);
 
   const desktop = isTauri();
   // The desktop app's own window, where this page can ask the app to install its update. `isTauri()`
   // is true in the phone app too, which only reaches a Hub over the network, like a browser.
   const desktopWindow = desktop && !isTauriMobileSync();
+  const noDesktopApp = hubHasNoDesktopApp(hostListener, desktopWindow, stackBlock.desktopApp);
 
   const getUpdateMessage = useCallback(
     (result: UpdateActionResult) =>
       result.defaultMessage
         ? t(result.messageKey, { defaultValue: result.defaultMessage, ...result.messageParams })
-        : t(result.messageKey, result.messageParams),
+        : t(result.messageKey, result.messageParams ?? {}),
     [t],
   );
 
@@ -126,12 +193,24 @@ export const GeneralActionsContainer = () => {
     }
   }, [t]);
 
-  const setFactoryResetDialogOpen = useCallback((open: boolean) => {
-    setFactoryResetOpen(open);
-    // Cancel, the X, and a click outside all close through here. A phrase left in state would
-    // still match the device name, so the next open could wipe the Hub in one click.
-    if (!open) setFactoryResetPhrase('');
-  }, []);
+  const setFactoryResetDialogOpen = useCallback(
+    (open: boolean) => {
+      // The Hub is already reset when the dialog is only left open to say the Portal still lists its
+      // apps. Closing it goes on to sign in, as a reset that needed no warning does.
+      if (!open && factoryResetPortalAppsLeft) {
+        window.location.href = '/login';
+        return;
+      }
+      setFactoryResetOpen(open);
+      // Cancel, the X, and a click outside all close through here. A phrase left in state would
+      // still match the device name, so the next open could wipe the Hub in one click.
+      if (!open) {
+        setFactoryResetPhrase('');
+        setFactoryResetRemovePortalApps(false);
+      }
+    },
+    [factoryResetPortalAppsLeft],
+  );
 
   const handleFactoryReset = useCallback(async () => {
     if (demoMode) {
@@ -146,32 +225,51 @@ export const GeneralActionsContainer = () => {
 
     setFactoryResetting(true);
     try {
-      const result = await factoryReset({ body: { confirmation: typedName } });
+      const result = await factoryReset({ body: { confirmation: typedName, removeAppsFromPortal: factoryResetRemovePortalApps } });
       if (result.error) {
         throw result.error instanceof Error ? result.error : new Error(String(result.error));
       }
       clearClientHubState();
+      // Asked to take the apps off the Portal and it couldn't be reached: say so before leaving, since a
+      // toast would go with the page. The X, Escape and a click outside can close the dialog while the
+      // reset runs, so it opens again to say it. Closed, it left the page on a Hub that was reset.
+      if ((result.data as { portalApps?: string } | undefined)?.portalApps === 'failed') {
+        setFactoryResetting(false);
+        setFactoryResetPortalAppsLeft(true);
+        setFactoryResetOpen(true);
+        return;
+      }
       toast.success(t('SETTINGS_FACTORY_RESET_SUCCESS'));
       window.location.href = '/login';
-    } catch {
+    } catch (error) {
       setFactoryResetting(false);
-      toast.error(t('SETTINGS_FACTORY_RESET_ERROR'));
+      // A reset that stopped on files it could not delete says how many, which, and how to finish, and
+      // one that refused a home folder as the data folder names it. Anything else may have stopped
+      // anywhere, and running it again is the advice.
+      toast.error(
+        error instanceof TranslatableError &&
+          (error.message === 'SETTINGS_FACTORY_RESET_FILES_LEFT' || error.message === 'SETTINGS_FACTORY_RESET_DATA_ROOT_REFUSED')
+          ? t(error.message, error.intlParams ?? {})
+          : t('SETTINGS_FACTORY_RESET_ERROR'),
+      );
     }
-  }, [demoMode, deviceName, factoryResetPhrase, t]);
+  }, [demoMode, deviceName, factoryResetPhrase, factoryResetRemovePortalApps, t]);
 
   const refreshShellUpdateState = useCallback(async () => {
     const installedVersion = desktop ? await getInstalledDesktopVersion() : null;
     setShellVersion(installedVersion);
     setShellRestart(desktop ? await getDesktopRestartState() : null);
-    const info = await checkForUpdates(installedVersion ?? undefined);
+    // The desktop app names an installer only when a newer version exists. Settings is signed in, so
+    // the Hub can look up the installer of the version this computer already runs.
+    const info = await checkForUpdates(installedVersion ?? undefined, { askHubForInstaller: true });
     setShellUpdate(info);
     return info;
   }, [desktop]);
 
   const refreshHostListenerStatus = useCallback(async () => {
-    const reachable = await fetchHostListenerStatus();
-    setHostListenerReachable(reachable);
-    return reachable;
+    const status = await fetchHostListenerStatus();
+    // A Hub that doesn't answer this time, say mid-restart, hasn't taken back what it said before.
+    setHostListener((previous) => status ?? previous ?? null);
   }, []);
 
   useEffect(() => {
@@ -181,16 +279,29 @@ export const GeneralActionsContainer = () => {
   useEffect(
     () =>
       subscribeStackUpdate((outcome) => {
+        // On screen now, so the next visit doesn't repeat it.
+        clearKeptStackUpdateOutcome();
         setUpdating(false);
-        setStackMessage(
-          outcome.state === 'completed'
-            ? t('SETTINGS_ACTIONS_UPDATE_COMPLETE', { version: outcome.version })
-            : t('SETTINGS_ACTIONS_UPDATE_NOT_CONFIRMED', { version: outcome.version }),
-        );
+        setStackMessage(stackUpdateOutcomeMessage(t, outcome));
         void refreshAppContext();
+        // Asked while the Hub was restarting, it couldn't say whether it has a desktop app.
+        void refreshHostListenerStatus();
       }),
-    [refreshAppContext, t],
+    [refreshAppContext, refreshHostListenerStatus, t],
   );
+
+  // Shown once. The state above has it now so coming back to this tab later doesn't repeat it.
+  // Reading it again here catches an outcome that landed between the first render and the subscription.
+  useEffect(() => {
+    if (!isStackUpdatePending()) {
+      const kept = readKeptStackUpdateOutcome();
+      if (kept) {
+        setUpdating(false);
+        setStackMessage(stackUpdateOutcomeMessage(t, kept));
+      }
+    }
+    clearKeptStackUpdateOutcome();
+  }, [t]);
 
   const handleStopWaiting = useCallback(() => {
     clearStackUpdatePending();
@@ -202,20 +313,55 @@ export const GeneralActionsContainer = () => {
     void refreshHostListenerStatus();
   }, [refreshHostListenerStatus]);
 
+  const applyStackBlock = useCallback((blocks: HubUpdateBlocks | null) => {
+    setStackBlock({
+      update: blocks?.updateBlockedReason ?? null,
+      auto: blocks?.autoUpdateBlockedReason ?? null,
+      desktopApp: blocks?.desktopAppUpdatesHub === true,
+    });
+  }, []);
+  // A browser's update leaves the desktop app out (#2316) unless only the desktop app can update this
+  // Hub: the updater can't reproduce the stack (the daily update's refusal) and the update isn't blocked.
+  const browserUpdateUsesDesktopApp = stackBlock.auto !== null && stackBlock.update === null;
+
+  // `blocked`, not `check`: this runs on every visit, and `check` also looks up the registry and wakes
+  // every connected agent when an update is available. Only the Hub update card reads the answer, so a
+  // member, who doesn't see that card, isn't asked.
   useEffect(() => {
+    if (!manageHub) {
+      return;
+    }
+    const seq = ++stackCheckSeq.current;
+    unwrapSdkOrNull(getUpdateBlocks())
+      .then((data) => {
+        if (seq === stackCheckSeq.current) applyStackBlock(data as HubUpdateBlocks | null);
+      })
+      // A Hub that is restarting doesn't answer. The update button then shows as it did before.
+      .catch(() => undefined);
+    return () => {
+      stackCheckSeq.current += 1;
+    };
+  }, [applyStackBlock, manageHub]);
+
+  useEffect(() => {
+    if (!manageHub) {
+      return;
+    }
     void unwrapSdkOrNull(getAutoUpdates()).then((data) => {
       const enabled = (data as { enabled?: boolean } | null)?.enabled;
       if (typeof enabled === 'boolean') setAutoUpdates(enabled);
     });
-  }, []);
+  }, [manageHub]);
 
   const handleCheckForUpdates = useCallback(async () => {
     setChecking(true);
     setStackMessage(null);
+    stackCheckSeq.current += 1;
     try {
       const result = await sdkResult(checkHubForUpdates());
       if (!result.ok) throw new Error(`HTTP ${result.status}`);
-      const data = (result.data ?? {}) as { updateAvailable?: boolean; latest?: string };
+      const data = (result.data ?? {}) as HubUpdateCheck;
+      applyStackBlock(data);
       await refreshAppContext();
       await refreshShellUpdateState();
       await refreshHostListenerStatus();
@@ -229,13 +375,17 @@ export const GeneralActionsContainer = () => {
     } finally {
       setChecking(false);
     }
-  }, [refreshAppContext, refreshHostListenerStatus, refreshShellUpdateState, t, version.latest]);
+  }, [applyStackBlock, refreshAppContext, refreshHostListenerStatus, refreshShellUpdateState, t, version.latest]);
 
   const handleUpdate = useCallback(async () => {
     setUpdating(true);
     setStackMessage(null);
     try {
-      const stackResult = await performStackUpdate(version.latest);
+      // The button shows before the Hub has said whether it has a desktop app.
+      const listener = hostListener === undefined ? await fetchHostListenerStatus() : hostListener;
+      const stackResult = await performStackUpdate(version.latest, {
+        noDesktopApp: hubHasNoDesktopApp(listener, desktopWindow, stackBlock.desktopApp),
+      });
       if (stackResult.ok) {
         markStackUpdatePending(version.current);
         clearHubSteadySession();
@@ -248,7 +398,7 @@ export const GeneralActionsContainer = () => {
       setStackMessage(t('SETTINGS_ACTIONS_UPDATE_REQUEST_FAILED'));
       setUpdating(false);
     }
-  }, [getUpdateMessage, t, version.latest, version.current]);
+  }, [desktopWindow, getUpdateMessage, hostListener, stackBlock.desktopApp, t, version.latest, version.current]);
 
   const handleShellUpdate = useCallback(async () => {
     setUpdatingShell(true);
@@ -353,12 +503,22 @@ export const GeneralActionsContainer = () => {
       // Install over the current app, never remove it first. Removing the package runs its cleanup,
       // which deletes the Hub's database, every app with its data, and the Hub's folder. An install
       // in place skips that: the old package's deb `postrm` sees `upgrade`, its rpm `postun` sees 1.
-      const install = kind === 'deb' ? 'sudo apt install' : 'sudo rpm -U';
+      // The version this computer already runs is installed again: apt skips it as "already the
+      // newest version" and `rpm -U` refuses it as "already installed" without these flags.
+      const reinstall = shellVersion !== null && shellUpdate.latestVersion === shellVersion;
+      const install = kind === 'deb' ? `sudo apt install${reinstall ? ' --reinstall' : ''}` : `sudo rpm -U${reinstall ? ' --replacepkgs' : ''}`;
       steps = [
         { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_DOWNLOAD') },
         fileName
-          ? { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_INSTALL'), command: `${install} "./${fileName}"` }
-          : { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_INSTALL_NO_COMMAND') },
+          ? {
+              text: t(reinstall ? 'SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_REINSTALL' : 'SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_INSTALL'),
+              command: `${install} "./${fileName}"`,
+            }
+          : {
+              text: t(
+                reinstall ? 'SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_REINSTALL_NO_COMMAND' : 'SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_INSTALL_NO_COMMAND',
+              ),
+            },
         { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_RELAUNCH') },
       ];
     } else if (kind === 'dmg' || platform === 'macos') {
@@ -514,6 +674,19 @@ export const GeneralActionsContainer = () => {
       );
     }
 
+    if (stackUpdateAvailable && stackBlock.update) {
+      return (
+        <div className="space-y-1 rounded-md bg-muted p-3 text-sm" data-testid="hub-update-blocked">
+          {/* Only a refusal that names the desktop app sends people to its card: a dev-channel pin or a
+              source Hub outside a container is not fixed by updating the app. */}
+          <p>
+            {t(desktopWindow && stackBlock.desktopApp ? 'SETTINGS_ACTIONS_STACK_UPDATE_BLOCKED_DESKTOP' : 'SETTINGS_ACTIONS_STACK_UPDATE_BLOCKED')}
+          </p>
+          <p className="text-xs text-muted-foreground">{stackBlock.update}</p>
+        </div>
+      );
+    }
+
     if (stackUpdateAvailable) {
       const release = version.releases?.find((r) => r.version === latestVersion) ?? version.releases?.[0];
       const releaseBody = release?.body?.trim() ?? '';
@@ -567,218 +740,293 @@ export const GeneralActionsContainer = () => {
 
   return (
     <div className="space-y-6">
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <ArrowUpCircle className="h-5 w-5 shrink-0 text-muted-foreground" />
-            <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_HUB_STACK_TITLE')}</CardTitle>
-          </div>
-          <CardDescription>{t('SETTINGS_ACTIONS_CURRENT_VERSION', { version: displayVersion })}</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground mb-4">
-            {stackUpdateAvailable ? t('SETTINGS_ACTIONS_NEW_VERSION', { version: latestVersion }) : t('SETTINGS_ACTIONS_STAY_UP_TO_DATE')}
-          </p>
-          {renderUpdateButton()}
-
-          <div className="mt-6 pt-6 border-t">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <h3 id={autoUpdatesTitleId} className="text-sm font-medium">
-                  {t('SETTINGS_ACTIONS_AUTO_UPDATE_STACK_TITLE')}
-                </h3>
-                <p id={autoUpdatesDescriptionId} className="text-sm text-muted-foreground">
-                  {t('SETTINGS_ACTIONS_AUTO_UPDATE_STACK_DESCRIPTION')}
-                </p>
-              </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={autoUpdates}
-                aria-labelledby={autoUpdatesTitleId}
-                aria-describedby={autoUpdatesDescriptionId}
-                aria-disabled={autoUpdatesLoading}
-                aria-busy={autoUpdatesLoading}
-                onClick={handleAutoUpdatesToggle}
-                className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background ${autoUpdates ? 'bg-primary' : 'bg-foreground/50'} ${autoUpdatesLoading ? 'cursor-wait opacity-50' : ''}`}
-              >
-                <span
-                  className={`inline-block h-4 w-4 transform rounded-full bg-background transition-transform ${autoUpdates ? 'translate-x-6' : 'translate-x-1'}`}
-                />
-              </button>
+      {manageHub && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <ArrowUpCircle className="h-5 w-5 shrink-0 text-muted-foreground" />
+              <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_HUB_STACK_TITLE')}</CardTitle>
             </div>
-          </div>
-        </CardContent>
-      </Card>
+            <CardDescription>{t('SETTINGS_ACTIONS_CURRENT_VERSION', { version: displayVersion })}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm text-muted-foreground mb-4">
+              {stackUpdateAvailable ? t('SETTINGS_ACTIONS_NEW_VERSION', { version: latestVersion }) : t('SETTINGS_ACTIONS_STAY_UP_TO_DATE')}
+            </p>
+            {renderUpdateButton()}
 
-      <Card data-testid="desktop-shell-update-card">
-        <CardHeader>
-          <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_SHELL_UPDATE_TITLE')}</CardTitle>
-          <CardDescription>
-            {installedShellVersion
-              ? t('SETTINGS_ACTIONS_SHELL_UPDATE_SUBTITLE_WITH_VERSION', { version: installedShellVersion })
-              : t('SETTINGS_ACTIONS_SHELL_UPDATE_SUBTITLE')}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {/* The Hub can't reach the listener of any desktop app up to 0.2.77, running or not, so in the
-              desktop window it is no sign the app is down. A browser can say where to update instead. */}
-          {!desktopWindow && hostListenerReachable === false ? (
-            <p className="text-sm text-muted-foreground mb-4" data-testid="host-listener-unavailable">
+            <div className="mt-6 pt-6 border-t">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h3 id={autoUpdatesTitleId} className="text-sm font-medium">
+                    {t('SETTINGS_ACTIONS_AUTO_UPDATE_STACK_TITLE')}
+                  </h3>
+                  <p id={autoUpdatesDescriptionId} className="text-sm text-muted-foreground">
+                    {t('SETTINGS_ACTIONS_AUTO_UPDATE_STACK_DESCRIPTION')}
+                  </p>
+                  {stackBlock.auto ? (
+                    <p id={autoUpdatesBlockedId} className="mt-1 text-sm text-muted-foreground" data-testid="auto-update-blocked">
+                      {t('SETTINGS_ACTIONS_AUTO_UPDATE_STACK_BLOCKED')}
+                    </p>
+                  ) : null}
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={autoUpdates}
+                  aria-labelledby={autoUpdatesTitleId}
+                  aria-describedby={stackBlock.auto ? `${autoUpdatesDescriptionId} ${autoUpdatesBlockedId}` : autoUpdatesDescriptionId}
+                  aria-disabled={autoUpdatesLoading}
+                  aria-busy={autoUpdatesLoading}
+                  onClick={handleAutoUpdatesToggle}
+                  className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background ${autoUpdates ? 'bg-primary' : 'bg-foreground/50'} ${autoUpdatesLoading ? 'cursor-wait opacity-50' : ''}`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-background transition-transform ${autoUpdates ? 'translate-x-6' : 'translate-x-1'}`}
+                  />
+                </button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {noDesktopApp ? (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_SHELL_UPDATE_TITLE')}</CardTitle>
+            {/* A member has neither the Hub stack card nor a reason to update from this page. */}
+            <CardDescription data-testid="desktop-app-cli-install-note">
               <Trans
-                i18nKey="SETTINGS_ACTIONS_HOST_LISTENER_UNAVAILABLE"
+                i18nKey={manageHub ? 'SETTINGS_ACTIONS_SHELL_CLI_INSTALL_HOW_TO_UPDATE' : 'SETTINGS_ACTIONS_SHELL_CLI_INSTALL'}
                 components={{ code: <code className="rounded bg-muted px-1 font-mono text-xs" /> }}
               />
-            </p>
-          ) : null}
-          {hostListenerReachable === true ? (
-            <p className="text-sm text-muted-foreground mb-4" data-testid="host-listener-ready">
-              {t('SETTINGS_ACTIONS_HOST_LISTENER_READY')}
-            </p>
-          ) : null}
-          {shellRestart?.restartRequired ? (
-            <div data-testid="desktop-restart-required">
-              <p className="text-sm mb-2">
-                {shellRestart.installedVersion
-                  ? t('SETTINGS_ACTIONS_SHELL_RESTART_REQUIRED', { installed: shellRestart.installedVersion, running: shellRestart.runningVersion })
-                  : t('SETTINGS_ACTIONS_SHELL_RESTART_REQUIRED_UNKNOWN_VERSION', { running: shellRestart.runningVersion })}
+            </CardDescription>
+          </CardHeader>
+        </Card>
+      ) : desktopWindow || hostListener !== undefined ? (
+        <Card data-testid="desktop-shell-update-card">
+          <CardHeader>
+            <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_SHELL_UPDATE_TITLE')}</CardTitle>
+            <CardDescription>
+              {installedShellVersion
+                ? t('SETTINGS_ACTIONS_SHELL_UPDATE_SUBTITLE_WITH_VERSION', { version: installedShellVersion })
+                : t('SETTINGS_ACTIONS_SHELL_UPDATE_SUBTITLE')}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {/* The Hub can't reach the listener of any desktop app up to 0.2.77, running or not, so in the
+                desktop window it is no sign the app is down. A browser can say where to update instead.
+                It says so when the listener answers too: a browser's update leaves the app out unless
+                only the app can update this Hub (#2316). */}
+            {!desktopWindow && (hostListenerReachable === false || (hostListenerReachable === true && !browserUpdateUsesDesktopApp)) ? (
+              <p className="text-sm text-muted-foreground mb-4" data-testid="host-listener-unavailable">
+                <Trans
+                  i18nKey="SETTINGS_ACTIONS_HOST_LISTENER_UNAVAILABLE"
+                  components={{ code: <code className="rounded bg-muted px-1 font-mono text-xs" /> }}
+                />
               </p>
-              <p className="text-sm text-muted-foreground mb-3">{t('SETTINGS_ACTIONS_SHELL_RESTART_HUB_NOTE')}</p>
-              <Button onClick={handleShellRestart} disabled={restartingShell} data-testid="desktop-restart-btn">
-                {restartingShell ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                    {t('SETTINGS_ACTIONS_SHELL_RESTARTING')}
-                  </>
-                ) : (
-                  t('SETTINGS_ACTIONS_SHELL_RESTART_BUTTON')
-                )}
-              </Button>
-            </div>
-          ) : shellUpdate?.downloadUrl && desktopWindow && shellUpdate.updateAvailable ? (
-            renderShellInstall(shellUpdate)
-          ) : shellUpdate?.downloadUrl ? (
-            <>
-              {shellVersion && !shellUpdate.updateAvailable ? (
-                <p className="text-sm text-muted-foreground mb-3">{t('SETTINGS_ACTIONS_SHELL_UP_TO_DATE')}</p>
-              ) : null}
-              <Button onClick={handleShellUpdate} disabled={updatingShell} data-testid="hub-shell-update-btn">
-                {updatingShell ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                    {t('SETTINGS_ACTIONS_CHECKING')}
-                  </>
-                ) : (
-                  t('SETTINGS_ACTIONS_DOWNLOAD_INSTALLER_VERSION', { version: shellUpdate.latestVersion })
-                )}
-              </Button>
-              {shellMessage ? <p className="mt-3 text-sm text-muted-foreground">{shellMessage}</p> : null}
-              {renderManualUpdateInstructions()}
-            </>
-          ) : (
-            <p className="text-sm text-muted-foreground">
-              {shellVersion && !shellUpdate?.updateAvailable ? t('SETTINGS_ACTIONS_SHELL_UP_TO_DATE') : t('SETTINGS_ACTIONS_UPDATE_NO_DOWNLOAD_URL')}
-            </p>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_UPDATE_REPO_TITLE')}</CardTitle>
-          <CardDescription>{t('SETTINGS_ACTIONS_UPDATE_REPO_SUBTITLE')}</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <UpdateRepoModal />
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <Wand2 className="h-5 w-5 shrink-0 text-muted-foreground" />
-            <CardTitle className="text-xl">{t('SETTINGS_WIZARD_TITLE')}</CardTitle>
-          </div>
-          <CardDescription>{t('SETTINGS_WIZARD_SUBTITLE')}</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Button onClick={handleRestartWizard} disabled={demoMode || restartingWizard} data-testid="restart-wizard-btn">
-            {restartingWizard ? (
+            ) : null}
+            {hostListenerReachable === true && (desktopWindow || browserUpdateUsesDesktopApp) ? (
+              <p className="text-sm text-muted-foreground mb-4" data-testid="host-listener-ready">
+                {t('SETTINGS_ACTIONS_HOST_LISTENER_READY')}
+              </p>
+            ) : null}
+            {shellRestart?.restartRequired ? (
+              <div data-testid="desktop-restart-required">
+                <p className="text-sm mb-2">
+                  {shellRestart.installedVersion
+                    ? t('SETTINGS_ACTIONS_SHELL_RESTART_REQUIRED', { installed: shellRestart.installedVersion, running: shellRestart.runningVersion })
+                    : t('SETTINGS_ACTIONS_SHELL_RESTART_REQUIRED_UNKNOWN_VERSION', { running: shellRestart.runningVersion })}
+                </p>
+                <p className="text-sm text-muted-foreground mb-3">{t('SETTINGS_ACTIONS_SHELL_RESTART_HUB_NOTE')}</p>
+                <Button onClick={handleShellRestart} disabled={restartingShell} data-testid="desktop-restart-btn">
+                  {restartingShell ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                      {t('SETTINGS_ACTIONS_SHELL_RESTARTING')}
+                    </>
+                  ) : (
+                    t('SETTINGS_ACTIONS_SHELL_RESTART_BUTTON')
+                  )}
+                </Button>
+              </div>
+            ) : shellUpdate?.downloadUrl && desktopWindow && shellUpdate.updateAvailable ? (
+              renderShellInstall(shellUpdate)
+            ) : shellUpdate?.downloadUrl ? (
               <>
-                <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                {t('SETTINGS_WIZARD_RESTARTING')}
+                {shellVersion && !shellUpdate.updateAvailable ? (
+                  <p className="text-sm text-muted-foreground mb-3">{t('SETTINGS_ACTIONS_SHELL_UP_TO_DATE')}</p>
+                ) : null}
+                <Button onClick={handleShellUpdate} disabled={updatingShell} data-testid="hub-shell-update-btn">
+                  {updatingShell ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                      {t('SETTINGS_ACTIONS_CHECKING')}
+                    </>
+                  ) : (
+                    t('SETTINGS_ACTIONS_DOWNLOAD_INSTALLER_VERSION', { version: shellUpdate.latestVersion })
+                  )}
+                </Button>
+                {shellMessage ? <p className="mt-3 text-sm text-muted-foreground">{shellMessage}</p> : null}
+                {renderManualUpdateInstructions()}
               </>
+            ) : desktopWindow && shellUpdate?.updateAvailable ? (
+              // A newer version with no installer in the format this computer installs, as on a distro
+              // the desktop app can't place. Another format would install a second copy or not at all,
+              // so the card sends people to the download page instead.
+              <div data-testid="desktop-update-no-installer">
+                <p className="text-sm mb-3">{t('SETTINGS_ACTIONS_SHELL_UPDATE_NO_INSTALLER', { version: shellUpdate.latestVersion })}</p>
+                <Button
+                  variant="outline"
+                  onClick={() => void openDesktopDownloadPage(shellUpdate.latestVersion)}
+                  data-testid="desktop-download-page-btn"
+                >
+                  {t('SETTINGS_ACTIONS_SHELL_OPEN_DOWNLOAD_PAGE')}
+                </Button>
+              </div>
             ) : (
-              t('SETTINGS_WIZARD_RESTART_BUTTON')
+              // No installer to offer here, so the up-to-date line can't say there is one to download. Only
+              // a check that answered can call the app up to date: none has while it runs or after it failed.
+              <p className="text-sm text-muted-foreground">
+                {shellVersion && shellUpdate && !shellUpdate.updateAvailable
+                  ? t('SETTINGS_ACTIONS_SHELL_UP_TO_DATE_NO_DOWNLOAD')
+                  : t('SETTINGS_ACTIONS_UPDATE_NO_DOWNLOAD_URL')}
+              </p>
             )}
-          </Button>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      ) : null}
 
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <TriangleAlert className="h-5 w-5 shrink-0 text-destructive" />
-            <CardTitle className="text-xl">{t('SETTINGS_FACTORY_RESET_TITLE')}</CardTitle>
-          </div>
-          <CardDescription>{t('SETTINGS_FACTORY_RESET_SUBTITLE')}</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground mb-4">{t('SETTINGS_FACTORY_RESET_DESCRIPTION')}</p>
-          <Button
-            intent="danger"
-            variant="outline"
-            disabled={demoMode}
-            onClick={() => setFactoryResetDialogOpen(true)}
-            data-testid="factory-reset-btn"
-          >
-            {t('SETTINGS_FACTORY_RESET_BUTTON')}
-          </Button>
-        </CardContent>
-      </Card>
+      {manageHub && (
+        <>
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_UPDATE_REPO_TITLE')}</CardTitle>
+              <CardDescription>{t('SETTINGS_ACTIONS_UPDATE_REPO_SUBTITLE')}</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <UpdateRepoModal />
+            </CardContent>
+          </Card>
 
-      <Dialog open={factoryResetOpen} onOpenChange={setFactoryResetDialogOpen}>
-        <DialogContent type="danger" size="sm">
-          <DialogHeader>
-            <DialogTitle>{t('SETTINGS_FACTORY_RESET_DIALOG_TITLE')}</DialogTitle>
-          </DialogHeader>
-          <DialogDescription className="space-y-4 py-2">
-            <p>{t('SETTINGS_FACTORY_RESET_DIALOG_BODY')}</p>
-            <div className="space-y-3 text-left">
-              {deviceName ? (
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-2">
+                <Wand2 className="h-5 w-5 shrink-0 text-muted-foreground" />
+                <CardTitle className="text-xl">{t('SETTINGS_WIZARD_TITLE')}</CardTitle>
+              </div>
+              <CardDescription>{t('SETTINGS_WIZARD_SUBTITLE')}</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Button variant="outline" onClick={handleRestartWizard} disabled={demoMode || restartingWizard} data-testid="restart-wizard-btn">
+                {restartingWizard ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                    {t('SETTINGS_WIZARD_RESTARTING')}
+                  </>
+                ) : (
+                  t('SETTINGS_WIZARD_RESTART_BUTTON')
+                )}
+              </Button>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-2">
+                <TriangleAlert className="h-5 w-5 shrink-0 text-destructive" />
+                <CardTitle className="text-xl">{t('SETTINGS_FACTORY_RESET_TITLE')}</CardTitle>
+              </div>
+              <CardDescription>{t('SETTINGS_FACTORY_RESET_SUBTITLE')}</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-muted-foreground mb-4">{t('SETTINGS_FACTORY_RESET_DESCRIPTION')}</p>
+              <Button
+                intent="danger"
+                variant="outline"
+                disabled={demoMode}
+                onClick={() => setFactoryResetDialogOpen(true)}
+                data-testid="factory-reset-btn"
+              >
+                {t('SETTINGS_FACTORY_RESET_BUTTON')}
+              </Button>
+            </CardContent>
+          </Card>
+
+          <Dialog open={factoryResetOpen} onOpenChange={setFactoryResetDialogOpen}>
+            <DialogContent type="danger" size="sm">
+              <DialogHeader>
+                <DialogTitle>{t('SETTINGS_FACTORY_RESET_DIALOG_TITLE')}</DialogTitle>
+              </DialogHeader>
+              {factoryResetPortalAppsLeft ? (
                 <>
-                  <label htmlFor="factory-reset-confirmation" className="block text-sm font-medium">
-                    {t('SETTINGS_FACTORY_RESET_CONFIRMATION_LABEL', { phrase: deviceName })}
-                  </label>
-                  <Input
-                    id="factory-reset-confirmation"
-                    value={factoryResetPhrase}
-                    onChange={(event) => setFactoryResetPhrase(event.target.value)}
-                    autoComplete="off"
-                    data-testid="factory-reset-confirmation-input"
-                  />
+                  <DialogDescription className="py-2">
+                    <span role="alert" data-testid="factory-reset-portal-apps-left">
+                      {t('SETTINGS_FACTORY_RESET_PORTAL_APPS_LEFT')}
+                    </span>
+                  </DialogDescription>
+                  <DialogFooter>
+                    <Button onClick={() => setFactoryResetDialogOpen(false)} data-testid="factory-reset-continue-btn">
+                      {t('SETTINGS_FACTORY_RESET_CONTINUE')}
+                    </Button>
+                  </DialogFooter>
                 </>
               ) : (
-                <p data-testid="factory-reset-no-device-name">{t('SETTINGS_FACTORY_RESET_NO_DEVICE_NAME')}</p>
+                <>
+                  <DialogDescription className="space-y-4 py-2">
+                    <p>{t('SETTINGS_FACTORY_RESET_DIALOG_BODY')}</p>
+                    {deviceName && !factoryResetRemovePortalApps ? (
+                      <p data-testid="factory-reset-portal-apps-kept">{t('SETTINGS_FACTORY_RESET_PORTAL_APPS_KEPT')}</p>
+                    ) : null}
+                    <div className="space-y-3 text-left">
+                      {deviceName ? (
+                        <>
+                          <label htmlFor="factory-reset-confirmation" className="block text-sm font-medium">
+                            {t('SETTINGS_FACTORY_RESET_CONFIRMATION_LABEL', { phrase: deviceName })}
+                          </label>
+                          <Input
+                            id="factory-reset-confirmation"
+                            value={factoryResetPhrase}
+                            onChange={(event) => setFactoryResetPhrase(event.target.value)}
+                            autoComplete="off"
+                            data-testid="factory-reset-confirmation-input"
+                          />
+                          <div className="space-y-1">
+                            <Checkbox
+                              name="factory-reset-remove-portal-apps"
+                              checked={factoryResetRemovePortalApps}
+                              onCheckedChange={(checked) => setFactoryResetRemovePortalApps(checked === true)}
+                              label={t('SETTINGS_FACTORY_RESET_REMOVE_PORTAL_APPS')}
+                            />
+                            <p className="pl-6 text-xs text-muted-foreground">{t('SETTINGS_FACTORY_RESET_REMOVE_PORTAL_APPS_HINT')}</p>
+                          </div>
+                        </>
+                      ) : (
+                        <p data-testid="factory-reset-no-device-name">{t('SETTINGS_FACTORY_RESET_NO_DEVICE_NAME')}</p>
+                      )}
+                    </div>
+                  </DialogDescription>
+                  <DialogFooter>
+                    <Button variant="ghost" onClick={() => setFactoryResetDialogOpen(false)} disabled={factoryResetting}>
+                      {t('COMMON_CANCEL')}
+                    </Button>
+                    <Button
+                      intent="danger"
+                      loading={factoryResetting}
+                      disabled={!deviceName || factoryResetPhrase.trim() !== deviceName}
+                      onClick={handleFactoryReset}
+                      data-testid="factory-reset-confirm-btn"
+                    >
+                      {t('SETTINGS_FACTORY_RESET_BUTTON')}
+                    </Button>
+                  </DialogFooter>
+                </>
               )}
-            </div>
-          </DialogDescription>
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setFactoryResetDialogOpen(false)} disabled={factoryResetting}>
-              {t('COMMON_CANCEL')}
-            </Button>
-            <Button
-              intent="danger"
-              loading={factoryResetting}
-              disabled={!deviceName || factoryResetPhrase.trim() !== deviceName}
-              onClick={handleFactoryReset}
-              data-testid="factory-reset-confirm-btn"
-            >
-              {t('SETTINGS_FACTORY_RESET_BUTTON')}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            </DialogContent>
+          </Dialog>
+        </>
+      )}
 
       {usesCloudConnect() && (
         <Card>

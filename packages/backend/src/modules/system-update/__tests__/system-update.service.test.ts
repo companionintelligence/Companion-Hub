@@ -4,7 +4,13 @@ import { HUB_STACK_IMAGE_REPO, HUB_STACK_REGISTRY_REPO } from '@/common/constant
 import { resolveHostListenerBaseUrl, SystemUpdateService } from '../system-update.service';
 import { ENV_RESTORE_VARIABLE } from '../stack-updater';
 import type { DockerContainerInspect } from '../hub-deployment';
-import { core14HybridCheckout, core3EnvLabelDiffersFromMount, core4SourceCheckout, core6Appliance } from './fleet-hub-inspect.fixtures';
+import {
+  core14HybridCheckout,
+  core3EnvLabelDiffersFromMount,
+  core4SourceCheckout,
+  core6Appliance,
+  windowsDesktopWslEngine,
+} from './fleet-hub-inspect.fixtures';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import axios from 'axios';
@@ -29,6 +35,7 @@ vi.mock('node:fs', () => ({
     appendFileSync: vi.fn(),
     openSync: vi.fn(() => 3),
     fstatSync: vi.fn(),
+    lstatSync: vi.fn(),
     closeSync: vi.fn(),
     constants: { O_RDONLY: 0, O_NOFOLLOW: 0o400000, O_NONBLOCK: 0o4000 },
     promises: { writeFile: vi.fn() },
@@ -172,11 +179,178 @@ describe('SystemUpdateService', () => {
       expect(result).toMatchObject({ latest: '0.2.71', updateAvailable: true, updateBlockedReason: null });
     });
 
+    // The daily check never hands the update to the desktop app, so on a Windows desktop install it
+    // skips every day. Settings needs that answer too, or the Auto-update switch looks like it works.
+    it('says the daily auto-update cannot move a Windows desktop install, even when the desktop app will', async () => {
+      insideHubContainer(`CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:0.3.4\nCI_HUB_VERSION=0.3.4\n`);
+      withListenerToken();
+      vi.mocked(fs.readFileSync).mockImplementation(((target: unknown) =>
+        String(target) === '/data/.env' ? `CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:0.3.4\n` : 'listener-token\n') as never);
+      vi.mocked(axios.get).mockResolvedValue({ status: 200 });
+      await installDocker(windowsDesktopWslEngine());
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.3.5']);
+
+      const result = await service.checkForUpdates();
+
+      expect(result).toMatchObject({ latest: '0.3.5', updateAvailable: true, updateBlockedReason: null });
+      expect(result.autoUpdateBlockedReason).toContain('started on Windows');
+    });
+
+    it('blocks both when the desktop listener does not answer', async () => {
+      insideHubContainer(`CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:0.3.4\nCI_HUB_VERSION=0.3.4\n`);
+      await installDocker(windowsDesktopWslEngine());
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.3.5']);
+
+      const result = await service.checkForUpdates();
+
+      expect(result.updateAvailable).toBe(false);
+      expect(result.updateBlockedReason).toContain('started on Windows');
+      expect(result.autoUpdateBlockedReason).toBe(result.updateBlockedReason);
+    });
+
+    it('leaves the auto-update unblocked where the updater container can reproduce the stack', async () => {
+      insideHubContainer(PINNED_ENV);
+      await installDocker(core6Appliance(RELEASE_PIN));
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+
+      const result = await service.checkForUpdates();
+
+      expect(result).toMatchObject({ updateBlockedReason: null, autoUpdateBlockedReason: null, desktopAppUpdatesHub: false });
+    });
+
+    it('still wakes agents when an update is available', async () => {
+      const agentNotifyService = { notify: vi.fn().mockResolvedValue(true) };
+      service = new SystemUpdateService(mockLogger as never, mockConfig as never, mockRegistryService as never, agentNotifyService as never);
+      insideHubContainer(PINNED_ENV);
+      await installDocker(core6Appliance(RELEASE_PIN));
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+
+      await service.checkForUpdates();
+
+      expect(agentNotifyService.notify).toHaveBeenCalledWith('system.update_available', { current: '0.2.70', latest: '0.2.71' }, 'low');
+    });
+
+    // An agent that looks into the wake with hub_check_for_updates runs this same check.
+    it('wakes agents once per release, not on every check', async () => {
+      const agentNotifyService = { notify: vi.fn().mockResolvedValue(true) };
+      service = new SystemUpdateService(mockLogger as never, mockConfig as never, mockRegistryService as never, agentNotifyService as never);
+      insideHubContainer(PINNED_ENV);
+      await installDocker(core6Appliance(RELEASE_PIN));
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+
+      await service.checkForUpdates();
+      await service.checkForUpdates();
+
+      expect(agentNotifyService.notify).toHaveBeenCalledTimes(1);
+
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71', '0.2.72']);
+      await service.checkForUpdates();
+
+      expect(agentNotifyService.notify).toHaveBeenCalledTimes(2);
+      expect(agentNotifyService.notify).toHaveBeenLastCalledWith('system.update_available', { current: '0.2.70', latest: '0.2.72' }, 'low');
+    });
+
+    it('does not wake agents about an older release when the registry briefly lists fewer tags', async () => {
+      const agentNotifyService = { notify: vi.fn().mockResolvedValue(true) };
+      service = new SystemUpdateService(mockLogger as never, mockConfig as never, mockRegistryService as never, agentNotifyService as never);
+      insideHubContainer(PINNED_ENV);
+      await installDocker(core6Appliance(RELEASE_PIN));
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71', '0.2.72']);
+
+      await service.checkForUpdates();
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+      await service.checkForUpdates();
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71', '0.2.72']);
+      await service.checkForUpdates();
+
+      expect(agentNotifyService.notify).toHaveBeenCalledTimes(1);
+      expect(agentNotifyService.notify).toHaveBeenCalledWith('system.update_available', { current: '0.2.70', latest: '0.2.72' }, 'low');
+    });
+
+    it('tries the same release again when sending the wake failed outright', async () => {
+      const agentNotifyService = { notify: vi.fn().mockRejectedValueOnce(new Error('boom')).mockResolvedValue(true) };
+      service = new SystemUpdateService(mockLogger as never, mockConfig as never, mockRegistryService as never, agentNotifyService as never);
+      insideHubContainer(PINNED_ENV);
+      await installDocker(core6Appliance(RELEASE_PIN));
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+
+      await service.checkForUpdates();
+      await service.checkForUpdates();
+
+      expect(agentNotifyService.notify).toHaveBeenCalledTimes(2);
+    });
+
+    // Checked before an agent was installed, or while it was down: the release was never heard.
+    it('wakes agents about the same release again when no agent heard it', async () => {
+      const agentNotifyService = { notify: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true) };
+      service = new SystemUpdateService(mockLogger as never, mockConfig as never, mockRegistryService as never, agentNotifyService as never);
+      insideHubContainer(PINNED_ENV);
+      await installDocker(core6Appliance(RELEASE_PIN));
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+
+      await service.checkForUpdates();
+      await service.checkForUpdates();
+      await service.checkForUpdates();
+
+      expect(agentNotifyService.notify).toHaveBeenCalledTimes(2);
+      expect(agentNotifyService.notify).toHaveBeenLastCalledWith('system.update_available', { current: '0.2.70', latest: '0.2.71' }, 'low');
+    });
+
     it('says the build is unknown outside a container instead of reporting CI_HUB_VERSION', async () => {
       const result = await service.checkForUpdates();
 
       expect(result).toMatchObject({ current: 'unknown', updateAvailable: false, build: null });
       expect(result.updateBlockedReason).toContain('not running in a container');
+    });
+  });
+
+  // Settings asks this on every visit. Before it existed the page called `check`, which looked up the
+  // registry and woke every connected agent with system.update_available each time.
+  describe('getUpdateBlocks', () => {
+    it('answers for a Windows desktop install without the registry and without waking agents', async () => {
+      const agentNotifyService = { notify: vi.fn().mockResolvedValue(true) };
+      service = new SystemUpdateService(mockLogger as never, mockConfig as never, mockRegistryService as never, agentNotifyService as never);
+      insideHubContainer(`CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:0.3.4\nCI_HUB_VERSION=0.3.4\n`);
+      await installDocker(windowsDesktopWslEngine());
+
+      const blocks = await service.getUpdateBlocks();
+
+      expect(blocks.updateBlockedReason).toContain('started on Windows');
+      expect(blocks.autoUpdateBlockedReason).toBe(blocks.updateBlockedReason);
+      expect(blocks.desktopAppUpdatesHub).toBe(true);
+      expect(mockRegistryService.getTagsSinceWithHubFallback).not.toHaveBeenCalled();
+      expect(agentNotifyService.notify).not.toHaveBeenCalled();
+    });
+
+    it('lets the desktop listener take a Windows install, and keeps the daily answer', async () => {
+      insideHubContainer(`CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:0.3.4\nCI_HUB_VERSION=0.3.4\n`);
+      withListenerToken();
+      vi.mocked(fs.readFileSync).mockImplementation(((target: unknown) =>
+        String(target) === '/data/.env' ? `CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:0.3.4\n` : 'listener-token\n') as never);
+      vi.mocked(axios.get).mockResolvedValue({ status: 200 });
+      await installDocker(windowsDesktopWslEngine());
+
+      const blocks = await service.getUpdateBlocks();
+
+      expect(blocks).toMatchObject({ updateBlockedReason: null, desktopAppUpdatesHub: true });
+      expect(blocks.autoUpdateBlockedReason).toContain('started on Windows');
+    });
+
+    it('does not credit the desktop app for a block it has nothing to do with', async () => {
+      insideHubContainer(`CI_HUB_IMAGE=${DEV_CHANNEL}\n`);
+      await installDocker(core6Appliance(DEV_CHANNEL));
+
+      const blocks = await service.getUpdateBlocks();
+
+      expect(blocks.updateBlockedReason).toContain("floating 'dev' tag");
+      expect(blocks.desktopAppUpdatesHub).toBe(false);
+    });
+
+    it('refuses everything outside a container', async () => {
+      const blocks = await service.getUpdateBlocks();
+
+      expect(blocks.updateBlockedReason).toContain('not running in a container');
+      expect(blocks).toMatchObject({ autoUpdateBlockedReason: blocks.updateBlockedReason, desktopAppUpdatesHub: false });
     });
   });
 
@@ -303,6 +477,48 @@ describe('SystemUpdateService', () => {
       expect(vi.mocked(fs.writeFileSync).mock.calls.at(-1)?.[1]).toBe(PINNED_ENV);
     });
 
+    // Companion-Hub#884: an env file with no broker password recreated the Hub through the older
+    // compose's `:-admin` fallback, moving a Hub that ran on a strong password back onto `admin`.
+    it.each([
+      ['no broker password', PINNED_ENV],
+      ['the shared default', `${PINNED_ENV}RABBITMQ_PASSWORD=admin\n`],
+    ])('writes the broker password this Hub runs with to an env file that has %s', async (_case, envContent) => {
+      vi.stubEnv('RABBITMQ_PASSWORD', 'running-broker-password');
+      insideHubContainer(envContent);
+      const calls = await installDocker(core6Appliance(RELEASE_PIN));
+
+      await service.performUpdate('0.2.71');
+
+      const written = vi.mocked(fs.writeFileSync).mock.calls.at(-1)?.[1] as string;
+      expect(written).toMatch(/^RABBITMQ_PASSWORD=running-broker-password$/m);
+      expect(written).not.toMatch(/^RABBITMQ_PASSWORD=admin$/m);
+      // The value travels in the env file, never in the helper's argv.
+      const runArgs = calls.find((call) => call[1][0] === 'run')?.[1] ?? [];
+      expect(runArgs.join(' ')).not.toContain('running-broker-password');
+    });
+
+    it('keeps a strong broker password the env file already has', async () => {
+      vi.stubEnv('RABBITMQ_PASSWORD', 'running-broker-password');
+      insideHubContainer(`${PINNED_ENV}RABBITMQ_PASSWORD=file-broker-password\n`);
+      await installDocker(core6Appliance(RELEASE_PIN));
+
+      await service.performUpdate('0.2.71');
+
+      const written = vi.mocked(fs.writeFileSync).mock.calls.at(-1)?.[1] as string;
+      expect(written).toMatch(/^RABBITMQ_PASSWORD=file-broker-password$/m);
+      expect(written).not.toContain('running-broker-password');
+    });
+
+    it('never writes the shared default from a Hub that runs on it', async () => {
+      vi.stubEnv('RABBITMQ_PASSWORD', 'admin');
+      insideHubContainer(PINNED_ENV);
+      await installDocker(core6Appliance(RELEASE_PIN));
+
+      await service.performUpdate('0.2.71');
+
+      expect(vi.mocked(fs.writeFileSync).mock.calls.at(-1)?.[1]).not.toContain('RABBITMQ_PASSWORD');
+    });
+
     it('leaves the env file alone when the pull fails', async () => {
       insideHubContainer(PINNED_ENV);
       await installDocker(core6Appliance(RELEASE_PIN), { failing: 'pull' });
@@ -364,6 +580,81 @@ describe('SystemUpdateService', () => {
       expect(vi.mocked(fs.writeFileSync).mock.calls.at(-1)?.[1]).toContain(`CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:0.2.71`);
     });
 
+    // A browser on another computer asks for the Hub image only (#2316), except where nothing else can
+    // update the Hub because the updater container can't reproduce its stack.
+    describe('from a browser (Hub image only unless the desktop app is the only way)', () => {
+      const browser = { includeDesktopApp: false, desktopAppWhenOnlyWay: true };
+
+      it('updates the Hub image without asking the desktop app when the stack can be reproduced', async () => {
+        insideHubContainer(PINNED_ENV);
+        withListenerToken();
+        vi.mocked(fs.readFileSync).mockImplementation(((target: unknown) =>
+          String(target) === '/data/.env' ? PINNED_ENV : 'listener-token\n') as never);
+        vi.mocked(axios.get).mockResolvedValue({ status: 200 });
+        vi.mocked(axios.post).mockResolvedValue({ status: 200 });
+        await installDocker(core6Appliance(RELEASE_PIN));
+
+        const result = await service.performUpdate('0.2.71', browser);
+
+        expect(result).toEqual({ success: true, message: 'Update initiated, hub will restart shortly', stack: 'updating', host: 'skipped' });
+        expect(axios.get).not.toHaveBeenCalled();
+        expect(axios.post).not.toHaveBeenCalled();
+      });
+
+      it('hands a Windows install to its desktop app', async () => {
+        const env = `CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:0.3.4\nCI_HUB_VERSION=0.3.4\n`;
+        insideHubContainer(env);
+        withListenerToken();
+        vi.mocked(fs.readFileSync).mockImplementation(((target: unknown) => (String(target) === '/data/.env' ? env : 'listener-token\n')) as never);
+        vi.mocked(axios.get).mockResolvedValue({ status: 200 });
+        vi.mocked(axios.post).mockResolvedValue({ status: 200 });
+        await installDocker(windowsDesktopWslEngine());
+
+        const result = await service.performUpdate('0.3.5', browser);
+
+        expect(result).toEqual({ success: true, message: 'Update initiated, hub will restart shortly', stack: 'skipped', host: 'started' });
+        expect(axios.post).toHaveBeenCalledWith(expect.stringMatching(/\/update$/), null, expect.anything());
+      });
+
+      it('still refuses a Windows install for the daily check, which never asks the desktop app', async () => {
+        const env = `CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:0.3.4\nCI_HUB_VERSION=0.3.4\n`;
+        insideHubContainer(env);
+        withListenerToken();
+        vi.mocked(fs.readFileSync).mockImplementation(((target: unknown) => (String(target) === '/data/.env' ? env : 'listener-token\n')) as never);
+        vi.mocked(axios.get).mockResolvedValue({ status: 200 });
+        vi.mocked(axios.post).mockResolvedValue({ status: 200 });
+        await installDocker(windowsDesktopWslEngine());
+
+        await expect(service.performUpdate('0.3.5', { includeDesktopApp: false })).rejects.toThrow(ConflictException);
+        expect(axios.post).not.toHaveBeenCalled();
+      });
+
+      // core-3's layout: the updater can't pin the env file compose reads, so only the desktop app can
+      // update it. A browser still gets that, and the page says a password may be asked on the machine.
+      it('hands a Linux stack the updater cannot reproduce to the desktop app', async () => {
+        insideHubContainer(PINNED_ENV);
+        withListenerToken();
+        vi.mocked(fs.readFileSync).mockImplementation(((target: unknown) =>
+          String(target) === '/data/.env' ? PINNED_ENV : 'listener-token\n') as never);
+        vi.mocked(axios.get).mockResolvedValue({ status: 200 });
+        vi.mocked(axios.post).mockResolvedValue({ status: 200 });
+        await installDocker(core3EnvLabelDiffersFromMount(RELEASE_PIN));
+
+        const result = await service.performUpdate('0.2.71', browser);
+
+        expect(result).toEqual({ success: true, message: 'Update initiated, hub will restart shortly', stack: 'skipped', host: 'started' });
+        expect(axios.post).toHaveBeenCalledWith(expect.stringMatching(/\/update$/), null, expect.anything());
+      });
+
+      it('still refuses that stack when the desktop app does not answer', async () => {
+        insideHubContainer(PINNED_ENV);
+        await installDocker(core3EnvLabelDiffersFromMount(RELEASE_PIN));
+
+        await expect(service.performUpdate('0.2.71', browser)).rejects.toThrow(ConflictException);
+        expect(axios.post).not.toHaveBeenCalled();
+      });
+    });
+
     it('puts the pin back when the listener fails and the stack cannot be reproduced either', async () => {
       const container = core6Appliance(RELEASE_PIN);
       container.Config = { ...container.Config, Labels: { 'org.opencontainers.image.version': 'latest' } };
@@ -385,7 +676,7 @@ describe('SystemUpdateService', () => {
       vi.mocked(axios.get).mockRejectedValue(new Error('timeout'));
 
       await expect(service.probeHostListener()).resolves.toBe(false);
-      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false });
+      await expect(service.getHostListenerStatus()).resolves.toMatchObject({ reachable: false });
       expect(axios.get).toHaveBeenCalledWith(expect.stringMatching(/\/health$/), expect.anything());
     });
   });
@@ -546,6 +837,10 @@ describe('SystemUpdateService', () => {
     function withFiles(files: Record<string, string>) {
       const openFiles = new Map<number, string>();
       openFlags.clear();
+      vi.mocked(fs.lstatSync).mockImplementation(((target: unknown) => {
+        if (files[String(target)] === undefined) throw Object.assign(new Error(`ENOENT: ${String(target)}`), { code: 'ENOENT' });
+        return {};
+      }) as never);
       vi.mocked(fs.openSync).mockImplementation(((target: unknown, flags: unknown) => {
         openFlags.set(String(target), Number(flags));
         const entry = files[String(target)];
@@ -580,28 +875,41 @@ describe('SystemUpdateService', () => {
     it('reaches the listener with the token the desktop app keeps in state/', async () => {
       withFiles({ [STATE_TOKEN]: 'state-token\n' });
 
-      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: true });
+      await expect(service.getHostListenerStatus()).resolves.toMatchObject({ reachable: true });
       expectSentToken('state-token');
     });
 
     it('prefers state/ over a token an older desktop build left at the data folder root', async () => {
       withFiles({ [STATE_TOKEN]: 'state-token\n', [ROOT_TOKEN]: 'legacy-token\n' });
 
-      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: true });
+      await expect(service.getHostListenerStatus()).resolves.toMatchObject({ reachable: true });
       expectSentToken('state-token');
     });
 
     it('falls back to the data folder root, where older desktop builds wrote the token', async () => {
       withFiles({ [ROOT_TOKEN]: 'legacy-token\n' });
 
-      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: true });
+      await expect(service.getHostListenerStatus()).resolves.toMatchObject({ reachable: true });
       expectSentToken('legacy-token');
+    });
+
+    it('says this Hub has no desktop app when neither token file exists', async () => {
+      withFiles({});
+
+      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false, desktopApp: false });
+    });
+
+    it('says a desktop app runs this Hub when its token is there, even while the app is closed', async () => {
+      withFiles({ [STATE_TOKEN]: 'state-token\n' });
+      vi.mocked(axios.get).mockRejectedValue(new Error('connect ECONNREFUSED'));
+
+      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false, desktopApp: true });
     });
 
     it('reports the listener unreachable, without calling it, when neither file exists', async () => {
       withFiles({});
 
-      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false });
+      await expect(service.getHostListenerStatus()).resolves.toMatchObject({ reachable: false });
       expect(axios.get).not.toHaveBeenCalled();
     });
 
@@ -610,7 +918,7 @@ describe('SystemUpdateService', () => {
     it('does not follow a symlink in place of the token', async () => {
       withFiles({ [STATE_TOKEN]: SYMLINK });
 
-      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false });
+      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false, desktopApp: true });
       expect(axios.get).not.toHaveBeenCalled();
     });
 
@@ -618,7 +926,7 @@ describe('SystemUpdateService', () => {
     it('does not wait on a FIFO in place of the token', async () => {
       withFiles({ [STATE_TOKEN]: FIFO });
 
-      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false });
+      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false, desktopApp: true });
       expect((openFlags.get(STATE_TOKEN) ?? 0) & fs.constants.O_NONBLOCK).not.toBe(0);
       expect(axios.get).not.toHaveBeenCalled();
     });
@@ -631,8 +939,49 @@ describe('SystemUpdateService', () => {
     ])('does not send %s as the token', async (_name, entry) => {
       withFiles({ [STATE_TOKEN]: entry });
 
-      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false });
+      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false, desktopApp: true });
       expect(axios.get).not.toHaveBeenCalled();
+    });
+
+    // On the Docker engine inside WSL, host.docker.internal is the WSL VM, where nothing listens on
+    // 17400. The desktop app records the Windows host's address on the WSL adapter (CI-Hub#1934).
+    describe('from inside the Hub container', () => {
+      const STATE_HOST = '/data/state/update-listener.host';
+      const expectCalledAt = (baseUrl: string) => expect(axios.get).toHaveBeenCalledWith(`${baseUrl}/health`, expect.anything());
+
+      beforeEach(() => {
+        vi.mocked(fs.existsSync).mockImplementation((target) => String(target) === '/.dockerenv');
+      });
+
+      it('calls the listener at the Windows host address the desktop app recorded', async () => {
+        withFiles({ [STATE_TOKEN]: 'state-token\n', [STATE_HOST]: '172.27.96.1\n' });
+
+        await expect(service.getHostListenerStatus()).resolves.toMatchObject({ reachable: true });
+        expectCalledAt('http://172.27.96.1:17400');
+      });
+
+      it('calls host.docker.internal when the desktop app recorded no address', async () => {
+        withFiles({ [STATE_TOKEN]: 'state-token\n' });
+
+        await expect(service.getHostListenerStatus()).resolves.toMatchObject({ reachable: true });
+        expectCalledAt('http://host.docker.internal:17400');
+      });
+
+      // Whatever answers at that address gets the token.
+      it.each([
+        ['a host name', 'listener.example.com\n'],
+        ['an address and port', '172.27.96.1:80\n'],
+        ['a public address', '8.8.8.8\n'],
+        ['the cloud metadata address', '169.254.169.254\n'],
+        ['a tailnet address', '100.100.1.1\n'],
+        ['a loopback address', '127.0.0.1\n'],
+        ['a symlink', SYMLINK],
+      ])('sends the token to host.docker.internal, not to %s in the address file', async (_name, entry) => {
+        withFiles({ [STATE_TOKEN]: 'state-token\n', [STATE_HOST]: entry });
+
+        await service.getHostListenerStatus();
+        expectCalledAt('http://host.docker.internal:17400');
+      });
     });
   });
 

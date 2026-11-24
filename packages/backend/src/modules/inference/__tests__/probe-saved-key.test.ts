@@ -26,7 +26,7 @@ import { BackendObserverService } from '../supervision/backend-observer.service'
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
-import { OmlxBackend } from '../backends/omlx.backend';
+import { OMLX_CUDA_HELPER_PAIRING_COMMAND, OMLX_CUDA_HELPER_RUN_COMMAND, OmlxBackend } from '../backends/omlx.backend';
 
 // Only `get` is faked, so every probe the real backends make is recorded with the headers it sent.
 vi.mock('axios', async (importOriginal) => {
@@ -169,6 +169,54 @@ describe('InferenceController — Re-check probes and the saved keys', () => {
       await controller.getOmlxStatus({ url: LISTENER }, 'typed-omlx-key');
 
       expect(modelsProbes()).toEqual([{ url: `${LISTENER}/v1/models`, authorization: 'Bearer typed-omlx-key' }]);
+    });
+  });
+
+  describe('GET omlx/status on an NVIDIA host', () => {
+    // `identity()` in jundot/omlx apps/omlx-cuda-helper/omlx_cuda_helper/discovery.py.
+    const HELPER_IDENTITY = {
+      node_id: '6f1c2a90-1d2b-4b8e-9b55-0d6f8e7c1a42',
+      version: '0.1.3',
+      cluster_name: 'omlx',
+      friendly_name: 'core-1',
+      caps: { chip: '2x NVIDIA RTX A6000', ram_gb: 96.0, backends: ['cuda'], control: 'agent' },
+      control_port: 8851,
+    };
+    const helperProbes = () => get.mock.calls.filter(([url]) => String(url).includes(':8850/'));
+
+    it("hands out the helper's run command, not Homebrew, while the helper is not running", async () => {
+      const status = await controller.getOmlxStatus();
+
+      expect(status.ready).toBe(false);
+      expect(status.remediationCommand).toBe(OMLX_CUDA_HELPER_RUN_COMMAND);
+      expect(status.hint).toContain('Prefill Accelerator helper');
+      // There is no local oMLX to point at, so the note about probing from the container is left out.
+      expect(status.hint).not.toContain('host.docker.internal:8000');
+      expect(status.prefillHelper).toEqual({ running: false });
+      expect(helperProbes()).toHaveLength(1);
+    });
+
+    it('hands out the pairing command once the helper answers on :8850', async () => {
+      get.mockImplementation(async (url: string) =>
+        String(url).endsWith(':8850/api/cluster/node_id') ? { status: 200, data: HELPER_IDENTITY } : { status: 200, data: { data: [] } },
+      );
+
+      const status = await controller.getOmlxStatus();
+
+      expect(status.remediationCommand).toBe(OMLX_CUDA_HELPER_PAIRING_COMMAND);
+      expect(status.hint).toContain('press Pair on "core-1"');
+      expect(status.prefillHelper).toMatchObject({ running: true, version: '0.1.3', chip: '2x NVIDIA RTX A6000' });
+    });
+
+    it('keeps the Homebrew guidance on Apple Silicon, and never asks :8850 there', async () => {
+      hardwareInspector.getProfile.mockResolvedValue({ ...profile, gpu: { ...profile.gpu, vendor: 'apple' } } as HardwareProfile);
+
+      const status = await controller.getOmlxStatus();
+
+      expect(status.remediationCommand).toContain('brew install jundot/omlx/omlx');
+      expect(status.hint).toContain('host.docker.internal:8000');
+      expect(status).not.toHaveProperty('prefillHelper');
+      expect(helperProbes()).toHaveLength(0);
     });
   });
 

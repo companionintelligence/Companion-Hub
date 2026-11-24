@@ -6,6 +6,7 @@ import {
   GRANTED_ACTOR,
   UNGRANTED_CALLERS,
   asGrantedOperator,
+  asKey,
   asManagedKeyOnOtherApp,
   gateChecks,
   lifecycleActorGate,
@@ -46,18 +47,149 @@ describe('AppDiscoveryTools', () => {
   });
 
   describe('hub_list_installed_apps', () => {
-    it('should return array of installed apps with app, info, and metadata fields', async () => {
-      const mockApps = [{ app: { status: 'running' }, info: { name: 'test', urn: 'ci-store:test' }, metadata: { latestVersion: 1 } }];
-      appsService.getInstalledApps.mockResolvedValue(mockApps as any);
+    /** An installed entry as `AppsService.getInstalledApps` returns it, catalog copy included. */
+    const installedEntry = (over: { app?: Record<string, unknown>; info?: Record<string, unknown>; metadata?: Record<string, unknown> } = {}) => ({
+      app: {
+        status: 'running',
+        appName: 'ci-earth',
+        appStoreSlug: 'ci-marketplace',
+        version: 1,
+        ignoredVersion: null,
+        exposureMode: 'local',
+        openPort: true,
+        port: 18803,
+        localSubdomain: 'ci-earth',
+        publicDomain: null,
+        customDomain: null,
+        domain: null,
+        pendingRestart: false,
+        ...over.app,
+      },
+      info: {
+        name: 'Companion Earth',
+        short_desc: 'A globe of your places',
+        version: '1.2.0',
+        no_gui: false,
+        description: 'x'.repeat(4000),
+        form_fields: [{ env_variable: 'APP_ADMIN_PASSWORD', label: 'Admin password', type: 'password' }],
+        privacy: { summary: 'y'.repeat(800) },
+        ...over.info,
+      },
+      metadata: { latestVersion: 1, latestDockerVersion: '1.2.0', appDataDir: '/app-data/ci-marketplace/ci-earth', ...over.metadata },
+    });
+
+    it('returns one short entry per app with the count, leaving out the catalog copy', async () => {
+      appsService.getInstalledApps.mockResolvedValue([installedEntry()] as any);
       const result = await tools.listInstalledApps();
       expect(appsService.getInstalledApps).toHaveBeenCalled();
-      expect(result).toEqual(mockApps);
+      expect(result).toEqual({
+        count: 1,
+        apps: [
+          {
+            appUrn: 'ci-earth:ci-marketplace',
+            name: 'Companion Earth',
+            summary: 'A globe of your places',
+            status: 'running',
+            version: '1.2.0',
+            exposureMode: 'local',
+            port: 18803,
+            localSubdomain: 'ci-earth',
+          },
+        ],
+      });
+      expect(JSON.stringify(result)).not.toContain('Admin password');
+    });
+
+    it('flags a waiting update with the version it would install', async () => {
+      appsService.getInstalledApps.mockResolvedValue([installedEntry({ metadata: { latestDockerVersion: '1.3.0' } })] as any);
+      const result = (await tools.listInstalledApps()) as { apps: Array<Record<string, unknown>> };
+      expect(result.apps[0]).toMatchObject({ updateAvailable: true, latestVersion: '1.3.0' });
+    });
+
+    it('does not flag an update while the app is already updating', async () => {
+      appsService.getInstalledApps.mockResolvedValue([
+        installedEntry({ app: { status: 'updating' }, metadata: { latestDockerVersion: '1.3.0' } }),
+      ] as any);
+      const result = (await tools.listInstalledApps()) as { apps: Array<Record<string, unknown>> };
+      expect(result.apps[0]).not.toHaveProperty('updateAvailable');
+    });
+
+    it('reports public and custom domains, a pending restart and an app without a web page', async () => {
+      appsService.getInstalledApps.mockResolvedValue([
+        installedEntry({
+          app: {
+            exposureMode: 'cloudflare',
+            openPort: false,
+            publicDomain: 'ci-earth-hub.example.pw',
+            customDomain: 'earth.example.com',
+            pendingRestart: true,
+          },
+          info: { no_gui: true },
+        }),
+      ] as any);
+      const result = (await tools.listInstalledApps()) as { apps: Array<Record<string, unknown>> };
+      expect(result.apps[0]).toMatchObject({
+        exposureMode: 'cloudflare',
+        publicDomain: 'ci-earth-hub.example.pw',
+        customDomain: 'earth.example.com',
+        pendingRestart: true,
+        noGui: true,
+      });
+      // The port is not published when openPort is off, so naming it would send the agent to nothing.
+      expect(result.apps[0]).not.toHaveProperty('port');
+    });
+
+    it('returns the full stored records when asked with full: true', async () => {
+      const entries = [installedEntry()];
+      appsService.getInstalledApps.mockResolvedValue(entries as any);
+      await expect(tools.listInstalledApps({ full: true })).resolves.toEqual(entries);
+    });
+
+    describe('the values typed into an app’s settings', () => {
+      const typed = { config: { ADMIN_PASSWORD: 'hunter2' } };
+
+      it('SECURITY: are left out of the full records for another app’s key below full', async () => {
+        appsService.getInstalledApps.mockResolvedValue([installedEntry({ app: typed })] as any);
+
+        const [entry] = (await asManagedKeyOnOtherApp(() => tools.listInstalledApps({ full: true }))) as Array<{ app: Record<string, unknown> }>;
+
+        expect(entry.app).not.toHaveProperty('config');
+        expect(entry.app.appName).toBe('ci-earth');
+        expect(JSON.stringify(entry)).not.toContain('hunter2');
+      });
+
+      it('SECURITY: are left out of hub_get_app for another app’s key below full', async () => {
+        lifecycle.assertActorMay.mockResolvedValue(undefined);
+        appsService.getApp.mockResolvedValue(installedEntry({ app: typed }) as any);
+
+        const result = (await asManagedKeyOnOtherApp(() => tools.getApp({ appUrn: 'ci-earth:ci-marketplace' }), 'read')) as {
+          app: Record<string, unknown>;
+        };
+
+        expect(result.app).not.toHaveProperty('config');
+      });
+
+      it.each([
+        ['another app’s key at full', (call: () => Promise<unknown>) => asManagedKeyOnOtherApp(call, 'full')],
+        [
+          'the app’s own key',
+          (call: () => Promise<unknown>) => asKey({ ownerAppUrn: 'ci-earth:ci-marketplace', createdByUserId: null, capability: 'read' }, call),
+        ],
+        ['a person', (call: () => Promise<unknown>) => asGrantedOperator(call)],
+      ])('stay for %s', async (_label, as) => {
+        lifecycle.assertActorMay.mockResolvedValue(undefined);
+        appsService.getApp.mockResolvedValue(installedEntry({ app: typed }) as any);
+
+        const result = (await as(() => tools.getApp({ appUrn: 'ci-earth:ci-marketplace' }))) as { app: Record<string, unknown> };
+
+        expect(result.app.config).toEqual(typed.config);
+      });
     });
 
     it('should only include apps with a database record', async () => {
       appsService.getInstalledApps.mockResolvedValue([]);
       const result = await tools.listInstalledApps();
-      expect(result).toEqual([]);
+      expect(result).toEqual({ count: 0, apps: [] });
     });
   });
 
@@ -127,6 +259,15 @@ describe('AppDiscoveryTools', () => {
       const result = await asGrantedOperator(() => tools.getComposeDiff({ appUrn: 'ci-store:test' }));
       expect(result.current).toBeNull();
       expect(result.new).toBeNull();
+    });
+
+    // A custom app's compose holds its env values, which are for whoever may change its settings.
+    it('asks for configure on a custom app', async () => {
+      appsService.getAppComposeDiff.mockResolvedValue({ current: '{}', new: null });
+
+      await asGrantedOperator(() => tools.getComposeDiff({ appUrn: 'my-compose:_user' }));
+
+      expect(gateChecks(lifecycle.assertActorMay)).toEqual([[GRANTED_ACTOR, 'my-compose:_user', 'configure', undefined]]);
     });
   });
 

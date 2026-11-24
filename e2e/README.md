@@ -8,7 +8,7 @@ Companion Hub has multiple Playwright lanes. The default config ([`playwright.co
 
 | Lane | Local command | CI workflow | What it covers |
 |------|---------------|-------------|----------------|
-| **Default** | `pnpm test:e2e:ci` | [`e2e.yml`](../.github/workflows/e2e.yml) (release/nightly) | Auth, dashboard, store, lifecycle reconciliation; mock Portal on **4444** |
+| **Default** | `pnpm test:e2e:ci` | [`e2e.yml`](../.github/workflows/e2e.yml) (manual) | Auth, dashboard, store, lifecycle reconciliation; mock Portal on **4444** |
 | **Cross-domain** | `pnpm e2e:cross-domain` | [`e2e-extended.yml`](../.github/workflows/e2e-extended.yml) | Real Portal (wrangler **8012**) + Hub Docker; device registration, Traefik |
 | **Future onboarding** | `pnpm e2e:future:onboarding` | `e2e-extended.yml` | Onboarding AI setup wizard (`e2e/future/onboarding-ai-setup.spec.ts`) |
 | **Platform** | `npx playwright test e2e/platform/` | [`e2e-platform.yml`](../.github/workflows/e2e-platform.yml) | Self-hosted Hub + seeded test app (networking, lifecycle) |
@@ -31,9 +31,9 @@ pnpm e2e:future:onboarding
 
 ### Triggering extended CI
 
-- **Nightly:** `e2e-extended` runs on schedule (3:00 UTC).
-- **Manual:** Actions → **E2E Extended** → **Run workflow**.
-- **PR label:** Add label `e2e-extended` to a pull request to run cross-domain + future onboarding on that branch.
+The E2E workflows are gated to manual runs. `ci-local` comments out their `schedule` and `pull_request` triggers, so the nightly run and the `e2e-extended` PR label do nothing today. Restore the original triggers with `ci-local restore`.
+
+- **Manual:** Actions → **E2E Extended** → **Run workflow**, or `gh workflow run e2e-extended.yml`.
 
 ---
 

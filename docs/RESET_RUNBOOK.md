@@ -29,7 +29,7 @@ cihub up dev --detached
 What it does:
 
 0. Lists the apps and containers it will remove (step 1) before it asks for confirmation. `--dry-run` prints that list and the host data it would delete, including any folder in it that you cannot delete as your user (step 5) and, on an appliance, which files in the tunnel folder are the Hub's (step 4), then stops. If Docker cannot list containers, the reset stops without removing anything: an app with a restart policy would come back with the daemon, against the deleted data.
-1. Removes every installed app: the containers, networks, and named volumes of each compose project labelled `ci-hub.managed=true` or `ci-os-hub.managed=true`. Apps are separate compose projects, so the next step does not reach them, and apps left running keep bind mounts into the deleted data directory and Hub credentials the reset Hub rejects.
+1. Removes every installed app. An app is the compose project named by the `com.docker.compose.project` label of a container labelled `ci-hub.managed=true` or `ci-os-hub.managed=true`. Reset removes the project's containers, networks, and named volumes, including services you added in the app's `user-config` compose file. Apps are separate compose projects, so the next step does not reach them, and apps left running keep bind mounts into the deleted data directory and Hub credentials the reset Hub rejects.
    It also removes any other container attached to the Hub network (`ci-hub_network`, `ci-os-hub_network`, or their underscore spellings) that is not part of the Hub's own compose project. The Hub never installed these, so it has no record of them before or after the reset. Only the container goes; no named volume can be traced to it, and its bind mounts under the data directory go with step 4. On beta-max (2026-09-22) four containers started with `docker run` under Hub-style app names ran on `ci-hub_network` against `app-data/`, invisible to the Hub, which could not stop, expose, or uninstall them.
 2. `docker compose down -v --remove-orphans` — removes Hub containers **and** named volumes such as `ci_hub_pgdata`
 3. Verifies lingering Hub volumes (`ci_hub_pgdata`, `ci_hub_app_data`, `hub_tailscale_state`) and removes any leftovers
@@ -83,7 +83,19 @@ If you cannot delete one of the Hub's files as your user, reset prints a command
 - Requires an **operator** login
 - Requires typing the confirmation phrase: `factory-reset`
 - Calls `POST /api/system/factory-reset`
-- Tears down installed apps, wipes Postgres tables (including `user` and every API key, so agents and `cihub api-key` users need new keys afterwards), clears `settings.json`, app data mounts, repos, backups, and registration artifacts
+- Refuses to run, and changes nothing, when the Hub's data folder (`ROOT_FOLDER_HOST`) is `/`, the top of drive C (`C:\`, `/mnt/c`, or `/c`), or a home folder such as `/home/<user>`, `/Users/<user>`, or `C:\Users\<user>`, or a link to one, and names the folder. The Hub container can't see the host's home, so this goes by the shape of the path. The top of another drive, such as a `D:\` given to the Hub, is allowed
+- Tears down installed apps, wipes Postgres tables (including `user` and every API key, so agents and `cihub api-key` users need new keys afterwards), clears `settings.json` and registration artifacts, and empties the `app-data`, `apps`, `repos`, `backups`, and `user-config` folders
+- Clears the cloud provider keys the running Hub still held from `settings.json`, so apps installed afterwards get none of them, and puts the inference, Hub Pool, and app resource settings back to their defaults. The General settings (time zone, app data path, domain, log level, and the rest) keep their old values in the running Hub until it restarts, although `settings.json` no longer has them
+- Empties every Postgres table, not only users and apps. Hub Pool pairings go with this Hub's pool identity, so a Hub it was paired with sees it refuse requests until someone unpairs it there. Memory connections, cached entitlements and the job and event history go too. So do the app stores a person added. The CI Marketplace store is registered again and its catalog downloaded, so pairing again restores the device's apps without a restart
+- Removes the model pins (`state/inference-pinned-models.json`) and the record of what each app was handed (`state/inference-handouts.json`), so the next start pins nothing. It also unloads each pinned model the engine still holds, which the Hub loaded to stay in memory for good. It asks only the Ollama (or Lemonade) the Hub is configured with and only for a model listed under that exact name, so a shared Ollama loses only the models the Hub pinned. Other models already loaded stay loaded until a load needs the room. `state/inference-footprint-sightings.json` stays: it records what each model took on this hardware
+- Forgets the Portal device key and move key in the running Hub, not only in `settings.json`. Right after the reset the pairing page shows only the pairing form, as it does after a restart. To pair onto the same device in CI Portal again, use **Regenerate pairing code** in its device menu. CI Portal refuses an **Add Device** code while that device exists
+- Removes the record of the images each app pulled (`state/pulled-images`). Left in place, it would claim images for an app of the same name on the next Hub. Uninstalling that app would remove them.
+- Removes a pending password change request (`state/password-change-request`) and the last pairing's apps check (`state/pairing-app-check.json`). Left in place, the first would set the next first operator's password if they claimed the Hub within its 15 minutes. The second held app sync and named the old device's apps for a restore
+- Leaves `settings.json` holding only a new host-local key (`hubLocalKey`). The running Hub accepts the new key at once and refuses the old one, so `cihub` and the desktop app, which read the key from that file, keep working without a restart
+- `user-config` holds each app's env and compose overrides, and also the Hub's own compose override (`hub-compose.yml`) and the Hub process's home folder (its `.gitconfig`). All of it goes, as with `cihub reset`
+- Leaves `media` alone, files and folders: it is the shared media library (books, films, music and downloads that media apps use). `cihub reset` still deletes it with the rest of the data folder
+- Leaves a folder alone when it is a link (a symlink, or a junction on Windows) to a folder with another name, which puts its contents outside the Hub's data folder. The Hub reads where each folder is mounted from in `/proc/self/mountinfo` and names that folder, as `backups/`, with the files it could not delete. A link to a folder with the same name is emptied, unless that folder is in a home folder (`~/repos`, say), which the reset leaves alone and names the same way
+- Those folders are bind mounts, so each one is emptied and kept. If anything is left in one, the reset stops before it touches Postgres, and the page says how many files or folders are left, names the first three, and points to `cihub reset --yes`. The apps are already uninstalled by then, and each one whose teardown worked is gone from the app list. The Hub log lists up to ten per folder. Running the reset again is safe
 - Does **not** remove Docker named volumes — use `cihub reset --yes` if you also need `ci_hub_pgdata` removed while containers are stopped
 
 Best when the Hub is healthy but auth/setup is stuck after a partial reset.
@@ -95,7 +107,7 @@ Best when the Hub is healthy but auth/setup is stuck after a partial reset.
 - Opens CI Portal at `/home?remove_device=<device id>`, where an owner or admin confirms deleting the device
 - Deleting the device in CI Portal removes its web addresses and apps from the account
 - While the page stays open, the Hub checks in about every 30 seconds for up to 15 minutes. When CI Portal answers `DEVICE_NOT_ACTIVE`, the Hub resets and opens the pairing screen
-- If the page closes first, the hourly check-in resets the Hub the same way
+- If the page closes first, the next check-in resets the Hub the same way, within 30 minutes
 
 The Hub cannot remove itself from CI Portal. Its device key is also held by first-party apps, so CI Portal accepts removal only from a signed-in owner or admin.
 
@@ -104,6 +116,7 @@ The Hub cannot remove itself from CI Portal. Its device key is also held by firs
 **Settings → Network → This Hub in your account → Reset this Hub only**
 
 - Clears `device_registration`, tunnel token, `tunnel/registration.json`, and resolved env, and stops `cloudflared`
+- Stops a pairing that is still setting up, so the Hub stays unregistered. If CI Portal answers that pairing, the Hub keeps the device key and move key CI Portal issued with that answer, because CI Portal no longer accepts the earlier ones
 - **Does not** delete the operator account
 - **Does not** change CI Portal: the device, its web addresses, and its apps stay in the account
 - Use when you only need to pair again with CI Portal, not wipe local users/apps

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hostPortStaysOnLoopback, manifestDefaultsEdgeAuthOn, hubIntegrationSchema } from '../app-info';
+import { hostPortStaysOnLoopback, manifestDefaultsEdgeAuthOn, hubIntegrationSchema, requiresHubLoginOnPublicRoute } from '../app-info';
 import { appInfoSchema } from '../app-info';
 
 describe('hubIntegrationSchema', () => {
@@ -427,6 +427,26 @@ describe('hubIntegrationSchema', () => {
         expect(manifestDefaultsEdgeAuthOn({ exposable: true, hub_integration: { edge_auth: { default: false } } })).toBe(false);
       });
     });
+
+    // One rule for the backend's route builder and the install form's edit dialog. The dialog once
+    // fell back to the manifest default alone, so a stored form on an open host port showed OFF while
+    // the Hub served it WITH the login, and a save wrote `enableAuth: false` over it.
+    describe('requiresHubLoginOnPublicRoute', () => {
+      const edgeAuthOn = { exposable: true, hub_integration: { edge_auth: { default: true } } };
+
+      it('takes an explicit enableAuth over everything else, in both directions', () => {
+        expect(requiresHubLoginOnPublicRoute({ enableAuth: false, openPort: true }, edgeAuthOn)).toBe(false);
+        expect(requiresHubLoginOnPublicRoute({ enableAuth: true, openPort: false }, { exposable: true })).toBe(true);
+      });
+
+      it('falls back to the manifest default, then to an open host port, and otherwise stays off', () => {
+        expect(requiresHubLoginOnPublicRoute({ openPort: false }, edgeAuthOn)).toBe(true);
+        expect(requiresHubLoginOnPublicRoute({ openPort: true }, { exposable: true })).toBe(true);
+        expect(requiresHubLoginOnPublicRoute({ openPort: true })).toBe(true);
+        expect(requiresHubLoginOnPublicRoute({ openPort: false }, { exposable: true })).toBe(false);
+        expect(requiresHubLoginOnPublicRoute({})).toBe(false);
+      });
+    });
   });
 
   describe('hostPortStaysOnLoopback', () => {
@@ -466,5 +486,39 @@ describe('hubIntegrationSchema', () => {
     it('ignores edge auth on a non-exposable app, as the toggle it defaults does not exist there', () => {
       expect(hostPortStaysOnLoopback(parsed({ exposable: false, hub_integration: { edge_auth: { default: true } } }))).toBe(false);
     });
+  });
+});
+
+describe('hubIntegrationSchema links', () => {
+  it('reads both directions, with the store and the name to reach the other app by left optional', () => {
+    const parsed = hubIntegrationSchema.parse({
+      links: {
+        connects_to: [
+          { app: 'prowlarr', service: 'prowlarr' },
+          { app: 'immich', store: 'photos', service: 'server', alias: 'photos' },
+        ],
+      },
+    });
+
+    expect(parsed?.links).toEqual({
+      connects_to: [
+        { app: 'prowlarr', service: 'prowlarr' },
+        { app: 'immich', store: 'photos', service: 'server', alias: 'photos' },
+      ],
+      accepts_from: [],
+    });
+  });
+
+  // A link only reaches the declaring app's own containers, but the name it gives the other app must not
+  // stand in for the Hub's own services there, nor be a hostname that means something elsewhere.
+  it.each([
+    ['an alias that names the Hub', { app: 'x', service: 'web', alias: 'ci-hub' }],
+    ['an alias that names Companion Memory', { app: 'x', service: 'web', alias: 'ci-memory' }],
+    ['an alias that is a hostname', { app: 'x', service: 'web', alias: 'evil.example.com' }],
+    ['a service that is a hostname', { app: 'x', service: 'host.docker.internal' }],
+    ['an app id with a colon', { app: 'x:y', service: 'web' }],
+    ['an app id that is a path', { app: '../x', service: 'web' }],
+  ])('refuses %s', (_case, entry) => {
+    expect(hubIntegrationSchema.safeParse({ links: { connects_to: [entry] } }).success).toBe(false);
   });
 });

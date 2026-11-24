@@ -18,12 +18,21 @@ function makeResolver(installed: Array<{ info: AppInfo }>) {
   };
   const appsService = {
     checkAppAvailability: vi.fn().mockResolvedValue({ available: true, appUrl: 'https://ci-memory.example.com' }),
+    publicAddressRefusalFor: vi.fn().mockResolvedValue(null),
   };
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+  // ci-memory's gateway, by its address on ci-memory's own network.
+  const dockerReadFacade = {
+    getServiceAddressOnAppNetwork: vi.fn(async (urn: string, service: string) =>
+      urn === 'ci-memory:ci-marketplace' && service === 'gateway' ? '10.128.11.2' : null,
+    ),
+  };
+  const moduleRef = { get: vi.fn(() => dockerReadFacade) };
   return {
-    resolver: new MemoryProviderResolver(appsReadService as never, appsService as never, logger as never),
+    resolver: new MemoryProviderResolver(appsReadService as never, appsService as never, logger as never, moduleRef as never),
     appsReadService,
     appsService,
+    dockerReadFacade,
   };
 }
 
@@ -100,13 +109,15 @@ describe('MemoryProviderResolver.getProviderRuntimeStatus', () => {
 describe('MemoryProviderResolver.getProviderRuntimeInfo — localOnly', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  const readyMemory = (exposureMode?: string) => [{ appName: 'ci-memory', appStoreSlug: 'ci-marketplace', status: 'running', exposureMode }];
+  const readyMemory = (exposureMode?: string, customDomain: string | null = null) => [
+    { appName: 'ci-memory', appStoreSlug: 'ci-marketplace', status: 'running', exposureMode, customDomain },
+  ];
 
   it('is local-only for a LAN-exposed provider', async () => {
     const { resolver, appsReadService } = makeResolver([]);
     appsReadService.getInstalledAppsLite.mockResolvedValue(readyMemory('local'));
 
-    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: true });
+    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: true, onHostPort: true });
   });
 
   it('is local-only for a Tailscale-exposed provider — its MagicDNS consent page is not publicly reachable', async () => {
@@ -116,21 +127,54 @@ describe('MemoryProviderResolver.getProviderRuntimeInfo — localOnly', () => {
     const { resolver, appsReadService } = makeResolver([]);
     appsReadService.getInstalledAppsLite.mockResolvedValue(readyMemory('tailscale'));
 
-    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: true });
+    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: true, onHostPort: false });
   });
 
   it('is NOT local-only for a Cloudflare-exposed provider — a public browser can reach it', async () => {
     const { resolver, appsReadService } = makeResolver([]);
     appsReadService.getInstalledAppsLite.mockResolvedValue(readyMemory('cloudflare'));
 
-    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: false });
+    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: false, onHostPort: false });
+  });
+
+  it('flags a Public web provider whose address the Portal refused (#2309)', async () => {
+    const { resolver, appsReadService, appsService } = makeResolver([]);
+    appsReadService.getInstalledAppsLite.mockResolvedValue(readyMemory('cloudflare'));
+    appsService.publicAddressRefusalFor.mockResolvedValue('subdomain_quota_exceeded');
+
+    expect(await resolver.getProviderRuntimeInfo()).toEqual({
+      status: 'ready',
+      localOnly: false,
+      onHostPort: false,
+      publicAddressRefusal: 'subdomain_quota_exceeded',
+    });
+    expect(appsService.publicAddressRefusalFor).toHaveBeenCalledWith('ci-memory:ci-marketplace');
+  });
+
+  // The refusal names the platform hostname. The connect flow goes to a custom hostname when there is one and
+  // the Portal keeps serving that hostname after a DNS write for the platform name fails.
+  it('does not flag a refused platform address when the provider has a custom hostname', async () => {
+    const { resolver, appsReadService, appsService } = makeResolver([]);
+    appsReadService.getInstalledAppsLite.mockResolvedValue(readyMemory('cloudflare', 'memory.acme.example'));
+    appsService.publicAddressRefusalFor.mockResolvedValue('conflict');
+
+    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: false, onHostPort: false });
+  });
+
+  it('does not ask about an address for a provider that has no public route', async () => {
+    const { resolver, appsReadService, appsService } = makeResolver([]);
+    appsReadService.getInstalledAppsLite.mockResolvedValue(readyMemory('local'));
+    appsService.publicAddressRefusalFor.mockResolvedValue('subdomain_quota_exceeded');
+
+    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: true, onHostPort: true });
+    expect(appsService.publicAddressRefusalFor).not.toHaveBeenCalled();
   });
 
   it('treats a missing exposureMode as local (conservative pre-column default)', async () => {
     const { resolver, appsReadService } = makeResolver([]);
     appsReadService.getInstalledAppsLite.mockResolvedValue(readyMemory(undefined));
 
-    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: true });
+    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: true, onHostPort: true });
   });
 });
 
@@ -193,8 +237,10 @@ describe('MemoryProviderResolver.findProvider', () => {
 
     expect(provider).toEqual({
       appUrn: 'ci-memory:ci-marketplace',
-      internalUrl: 'http://gateway:8642',
+      internalUrl: 'http://10.128.11.2:8642',
+      consumerUrl: 'http://ci-memory:8642',
       publicUrl: 'https://ci-memory.example.com',
+      hostPortOnLoopback: false,
     });
   });
 
@@ -203,18 +249,121 @@ describe('MemoryProviderResolver.findProvider', () => {
 
     const provider = await resolver.findProvider();
 
-    expect(provider?.internalUrl).toBe('http://gateway:8642');
+    expect(provider?.internalUrl).toBe('http://10.128.11.2:8642');
     expect(provider?.publicUrl).toBeUndefined();
     expect(appsService.checkAppAvailability).not.toHaveBeenCalled();
   });
 
-  it('falls back to gateway:8642 when the provider descriptor is absent', async () => {
-    const { resolver } = makeResolver([{ info: info({ id: 'ci-memory', urn: 'ci-memory:ci-marketplace' }) }]);
+  it('falls back to the gateway service on 8642 when the provider descriptor is absent', async () => {
+    const { resolver, dockerReadFacade } = makeResolver([{ info: info({ id: 'ci-memory', urn: 'ci-memory:ci-marketplace' }) }]);
 
     const provider = await resolver.findProvider();
 
-    expect(provider?.internalUrl).toBe('http://gateway:8642');
+    expect(dockerReadFacade.getServiceAddressOnAppNetwork).toHaveBeenCalledWith('ci-memory:ci-marketplace', 'gateway');
+    expect(provider?.internalUrl).toBe('http://10.128.11.2:8642');
+    expect(provider?.consumerUrl).toBe('http://ci-memory:8642');
   });
+
+  // Any app with a service called `gateway` answered the Hub's calls to that name, and was handed the key.
+  it('has no internal URL, rather than the service name, while the gateway is not running', async () => {
+    const { resolver, dockerReadFacade } = makeResolver([{ info: info({ id: 'ci-memory', urn: 'ci-memory:ci-marketplace' }) }]);
+    dockerReadFacade.getServiceAddressOnAppNetwork.mockResolvedValue(null);
+
+    const provider = await resolver.findProvider();
+
+    expect(provider?.internalUrl).toBeNull();
+    expect(provider?.consumerUrl).toBe('http://ci-memory:8642');
+  });
+
+  // The probe still names the address when it fails. Right after CI Memory's containers stopped, that address answered
+  // Traefik's 404, and the connect flow sent the browser there.
+  it('withholds the public URL when the availability probe says CI Memory does not answer there', async () => {
+    const { resolver, appsService } = makeResolver([{ info: info({ id: 'ci-memory', urn: 'ci-memory:ci-marketplace' }) }]);
+    appsService.checkAppAvailability.mockResolvedValue({
+      available: false,
+      appUrl: 'https://ci-memory.example.com',
+      httpStatus: 404,
+      errorCode: 'CF_UPSTREAM_ERROR',
+    });
+
+    const provider = await resolver.findProvider({ withPublicUrl: true });
+
+    expect(provider?.appUrn).toBe('ci-memory:ci-marketplace');
+    expect(provider?.publicUrl).toBeUndefined();
+  });
+
+  describe('a public address the Portal refused (#2309)', () => {
+    const memoryRow = (customDomain: string | null = null) => [
+      { appName: 'ci-memory', appStoreSlug: 'ci-marketplace', status: 'running', exposureMode: 'cloudflare', customDomain },
+    ];
+
+    function refusedProvider(customDomain?: string) {
+      const made = makeResolver([{ info: info({ id: 'ci-memory', urn: 'ci-memory:ci-marketplace' }) }]);
+      made.appsReadService.getInstalledAppsLite.mockResolvedValue(memoryRow(customDomain));
+      made.appsService.publicAddressRefusalFor.mockResolvedValue('conflict');
+      return made;
+    }
+
+    // The status poll blocks on every standing refusal. Only the plan-limit one has its own verdict. The others
+    // reach here as a plain missing record, so a page opened earlier would still send the browser there.
+    it.each(['PUBLIC_ADDRESS_QUOTA_EXCEEDED', 'DNS_NOT_FOUND'])('withholds the public URL on a %s verdict', async (errorCode) => {
+      const { resolver, appsService } = refusedProvider();
+      appsService.checkAppAvailability.mockResolvedValue({ available: false, appUrl: 'https://ci-memory.example.com', errorCode });
+
+      const provider = await resolver.findProvider({ withPublicUrl: true });
+
+      expect(provider?.publicUrl).toBeUndefined();
+    });
+
+    it('keeps the public URL when the address answers despite the remembered refusal', async () => {
+      const { resolver } = refusedProvider();
+
+      const provider = await resolver.findProvider({ withPublicUrl: true });
+
+      expect(provider?.publicUrl).toBe('https://ci-memory.example.com');
+    });
+
+    // The status poll offers Connect on a custom hostname, so the click has to go there too.
+    it('keeps a custom hostname the probe could not resolve', async () => {
+      const { resolver, appsService } = refusedProvider('memory.acme.example');
+      appsService.checkAppAvailability.mockResolvedValue({
+        available: false,
+        appUrl: 'https://memory.acme.example',
+        errorCode: 'PUBLIC_ADDRESS_QUOTA_EXCEEDED',
+      });
+
+      const provider = await resolver.findProvider({ withPublicUrl: true });
+
+      expect(provider?.publicUrl).toBe('https://memory.acme.example');
+    });
+  });
+
+  it('withholds the public URL when the tunnel itself says CI Memory has no connector', async () => {
+    const { resolver, appsService } = makeResolver([{ info: info({ id: 'ci-memory', urn: 'ci-memory:ci-marketplace' }) }]);
+    appsService.checkAppAvailability.mockResolvedValue({
+      available: false,
+      appUrl: 'https://ci-memory.example.com',
+      errorCode: 'CF_TUNNEL_NOT_FOUND',
+    });
+
+    const provider = await resolver.findProvider({ withPublicUrl: true });
+
+    expect(provider?.publicUrl).toBeUndefined();
+  });
+
+  // A probe that got no answer says more about the Hub's own network than about CI Memory: a slow lookup from
+  // inside the container, or a Private VPN address the Hub cannot route to. The browser may well reach it.
+  it.each(['CONNECTION_TIMEOUT', 'DNS_NOT_FOUND', 'CONNECTION_REFUSED', 'CF_TIMEOUT'])(
+    'still sends the browser to the public URL when the probe failed with %s',
+    async (errorCode) => {
+      const { resolver, appsService } = makeResolver([{ info: info({ id: 'ci-memory', urn: 'ci-memory:ci-marketplace' }) }]);
+      appsService.checkAppAvailability.mockResolvedValue({ available: false, appUrl: 'https://ci-memory.example.com', errorCode });
+
+      const provider = await resolver.findProvider({ withPublicUrl: true });
+
+      expect(provider?.publicUrl).toBe('https://ci-memory.example.com');
+    },
+  );
 
   it('still returns a provider (without publicUrl) when availability resolution fails', async () => {
     const { resolver, appsService } = makeResolver([{ info: info({ id: 'ci-memory', urn: 'ci-memory:ci-marketplace' }) }]);

@@ -1,8 +1,10 @@
-import { pairPeer, removePeer } from '@/api-client/sdk.gen';
+import { approvePeer, pairPeer, rejectPeer, removePeer } from '@/api-client/sdk.gen';
+import { TranslatableError } from '@/types/error.types';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { toast } from 'sonner';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HubPoolSection } from '../hub-pool-settings';
 
 type Json = Record<string, unknown>;
@@ -19,12 +21,12 @@ const fixtures = vi.hoisted(() => ({
   discoverableGate: null as null | Promise<void>,
   routingLog: { entries: [] as Json[], summary: { recorded: 0, capacity: 200, served: 0, failed: 0, failovers: 0, lastAt: null } } as Json,
   updateSettings: vi.fn(async (_options: { body: Record<string, unknown> }) => ({})),
-  peerToggle: vi.fn(async (_options: { url: string }) => ({})),
-  patchSettings: vi.fn(async (_options: { url: string; body: Record<string, unknown> }) => ({})),
-  pinMint: vi.fn(async (_options: { url: string }) => ({ data: undefined }) as { data?: Record<string, unknown> }),
-  pinCancel: vi.fn(async (_options: { url: string }) => ({})),
-  upsertPin: vi.fn(async (_options: { body: Record<string, unknown> }) => ({})),
-  deletePin: vi.fn(async (_options: { query: Record<string, unknown> }) => ({})),
+  peerToggle: vi.fn(async (_options: { url: string; throwOnError?: boolean }) => ({})),
+  patchSettings: vi.fn(async (_options: { url: string; body: Record<string, unknown>; throwOnError?: boolean }) => ({})),
+  pinMint: vi.fn(async (_options: { url: string; throwOnError?: boolean }) => ({ data: undefined }) as { data?: Record<string, unknown> }),
+  pinCancel: vi.fn(async (_options: { url: string; throwOnError?: boolean }) => ({})),
+  upsertPin: vi.fn(async (_options: { body: Record<string, unknown>; throwOnError?: boolean }) => ({})),
+  deletePin: vi.fn(async (_options: { query: Record<string, unknown>; throwOnError?: boolean }) => ({})),
 }));
 
 vi.mock('react-i18next', () => {
@@ -64,8 +66,8 @@ vi.mock('@/api-client/sdk.gen', () => ({
   approvePeer: vi.fn(),
   rejectPeer: vi.fn(),
   removePeer: vi.fn(),
-  upsertPoolPin: (options: { body: Record<string, unknown> }) => fixtures.upsertPin(options),
-  deletePoolPin: (options: { query: Record<string, unknown> }) => fixtures.deletePin(options),
+  upsertPoolPin: (options: { body: Record<string, unknown>; throwOnError?: boolean }) => fixtures.upsertPin(options),
+  deletePoolPin: (options: { query: Record<string, unknown>; throwOnError?: boolean }) => fixtures.deletePin(options),
 }));
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   poolStatusQueryKey: () => ['pool-status'],
@@ -241,7 +243,7 @@ describe('HubPoolSection', () => {
 
       await userEvent.click(await screen.findByTestId('hub-pool-peer-toggle'));
 
-      expect(fixtures.peerToggle).toHaveBeenCalledWith({ url: '/api/inference/pool/peers/peer-1/disable' });
+      expect(fixtures.peerToggle).toHaveBeenCalledWith({ url: '/api/inference/pool/peers/peer-1/disable', throwOnError: true });
     });
 
     it('never renders a disabled peer as connected', async () => {
@@ -254,6 +256,34 @@ describe('HubPoolSection', () => {
 
       expect(await screen.findByTestId('hub-pool-peer-disabled-badge')).toBeTruthy();
       expect(screen.queryByText('HUB_POOL_STATUS_CONNECTED')).toBeNull();
+    });
+
+    it('leaves a switched-off peer out of what the pool can serve', async () => {
+      fixtures.status = baseStatus({
+        peers: [
+          connectedPeer({
+            id: 'peer-off',
+            displayName: 'Parked Hub',
+            nodeFqdn: 'hub-c.example-tailnet.ts.net',
+            enabled: false,
+            lastCapabilities: {
+              hardwareTier: 'server',
+              backends: [{ type: 'vllm', healthy: true, modelsLoaded: ['only-parked:7b'] }],
+              updatedAt: '2026-09-05T10:00:00.000Z',
+            },
+          }),
+          connectedPeer(),
+        ],
+        peerCounts: { total: 2, connected: 2, pending: 0, unreachable: 0, disabled: 1 },
+      });
+
+      renderSection();
+
+      const rows = await screen.findAllByTestId('hub-pool-model');
+      expect(rows.map((row) => row.getAttribute('data-model'))).toEqual(['llama3.2:3b', 'qwen3:8b']);
+      expect(rows.map((row) => row.getAttribute('data-nodes'))).toEqual(['HUB_POOL_LOCAL_NODE_LABEL,Studio Hub', 'Studio Hub']);
+      expect(screen.queryByRole('columnheader', { name: 'Parked Hub' })).toBeNull();
+      expect(screen.getByRole('columnheader', { name: 'Studio Hub' })).toBeTruthy();
     });
 
     it('says a peer is refusing OUR work rather than showing it as a node with no models', async () => {
@@ -368,6 +398,43 @@ describe('HubPoolSection', () => {
 
     await waitFor(() => expect(fixtures.updateSettings).toHaveBeenCalledTimes(1));
     expect(fixtures.updateSettings.mock.calls[0]?.[0]).toMatchObject({ body: { poolLocalAffinity: 20, poolHealthPollSeconds: 30 } });
+  });
+
+  it('does not promise that a switched-off peer rejoins by itself', async () => {
+    fixtures.status = baseStatus({
+      peers: [connectedPeer({ status: 'unreachable', enabled: false, consecutiveFailures: 18922, inFlightRequests: 0 })],
+      peerCounts: { total: 1, connected: 0, pending: 0, unreachable: 1 },
+      reason: 'no_peers',
+      routingActive: false,
+    });
+
+    renderSection();
+
+    expect(await screen.findByText('HUB_POOL_STATUS_DISABLED')).toBeTruthy();
+    expect(screen.queryByTestId('hub-pool-unreachable-hint')).toBeNull();
+  });
+
+  it('keeps the re-pair steps on a switched-off peer that refuses this Hub', async () => {
+    fixtures.status = baseStatus({
+      peers: [
+        connectedPeer({
+          status: 'unreachable',
+          enabled: false,
+          consecutiveFailures: 5,
+          inFlightRequests: 0,
+          probeFailure: { kind: 'identity_changed', action: 'Re-pair: (1) here: cihub pool unpair hub-b.example-tailnet.ts.net; ...' },
+        }),
+      ],
+      peerCounts: { total: 1, connected: 0, pending: 0, unreachable: 1 },
+      reason: 'no_peers',
+      routingActive: false,
+    });
+
+    renderSection();
+
+    const hint = await screen.findByTestId('hub-pool-peer-needs-repair-hint');
+    expect(hint.textContent).toContain('cihub pool unpair hub-b.example-tailnet.ts.net');
+    expect(screen.queryByTestId('hub-pool-unreachable-hint')).toBeNull();
   });
 
   it('tells the operator an unreachable peer heals itself instead of needing an unpair', async () => {
@@ -506,6 +573,50 @@ describe('HubPoolSection', () => {
     const failedOverRow = entries.find((row) => row.getAttribute('data-failedover'));
     expect(failedOverRow?.getAttribute('data-failedover')).toBe('local');
     expect(screen.getByText('HUB_POOL_ROUTING_INBOUND')).toBeTruthy();
+  });
+
+  it("calls this Hub by its label on a routing row, never by the log's key", async () => {
+    const row = (overrides: Json): Json => ({
+      at: '2026-09-05T10:00:00.000Z',
+      direction: 'outbound',
+      path: '/api/chat',
+      model: 'gemma3:270m',
+      node: 'local',
+      peerId: null,
+      backend: 'ollama',
+      candidates: 1,
+      attempt: 1,
+      failedOverFrom: [],
+      outcome: 'served',
+      status: 200,
+      durationMs: 12,
+      ...overrides,
+    });
+    fixtures.routingLog = {
+      entries: [
+        row({}),
+        row({ at: '2026-09-05T10:00:01.000Z', outcome: 'failed', status: 500 }),
+        row({ at: '2026-09-05T10:00:02.000Z', node: 'hub-b' }),
+        row({
+          at: '2026-09-05T10:00:03.000Z',
+          node: 'hub-b',
+          failedOverFrom: ['local'],
+          attempts: [{ node: 'local', backend: 'ollama', status: 500, reason: 'HTTP 500' }],
+        }),
+        row({ at: '2026-09-05T10:00:04.000Z', node: 'hub-b', failedOverFrom: ['local'] }),
+      ],
+      summary: { recorded: 5, capacity: 200, served: 4, failed: 1, failovers: 2, lastAt: '2026-09-05T10:00:04.000Z' },
+    };
+
+    renderSection();
+
+    expect(await screen.findByText('HUB_POOL_ROUTING_LOCAL_SERVED')).toBeTruthy();
+    expect(screen.getByText('HUB_POOL_ROUTING_LOCAL_SENT')).toBeTruthy();
+    // A peer keeps the wording it had.
+    expect(screen.getAllByText('HUB_POOL_ROUTING_OUTBOUND')).toHaveLength(3);
+    // The failover hover, with what each node answered and from a Hub that only names them.
+    expect(i18nCalls).toContainEqual({ key: 'HUB_POOL_ROUTING_FAILOVER', params: { nodes: 'HUB_POOL_LOCAL_NODE_LABEL (HTTP 500)' } });
+    expect(i18nCalls).toContainEqual({ key: 'HUB_POOL_ROUTING_FAILOVER', params: { nodes: 'HUB_POOL_LOCAL_NODE_LABEL' } });
   });
 
   /**
@@ -725,6 +836,32 @@ describe('HubPoolSection', () => {
     });
   });
 
+  it('lists the first five discoverable Hubs and the rest behind Show all', async () => {
+    fixtures.discoverable = Array.from({ length: 7 }, (_, index) => ({
+      tailscaleDeviceId: `ts-${index}`,
+      nodeFqdn: `hub-${index}.example-tailnet.ts.net`,
+      hostname: `hub-${index}`,
+    }));
+    renderSection();
+
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'HUB_POOL_PAIR_BUTTON' })).toHaveLength(5));
+    const toggle = screen.getByTestId('hub-pool-discoverable-toggle');
+    expect(toggle.textContent).toBe('HUB_POOL_DISCOVERABLE_SHOW_ALL');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+
+    await userEvent.click(toggle);
+    expect(screen.getAllByRole('button', { name: 'HUB_POOL_PAIR_BUTTON' })).toHaveLength(7);
+    expect(toggle.textContent).toBe('HUB_POOL_DISCOVERABLE_SHOW_FEWER');
+  });
+
+  it('shows no Show all toggle when every discoverable Hub fits', async () => {
+    fixtures.discoverable = [{ tailscaleDeviceId: 'ts-1', nodeFqdn: 'hub-b.example-tailnet.ts.net', hostname: 'hub-b' }];
+    renderSection();
+
+    await screen.findByRole('button', { name: 'HUB_POOL_PAIR_BUTTON' });
+    expect(screen.queryByTestId('hub-pool-discoverable-toggle')).toBeNull();
+  });
+
   it('names the missing tailnet-enumeration credential instead of showing a bare empty device list', async () => {
     fixtures.status = baseStatus({ tailscaleAdminApiConfigured: false, reason: 'no_peers', routingActive: false });
 
@@ -904,16 +1041,39 @@ describe('HubPoolSection', () => {
     });
 
     it('takes the digits off the screen once the PIN has expired', async () => {
-      fixtures.status = baseStatus();
-      fixtures.pinMint.mockImplementation(async () => ({
-        data: { pin: '481502', expiresAt: new Date(Date.now() + 150).toISOString() },
-      }));
-      renderSection();
+      // The clock is faked so the PIN's lifetime is measured in test time, not wall time. A short real
+      // expiry (it was 150 ms) is gone before a loaded machine renders the digits, so the test never saw
+      // them. `shouldAdvanceTime` keeps Testing Library's polling and user-event moving, but the fake
+      // clock never outpaces the wall clock, so a 60 s lifetime cannot lapse inside the 15 s test timeout:
+      // it only lapses when this test advances it.
+      const PIN_LIFETIME_MS = 60_000;
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+        fixtures.status = baseStatus();
+        fixtures.pinMint.mockImplementation(async () => ({
+          data: { pin: '481502', expiresAt: new Date(Date.now() + PIN_LIFETIME_MS).toISOString() },
+        }));
+        renderSection();
 
-      await userEvent.click(await screen.findByTestId('hub-pool-mint-pin-btn'));
+        await user.click(await screen.findByTestId('hub-pool-mint-pin-btn'));
 
-      expect(await screen.findByTestId('hub-pool-minted-pin')).toHaveTextContent('481502');
-      await waitFor(() => expect(screen.queryByTestId('hub-pool-minted-pin')).not.toBeInTheDocument(), { timeout: 2000 });
+        expect(await screen.findByTestId('hub-pool-minted-pin')).toHaveTextContent('481502');
+
+        // Still live halfway through its lifetime: the digits must not be cleared early.
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(PIN_LIFETIME_MS / 2);
+        });
+        expect(screen.getByTestId('hub-pool-minted-pin')).toHaveTextContent('481502');
+
+        // Past its expiry: the digits are gone.
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(PIN_LIFETIME_MS / 2 + 1_000);
+        });
+        expect(screen.queryByTestId('hub-pool-minted-pin')).not.toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('says a PIN is outstanding without ever re-showing it, which is what status reports', async () => {
@@ -1045,7 +1205,7 @@ describe('HubPoolSection', () => {
 
       await userEvent.click(await screen.findByTestId('hub-pool-pin-add'));
 
-      expect(fixtures.upsertPin).toHaveBeenCalledWith({ body: { scope: 'default', targetKind: 'local' } });
+      expect(fixtures.upsertPin).toHaveBeenCalledWith({ body: { scope: 'default', targetKind: 'local' }, throwOnError: true });
     });
 
     it('removes a pin by scope and model, never by an id it does not have', async () => {
@@ -1056,7 +1216,7 @@ describe('HubPoolSection', () => {
       renderSection();
       await userEvent.click(await screen.findByTestId('hub-pool-pin-remove'));
 
-      expect(fixtures.deletePin).toHaveBeenCalledWith({ query: { scope: 'model', model: 'hf.co/org/repo:Q4_K_M' } });
+      expect(fixtures.deletePin).toHaveBeenCalledWith({ query: { scope: 'model', model: 'hf.co/org/repo:Q4_K_M' }, throwOnError: true });
     });
 
     it('warns in the unpair dialog when a pin points at the peer being unpaired', async () => {
@@ -1433,6 +1593,242 @@ describe('HubPoolSection', () => {
 
       expect(optionsOf('pool-discoverable')?.refetchInterval).toBeUndefined();
       expect(optionsOf('pool-status')?.refetchInterval).toBe(15_000);
+    });
+  });
+
+  /**
+   * The generated client RESOLVES on a non-2xx, with `{ error }`, and rejects only when the call passed
+   * `throwOnError`. A mutation that leaves the flag off runs its `onSuccess` on a failure. These fakes
+   * keep that contract, so a missing flag shows up here as the success toast it causes on a real Hub.
+   */
+  describe('when the Hub answers an action with an error', () => {
+    const failsLikeTheGeneratedClient =
+      (error: Error = new TranslatableError('INTERNAL_SERVER_ERROR')) =>
+      async (options?: { throwOnError?: boolean }) => {
+        if (options?.throwOnError) throw error;
+        return { data: undefined, error };
+      };
+    const fail = (mock: { mockImplementationOnce: (impl: never) => unknown }, error?: Error) =>
+      mock.mockImplementationOnce(failsLikeTheGeneratedClient(error) as never);
+
+    const withPeers = (...peers: Json[]) => {
+      fixtures.status = baseStatus({ peers, peerCounts: { total: peers.length, connected: 0, pending: 0, unreachable: 0, disabled: 0 } });
+    };
+    const pairable = () => {
+      fixtures.discoverable = [{ tailscaleDeviceId: 'ts-1', nodeFqdn: 'hub-b.example-tailnet.ts.net', hostname: 'hub-b' }];
+    };
+    const pairWithPin = async (pin: string) => {
+      await userEvent.type(await screen.findByTestId('hub-pool-pin-input'), pin);
+      await userEvent.click(screen.getByRole('button', { name: 'HUB_POOL_PAIR_BUTTON' }));
+    };
+
+    beforeEach(() => {
+      vi.mocked(toast.success).mockClear();
+      vi.mocked(toast.error).mockClear();
+    });
+
+    afterEach(() => {
+      for (const mock of [pairPeer, approvePeer, rejectPeer, removePeer]) vi.mocked(mock).mockReset();
+      for (const mock of [
+        fixtures.peerToggle,
+        fixtures.patchSettings,
+        fixtures.pinMint,
+        fixtures.pinCancel,
+        fixtures.upsertPin,
+        fixtures.deletePin,
+      ]) {
+        mock.mockReset();
+      }
+    });
+
+    it.each([
+      {
+        action: 'Pair',
+        errorKey: 'HUB_POOL_PAIR_ERROR',
+        arrange: () => {
+          pairable();
+          fail(vi.mocked(pairPeer));
+        },
+        run: async () => userEvent.click(await screen.findByRole('button', { name: 'HUB_POOL_PAIR_BUTTON' })),
+      },
+      {
+        action: 'Approve',
+        errorKey: 'HUB_POOL_APPROVE_ERROR',
+        arrange: () => {
+          withPeers(pendingInboundPeer());
+          fail(vi.mocked(approvePeer));
+        },
+        run: async () => userEvent.click(await screen.findByRole('button', { name: 'HUB_POOL_APPROVE_BUTTON' })),
+      },
+      {
+        action: 'Reject',
+        errorKey: 'HUB_POOL_REJECT_ERROR',
+        arrange: () => {
+          withPeers(pendingInboundPeer());
+          fail(vi.mocked(rejectPeer));
+        },
+        run: async () => userEvent.click(await screen.findByRole('button', { name: 'HUB_POOL_REJECT_BUTTON' })),
+      },
+      {
+        action: 'Cancel request',
+        errorKey: 'HUB_POOL_CANCEL_REQUEST_ERROR',
+        arrange: () => {
+          withPeers(connectedPeer({ id: 'outbound-1', status: 'pending', lastSeenAt: null, lastCapabilities: null, inFlightRequests: 0 }));
+          fail(vi.mocked(removePeer));
+        },
+        run: async () => userEvent.click(await screen.findByTestId('hub-pool-cancel-request-btn')),
+      },
+      {
+        action: 'Unpair',
+        errorKey: 'HUB_POOL_UNPAIR_ERROR',
+        arrange: () => {
+          withPeers(connectedPeer());
+          fail(vi.mocked(removePeer));
+        },
+        run: async () => {
+          await userEvent.click(await screen.findByTestId('hub-pool-unpair-btn'));
+          await userEvent.click(await screen.findByTestId('hub-pool-unpair-confirm-btn'));
+        },
+      },
+      {
+        action: 'the outbound switch',
+        errorKey: 'HUB_POOL_SETTINGS_ERROR',
+        arrange: () => fail(fixtures.patchSettings),
+        run: async () => userEvent.click(await screen.findByTestId('hub-pool-outbound-toggle')),
+      },
+      {
+        action: 'the inbound switch',
+        errorKey: 'HUB_POOL_SETTINGS_ERROR',
+        arrange: () => fail(fixtures.patchSettings),
+        run: async () => userEvent.click(await screen.findByTestId('hub-pool-inbound-toggle')),
+      },
+      {
+        action: 'the per-Hub switch',
+        errorKey: 'HUB_POOL_PEER_TOGGLE_ERROR',
+        arrange: () => {
+          withPeers(connectedPeer());
+          fail(fixtures.peerToggle);
+        },
+        run: async () => userEvent.click(await screen.findByTestId('hub-pool-peer-toggle')),
+      },
+      {
+        action: 'Generate PIN',
+        errorKey: 'HUB_POOL_PIN_MINT_ERROR',
+        arrange: () => fail(fixtures.pinMint),
+        run: async () => userEvent.click(await screen.findByTestId('hub-pool-mint-pin-btn')),
+      },
+      {
+        action: 'Pin',
+        errorKey: 'HUB_POOL_PINS_ERROR',
+        arrange: () => fail(fixtures.upsertPin),
+        run: async () => userEvent.click(await screen.findByTestId('hub-pool-pin-add')),
+      },
+      {
+        action: 'Remove pin',
+        errorKey: 'HUB_POOL_PINS_ERROR',
+        arrange: () => {
+          fixtures.status = baseStatus({
+            pins: [{ scope: 'model', model: 'llama3.2:3b', targetKind: 'local', mode: 'prefer', nodeFqdn: null, targetAvailable: true }],
+          });
+          fail(fixtures.deletePin);
+        },
+        run: async () => userEvent.click(await screen.findByTestId('hub-pool-pin-remove')),
+      },
+    ])('$action shows its failure toast and never the success one', async ({ arrange, run, errorKey }) => {
+      arrange();
+      renderSection();
+
+      await run();
+
+      await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledTimes(1));
+      expect(vi.mocked(toast.error).mock.calls[0]?.[0]).toBe(errorKey);
+      expect(vi.mocked(toast.success)).not.toHaveBeenCalled();
+    });
+
+    it('keeps the unpair dialog open when the unpair failed, since the peer is still paired', async () => {
+      withPeers(connectedPeer());
+      fail(vi.mocked(removePeer));
+      renderSection();
+
+      await userEvent.click(await screen.findByTestId('hub-pool-unpair-btn'));
+      await userEvent.click(await screen.findByTestId('hub-pool-unpair-confirm-btn'));
+
+      await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith('HUB_POOL_UNPAIR_ERROR'));
+      expect(screen.getByTestId('hub-pool-unpair-confirm-btn')).toBeInTheDocument();
+    });
+
+    // A 409 here usually means the other Hub paired from its side, and the discovery list never polls.
+    it('re-reads the pool after a failed pairing, so a stale row stops offering Pair', async () => {
+      pairable();
+      fail(vi.mocked(pairPeer));
+      renderSection();
+      await waitFor(() => expect(fixtures.discoverableReads).toBe(1));
+
+      await userEvent.click(await screen.findByRole('button', { name: 'HUB_POOL_PAIR_BUTTON' }));
+
+      await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith('HUB_POOL_PAIR_ERROR'));
+      await waitFor(() => expect(fixtures.discoverableReads).toBe(2));
+    });
+
+    it('keeps the PIN on screen when Cancel PIN failed, since it is still live', async () => {
+      fixtures.pinMint.mockResolvedValueOnce({ data: { pin: '481502', expiresAt: '2099-01-01T00:10:00.000Z' } });
+      fail(fixtures.pinCancel);
+      renderSection();
+      await userEvent.click(await screen.findByTestId('hub-pool-mint-pin-btn'));
+      await screen.findByTestId('hub-pool-minted-pin');
+
+      await userEvent.click(screen.getByRole('button', { name: 'HUB_POOL_PIN_CANCEL_BUTTON' }));
+
+      await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith('HUB_POOL_PIN_CANCEL_ERROR'));
+      expect(screen.getByTestId('hub-pool-minted-pin')).toHaveTextContent('481502');
+    });
+
+    it('says why a pairing failed when the Hub sent a reason, under the card’s own message', async () => {
+      pairable();
+      fail(vi.mocked(pairPeer), new TranslatableError('HUB_POOL_PAIR_ERROR_PIN_REFUSED', {}));
+      renderSection();
+
+      await pairWithPin('000000');
+
+      await waitFor(() =>
+        expect(vi.mocked(toast.error)).toHaveBeenCalledWith('HUB_POOL_PAIR_ERROR', { description: 'HUB_POOL_PAIR_ERROR_PIN_REFUSED' }),
+      );
+      expect(vi.mocked(toast.success)).not.toHaveBeenCalled();
+      // A refused PIN leaves nothing pending, so the field keeps what was typed rather than looking sent.
+      expect(screen.getByTestId('hub-pool-pin-input')).toHaveValue('000000');
+    });
+
+    it('passes the reason’s parameters along, so a declined request can name the other Hub’s answer', async () => {
+      pairable();
+      const declined = new TranslatableError('HUB_POOL_PAIR_ERROR_PEER_DECLINED_REASON', { status: '503', detail: 'Pooling is turned off' });
+      fail(vi.mocked(pairPeer), declined);
+      renderSection();
+
+      await userEvent.click(await screen.findByRole('button', { name: 'HUB_POOL_PAIR_BUTTON' }));
+
+      await waitFor(() =>
+        expect(vi.mocked(toast.error)).toHaveBeenCalledWith('HUB_POOL_PAIR_ERROR', { description: 'HUB_POOL_PAIR_ERROR_PEER_DECLINED_REASON' }),
+      );
+      expect(i18nCalls).toContainEqual({
+        key: 'HUB_POOL_PAIR_ERROR_PEER_DECLINED_REASON',
+        params: { status: '503', detail: 'Pooling is turned off' },
+      });
+    });
+
+    it.each([
+      ['a bare 500', new TranslatableError('INTERNAL_SERVER_ERROR')],
+      ['the generic fallback', new TranslatableError('COMMON_AN_ERROR_OCCURRED')],
+      ['raw backend English', new TranslatableError('Already paired or pairing with hub-b.example-tailnet.ts.net')],
+      ['a network failure', new TypeError('Failed to fetch')],
+    ])('shows only the card’s own message for %s', async (_label, error) => {
+      pairable();
+      fail(vi.mocked(pairPeer), error);
+      renderSection();
+
+      await userEvent.click(await screen.findByRole('button', { name: 'HUB_POOL_PAIR_BUTTON' }));
+
+      await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledTimes(1));
+      expect(vi.mocked(toast.error).mock.calls[0]).toEqual(['HUB_POOL_PAIR_ERROR']);
     });
   });
 });

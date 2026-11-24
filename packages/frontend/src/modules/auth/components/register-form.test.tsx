@@ -1,4 +1,5 @@
 import { render, screen, userEvent } from '@/tests/test-utils';
+import { MemoryRouter } from 'react-router';
 import { describe, expect, it, vi } from 'vitest';
 import { RegisterForm } from './register-form';
 
@@ -37,6 +38,21 @@ describe('RegisterForm', () => {
     expect(confirmationInput.type).toBe('text');
   });
 
+  it('says in words that the email address is missing or not valid', async () => {
+    const onSubmit = vi.fn();
+    render(<RegisterForm loading={false} onSubmit={onSubmit} />);
+
+    await userEvent.click(screen.getByRole('button', { name: 'AUTH_REGISTER_SUBMIT' }));
+    expect(await screen.findByText('AUTH_FORM_ERROR_EMAIL_REQUIRED')).toBeInTheDocument();
+
+    await userEvent.type(screen.getByLabelText('AUTH_FORM_EMAIL'), 'owner@localhost');
+    await userEvent.click(screen.getByRole('button', { name: 'AUTH_REGISTER_SUBMIT' }));
+    expect(await screen.findByText('SETTINGS_SECURITY_CHANGE_USERNAME_FORM_INVALID_USERNAME')).toBeInTheDocument();
+
+    expect(screen.queryByText(/invalid email|too small/i)).not.toBeInTheDocument();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it('shows the server password rule and refuses a password the server would reject', async () => {
     const onSubmit = vi.fn();
     render(<RegisterForm loading={false} onSubmit={onSubmit} />);
@@ -66,5 +82,36 @@ describe('RegisterForm', () => {
       password: 'Password1!',
       passwordConfirm: 'Password1!',
     });
+  });
+
+  it('puts the CI Account sign-in under the title, ahead of the sign-up form', () => {
+    render(<RegisterForm loading={false} onSubmit={vi.fn()} portalSignIn={<button type="button">ci account sign-in</button>} />);
+
+    const title = screen.getByRole('heading', { name: 'AUTH_REGISTER_TITLE' });
+    const signIn = screen.getByRole('button', { name: 'ci account sign-in' });
+    const email = screen.getByLabelText('AUTH_FORM_EMAIL');
+
+    expect(title.compareDocumentPosition(signIn) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(signIn.compareDocumentPosition(email) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The note sends CI Account holders to the sign-up form, which Portal refuses for their email.
+    expect(screen.queryByText('AUTH_REGISTER_NOTE_2')).not.toBeInTheDocument();
+  });
+
+  it('links to the sign-in page when given where it is', () => {
+    render(
+      <MemoryRouter>
+        <RegisterForm loading={false} onSubmit={vi.fn()} signInHref="/login?redirect_url=%2Fstore" />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole('link', { name: 'AUTH_REGISTER_SIGN_IN_INSTEAD' })).toHaveAttribute('href', '/login?redirect_url=%2Fstore');
+  });
+
+  it('keeps the plain sign-up form without them', () => {
+    render(<RegisterForm loading={false} onSubmit={vi.fn()} />);
+
+    expect(screen.queryByRole('link')).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'AUTH_REGISTER_TITLE' }).nextElementSibling).toHaveTextContent('AUTH_REGISTER_NOTE');
+    expect(screen.getByText('AUTH_REGISTER_NOTE_2')).toBeInTheDocument();
   });
 });

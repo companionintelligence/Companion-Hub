@@ -117,6 +117,20 @@ For example, an app assigned port `8138` is available at
 `https://hub-demo.example.ts.net:8138/`. Open the generated URL shown by CI-Hub
 and test it from another device signed in to the same tailnet.
 
+The Hub checks whether an app is up by connecting to its address from where the
+Hub runs. When the Hub runs in a container, that is a Docker network, and a
+`tailscaled` that binds its Serve listeners to the Tailscale device (seen with
+1.104.7) refuses a connection that arrives there, even though every device on the
+tailnet connects. When the Hub is refused, it reads `tailscale serve status`,
+finds the entry for the app's port under the device's current name, and sends a
+request to the target that entry forwards to. If the target is an IP address on a
+private network, which is what the Hub writes (the app container's address on its
+app network), and it answers, the app reads as available. In every other case the
+app reads as **App not responding**: the port has no entry, the target doesn't
+answer, or the target is a host name such as `host.docker.internal` or
+`localhost`, which the Hub's container and the host's `tailscaled` can read
+differently.
+
 When an app stops, CI-Hub removes the Serve entry it published for that app. It
 removes only entries it published, which it records in
 `state/tailscale-serve-ownership.json` under its data directory. If you run your
@@ -171,6 +185,7 @@ This workflow is ideal for remote maintenance, operator access, and private demo
 | **Remote device cannot reach the Hub or apps** | Confirm the remote device is logged in to the same tailnet and that the advertised route in `HUB_TAILSCALE_EXTRA_ARGS` matches the Docker network used by the Hub. |
 | **Logs still mention `headscale:8080` after upgrading** | Reconnect Tailscale once so the device state is rewritten against `controlplane.tailscale.com`. If you override `HUB_TAILSCALE_EXTRA_ARGS`, keep an explicit `--login-server=https://controlplane.tailscale.com` unless you intentionally run your own control plane. |
 | **App URL works locally but not via Tailscale** | Confirm the Hub and client are on the same tailnet, approve the HTTPS/Serve consent link shown by Hub if needed, then re-save the app with **Tailscale** exposure mode. |
+| **A Private VPN app reads "App not responding" but opens from another device on the tailnet** | Run `tailscale serve status` on the host. The app's port must be listed under the device's current name, and its target must be an app that is running. If the port is missing, **Resolve** publishes it again. If the target refuses connections, the app is stopped or still starting, and **Resolve** restarts a stopped container. If the target is a host name, such as `host.docker.internal`, the Hub can't check it, and the message stays even though the app works. |
 | **Logs say `serve config denied`** | The Hub uses the host Tailscale client and is neither root nor the host's Tailscale operator. Run the `sudo tailscale set --operator=…` command from the warning once on the host; the next sync publishes the Hub. |
 | **Peers fail TLS to the Hub after a device rename** | Wait for the next exposure sync, which runs every five minutes. If peers still fail after that, check the Hub logs for `serve config denied`, or, if `TAILSCALE_SERVE_USER_DISABLED=true` is set, for `Tailscale Serve has no :443 entry` and run the command it names. |
 | **Need to turn Tailscale off temporarily** | Set `TAILSCALE_SERVE_USER_DISABLED=true` in the hub `.env` and restart the stack. The Hub then stops publishing to Tailscale Serve but leaves existing entries in place, because other Hubs may reach it through them. It also stops repairing its own entry after a device rename or a `tailscale serve reset`, and only logs a warning, so pool peers lose this Hub until someone publishes it by hand. To remove the Hub's entry, run `sudo tailscale serve --https=443 off` on the host. To stop the sidecar as well, also set `PRIVATE_VPN_USER_DISABLED=true`. |

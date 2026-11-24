@@ -26,6 +26,7 @@ import { InferenceBackendRegistry } from './backends/backend-registry';
 import { OllamaBackend } from './backends/ollama.backend';
 import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
+import { LocalAiBackend } from './backends/localai.backend';
 import { OmlxBackend } from './backends/omlx.backend';
 import { BackendObserverService } from './supervision/backend-observer.service';
 import { InferenceController } from './inference.controller';
@@ -66,6 +67,7 @@ import { InferenceController } from './inference.controller';
     VllmBackend,
     LemonadeBackend,
     OmlxBackend,
+    LocalAiBackend,
     InferenceBackendRegistry,
     BackendObserverService,
     InternalOriginGuard,
@@ -89,6 +91,7 @@ import { InferenceController } from './inference.controller';
     VllmBackend,
     LemonadeBackend,
     OmlxBackend,
+    LocalAiBackend,
     InferenceBackendRegistry,
     BackendObserverService,
   ],

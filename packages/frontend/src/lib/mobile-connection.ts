@@ -350,6 +350,13 @@ export async function initMobileConnection(): Promise<{ isMobile: boolean; hubBa
   } else if (isTauri() && !isMobileClient() && osMobile === false) {
     // Confirmed desktop Tauri (macOS/Windows/Linux). Do not lock this when the
     // OS plugin is missing — ios:dev often looks like desktop until it answers.
+    // The desktop's Hub session lives in the keychain: load it before the first request.
+    try {
+      const { hydrateDesktopSession } = await import('@/lib/api-fetch');
+      await withTimeout(hydrateDesktopSession(), 3000, null);
+    } catch {
+      // Best-effort: without it the person signs in again.
+    }
     initialized = true;
   }
   // If Tauri isn't injected yet, leave `initialized` false so a later loader

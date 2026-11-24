@@ -16,6 +16,10 @@ const { readFileSync } = await vi.importActual<typeof import('node:fs')>('node:f
 const PORTAL = 'https://hub.ci.computer';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
+function stableIdentity(publicId: string, directoryId: string) {
+  return { issuer: `urn:ci-hub:${directoryId}`, userId: publicId };
+}
+
 /*
  * Against the real database and the real migrations: that every person gets a public id of their
  * own and keeps it through a rename, that the directory is one row the resolver names as
@@ -95,10 +99,7 @@ describe('forward auth: who a Hub person is, for good', () => {
     const alice = await insertUser('alice@example.com');
     const [directory] = await db.select().from(userDirectory).where(eq(userDirectory.id, 'self'));
 
-    await expect(resolver().stableIdFor(alice.id)).resolves.toEqual({
-      issuer: `urn:ci-hub:${directory.directoryId}`,
-      userId: alice.publicId,
-    });
+    await expect(resolver().stableIdFor(alice.id)).resolves.toEqual(stableIdentity(alice.publicId, directory.directoryId));
   });
 
   it('names nobody by id for a user that does not exist', async () => {
@@ -107,12 +108,13 @@ describe('forward auth: who a Hub person is, for good', () => {
 
   it('finds the Hub person a Portal subject is bound to, by their username today', async () => {
     const owner = await insertUser('owner@example.com');
+    const [directory] = await db.select().from(userDirectory).where(eq(userDirectory.id, 'self'));
     await federatedIdentities.create({ userId: owner.id, issuer: PORTAL, subject: 'portal-sub', email: 'owner@example.com' });
     await users.updateUser(owner.id, { username: 'owner.renamed@example.com' });
 
     await expect(resolver().personForPortalSubject(PORTAL, 'portal-sub')).resolves.toEqual({
       username: 'owner.renamed@example.com',
-      stableId: { issuer: expect.stringMatching(/^urn:ci-hub:/), userId: owner.publicId },
+      stableId: stableIdentity(owner.publicId, directory.directoryId),
     });
   });
 

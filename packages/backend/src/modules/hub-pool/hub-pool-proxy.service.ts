@@ -1,7 +1,7 @@
 import { ReadableStream as WebReadableStream } from 'node:stream/web';
 import { forwardRef, Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import type { Response } from 'express';
-import { INFERENCE_BACKEND_TYPES, type InferenceBackendType } from '@ci-hub/common/types';
+import { type BackendResidency, INFERENCE_BACKEND_TYPES, type InferenceBackendType } from '@ci-hub/common/types';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-registry';
 import type { EngineCapabilities } from '@/modules/inference/backends/backend.interface';
@@ -14,6 +14,7 @@ import { clampContextCap } from '@/common/helpers/inference-context-cap';
 import {
   CAPABILITIES_FRESHNESS_POLLS,
   UNKNOWN_PRESSURE,
+  arrivedThroughTunnel,
   clampPromptCeiling,
   effectivePeerPressureBand,
   inventoryListsModel,
@@ -77,7 +78,14 @@ import {
   type ResponseTapObserver,
 } from './response-usage-tap';
 import { POOL_AFFINITY_HEADER, PrefixAffinityStore, applyPrefixAffinity, derivePrefixKey, type PrefixKey } from './hub-pool-prefix-affinity';
-import { chooseAutoModel, collectPoolModelOffers, type AutoModelPreference, type NodeModelInventory } from './pool-auto-model';
+import {
+  autoModelNeeds,
+  chooseAutoModel,
+  collectPoolModelOffers,
+  type AutoModelChoice,
+  type AutoModelPreference,
+  type NodeModelInventory,
+} from './pool-auto-model';
 import {
   judgeRequestError,
   lastCandidateRequestError,
@@ -86,7 +94,19 @@ import {
   type PoolRequestErrorVerdict,
   type UnconfirmedRequestError,
 } from './hub-pool-request-error';
-import { CONNECT_TIMEOUT_MS, MIN_PREFILL_TOKENS_PER_SEC, estimatePromptTokens, forwardBudgetMs } from './hub-pool-budget';
+import {
+  CONNECT_TIMEOUT_MS,
+  LAST_LOCAL_BUDGET_FACTOR,
+  MIN_PREFILL_TOKENS_PER_SEC,
+  estimatePromptTokens,
+  forwardBudgetMs,
+  lastLocalBudgetMs,
+} from './hub-pool-budget';
+
+/** Added to a forward's deadline message when it ran under the last local candidate's longer budget, so the 502 names the setting that decided it. */
+const LAST_LOCAL_DEADLINE_NOTE = ' (last candidate, on this node)';
+import { type NativeChatPlan, nativeChatPlan, nativeChatPlanAt, nativeChatWindow, openAiChatResponse, optionsNumCtx } from './ollama-native-chat';
+import { lemonadeChatPlan, nativeChatResponseFromOpenAi } from './lemonade-native-chat';
 import {
   MAX_JUDGED_BODY_BYTES,
   OutputJudge,
@@ -101,6 +121,7 @@ import {
   type OutputVerdict,
   type PoolOutputFault,
 } from './hub-pool-output-check';
+import { foldOllamaTerminalRecords } from './ollama-terminal-record';
 import {
   LOCAL_LISTING_DEADLINE_MS,
   MERGED_LISTING_PATHS,
@@ -333,15 +354,12 @@ export function isStreamingRequest(body: unknown, path?: string): boolean {
  * what an engine actually loads the model at. The OpenAI-compatible `/v1` surface has no such field
  * and Ollama ignores one if sent (see `describeFromPeer`'s note on the Hermes probe), so a `/v1`
  * request runs at the serving engine's own default window — which is what the node's cap records.
- * For those, the caller falls back to the prompt estimate; see `applyContextCaps`. Anything but a
- * positive integer is no request, not a tiny one.
+ * The exception is a `/v1` chat completion that names one, which the pool sends to Ollama's native
+ * route (see `requestedWindow`). For the rest, the caller falls back to the prompt estimate; see
+ * `applyContextCaps`. Anything but a positive integer is no request, not a tiny one.
  */
 export function requestedNumCtx(body: unknown): number | null {
-  if (!isRecord(body) || !isRecord(body.options)) {
-    return null;
-  }
-  const raw = body.options.num_ctx;
-  return typeof raw === 'number' && Number.isInteger(raw) && raw > 0 ? raw : null;
+  return optionsNumCtx(body);
 }
 
 /**
@@ -370,7 +388,12 @@ function safeJson(value: unknown): string {
   }
 }
 
-export function describeAllCandidatesFailed(model: string, candidates: number, lastError: unknown): string {
+export function describeAllCandidatesFailed(
+  model: string,
+  candidates: number,
+  lastError: unknown,
+  { withCause = true }: { withCause?: boolean } = {},
+): string {
   // `String(someObject)` is "[object Object]", which tells the operator nothing and hides the one
   // field that would have. A rejected value here is not always an Error — a fetch layer can reject
   // with a plain object carrying `code`/`errno` — so serialise those rather than stringifying them.
@@ -394,7 +417,9 @@ export function describeAllCandidatesFailed(model: string, candidates: number, l
       'a node loading weights, reading a long prompt slowly or serving a long queue hits it while remaining healthy.'
     );
   }
-  return `All ${candidates} pool ${plural} for model "${model}" failed${message ? `: ${message}` : '.'}`;
+  // The cause names a node, its address or its pairing state. A reply through the tunnel leaves that out (`withCause: false`).
+  const reason = withCause ? message : '';
+  return `All ${candidates} pool ${plural} for model "${model}" failed${reason ? `: ${reason}` : '.'}`;
 }
 /**
  * Which deadline actually expired, in the terms an operator can act on.
@@ -412,6 +437,13 @@ export function describeAppliedDeadline(message: string, undiciHeaderTimeout: bo
   const applied = /No (response headers|completion) within (\d+)ms/.exec(message);
   if (applied) {
     const ms = Number(applied[2]);
+    if (message.includes(LAST_LOCAL_DEADLINE_NOTE)) {
+      const waitedFor = applied[1] === 'completion' ? 'a whole non-streamed completion' : 'response headers';
+      return (
+        `the last waited ${ms}ms for ${waitedFor} from this node's own engine, the last candidate left, which gets its usual ` +
+        `budget times HUB_POOL_LAST_LOCAL_BUDGET_FACTOR (${LAST_LOCAL_BUDGET_FACTOR})`
+      );
+    }
     if (applied[1] === 'completion') {
       return (
         `the last waited ${ms}ms for a whole non-streamed completion — HUB_POOL_COMPLETION_TIMEOUT_MS, ` +
@@ -596,6 +628,9 @@ const PEER_PAIRING_STATUSES: ReadonlySet<number> = new Set([401, 403]);
  * request that ranks it, and agent traffic ranks all day. Each refusal is still in the routing log.
  */
 const PEER_ENGINE_REFUSAL_WARN_INTERVAL_MS = 10 * 60_000;
+
+/** How often the same `auto` pass-over goes out at log level; see `PoolProxyService.noteAutoPassOver`. */
+const AUTO_PASS_OVER_NOTE_INTERVAL_MS = 10 * 60_000;
 
 /**
  * How long a request waits in the Hub, with its model's load refused only because other models'
@@ -1288,8 +1323,31 @@ const WINDOW_RELOADING_BACKENDS: ReadonlySet<InferenceBackendType> = new Set<Inf
 /** Sentinel a residency read's placement budget resolves to, distinct from any answer the engine gives — see `prefixCanStillBeWarm`. */
 const RESIDENCY_BUDGET_ELAPSED = Symbol('residency budget elapsed');
 
-/** The window a request runs at when it names one: `options.num_ctx` on Ollama's native routes, never on `/v1`, where Ollama drops `options` and its default applies. */
+/**
+ * What `listResident` answers, or {@link RESIDENCY_BUDGET_ELAPSED} when it has not answered within
+ * {@link PLACEMENT_PROBE_BUDGET_MS}. Rejects when the read throws, synchronously or not.
+ */
+async function residencyWithinBudget(listResident: () => Promise<BackendResidency>): Promise<BackendResidency | typeof RESIDENCY_BUDGET_ELAPSED> {
+  let budgetTimer: NodeJS.Timeout | undefined;
+  const budget = new Promise<typeof RESIDENCY_BUDGET_ELAPSED>((resolve) => {
+    budgetTimer = setTimeout(() => resolve(RESIDENCY_BUDGET_ELAPSED), PLACEMENT_PROBE_BUDGET_MS);
+  });
+  try {
+    return await Promise.race([listResident(), budget]);
+  } finally {
+    clearTimeout(budgetTimer);
+  }
+}
+
+/**
+ * The window a request runs at when it names one: `options.num_ctx` on Ollama's native routes. A `/v1`
+ * chat completion that names one runs at it too, because the pool sends it to the native route (`nativeChatWindow`, #2310).
+ * Any other `/v1` request is counted at the engine's default, because Ollama's `/v1` drops `options`. A chat
+ * completion that names none may still run at the window its model is loaded at on this node's Ollama, which
+ * is only decided at the forward (`loadedWindowPlan`), so this doesn't know it.
+ */
 function requestedWindow(path: string, body: unknown): number | null {
+  if (path === '/v1/chat/completions') return nativeChatWindow(body);
   return path.startsWith('/api/') ? requestedNumCtx(body) : null;
 }
 
@@ -1718,6 +1776,8 @@ export class PoolProxyService {
   private readonly prefixAffinity = new PrefixAffinityStore();
   /** When each peer engine's key refusal was last warned about — see {@link warnPeerEngineRefusal}. Bounded by peers × engines × two statuses. */
   private readonly peerEngineRefusalWarnedAt = new Map<string, number>();
+  /** The last `auto` pass-over line written at log level, and when. See {@link noteAutoPassOver}. */
+  private lastAutoPassOverNote: { line: string; at: number } | undefined;
   /**
    * Engines that have been answering 200 with cut-off or degenerate output, and are withheld from the
    * front of the walk for a cooldown — see `hub-pool-output-check.ts`. Per node, engine and model.
@@ -1735,7 +1795,7 @@ export class PoolProxyService {
    * the operator had set nothing, took the registry's pinned or loaded model and then the first one
    * the engine listed — beta-ms-a2's newest pull, `deepseek-r1:8b`.
    */
-  async resolveModelAlias(model: string): Promise<string | undefined> {
+  async resolveModelAlias(model: string, body?: unknown): Promise<string | undefined> {
     if (model !== AUTO_MODEL) {
       return model;
     }
@@ -1744,11 +1804,32 @@ export class PoolProxyService {
     const choice = chooseAutoModel(collectPoolModelOffers(inventories), {
       preferred: this.preferredChatModel(),
       catalog: this.modelRegistry?.getCatalog() ?? [],
+      needs: autoModelNeeds(body),
     });
-    if (choice) {
+    if (choice?.passedOver) {
+      this.noteAutoPassOver(choice.passedOver, choice.model);
+    } else if (choice) {
       this.logger.debug(`[PoolProxy] "${AUTO_MODEL}" resolved to "${choice.model}" (${choice.reason})`);
     }
     return choice?.model;
+  }
+
+  /**
+   * The operator's line for `auto` passing over their Settings > Inference model. An agent sends a
+   * turn every few seconds and the setting stays put, so it goes out at log level once per
+   * {@link AUTO_PASS_OVER_NOTE_INTERVAL_MS} for the same pass-over and at debug in between.
+   */
+  private noteAutoPassOver(passedOver: NonNullable<AutoModelChoice['passedOver']>, chosen: string): void {
+    const lacking = passedOver.lacks.map((need) => (need === 'tools' ? 'tool calling' : 'thinking')).join(' or ');
+    const line = `[PoolProxy] "${AUTO_MODEL}" passed over the Settings > Inference model "${passedOver.model}" (no ${lacking}, which this request uses) for "${chosen}"`;
+    const now = Date.now();
+    const last = this.lastAutoPassOverNote;
+    if (last && last.line === line && now - last.at < AUTO_PASS_OVER_NOTE_INTERVAL_MS) {
+      this.logger.debug(line);
+      return;
+    }
+    this.lastAutoPassOverNote = { line, at: now };
+    this.logger.log(line);
   }
 
   /** Settings → Inference, as an engine id. A catalog id maps through its row, an engine id stands as itself. */
@@ -2514,12 +2595,8 @@ export class PoolProxyService {
     if (typeof engine?.listResident !== 'function') {
       return null;
     }
-    let budgetTimer: NodeJS.Timeout | undefined;
-    const budget = new Promise<typeof RESIDENCY_BUDGET_ELAPSED>((resolve) => {
-      budgetTimer = setTimeout(() => resolve(RESIDENCY_BUDGET_ELAPSED), PLACEMENT_PROBE_BUDGET_MS);
-    });
     try {
-      const residency = await Promise.race([engine.listResident(), budget]);
+      const residency = await residencyWithinBudget(engine.listResident.bind(engine));
       if (residency === RESIDENCY_BUDGET_ELAPSED) {
         return `its residency did not answer within ${PLACEMENT_PROBE_BUDGET_MS} ms`;
       }
@@ -2529,8 +2606,6 @@ export class PoolProxyService {
       return residency.models.some((resident) => sameModelId(resident.id, model)) ? null : `${model} is no longer resident there`;
     } catch (error) {
       return `its residency could not be read: ${error instanceof Error ? error.message : String(error)}`;
-    } finally {
-      clearTimeout(budgetTimer);
     }
   }
 
@@ -2660,7 +2735,7 @@ export class PoolProxyService {
     const { path, method, res } = params;
     const startedAt = Date.now();
     const clientClosed = watch.clientClosed;
-    const model = await this.resolveModelAlias(params.model);
+    const model = await this.resolveModelAlias(params.model, params.body);
     if (!model) {
       const failed = this.routingLog.record({
         at: new Date().toISOString(),
@@ -2765,8 +2840,16 @@ export class PoolProxyService {
       res.setHeader(POOL_REQUEST_ID_HEADER, failed.id);
       // `localBackends` is the container's-eye view of every local engine: the operator reading
       // this on a node that plainly runs the model needs the probed URL and the error, not a
-      // second look at the inventory.
-      res.status(502).json({ error: describeNoCandidates(model, pin, localProbes), localBackends: localProbes });
+      // second look at the inventory. Those URLs and errors stay on the machine's own network: a
+      // reply through the tunnel gets the reason alone, and the routing log's row says only
+      // `no candidate`, so the operator repeats the request from inside to see them.
+      res
+        .status(502)
+        .json(
+          arrivedThroughTunnel(res.req)
+            ? { error: describeNoCandidates(model, pin) }
+            : { error: describeNoCandidates(model, pin, localProbes), localBackends: localProbes },
+        );
       return;
     }
 
@@ -2935,7 +3018,14 @@ export class PoolProxyService {
             );
           }
         }
-        const upstream = await this.forward(candidate, path, method, body, model, payload(), row.id, clientClosed);
+        const untried = walk.slice(index + 1);
+        // This node's own engine with nothing after it gets a longer budget: a cut here would only throw its work away (#2310).
+        const lastLocal = candidate.peerId === null && untried.length === 0;
+        if (lastLocal && row.budgetMs !== null) {
+          // The row's budget is the deadline its forward runs under, and the dashboard warns as a wait nears it.
+          this.routingLog.update(row, { budgetMs: lastLocalBudgetMs(row.budgetMs) });
+        }
+        const upstream = await this.forward(candidate, path, method, body, model, payload(), row.id, clientClosed, lastLocal);
         const headersAt = Date.now();
         // Read before the serving record and the failover decision, because both turn on it: a 500
         // that proves the request is bad is neither the model failing nor a reason to try the next node.
@@ -2943,7 +3033,6 @@ export class PoolProxyService {
         // Before the failover branch, so both outcomes teach the local engine the same thing: a
         // live request is the only place the pool ever learns whether a model actually serves.
         this.noteLocalServing(candidate, model, upstream.status, verdict);
-        const untried = walk.slice(index + 1);
         // A peer's engine refusing the key the peer holds for it: another node may well serve the
         // request, so it is tried, but the pairing is fine and the peer keeps its inventory. On the
         // last candidate the engine's own answer goes back, as a local engine's 401 always has,
@@ -3077,6 +3166,7 @@ export class PoolProxyService {
         let relayCut = false;
         try {
           await this.streamResponse(upstream, res, watch, {
+            path,
             onUsage: (usage) => {
               this.routingLog.attachUsage(row, usage);
               if (meter) meter.timing.usage = usage;
@@ -3186,7 +3276,9 @@ export class PoolProxyService {
         res.setHeader(name, value);
       }
     }
-    this.respondUncommitted(res, 502, { error: describeAllCandidatesFailed(model, candidates.length, lastError) });
+    this.respondUncommitted(res, 502, {
+      error: describeAllCandidatesFailed(model, candidates.length, lastError, { withCause: !arrivedThroughTunnel(res.req) }),
+    });
   }
 
   /**
@@ -3715,6 +3807,7 @@ export class PoolProxyService {
       let relayCut = false;
       try {
         await this.streamResponse(upstream, res, watch, {
+          path,
           onUsage: meter
             ? (usage) => {
                 meter.timing.usage = usage;
@@ -3913,7 +4006,7 @@ export class PoolProxyService {
         }
         this.commitResponse(upstream, res);
         committed = true;
-        await this.streamResponse(upstream, res, watch);
+        await this.streamResponse(upstream, res, watch, { path });
         return;
       } catch (error) {
         this.logger.debug(`[PoolProxy] ${path} via local ${type} failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -4120,7 +4213,7 @@ export class PoolProxyService {
         }
         this.commitResponse(upstream, res, servedByHeaders(candidate, model));
         committed = true;
-        await this.streamResponse(upstream, res, watch);
+        await this.streamResponse(upstream, res, watch, { path });
         return true;
       } catch (error) {
         this.logger.debug(
@@ -4162,7 +4255,7 @@ export class PoolProxyService {
     if (!isRecord(body)) return body;
     const fields = ['name', 'model'].filter((field) => body[field] === AUTO_MODEL);
     if (fields.length === 0) return body;
-    const resolved = await this.resolveModelAlias(AUTO_MODEL);
+    const resolved = await this.resolveModelAlias(AUTO_MODEL, body);
     if (!resolved) return null;
     return { ...body, ...Object.fromEntries(fields.map((field) => [field, resolved])) };
   }
@@ -4335,21 +4428,94 @@ export class PoolProxyService {
     body: unknown,
     payload: string | undefined = forwardedPayload(method, body),
     clientClosed?: AbortSignal,
+    lastLocal = false,
   ): Promise<globalThis.Response> {
     const backendImpl = this.backends.get(backend);
-    const url = `${backendImpl.getBaseUrl()}${path}`;
     const apiKey = backendImpl.getApiKey?.();
+    const headers = { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) };
+    // Ollama's `/v1` drops `options.num_ctx`, so a chat completion that names a window goes to its native
+    // `/api/chat`, which honours it. The answer comes back in the OpenAI shape (#2310). See `ollama-native-chat.ts`.
+    // One that names none runs at the window its model is already loaded at, when that is safe, so it doesn't reload it.
+    const native =
+      backend === 'ollama' && method === 'POST' && path === '/v1/chat/completions'
+        ? (nativeChatPlan(body) ?? (await this.loadedWindowPlan(backend, body, Buffer.byteLength(payload ?? '', 'utf8'))))
+        : null;
+    if (native) {
+      const upstream = await this.fetchWithConnectTimeout(
+        `${backendImpl.getBaseUrl()}/api/chat`,
+        { method, headers, body: JSON.stringify(native.request) },
+        native.stream,
+        payload?.length ?? 0,
+        clientClosed,
+        lastLocal,
+      );
+      return await openAiChatResponse(upstream, native);
+    }
+    // Lemonade's native `/api/chat` reports only the uncached part of the prompt, so an agent that
+    // sizes its context from it never compacts. Its `/v1` reports the whole prompt. See `lemonade-native-chat.ts`.
+    const lemonade = backend === 'lemonade' && method === 'POST' && path === '/api/chat' ? lemonadeChatPlan(body) : null;
+    if (lemonade) {
+      const upstream = await this.fetchWithConnectTimeout(
+        `${backendImpl.getBaseUrl()}/v1/chat/completions`,
+        { method, headers, body: JSON.stringify(lemonade.request) },
+        lemonade.stream,
+        payload?.length ?? 0,
+        clientClosed,
+        lastLocal,
+      );
+      return await nativeChatResponseFromOpenAi(upstream, lemonade);
+    }
     return this.fetchWithConnectTimeout(
-      url,
-      {
-        method,
-        headers: { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
-        body: payload,
-      },
+      `${backendImpl.getBaseUrl()}${path}`,
+      { method, headers, body: payload },
       isStreamingRequest(body, path),
       payload?.length ?? 0,
       clientClosed,
+      lastLocal,
     );
+  }
+
+  /**
+   * A `/v1` chat completion that names no window, sent at the window its model is already loaded at
+   * on this node's `backend`, or `null` to send it to `/v1` as before.
+   *
+   * Hermes names `num_ctx` on its main turns but not on side calls such as title generation. Once
+   * the main turn runs at its window (see {@link nativeChatPlan}), a side call on `/v1` ran at the
+   * engine's default, so Ollama reloaded the model for it and again for the next main turn: two
+   * reloads per turn, each minutes on a CPU. Running the side call at the loaded window reloads
+   * nothing. The model must be resident at a window Ollama reports, the prompt estimate at most half
+   * of it and the window above the default this node states for the engine. At that default `/v1`
+   * reloads nothing either. Below it `/v1` gives the request more room. A node that states no
+   * default can't rule that out, so there a request may get less room than `/v1` would have given it.
+   * Anything else, a model that isn't loaded included, goes to `/v1` exactly as before. Residency is
+   * read within {@link PLACEMENT_PROBE_BUDGET_MS}.
+   *
+   * Placement and the window bookkeeping still count such a request at the engine's default (see
+   * `requestedWindow`), because the window is only known here, at the forward.
+   */
+  private async loadedWindowPlan(backend: InferenceBackendType, body: unknown, bodyBytes: number): Promise<NativeChatPlan | null> {
+    if (!isRecord(body) || typeof body.model !== 'string' || optionsNumCtx(body) !== null) {
+      return null;
+    }
+    const engine = this.backends.tryGet(backend);
+    if (typeof engine?.listResident !== 'function') {
+      return null;
+    }
+    const model = body.model;
+    // A residency that throws, or isn't a promise, is no answer rather than a failed forward.
+    const residency = await residencyWithinBudget(engine.listResident.bind(engine)).catch(() => null);
+    if (residency === null || residency === RESIDENCY_BUDGET_ELAPSED) {
+      return null;
+    }
+    const loaded = residency?.models?.find((resident) => sameModelId(resident.id, model))?.contextLength;
+    if (typeof loaded !== 'number' || !Number.isInteger(loaded) || loaded <= 0) {
+      return null;
+    }
+    const engineDefault = this.localEngineWindow(backend);
+    if (estimatePromptTokens(bodyBytes) * 2 > loaded || (engineDefault !== null && loaded <= engineDefault)) {
+      return null;
+    }
+    return nativeChatPlanAt(body, loaded);
   }
 
   private async forward(
@@ -4361,11 +4527,12 @@ export class PoolProxyService {
     payload: string | undefined = forwardedPayload(method, body),
     requestId?: string,
     clientClosed?: AbortSignal,
+    lastLocal = false,
   ): Promise<globalThis.Response> {
     if (candidate.peerId === null) {
       // The Hub's residency arbitration has already run for a generation, in the routed walk, which
       // is the only caller that sends one here: see `arbitrateLocalLoad`.
-      return this.callBackend(candidate.backend, path, method, body, payload, clientClosed);
+      return this.callBackend(candidate.backend, path, method, body, payload, clientClosed, lastLocal);
     }
 
     const peer = await this.peerService.getPeerById(candidate.peerId);
@@ -4416,6 +4583,9 @@ export class PoolProxyService {
    * `clientClosed` is combined with the deadline rather than checked around it, because the signal
    * given to `fetch` also governs the response body: after headers the deadline timer is cleared, but
    * a client that leaves mid-stream still aborts the upstream connection. See CLIENT_CLOSED_MESSAGE.
+   *
+   * `lastLocal` is set for this node's own engine when no candidate is left after it, which gets
+   * {@link lastLocalBudgetMs} instead (see LAST_LOCAL_BUDGET_FACTOR, #2310).
    */
   private async fetchWithConnectTimeout(
     url: string,
@@ -4423,15 +4593,21 @@ export class PoolProxyService {
     streaming = false,
     bodyBytes = 0,
     clientClosed?: AbortSignal,
+    lastLocal = false,
   ): Promise<globalThis.Response> {
     const controller = new AbortController();
     // A streamed request's first byte waits on the prompt being read, so its budget grows with the
     // prompt (see MIN_PREFILL_TOKENS_PER_SEC); a non-streamed one waits on the whole completion.
-    const budget = forwardBudgetMs(streaming, bodyBytes);
+    const usual = forwardBudgetMs(streaming, bodyBytes);
+    const budget = lastLocal ? lastLocalBudgetMs(usual) : usual;
+    const note = lastLocal ? LAST_LOCAL_DEADLINE_NOTE : '';
     const timer = setTimeout(
       () =>
         controller.abort(
-          new PoolForwardDeadlineError(streaming ? `No response headers within ${budget}ms` : `No completion within ${budget}ms`, budget),
+          new PoolForwardDeadlineError(
+            streaming ? `No response headers within ${budget}ms${note}` : `No completion within ${budget}ms${note}`,
+            budget,
+          ),
         ),
       budget,
     );
@@ -4474,8 +4650,9 @@ export class PoolProxyService {
   }
 
   /**
-   * Relay the body to the caller. Everything in `taps` is optional and reads the body on the way past
-   * without changing a byte: `onUsage` and `observer` a token-usage frame and engine timings (see
+   * Relay the body to the caller. Everything in `taps` is optional. `path` names the route, so an
+   * Ollama-native stream can have its closing records folded into one. The rest read the body on the
+   * way past without changing a byte: `onUsage` and `observer` a token-usage frame and engine timings (see
    * `response-usage-tap.ts`), `judge` whether the answer finished and said anything (see
    * `hub-pool-output-check.ts`). `body` replaces the upstream's own when the caller has already read
    * it — a non-streamed completion held to be judged.
@@ -4492,6 +4669,7 @@ export class PoolProxyService {
       observer?: ResponseTapObserver;
       judge?: OutputJudge | null;
       body?: WebReadableStream<Uint8Array>;
+      path?: string;
     } = {},
   ): Promise<void> {
     const source = taps.body ?? (upstream.body as WebReadableStream<Uint8Array> | null);
@@ -4500,6 +4678,11 @@ export class PoolProxyService {
       return;
     }
     let body = source;
+    // The one place the relay rewrites anything: an Ollama-native stream must end with a single
+    // `done` record, and Lemonade sends two. See `ollama-terminal-record.ts`.
+    if (taps.path && outputDialectOf(taps.path) === 'ollama-native' && isStreamedContentType(upstream.headers.get('content-type'))) {
+      body = foldOllamaTerminalRecords(body as unknown as ReadableStream<Uint8Array>) as unknown as WebReadableStream<Uint8Array>;
+    }
     if (taps.onUsage || taps.observer) {
       body = tapResponseUsageWhileStreaming(body, taps.onUsage ?? (() => undefined), taps.observer);
     }

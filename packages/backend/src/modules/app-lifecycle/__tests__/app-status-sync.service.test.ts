@@ -8,6 +8,8 @@ import { SSEService } from '@/core/sse/sse.service';
 import { SystemEventsQueue } from '@/modules/queue/entities/system-events';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
+import type { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
+import type { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppOperationRegistry } from '../app-operation-registry';
 import type Dockerode from 'dockerode';
 
@@ -16,19 +18,24 @@ describe('AppStatusSyncService', () => {
   let appRepository: MockProxy<AppsRepository>;
   let docker: MockProxy<Dockerode>;
   let errorReportingService: MockProxy<ErrorReportingService>;
+  let agentNotifyService: MockProxy<AgentNotifyService>;
   let sseService: MockProxy<SSEService>;
   let installPipelineTracker: InstallPipelineTracker;
   let operationRegistry: AppOperationRegistry;
   let dockerReadFacade: { diagnoseAppContainers: ReturnType<typeof vi.fn> };
   let logger: MockProxy<LoggerService>;
+  let appFilesManager: MockProxy<AppFilesManager>;
 
   beforeEach(() => {
     logger = mock<LoggerService>();
+    appFilesManager = mock<AppFilesManager>();
+    appFilesManager.getOneShotServiceNames.mockResolvedValue(new Set());
     appRepository = mock<AppsRepository>();
     appRepository.updateAppByIdIfStatus.mockResolvedValue(true);
     docker = mock<Dockerode>();
     docker.listContainers.mockResolvedValue([]);
     errorReportingService = mock<ErrorReportingService>();
+    agentNotifyService = mock<AgentNotifyService>();
     sseService = mock<SSEService>();
     installPipelineTracker = new InstallPipelineTracker();
     operationRegistry = new AppOperationRegistry(mock<LoggerService>());
@@ -58,10 +65,12 @@ describe('AppStatusSyncService', () => {
       docker,
       installPipelineTracker,
       operationRegistry,
-      undefined,
+      agentNotifyService,
       errorReportingService,
       undefined,
       dockerReadFacade as never,
+      undefined,
+      appFilesManager,
     );
   });
 
@@ -80,6 +89,75 @@ describe('AppStatusSyncService', () => {
 
     expect(appRepository.updateAppById).not.toHaveBeenCalled();
     expect(result.skippedCount).toBe(1);
+  });
+
+  describe('an app that failed to come up', () => {
+    const failed = (status: string) => [{ id: 7, appName: 'ci-memory', appStoreSlug: 'ci-marketplace', status, updatedAt: new Date().toISOString() }];
+    const labelled = (id: string, State: string, Status: string) => ({
+      Id: id,
+      State,
+      Status,
+      Labels: { 'ci-hub.appurn': 'ci-memory:ci-marketplace' },
+    });
+
+    it.each([
+      ['a service crash-looping', [labelled('web', 'running', 'Up 4 minutes'), labelled('summary', 'restarting', 'Restarting (126) 3 seconds ago')]],
+      ['a container left Created by a compose up that failed (#2041)', [labelled('openclaw', 'created', 'Created')]],
+      [
+        'a service that exited with an error',
+        [labelled('web', 'running', 'Up 4 minutes'), labelled('migrate', 'exited', 'Exited (1) 4 minutes ago')],
+      ],
+      ['every container stopped', [labelled('web', 'exited', 'Exited (0) 4 minutes ago')]],
+    ])('stays install_failed with %s, so the failure message and Retry install stay', async (_name, containers) => {
+      appRepository.getApps.mockResolvedValue(failed('install_failed') as never);
+      docker.listContainers.mockResolvedValue(containers as never);
+
+      await service.syncAllAppStatuses();
+
+      expect(appRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+      expect(sseService.emit).not.toHaveBeenCalled();
+      expect(agentNotifyService.notify).not.toHaveBeenCalled();
+      expect(errorReportingService.reportAppFailure).not.toHaveBeenCalled();
+    });
+
+    it('reaches running by itself once its containers have come good', async () => {
+      appRepository.getApps.mockResolvedValue(failed('install_failed') as never);
+      docker.listContainers.mockResolvedValue([labelled('web', 'running', 'Up 4 minutes'), labelled('summary', 'running', 'Up 2 minutes')] as never);
+
+      await service.syncAllAppStatuses();
+
+      expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'install_failed', { status: 'running' });
+      expect(sseService.emit).toHaveBeenCalledWith('app', { event: 'status_change', appUrn: 'ci-memory:ci-marketplace', appStatus: 'running' });
+      expect(agentNotifyService.notify).not.toHaveBeenCalled();
+    });
+
+    it.each(['install_failed', 'stopped'])('stays %s when the look lands on a crash loop between two crashes', async (status) => {
+      appRepository.getApps.mockResolvedValue(failed(status) as never);
+      docker.listContainers.mockResolvedValue([labelled('web', 'running', 'Up 4 minutes'), labelled('summary', 'running', 'Up 3 seconds')] as never);
+
+      await service.syncAllAppStatuses();
+
+      expect(appRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+    });
+
+    it('still moves a stopped app whose containers have been up a while to running', async () => {
+      appRepository.getApps.mockResolvedValue(failed('stopped') as never);
+      docker.listContainers.mockResolvedValue([labelled('web', 'running', 'Up About a minute')] as never);
+
+      await service.syncAllAppStatuses();
+
+      expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'stopped', { status: 'running' });
+    });
+
+    it('still reports a running app that started crashing as a crash', async () => {
+      appRepository.getApps.mockResolvedValue(failed('running') as never);
+      docker.listContainers.mockResolvedValue([labelled('summary', 'restarting', 'Restarting (126) 3 seconds ago')] as never);
+
+      await service.syncAllAppStatuses();
+
+      expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { status: 'stopped' });
+      expect(agentNotifyService.notify).toHaveBeenCalledWith('app.crashed', expect.objectContaining({ appUrn: 'ci-memory:ci-marketplace' }), 'high');
+    });
   });
 
   it('does not mark installing apps as missing while no containers exist within the pull grace', async () => {
@@ -233,6 +311,99 @@ describe('AppStatusSyncService', () => {
   });
 
   /*
+   * A restart, backup, or restore takes the app's containers down before it brings them back, and can
+   * run as long as the queue allows. Five minutes in, the sync read the missing containers as a stopped
+   * app (Companion-Hub#1985). A boot start that pulls the images an uninstall removed is the same case
+   * (Companion-Hub#1980). The row's last update is past the time window here, so only the registry
+   * entry keeps the app skipped.
+   */
+  it.each([
+    ['restarting', 'restart'],
+    ['backing_up', 'backup'],
+    ['starting', 'start'],
+  ] as const)('leaves a %s app with no containers alone while its operation is in the registry', async (status, command) => {
+    appRepository.getApps.mockResolvedValue([
+      { id: 14, appName: 'wordpress', appStoreSlug: 'ci-marketplace', status, updatedAt: new Date(Date.now() - 50 * 60 * 1000).toISOString() },
+    ] as never);
+    operationRegistry.register('wordpress:ci-marketplace' as never, { requestId: 'req-14', command, tier: 'safe' });
+
+    const result = await service.syncAllAppStatuses();
+
+    expect(appRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+    expect(sseService.emit).not.toHaveBeenCalled();
+    expect(errorReportingService.captureWarning).not.toHaveBeenCalled();
+    expect(errorReportingService.reportAppFailure).not.toHaveBeenCalled();
+    expect(result.skippedCount).toBe(1);
+  });
+
+  /*
+   * A queued command's entry clears when the queue gives up on it, but a force stop calls Docker
+   * directly with no timeout of its own. An entry that outlives the queue timeout no longer holds the app.
+   */
+  it('reads Docker for an app whose registry entry has outlived the queue timeout', async () => {
+    appRepository.getApps.mockResolvedValue([
+      {
+        id: 16,
+        appName: 'wordpress',
+        appStoreSlug: 'ci-marketplace',
+        status: 'stopping',
+        updatedAt: new Date(Date.now() - 50 * 60 * 1000).toISOString(),
+      },
+    ] as never);
+    const entry = operationRegistry.register('wordpress:ci-marketplace' as never, { requestId: 'req-16', command: 'stop', tier: 'safe' });
+    entry.createdAt = Date.now() - 50 * 60 * 1000;
+
+    await service.syncAllAppStatuses();
+
+    expect(errorReportingService.captureWarning).toHaveBeenCalledWith(
+      "App wordpress:ci-marketplace stuck in 'stopping'",
+      expect.objectContaining({ appUrn: 'wordpress:ci-marketplace', status: 'stopping' }),
+      expect.anything(),
+    );
+    expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(16, 'stopping', { status: 'stopped' });
+  });
+
+  /*
+   * A backend restart empties the registry. A command RabbitMQ hands to the new process writes no
+   * status when it ends, so this sync is what settles the row. With the queue's 45 minutes as the
+   * window, an in-app update that restarted the backend during a restart left the app on Restarting
+   * that long. A row the registry does not list keeps the window it always had.
+   */
+  it('settles a restarting app the registry does not list from Docker once eventsTimeout has passed', async () => {
+    appRepository.getApps.mockResolvedValue([
+      {
+        id: 15,
+        appName: 'wordpress',
+        appStoreSlug: 'ci-marketplace',
+        status: 'restarting',
+        updatedAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+      },
+    ] as never);
+
+    await service.syncAllAppStatuses();
+
+    expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(15, 'restarting', { status: 'stopped' });
+    expect(errorReportingService.reportAppFailure).not.toHaveBeenCalled();
+  });
+
+  it('leaves an updating app the registry does not list alone while its image pull may still run', async () => {
+    appRepository.getApps.mockResolvedValue([
+      {
+        id: 15,
+        appName: 'wordpress',
+        appStoreSlug: 'ci-marketplace',
+        status: 'updating',
+        updatedAt: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+      },
+    ] as never);
+
+    const result = await service.syncAllAppStatuses();
+
+    expect(appRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+    expect(result.skippedCount).toBe(1);
+  });
+
+  /*
    * Postgres hands a `timestamp` back without a zone ("2026-10-01 10:00:00.123456"), and the Hub writes
    * them as UTC. Every fixture above is an ISO string ending in Z, which names its zone and so hid that
    * the sync read the other kind in the PROCESS's zone: the Hub container runs in the host's.
@@ -330,6 +501,175 @@ describe('AppStatusSyncService', () => {
     );
   });
 
+  /*
+   * The desktop's Stop Hub stops every app container with `docker stop`, so each one exits 0.
+   * Counting a clean exit as healthy, which is there for one-shot init services, kept such an app
+   * `running` with nothing running at all, and nothing offered to start it (Companion-Hub#1938).
+   */
+  it('marks an app stopped when every container exited cleanly', async () => {
+    appRepository.getApps.mockResolvedValue([
+      { id: 10, appName: 'wordpress', appStoreSlug: 'ci-marketplace', status: 'running', updatedAt: new Date().toISOString() },
+    ] as never);
+    docker.listContainers.mockResolvedValue([
+      {
+        Id: 'wp',
+        State: 'exited',
+        Status: 'Exited (0) 6 minutes ago',
+        Labels: { 'ci-hub.appurn': 'wordpress:ci-marketplace' },
+      },
+      {
+        Id: 'db',
+        State: 'exited',
+        Status: 'Exited (0) 6 minutes ago',
+        Labels: { 'ci-hub.appurn': 'wordpress:ci-marketplace' },
+      },
+    ] as never);
+
+    await service.syncAllAppStatuses();
+
+    expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(10, 'running', expect.objectContaining({ status: 'stopped' }));
+    expect(sseService.emit).toHaveBeenCalledWith('app', { event: 'status_change', appUrn: 'wordpress:ci-marketplace', appStatus: 'stopped' });
+  });
+
+  it('keeps an app running when only its one-shot service has exited with an error', async () => {
+    appFilesManager.getOneShotServiceNames.mockResolvedValue(new Set(['sync']));
+    appRepository.getApps.mockResolvedValue([
+      { id: 14, appName: 'listmonk', appStoreSlug: 'ci-marketplace', status: 'running', updatedAt: new Date().toISOString() },
+    ] as never);
+    docker.listContainers.mockResolvedValue([
+      {
+        Id: 'web',
+        State: 'running',
+        Status: 'Up 2 hours',
+        Labels: { 'ci-hub.appurn': 'listmonk:ci-marketplace', 'com.docker.compose.service': 'web' },
+      },
+      {
+        Id: 'sync',
+        State: 'exited',
+        Status: 'Exited (1) 2 hours ago',
+        Labels: { 'ci-hub.appurn': 'listmonk:ci-marketplace', 'com.docker.compose.service': 'sync' },
+      },
+    ] as never);
+
+    await service.syncAllAppStatuses();
+
+    expect(appRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+    expect(errorReportingService.captureWarning).not.toHaveBeenCalled();
+  });
+
+  it('marks an app stopped when a long-running service exited with an error, one-shot or no one-shot beside it', async () => {
+    appFilesManager.getOneShotServiceNames.mockResolvedValue(new Set(['sync']));
+    appRepository.getApps.mockResolvedValue([
+      { id: 15, appName: 'listmonk', appStoreSlug: 'ci-marketplace', status: 'running', updatedAt: new Date().toISOString() },
+    ] as never);
+    docker.listContainers.mockResolvedValue([
+      {
+        Id: 'web',
+        State: 'running',
+        Status: 'Up 2 hours',
+        Labels: { 'ci-hub.appurn': 'listmonk:ci-marketplace', 'com.docker.compose.service': 'web' },
+      },
+      {
+        Id: 'sync',
+        State: 'exited',
+        Status: 'Exited (1) 2 hours ago',
+        Labels: { 'ci-hub.appurn': 'listmonk:ci-marketplace', 'com.docker.compose.service': 'sync' },
+      },
+      {
+        Id: 'worker',
+        State: 'exited',
+        Status: 'Exited (1) 2 hours ago',
+        Labels: { 'ci-hub.appurn': 'listmonk:ci-marketplace', 'com.docker.compose.service': 'worker' },
+      },
+    ] as never);
+
+    await service.syncAllAppStatuses();
+
+    expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(15, 'running', expect.objectContaining({ status: 'stopped' }));
+  });
+
+  it('keeps an app running when only its one-shot init service has exited cleanly', async () => {
+    appRepository.getApps.mockResolvedValue([
+      { id: 11, appName: 'ci-memory', appStoreSlug: 'ci-marketplace', status: 'running', updatedAt: new Date().toISOString() },
+    ] as never);
+    docker.listContainers.mockResolvedValue([
+      {
+        Id: 'api',
+        State: 'running',
+        Status: 'Up 2 hours',
+        Labels: { 'ci-hub.appurn': 'ci-memory:ci-marketplace' },
+      },
+      {
+        Id: 'migrate',
+        State: 'exited',
+        Status: 'Exited (0) 2 hours ago',
+        Labels: { 'ci-hub.appurn': 'ci-memory:ci-marketplace' },
+      },
+    ] as never);
+
+    await service.syncAllAppStatuses();
+
+    expect(appRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+  });
+
+  /*
+   * Every container exiting 0 means something stopped the app on purpose. A stop from the Hub reports
+   * no crash, so this one doesn't either: no app.crashed for the agent, nothing to error reporting.
+   */
+  it('reports no crash for an app it marks stopped because every container exited cleanly', async () => {
+    appRepository.getApps.mockResolvedValue([
+      { id: 12, appName: 'wordpress', appStoreSlug: 'ci-marketplace', status: 'running', updatedAt: new Date().toISOString() },
+    ] as never);
+    docker.listContainers.mockResolvedValue([
+      {
+        Id: 'wp',
+        State: 'exited',
+        Status: 'Exited (0) 6 minutes ago',
+        Labels: { 'ci-hub.appurn': 'wordpress:ci-marketplace' },
+      },
+      {
+        Id: 'db',
+        State: 'exited',
+        Status: 'Exited (0) 6 minutes ago',
+        Labels: { 'ci-hub.appurn': 'wordpress:ci-marketplace' },
+      },
+    ] as never);
+
+    await service.syncAllAppStatuses();
+
+    expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(12, 'running', expect.objectContaining({ status: 'stopped' }));
+    expect(agentNotifyService.notify).not.toHaveBeenCalled();
+    expect(errorReportingService.reportAppFailure).not.toHaveBeenCalled();
+  });
+
+  it('still reports a crash when one of the stopped containers exited with an error', async () => {
+    appRepository.getApps.mockResolvedValue([
+      { id: 13, appName: 'wordpress', appStoreSlug: 'ci-marketplace', status: 'running', updatedAt: new Date().toISOString() },
+    ] as never);
+    docker.listContainers.mockResolvedValue([
+      {
+        Id: 'wp',
+        State: 'exited',
+        Status: 'Exited (137) 1 minute ago',
+        Labels: { 'ci-hub.appurn': 'wordpress:ci-marketplace' },
+      },
+      {
+        Id: 'db',
+        State: 'exited',
+        Status: 'Exited (0) 1 minute ago',
+        Labels: { 'ci-hub.appurn': 'wordpress:ci-marketplace' },
+      },
+    ] as never);
+
+    await service.syncAllAppStatuses();
+
+    expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(13, 'running', expect.objectContaining({ status: 'stopped' }));
+    expect(agentNotifyService.notify).toHaveBeenCalledWith('app.crashed', expect.objectContaining({ appUrn: 'wordpress:ci-marketplace' }), 'high');
+    expect(errorReportingService.reportAppFailure).toHaveBeenCalledWith(
+      expect.objectContaining({ appUrn: 'wordpress:ci-marketplace', phase: 'crash' }),
+    );
+  });
+
   it('reports top-level sync failures to Sentry so crash detection outages are visible', async () => {
     const boom = new Error('docker list failed');
     appRepository.getApps.mockRejectedValue(boom);
@@ -340,7 +680,48 @@ describe('AppStatusSyncService', () => {
     expect(errorReportingService.captureException).toHaveBeenCalledWith(boom, { surface: 'app-status-sync' });
   });
 
-  it('attaches container logs when reporting a running → stopped crash', async () => {
+  it('treats an unreachable Docker socket as a warning, not an error on every pass', async () => {
+    docker.listContainers.mockRejectedValue(
+      Object.assign(new Error('connect EACCES /var/run/docker.sock'), { code: 'EACCES', address: '/var/run/docker.sock' }),
+    );
+
+    const result = await service.syncAllAppStatuses();
+
+    expect(result.success).toBe(false);
+    expect(errorReportingService.captureException).not.toHaveBeenCalled();
+    expect(errorReportingService.captureWarning).toHaveBeenCalledWith(
+      'App status sync cannot reach the Docker socket',
+      { surface: 'app-status-sync' },
+      { debounceKey: 'app-status-sync:docker-socket', debounceMs: 60 * 60_000 },
+    );
+  });
+
+  it('treats a Docker call the read-only proxy refuses as a warning, not an error on every pass', async () => {
+    docker.listContainers.mockRejectedValue(
+      Object.assign(new Error('(HTTP code 403) unexpected - blocked by the read-only test proxy '), { statusCode: 403 }),
+    );
+
+    const result = await service.syncAllAppStatuses();
+
+    expect(result.success).toBe(false);
+    expect(errorReportingService.captureException).not.toHaveBeenCalled();
+    expect(errorReportingService.captureWarning).toHaveBeenCalledWith(
+      'App status sync was refused by the read-only Docker proxy',
+      { surface: 'app-status-sync' },
+      { debounceKey: 'app-status-sync:docker-proxy-refused', debounceMs: 60 * 60_000 },
+    );
+  });
+
+  it('keeps any other Docker refusal an error', async () => {
+    docker.listContainers.mockRejectedValue(Object.assign(new Error('(HTTP code 403) unexpected - forbidden '), { statusCode: 403 }));
+
+    await service.syncAllAppStatuses();
+
+    expect(errorReportingService.captureException).toHaveBeenCalledWith(expect.any(Error), { surface: 'app-status-sync' });
+    expect(errorReportingService.captureWarning).not.toHaveBeenCalled();
+  });
+
+  it('reports a running → stopped crash without sending app logs to telemetry', async () => {
     appRepository.getApps.mockResolvedValue([
       {
         id: 9,
@@ -368,9 +749,10 @@ describe('AppStatusSyncService', () => {
     expect(errorReportingService.reportAppFailure).toHaveBeenCalledWith({
       appUrn: 'remotion-studio:ci-marketplace',
       phase: 'crash',
-      message: expect.stringContaining('Error: out of memory'),
-      containers: [{ name: 'remotion-studio_ci-marketplace-1', state: 'Exited (1)', logs: 'Error: out of memory' }],
+      message: 'App transitioned from running to stopped during status sync\nremotion-studio_ci-marketplace-1 (Exited (1))',
+      containers: [{ name: 'remotion-studio_ci-marketplace-1', state: 'Exited (1)' }],
     });
+    expect(JSON.stringify(errorReportingService.reportAppFailure.mock.calls)).not.toContain('Error: out of memory');
   });
 
   describe('app containers without an app row', () => {

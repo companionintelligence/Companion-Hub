@@ -1,10 +1,11 @@
 /** biome-ignore-all lint/suspicious/noTemplateCurlyInString: intended */
+import { hubNetworkName } from '@/common/constants';
 import { createAppUrn } from '@/common/helpers/app-helpers';
 import { CI_MARKETPLACE_STORE_SLUG } from '@/core/portal/portal.constants';
 import type { ServiceInput } from '@ci-hub/common/schemas';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import yaml from 'yaml';
-import { DockerComposeBuilder } from '../compose.builder';
+import { DockerComposeBuilder, volumePathsBeforeMoves } from '../compose.builder';
 import { ServiceBuilder } from '../service.builder';
 
 const urn = createAppUrn('nginx', 'store-id');
@@ -48,43 +49,37 @@ describe('DockerComposeBuilder', () => {
     }
   });
 
-  it('attaches main services to both Hub networks during canonical migration', async () => {
-    const previousHubContainerName = process.env.HUB_CONTAINER_NAME;
-    process.env.HUB_CONTAINER_NAME = 'ci-hub';
-    try {
-      const compose = await composeBuilder.getDockerCompose([{ name: 'service', image: 'image', isMain: true }], {}, urn, subnet);
-      const parsed = yaml.parse(compose);
-
-      expect(parsed.services.service.networks).toMatchObject({
-        'ci-hub_network': { gw_priority: 1 },
-        'ci-os-hub_network': { gw_priority: 0 },
-      });
-      expect(parsed.networks['ci-hub_network']).toEqual({ name: 'ci-hub_network', external: true });
-      expect(parsed.networks['ci-os-hub_network']).toEqual({ name: 'ci-os-hub_network', external: true });
-    } finally {
-      if (previousHubContainerName === undefined) delete process.env.HUB_CONTAINER_NAME;
-      else process.env.HUB_CONTAINER_NAME = previousHubContainerName;
+  // Every app's main container used to join the shared Hub networks too, where any other app could reach
+  // it without the Hub login and claim a name other containers looked up.
+  it.each([
+    ['current', { HUB_CONTAINER_NAME: 'ci-hub' }],
+    ['image-only update', { HUB_CONTAINER_NAME: undefined, RABBITMQ_HOST: 'ci-os-hub-queue' }],
+  ] as const)('puts every service on the app’s own network and no shared Hub network (%s topology)', async (_topology, env) => {
+    const previous = { HUB_CONTAINER_NAME: process.env.HUB_CONTAINER_NAME, RABBITMQ_HOST: process.env.RABBITMQ_HOST };
+    for (const [key, value] of Object.entries(env)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
     }
-  });
-
-  it('writes only the existing legacy Hub network during an image-only update', async () => {
-    const previousHubContainerName = process.env.HUB_CONTAINER_NAME;
-    const previousRabbitmqHost = process.env.RABBITMQ_HOST;
-    delete process.env.HUB_CONTAINER_NAME;
-    process.env.RABBITMQ_HOST = 'ci-os-hub-queue';
     try {
-      const compose = await composeBuilder.getDockerCompose([{ name: 'service', image: 'image', isMain: true }], {}, urn, subnet);
+      const compose = await composeBuilder.getDockerCompose(
+        [
+          { name: 'service', image: 'image', isMain: true },
+          { name: 'sidecar', image: 'image', addToMainNetwork: true },
+        ],
+        {},
+        urn,
+        subnet,
+      );
       const parsed = yaml.parse(compose);
 
-      expect(parsed.services.service.networks['ci-os-hub_network']).toEqual({ gw_priority: 1 });
-      expect(parsed.services.service.networks).not.toHaveProperty('ci-hub_network');
-      expect(parsed.networks['ci-os-hub_network']).toEqual({ name: 'ci-os-hub_network', external: true });
-      expect(parsed.networks).not.toHaveProperty('ci-hub_network');
+      expect(Object.keys(parsed.services.service.networks)).toEqual(['nginx_store-id_network']);
+      expect(Object.keys(parsed.services.sidecar.networks)).toEqual(['nginx_store-id_network']);
+      expect(Object.keys(parsed.networks)).toEqual(['nginx_store-id_network']);
     } finally {
-      if (previousHubContainerName === undefined) delete process.env.HUB_CONTAINER_NAME;
-      else process.env.HUB_CONTAINER_NAME = previousHubContainerName;
-      if (previousRabbitmqHost === undefined) delete process.env.RABBITMQ_HOST;
-      else process.env.RABBITMQ_HOST = previousRabbitmqHost;
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
     }
   });
 
@@ -121,6 +116,20 @@ describe('DockerComposeBuilder', () => {
   });
 
   describe('app security sandbox', () => {
+    // The Hub, Traefik and the VPN sidecar join every app network, where a service name is a DNS alias:
+    // an app service called `ci-hub` could answer the sidecar's lookup of the Hub, login and all.
+    it.each(['ci-hub', 'ci-os-hub', 'hub-tailscale', 'ci-hub-db', 'ci-hub-queue', 'CI-Hub'])('refuses a service named %s', async (name) => {
+      const service: ServiceInput = { name, image: 'image', internalPort: 80 };
+      await expect(composeBuilder.getDockerCompose([service], {}, urn, subnet)).rejects.toThrow(/reserved for the Hub's own containers/);
+    });
+
+    it('accepts a service named like a store app of its own (traefik, cloudflared)', async () => {
+      for (const name of ['traefik', 'cloudflared']) {
+        const service: ServiceInput = { name, image: 'image', internalPort: 80 };
+        await expect(composeBuilder.getDockerCompose([service], {}, urn, subnet)).resolves.toBeDefined();
+      }
+    });
+
     it('rejects a privileged service from a non-allowlisted app', async () => {
       const service: ServiceInput = { name: 'svc', image: 'image', internalPort: 80, privileged: true };
       // `urn` is the nginx app (not in TRUSTED_APP_SECURITY_ALLOWLIST)
@@ -135,6 +144,38 @@ describe('DockerComposeBuilder', () => {
         volumes: [{ hostPath: '/var/run/docker.sock', containerPath: '/var/run/docker.sock' }],
       };
       await expect(composeBuilder.getDockerCompose([service], {}, urn, subnet)).rejects.toThrow(/host-privileged access/);
+    });
+
+    it('refuses a folder inside another the app can write to, across services', async () => {
+      const services: ServiceInput[] = [
+        { name: 'web', image: 'image', internalPort: 80, isMain: true, volumes: [{ hostPath: '${APP_DATA_DIR}/data', containerPath: '/data' }] },
+        { name: 'db', image: 'image', volumes: [{ hostPath: '${APP_DATA_DIR}/data/db', containerPath: '/var/lib/db' }] },
+      ];
+      await expect(composeBuilder.getDockerCompose(services, {}, urn, subnet)).rejects.toThrow(
+        /mounts a folder inside another folder it can write to: "\$\{APP_DATA_DIR\}\/data\/db" \(db\) is inside "\$\{APP_DATA_DIR\}\/data", which web can write to/,
+      );
+    });
+
+    it('builds folders side by side, and one inside a folder mounted read-only', async () => {
+      const services: ServiceInput[] = [
+        {
+          name: 'web',
+          image: 'image',
+          internalPort: 80,
+          isMain: true,
+          volumes: [
+            { hostPath: '${APP_DATA_DIR}/data/app', containerPath: '/data' },
+            { hostPath: '${APP_DATA_DIR}/data/config', containerPath: '/config', readOnly: true },
+          ],
+        },
+        { name: 'db', image: 'image', volumes: [{ hostPath: '${APP_DATA_DIR}/data/db', containerPath: '/var/lib/db' }] },
+        {
+          name: 'nats',
+          image: 'image',
+          volumes: [{ hostPath: '${APP_DATA_DIR}/data/config/nats.conf', containerPath: '/nats.conf', readOnly: true }],
+        },
+      ];
+      await expect(composeBuilder.getDockerCompose(services, {}, urn, subnet)).resolves.toBeDefined();
     });
 
     it('rejects host network mode from a non-allowlisted app', async () => {
@@ -415,8 +456,8 @@ describe('DockerComposeBuilder', () => {
       ulimits: { nproc: 1024, nofile: 65536 },
       command: 'node index.js',
       volumes: [
-        { hostPath: '/host/path', containerPath: '/container/path', readOnly: true },
-        { hostPath: '/host/path2', containerPath: '/container/path2' },
+        { hostPath: '${APP_DATA_DIR}/host/path', containerPath: '/container/path', readOnly: true },
+        { hostPath: '${APP_DATA_DIR}/host/path2', containerPath: '/container/path2' },
       ],
       environment: [
         { key: 'NODE_ENV', value: 'production' },
@@ -519,6 +560,41 @@ describe('DockerComposeBuilder', () => {
 
       expect(yamlObject.services.database.volumes).toEqual(['data-db:/var/lib/postgresql']);
       expect(yamlObject.volumes).toEqual({ 'data-db': {} });
+    });
+
+    it('keeps the volume of the path a data move came from, where the data already is', async () => {
+      // ci-openclaw: `/data` was `${APP_DATA_DIR}/data` and moved to `data/app`. On this host it lived in
+      // the volume `data`, which a folder move on disk does not touch.
+      const openclaw: ServiceInput = {
+        name: 'openclaw',
+        image: 'image',
+        internalPort: 80,
+        isMain: true,
+        volumes: [
+          { hostPath: '${APP_DATA_DIR}/data/app', containerPath: '/data', requiresPosixPermissions: true },
+          { hostPath: '${APP_DATA_DIR}/data/linuxbrew', containerPath: '/home/linuxbrew', requiresPosixPermissions: true },
+        ],
+      };
+      const builder = permissionlessBuilder().applyOptions({ dataMoves: [{ from: 'data', to: 'data/app' }] });
+      const yamlObject = yaml.parse(await builder.getDockerCompose([openclaw], {}, urn, subnet));
+
+      expect(yamlObject.services.openclaw.volumes).toEqual(['data:/data', 'data-linuxbrew:/home/linuxbrew']);
+      expect(yamlObject.volumes).toEqual({ data: {}, 'data-linuxbrew': {} });
+    });
+
+    it('follows a chain of moves back to the first path, and leaves moves from the data folder itself out', () => {
+      expect(
+        volumePathsBeforeMoves([
+          { from: 'data/postgres', to: 'data/pg' },
+          { from: 'data/pg', to: 'data/db' },
+          { from: '.', to: 'data/app' },
+        ]),
+      ).toEqual(
+        new Map([
+          ['data/pg', 'data/postgres'],
+          ['data/db', 'data/postgres'],
+        ]),
+      );
     });
 
     it('gives sidecars sharing a data directory the same volume so they still share data', async () => {
@@ -837,6 +913,29 @@ describe('DockerComposeBuilder', () => {
 
     expect(yaml).toMatchSnapshot();
   });
+
+  it('should support kata and confidential container runtimes (kata, kata-qemu, kata-cc)', async () => {
+    const services: ServiceInput[] = [
+      {
+        name: 'secure-app',
+        image: 'myorg/confidential-app:1.0.0',
+        runtime: 'kata-cc',
+        isMain: true,
+        internalPort: 8080,
+      },
+      {
+        name: 'worker',
+        image: 'myorg/worker:1.0.0',
+        runtime: 'kata-qemu',
+      },
+    ];
+
+    const composeResult = await composeBuilder.getDockerCompose(services, { appId: 'test-secure-app' }, urn, subnet);
+    const parsed = yaml.parse(composeResult);
+
+    expect(parsed.services['secure-app'].runtime).toBe('kata-cc');
+    expect(parsed.services.worker.runtime).toBe('kata-qemu');
+  });
 });
 
 const mainService: ServiceInput = {
@@ -987,7 +1086,7 @@ describe('DockerComposeBuilder — the app-starting page on every app router', (
     return yaml.parse(result).services as Record<string, { labels: Record<string, string | boolean> }>;
   };
 
-  it('keeps a manifest’s own chain, login included, when it replaces ours under the app-id placeholder', async () => {
+  it('keeps our chain ahead of a manifest’s own when it sets one on our routers under the app-id placeholder', async () => {
     // Donetick's shape: the manifest names the router through `{{CI_HUB_APP_ID}}` and sets its chain.
     const services = await labelsFor({ exposureMode: 'cloudflare', enableAuth: true }, [
       {
@@ -1000,10 +1099,11 @@ describe('DockerComposeBuilder — the app-starting page on every app router', (
     ]);
     const labels = services.nginx?.labels ?? {};
 
-    expect(labels['traefik.http.routers.nginx-store-id.middlewares']).toBe('ci-hub@file,nginx-store-id-public-host@docker,ci-hub-app-starting@file');
-    expect(labels['traefik.http.routers.nginx-store-id-insecure.middlewares']).toBe(
-      'ci-hub@file,nginx-store-id-public-host@docker,ci-hub-app-starting@file',
-    );
+    for (const router of ['nginx-store-id', 'nginx-store-id-insecure']) {
+      expect(labels[`traefik.http.routers.${router}.middlewares`], router).toBe(
+        'ci-hub-edge-headers@file,ci-hub@file,nginx-store-id-public-host@docker,ci-hub-app-starting@file',
+      );
+    }
     expect(Object.keys(labels).some((key) => key.includes('{{'))).toBe(false);
   });
 
@@ -1037,12 +1137,13 @@ describe('DockerComposeBuilder — the app-starting page on every app router', (
         internalPort: 8080,
         extraLabels: {
           'traefik.enable': true,
-          'traefik.http.routers.{{CI_HUB_APP_ID}}-admin.rule': 'Host(`admin.ci.lan`)',
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-admin.rule': 'Host(`${APP_DOMAIN}`) && PathPrefix(`/admin`)',
           'traefik.http.routers.{{CI_HUB_APP_ID}}-admin.entrypoints': 'web',
         },
       },
     ]);
 
+    expect(services.admin?.labels['traefik.http.routers.nginx-store-id-admin.rule']).toBe('Host(`${APP_DOMAIN}`) && PathPrefix(`/admin`)');
     expect(services.admin?.labels['traefik.http.routers.nginx-store-id-admin.middlewares']).toBe('ci-hub-app-starting@file');
   });
 
@@ -1117,6 +1218,26 @@ describe('DockerComposeBuilder resource limits', () => {
     const parsed = yaml.parse(compose);
 
     expect(parsed.services.nginx.deploy).toBeUndefined();
+  });
+
+  it('caps a service that sets no CPU limit at the Default app CPU limit from Settings', async () => {
+    builder = new DockerComposeBuilder('example.com', 'ci.lan', true, { defaultAppCpuLimit: '0.5' });
+
+    const parsed = yaml.parse(await build({}));
+
+    expect(parsed.services.nginx.deploy.resources.limits).toEqual({ cpus: '0.5' });
+  });
+
+  it('lets the install form and the app manifest beat the Default app CPU limit', async () => {
+    const cappedByManifest: ServiceInput = { ...service, deploy: { resources: { limits: { cpus: '0.25' } } } };
+
+    builder = new DockerComposeBuilder('example.com', 'ci.lan', true, { defaultAppCpuLimit: '0.5' });
+    const fromForm = yaml.parse(await build({ cpuLimit: '2' }));
+    builder = new DockerComposeBuilder('example.com', 'ci.lan', true, { defaultAppCpuLimit: '0.5' });
+    const fromManifest = yaml.parse(await build({}, [cappedByManifest]));
+
+    expect(fromForm.services.nginx.deploy.resources.limits).toEqual({ cpus: '2' });
+    expect(fromManifest.services.nginx.deploy.resources.limits).toEqual({ cpus: '0.25' });
   });
 });
 
@@ -1250,5 +1371,395 @@ describe('DockerComposeBuilder network sandboxing and defense-in-depth', () => {
 
     expect(parsed.services.web.security_opt).toContain('no-new-privileges:true');
     expect(parsed.services.web.extra_hosts).toContain('ci-hub-db:127.0.0.1');
+  });
+});
+
+/*
+ * The Hub finds an app's containers by `ci-hub.appurn` and the other labels it writes. An app's extra
+ * labels set after them could name another app, so the Hub took this container for that one. The
+ * Hub's own labels win, and reserved keys an app declares are left out.
+ */
+describe('DockerComposeBuilder — the Hub keeps its own labels', () => {
+  const customUrn = createAppUrn('my-app', '_user');
+
+  it('does not let extra labels replace or add Hub labels, and keeps the app’s other labels', async () => {
+    const result = await new DockerComposeBuilder('ci.computer', 'ci.lan').getDockerCompose(
+      [
+        {
+          name: 'web',
+          image: 'nginx:alpine',
+          isMain: true,
+          internalPort: 80,
+          extraLabels: {
+            'ci-hub.appurn': 'n8n:ci-marketplace',
+            'ci-hub.managed': false,
+            'ci-os-hub.appurn': 'n8n:ci-marketplace',
+            'ci-hub.extra': 'x',
+            'com.example.team': 'web',
+          },
+        },
+      ],
+      { exposureMode: 'local' },
+      customUrn,
+      subnet,
+    );
+    const labels = yaml.parse(result).services.web.labels as Record<string, string | boolean>;
+
+    expect(labels).toMatchObject({
+      'ci-hub.appurn': 'my-app:_user',
+      'ci-hub.managed': true,
+      'ci-os-hub.appurn': 'my-app:_user',
+      'ci-os-hub.managed': true,
+      'com.example.team': 'web',
+    });
+    expect(labels).not.toHaveProperty('ci-hub.extra');
+  });
+});
+
+/*
+ * One Traefik reads every app container's labels. A custom app's router that sent its traffic to
+ * another app's service reached that app's backend with no Hub login, a higher priority on another
+ * app's host showed this app in its place, and another app's router name took that app offline. The
+ * schema refuses these, and the builder leaves them out of a compose that never met it.
+ */
+describe('DockerComposeBuilder — an app’s Traefik labels stay inside the app', () => {
+  const customUrn = createAppUrn('my-app', '_user');
+  const ORIGIN = 'my-app-hub1-acme.ci.lan';
+
+  const labelsFor = async (form: Record<string, unknown>, extraLabels: Record<string, string | boolean>) => {
+    const result = await new DockerComposeBuilder('ci.computer', 'ci.lan').getDockerCompose(
+      [{ name: 'web', image: 'nginx:alpine', isMain: true, internalPort: 80, extraLabels }],
+      form,
+      customUrn,
+      subnet,
+      'ci.computer',
+      'ci.lan',
+      undefined,
+      ORIGIN,
+    );
+    return yaml.parse(result).services.web.labels as Record<string, string | boolean>;
+  };
+
+  it('leaves out a router that reaches another app and keeps the app’s own labels', async () => {
+    const labels = await labelsFor(
+      { exposureMode: 'cloudflare', enableAuth: true },
+      {
+        'traefik.http.routers.{{CI_HUB_APP_ID}}-side.rule': 'Host(`${APP_DOMAIN}`) && PathPrefix(`/side`)',
+        'traefik.http.routers.{{CI_HUB_APP_ID}}-side.service': 'n8n-ci-marketplace',
+        'traefik.http.routers.{{CI_HUB_APP_ID}}-shadow.rule': 'Host(`n8n-hub1-acme.ci.lan`)',
+        'traefik.http.routers.{{CI_HUB_APP_ID}}-shadow.priority': '9999',
+        'traefik.http.routers.n8n-ci-marketplace.rule': 'Host(`${APP_DOMAIN}`)',
+        'traefik.tcp.routers.{{CI_HUB_APP_ID}}.rule': 'HostSNI(`*`)',
+        'com.example.team': 'web',
+      },
+    );
+
+    expect(labels).toMatchObject({
+      'traefik.http.routers.my-app-_user-side.rule': 'Host(`${APP_DOMAIN}`) && PathPrefix(`/side`)',
+      'traefik.http.routers.my-app-_user-shadow.priority': '9999',
+      'traefik.http.routers.my-app-_user.rule': `Host(\`${ORIGIN}\`)`,
+      'traefik.http.routers.my-app-_user.service': 'my-app-_user',
+      'com.example.team': 'web',
+    });
+    expect(labels).not.toHaveProperty('traefik.http.routers.my-app-_user-side.service');
+    expect(labels).not.toHaveProperty('traefik.http.routers.my-app-_user-shadow.rule');
+    expect(Object.keys(labels).filter((key) => key.includes('n8n') || key.startsWith('traefik.tcp.'))).toEqual([]);
+  });
+
+  it('keeps the Hub login on our routers when a manifest’s chain leaves it out', async () => {
+    const labels = await labelsFor(
+      { exposureMode: 'cloudflare', enableAuth: true },
+      {
+        'traefik.http.middlewares.{{CI_HUB_APP_ID}}-proto.headers.customrequestheaders.X-Forwarded-Proto': 'https',
+        'traefik.http.routers.{{CI_HUB_APP_ID}}.middlewares': '{{CI_HUB_APP_ID}}-proto@docker',
+        'traefik.http.routers.{{CI_HUB_APP_ID}}-insecure.middlewares': '{{CI_HUB_APP_ID}}-gzip@docker',
+        // Traefik reads option names without regard to case, so this is the same chain.
+        'traefik.http.routers.{{CI_HUB_APP_ID}}-insecure.MIDDLEWARES': 'ci-hub@docker,{{CI_HUB_APP_ID}}-proto@docker',
+      },
+    );
+
+    expect(labels['traefik.http.routers.my-app-_user.middlewares']).toBe(
+      'ci-hub-edge-headers@file,ci-hub@file,my-app-_user-proto@docker,ci-hub-app-starting@file',
+    );
+    // The Hub's forward auth under the Docker provider is the same login, so it isn't asked for twice.
+    // The other spelling is folded into ours, the one key Traefik and TraefikConfigService both read.
+    expect(labels['traefik.http.routers.my-app-_user-insecure.middlewares']).toBe(
+      'ci-hub-edge-headers@file,ci-hub@file,my-app-_user-gzip@docker,my-app-_user-proto@docker,ci-hub-app-starting@file',
+    );
+    expect(labels).not.toHaveProperty('traefik.http.routers.my-app-_user-insecure.MIDDLEWARES');
+  });
+
+  // What an app saved before the label rules reaches the builder with: it leaves out both kinds and
+  // says which.
+  it('leaves out the Hub’s own labels and refused Traefik labels and logs each', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const labels = await labelsFor(
+        { exposureMode: 'cloudflare', enableAuth: true },
+        { 'traefik.docker.network': 'another_network', 'ci-hub.appurn': 'other-app:ci-marketplace', 'com.example.team': 'web' },
+      );
+
+      // The Hub's own value, not the app's.
+      expect(labels['traefik.docker.network']).not.toBe('another_network');
+      expect(labels['traefik.docker.network']).toMatch(/_network$/);
+      expect(labels['ci-hub.appurn']).toBe('my-app:_user');
+      expect(labels['com.example.team']).toBe('web');
+      const logged = warn.mock.calls.map(([line]) => String(line));
+      expect(logged).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(/label traefik\.docker\.network was left out \[CUSTOM_APP_ERROR_TRAEFIK_NETWORK_NOT_HUB\]/),
+          expect.stringMatching(/label ci-hub\.appurn was left out \[CUSTOM_APP_ERROR_LABEL_RESERVED\]/),
+        ]),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('keeps names that spell the app id out, as a compose written for this app may', async () => {
+    const labels = await labelsFor(
+      { exposureMode: 'local' },
+      {
+        'traefik.enable': true,
+        'traefik.http.routers.my-app-_user-admin.rule': 'Host(`${APP_LOCAL_DOMAIN}`)',
+        'traefik.http.routers.my-app-_user-admin.service': 'my-app-_user-admin',
+        'traefik.http.services.my-app-_user-admin.loadbalancer.server.port': '8080',
+      },
+    );
+
+    expect(labels).toMatchObject({
+      'traefik.enable': true,
+      'traefik.http.routers.my-app-_user-admin.rule': 'Host(`${APP_LOCAL_DOMAIN}`)',
+      'traefik.http.routers.my-app-_user-admin.service': 'my-app-_user-admin',
+      'traefik.http.services.my-app-_user-admin.loadbalancer.server.port': '8080',
+    });
+  });
+
+  // The Hub pins Traefik to the app's own network, the one Traefik joins. An app's own pin may name that
+  // network and no other: not a shared Hub network, which no app is on any more.
+  it('keeps an app’s pin to its own network, and no other', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const own = {
+        'traefik.enable': true,
+        'traefik.http.routers.{{CI_HUB_APP_ID}}-lan.rule': 'Host(`${APP_LOCAL_DOMAIN}`)',
+        'traefik.http.routers.{{CI_HUB_APP_ID}}-lan.entrypoints': 'web',
+        'traefik.http.services.{{CI_HUB_APP_ID}}.loadbalancer.server.port': '80',
+      };
+      const pinned = await labelsFor({ exposureMode: 'local' }, { ...own, 'traefik.docker.network': 'my-app__user_network' });
+      const hub = await labelsFor({ exposureMode: 'local' }, { ...own, 'traefik.docker.network': hubNetworkName() });
+      const elsewhere = await labelsFor({ exposureMode: 'local' }, { ...own, 'traefik.docker.network': 'another-app_network' });
+
+      expect(pinned['traefik.docker.network']).toBe('my-app__user_network');
+      expect(pinned['traefik.http.routers.my-app-_user-lan.rule']).toBe('Host(`${APP_LOCAL_DOMAIN}`)');
+      for (const labels of [hub, elsewhere]) {
+        expect(labels).not.toHaveProperty('traefik.docker.network');
+        expect(labels['traefik.http.routers.my-app-_user-lan.rule']).toBe('Host(`${APP_LOCAL_DOMAIN}`)');
+      }
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('pins Traefik to the app’s own network on a route the Hub builds', async () => {
+    const result = await new DockerComposeBuilder('ci.computer', 'ci.lan').getDockerCompose(
+      [{ name: 'web', image: 'nginx:alpine', isMain: true, internalPort: 80 }],
+      { exposureMode: 'cloudflare' },
+      customUrn,
+      subnet,
+      'ci.computer',
+      'ci.lan',
+    );
+    const { web } = yaml.parse(result).services;
+
+    expect(web.labels['traefik.docker.network']).toBe('my-app__user_network');
+    expect(Object.keys(web.networks)).toEqual(['my-app__user_network']);
+  });
+
+  // A router keeps all of its labels or none: the chain it asked for may hold the Hub login.
+  it('leaves out the whole of a router whose chain it leaves out', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const labels = await labelsFor(
+        { exposureMode: 'cloudflare', enableAuth: true },
+        {
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-api.rule': 'Host(`${APP_LOCAL_DOMAIN}`) && PathPrefix(`/api`)',
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-api.entrypoints': 'web',
+          'traefik.http.routers.my-app-_user-api.service': 'my-app-_user',
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-api.middlewares': 'ci-hub@file,authelia-ci-marketplace@docker',
+          // On the Hub's router, only the app's labels go: the Hub's own keep it and its chain.
+          'traefik.http.routers.{{CI_HUB_APP_ID}}.middlewares': 'ci-hub@file,authelia-ci-marketplace@docker',
+          'traefik.http.routers.{{CI_HUB_APP_ID}}.rule': 'Host(`${APP_LOCAL_DOMAIN}`)',
+        },
+      );
+
+      expect(Object.keys(labels).filter((key) => key.includes('-api'))).toEqual([]);
+      expect(labels['traefik.http.routers.my-app-_user.rule']).toBe(`Host(\`${ORIGIN}\`)`);
+      expect(labels['traefik.http.routers.my-app-_user.middlewares']).toBe('ci-hub-edge-headers@file,ci-hub@file,ci-hub-app-starting@file');
+      expect(warn.mock.calls.map(([line]) => String(line))).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(
+            /label traefik\.http\.routers\.my-app-_user-api\.service was left out \[CUSTOM_APP_ERROR_TRAEFIK_MIDDLEWARE_NOT_OWN on /,
+          ),
+        ]),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // Traefik reads a router spelled two ways as one router and only one of its two chains.
+  it('gives a router spelled in another case no second chain', async () => {
+    const labels = await labelsFor(
+      { exposureMode: 'cloudflare', enableAuth: true },
+      { 'traefik.http.routers.MY-APP-_user.entrypoints': 'websecure' },
+    );
+
+    expect(
+      Object.keys(labels)
+        .filter((key) => key.toLowerCase().endsWith('.middlewares'))
+        .sort(),
+    ).toEqual([
+      'traefik.http.routers.my-app-_user-insecure.middlewares',
+      'traefik.http.routers.my-app-_user-sw-reset-insecure.middlewares',
+      'traefik.http.routers.my-app-_user-sw-reset.middlewares',
+      'traefik.http.routers.my-app-_user.middlewares',
+    ]);
+    expect(labels['traefik.http.routers.my-app-_user.middlewares']).toBe('ci-hub-edge-headers@file,ci-hub@file,ci-hub-app-starting@file');
+  });
+});
+
+/*
+ * An app's id is its name and its store's slug joined by a dash. Both may hold dashes. The same app
+ * in stores `home` and `home-lab` is `app-home` and `app-home-lab`, so `{{CI_HUB_APP_ID}}-lab` from
+ * `app-home` is the other app's main Traefik service. Traefik's Docker provider merges a service of
+ * one name across containers. The builder gives each name to the app with the longest id that covers
+ * it, among every app the Hub knows.
+ */
+describe('DockerComposeBuilder: a name that starts with this app’s id can be another app’s', () => {
+  const ORIGIN = 'app-hub1-acme.ci.lan';
+
+  const build = async (appUrn: ReturnType<typeof createAppUrn>, knownAppIds: string[] | undefined, extraLabels: Record<string, string | boolean>) => {
+    const result = await new DockerComposeBuilder('ci.computer', 'ci.lan', true, knownAppIds ? { knownAppIds } : undefined).getDockerCompose(
+      [{ name: 'web', image: 'nginx:alpine', isMain: true, internalPort: 80, extraLabels }],
+      { exposureMode: 'cloudflare', enableAuth: true },
+      appUrn,
+      subnet,
+      'ci.computer',
+      'ci.lan',
+      undefined,
+      ORIGIN,
+    );
+    return yaml.parse(result).services.web.labels as Record<string, string | boolean>;
+  };
+
+  const reachingLabels = {
+    'traefik.http.routers.{{CI_HUB_APP_ID}}-side.rule': 'Host(`${APP_DOMAIN}`) && PathPrefix(`/side`)',
+    'traefik.http.routers.{{CI_HUB_APP_ID}}-side.service': '{{CI_HUB_APP_ID}}-lab',
+    'traefik.http.services.{{CI_HUB_APP_ID}}-lab.loadbalancer.server.port': '80',
+    'traefik.http.routers.{{CI_HUB_APP_ID}}-web.service': '{{CI_HUB_APP_ID}}-web',
+    'traefik.http.services.{{CI_HUB_APP_ID}}-web.loadbalancer.server.port': '8080',
+  };
+
+  it('leaves out the labels that name the other app’s service and says whose they are', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const labels = await build(createAppUrn('app', 'home'), ['app-home', 'app-home-lab'], reachingLabels);
+
+      expect(labels).toMatchObject({
+        'traefik.http.routers.app-home-side.rule': 'Host(`${APP_DOMAIN}`) && PathPrefix(`/side`)',
+        'traefik.http.routers.app-home-web.service': 'app-home-web',
+        'traefik.http.services.app-home-web.loadbalancer.server.port': '8080',
+        // The Hub's own route for the app is untouched.
+        'traefik.http.routers.app-home.service': 'app-home',
+        'traefik.http.services.app-home.loadbalancer.server.port': '80',
+      });
+      expect(labels).not.toHaveProperty('traefik.http.routers.app-home-side.service');
+      expect(Object.keys(labels).filter((key) => key.includes('app-home-lab'))).toEqual([]);
+      expect(warn.mock.calls.map(([line]) => String(line))).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(
+            /label traefik\.http\.routers\.\{\{CI_HUB_APP_ID\}\}-side\.service was left out \[CUSTOM_APP_ERROR_TRAEFIK_SERVICE_NOT_OWN, it is app-home-lab's\]/,
+          ),
+          expect.stringMatching(/label traefik\.http\.services\.\{\{CI_HUB_APP_ID\}\}-lab\.loadbalancer\.server\.port was left out/),
+        ]),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('keeps them without the other app’s id, as before', async () => {
+    const labels = await build(createAppUrn('app', 'home'), undefined, reachingLabels);
+
+    expect(labels['traefik.http.routers.app-home-side.service']).toBe('app-home-lab');
+    expect(labels['traefik.http.services.app-home-lab.loadbalancer.server.port']).toBe('80');
+  });
+
+  it('leaves the app with the longer id all of its own names', async () => {
+    const labels = await build(createAppUrn('app', 'home-lab'), ['app-home', 'app-home-lab'], {
+      'traefik.http.routers.{{CI_HUB_APP_ID}}-web.rule': 'Host(`${APP_DOMAIN}`)',
+      'traefik.http.routers.{{CI_HUB_APP_ID}}-web.service': '{{CI_HUB_APP_ID}}',
+    });
+
+    expect(labels).toMatchObject({
+      'traefik.http.routers.app-home-lab-web.rule': 'Host(`${APP_DOMAIN}`)',
+      'traefik.http.routers.app-home-lab-web.service': 'app-home-lab',
+      'traefik.http.routers.app-home-lab.service': 'app-home-lab',
+    });
+  });
+
+  it('leaves out a rule that names a host the Hub didn’t set for the app', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const result = await new DockerComposeBuilder('ci.computer', 'ci.lan', true, {
+        knownAppIds: ['app-home'],
+        hostVariables: ['APP_DOMAIN', 'APP_BASE_HOST'],
+      }).getDockerCompose(
+        [
+          {
+            name: 'web',
+            image: 'nginx:alpine',
+            isMain: true,
+            internalPort: 80,
+            extraLabels: {
+              'traefik.http.routers.{{CI_HUB_APP_ID}}.rule': 'Host(`${APP_LOCAL_DOMAIN}`) || Host(`${APP_BASE_HOST}`)',
+              'traefik.http.routers.{{CI_HUB_APP_ID}}-api.rule': 'Host(`${APP_DOMAIN}`) && PathPrefix(`/api`)',
+            },
+          },
+        ],
+        { exposureMode: 'cloudflare', enableAuth: true },
+        createAppUrn('app', 'home'),
+        subnet,
+        'ci.computer',
+        'ci.lan',
+        undefined,
+        ORIGIN,
+      );
+      const labels = yaml.parse(result).services.web.labels as Record<string, string | boolean>;
+
+      // The Hub's own rule stays on its router.
+      expect(labels['traefik.http.routers.app-home.rule']).toBe(`Host(\`${ORIGIN}\`)`);
+      expect(labels['traefik.http.routers.app-home-api.rule']).toBe('Host(`${APP_DOMAIN}`) && PathPrefix(`/api`)');
+      expect(warn.mock.calls.map(([line]) => String(line))).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(
+            /label traefik\.http\.routers\.\{\{CI_HUB_APP_ID\}\}\.rule was left out \[CUSTOM_APP_ERROR_TRAEFIK_RULE_NOT_OWN_HOST\]/,
+          ),
+        ]),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // A store whose slug splits an official app's id at a dash: app `app` in a store `ci` is `app-ci`.
+  it('gives the official store app its names when another store’s app id begins them', async () => {
+    const labels = await build(createAppUrn('app', 'ci'), ['app-ci', `app-${CI_MARKETPLACE_STORE_SLUG}`], {
+      'traefik.http.routers.{{CI_HUB_APP_ID}}-marketplace-insecure.rule': 'Host(`${APP_DOMAIN}`)',
+      'traefik.http.routers.{{CI_HUB_APP_ID}}-marketplace-insecure.priority': '9999',
+    });
+
+    expect(Object.keys(labels).filter((key) => key.includes('marketplace'))).toEqual([]);
   });
 });

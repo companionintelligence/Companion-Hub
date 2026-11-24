@@ -68,7 +68,7 @@ import {
   type SlowerPlacement,
   type UnmeasuredPlacement,
 } from '../hub-pool-proxy.service';
-import { firstByteBudgetMs, forwardBudgetMs } from '../hub-pool-budget';
+import { LAST_LOCAL_BUDGET_FACTOR, firstByteBudgetMs, forwardBudgetMs, lastLocalBudgetMs } from '../hub-pool-budget';
 import type { PoolOutputQuarantine } from '../hub-pool-output-check';
 import { LOCAL_LISTING_DEADLINE_MS } from '../pool-model-listing';
 import {
@@ -591,6 +591,41 @@ describe('PoolProxyService', () => {
       expect(loadService.localInFlight()).toBe(0);
     });
 
+    it("sends a native chat on Lemonade to its /v1 and answers with the whole prompt's count", async () => {
+      // Lemonade's own /api/chat reports only the uncached part of the prompt, so Hermes never compacted.
+      lemonade.getBaseUrl.mockReturnValue('http://local-lemonade:13305');
+      vi.mocked(global.fetch).mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            object: 'chat.completion',
+            choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'OK' } }],
+            usage: { prompt_tokens: 13_912, completion_tokens: 2, total_tokens: 13_914, prompt_tokens_details: { cached_tokens: 13_908 } },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+      );
+      const res = createMockResponse();
+
+      await service.forwardToLocalBackendAndRespond(
+        'lemonade',
+        '/api/chat',
+        'POST',
+        { model: MODEL, stream: false, options: { num_ctx: 65_536 }, messages: [{ role: 'user', content: 'hi' }] },
+        res,
+      );
+
+      const [url, init] = vi.mocked(global.fetch).mock.calls[0] ?? [];
+      expect(url).toBe('http://local-lemonade:13305/v1/chat/completions');
+      expect(JSON.parse(String(init?.body))).toEqual({ model: MODEL, messages: [{ role: 'user', content: 'hi' }], stream: false });
+      expect(JSON.parse(Buffer.concat(res.chunks).toString())).toMatchObject({
+        done: true,
+        message: { role: 'assistant', content: 'OK' },
+        prompt_eval_count: 13_912,
+        prompt_eval_cached_count: 13_908,
+        eval_count: 2,
+      });
+    });
+
     it('releases the local count when the request it was serving fails', async () => {
       ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
       peerService.listConnectedPeers.mockResolvedValue([]);
@@ -874,7 +909,7 @@ describe('PoolProxyService', () => {
       expect(res.status).toHaveBeenCalledWith(502);
       const body = vi.mocked(res.json).mock.calls[0]?.[0] as { error: string; localBackends: unknown[] };
       expect(body.error).toContain('local omlx at http://host.docker.internal:8000 answered but was left out: The server names itself "vllm"');
-      expect(body.error).toContain('local vllm, lemonade not reachable from inside the Hub container');
+      expect(body.error).toContain('local vllm, lemonade, localai not reachable from inside the Hub container');
       expect(body.localBackends).toEqual(
         expect.arrayContaining([
           {
@@ -909,6 +944,38 @@ describe('PoolProxyService', () => {
       // One row per declared backend — derived from the tuple so adding one does not quietly
       // assert the old count.
       expect(body.localBackends).toHaveLength(INFERENCE_BACKEND_TYPES.length);
+    });
+
+    // Cloudflare used to swallow these bodies; once a reply through the tunnel keeps its body they reach a key holder outside.
+    it('keeps engine addresses and probe errors off a reply through the tunnel', async () => {
+      vllm.getBaseUrl.mockReturnValue('http://192.168.1.20:8000');
+      vllm.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [], error: 'connect ECONNREFUSED 192.168.1.20:8000' });
+      omlx.healthCheck.mockResolvedValue({ running: true, healthy: false, modelsLoaded: [], error: 'The server names itself "vllm"' });
+      const res = createMockResponse();
+      Object.assign(res, { req: { headers: { 'cf-ray': '8f00000000000000-LHR' } } });
+
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: 'missing' }, model: 'missing', res });
+
+      expect(vi.mocked(res.json).mock.calls[0]?.[0]).toEqual({ error: 'No pool node currently has model "missing" available.' });
+    });
+
+    it('does not name the failing peer on a reply through the tunnel, and still does from inside', async () => {
+      const peer = mockPeer({ lastCapabilities: capabilitiesWithModel('llama3.2:3b') as unknown as Record<string, unknown> });
+      peerService.listConnectedPeers.mockResolvedValue([peer]);
+      peerService.getPeerById.mockResolvedValue(peer);
+      peerService.getPresentToken.mockResolvedValue('raw-token');
+      vi.mocked(global.fetch).mockRejectedValue(new Error('connect ECONNREFUSED 100.64.0.2:5002'));
+      const body = { model: 'llama3.2:3b' };
+
+      const tunnelled = createMockResponse();
+      Object.assign(tunnelled, { req: { headers: { 'cf-ray': '8f00000000000000-LHR' } } });
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body, model: 'llama3.2:3b', res: tunnelled });
+      expect(vi.mocked(tunnelled.json).mock.calls[0]?.[0]).toEqual({ error: 'All 1 pool candidate for model "llama3.2:3b" failed.' });
+
+      const inside = createMockResponse();
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body, model: 'llama3.2:3b', res: inside });
+      const answered = vi.mocked(inside.json).mock.calls[0]?.[0] as { error: string };
+      expect(answered.error).toContain('100.64.0.2');
     });
 
     it('fails over to a connected peer when the local candidate 5xxs', async () => {
@@ -1519,6 +1586,8 @@ describe('PoolProxyService', () => {
      */
     it('records stream, the forwarded body size, and the budget the forward timer used', async () => {
       ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      // A busier peer behind this node, so the local engine is not the last candidate and runs under its budget (#2310).
+      peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-a', MODEL, { inFlightRequests: 3 })]);
       vi.mocked(global.fetch).mockResolvedValueOnce(new Response('data: [DONE]\n\n', { status: 200 }));
       const prompt = 'x'.repeat(184_000);
 
@@ -2698,7 +2767,7 @@ describe('PoolProxyService', () => {
       expect((await service.buildCandidateList('other:1b')).map((candidate) => candidate.peerId)).toEqual(['peer-a', null]);
     });
 
-    it('matches a model pin verbatim: a case variant is a different model and does not apply', async () => {
+    it('does not apply a model pin to a case variant, which is a different model', async () => {
       peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-a', MODEL, { inFlightRequests: 0 })]);
       // Two queued locally against an idle peer clears the affinity head start, so the peer wins on
       // score alone — the ranking a pin would have had to override.
@@ -2708,6 +2777,25 @@ describe('PoolProxyService', () => {
 
       // Local is loaded, the peer is idle — but no pin applies, so this is the plain ranking.
       expect((await service.buildCandidateList(MODEL)).map((candidate) => candidate.peerId)).toEqual(['peer-a', null]);
+    });
+
+    it.each([
+      ['nomic-embed-text', 'nomic-embed-text:latest'],
+      ['nomic-embed-text:latest', 'nomic-embed-text'],
+    ])('puts the peer a pin on %s names first for a request for %s', async (pinned, requested) => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['nomic-embed-text:latest'] });
+      peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-busy', 'nomic-embed-text:latest', { inFlightRequests: 5 })]);
+      setPoolPreferences({ poolPins: [{ scope: 'model', model: pinned, targetKind: 'peer', peerId: 'peer-busy', mode: 'prefer' }] });
+
+      expect((await service.buildCandidateList(requested)).map((candidate) => candidate.peerId)).toEqual(['peer-busy', null]);
+    });
+
+    it('leaves a request for another tag on the plain ranking', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma3:270m', 'gemma3:1b'] });
+      peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-busy', 'gemma3:1b', { inFlightRequests: 5 })]);
+      setPoolPreferences({ poolPins: [{ scope: 'model', model: 'gemma3:270m', targetKind: 'peer', peerId: 'peer-busy', mode: 'prefer' }] });
+
+      expect((await service.buildCandidateList('gemma3:1b')).map((candidate) => candidate.peerId)).toEqual([null, 'peer-busy']);
     });
 
     /**
@@ -3932,7 +4020,8 @@ describe('PoolProxyService', () => {
         expect(entry?.promptCeiling?.estimatedTokens).toBe(entry?.contextCap?.numCtx);
       });
 
-      it('ignores options.num_ctx on a /v1 request, as Ollama does: it runs at the engine default all the same', async () => {
+      // The pool sends such a request to Ollama's native route, which loads the model at that window (#2310).
+      it('takes options.num_ctx on a /v1 chat completion as its window, like the native turn', async () => {
         servePeers(core17AndCore2());
         answerWith200();
 
@@ -3940,6 +4029,28 @@ describe('PoolProxyService', () => {
           path: '/v1/chat/completions',
           method: 'POST',
           body: { model: MODEL, stream: true, options: { num_ctx: 65_536 }, messages: [{ role: 'user', content: 'hello' }] },
+          model: MODEL,
+          res: createMockResponse(),
+        });
+
+        const entry = routingLog.list()[0];
+        expect(entry).toMatchObject({ node: 'core-2.tailxyz.ts.net' });
+        expect(entry?.contextCap).toEqual({
+          numCtx: 65_536,
+          source: 'request',
+          excluded: [{ node: 'core-17.tailxyz.ts.net', maxNumCtx: CORE17_CAP }],
+          overridden: false,
+        });
+      });
+
+      it('ignores options.num_ctx on a /v1 request the pool leaves on /v1, as Ollama does', async () => {
+        servePeers(core17AndCore2());
+        answerWith200();
+
+        await service.proxyRequest({
+          path: '/v1/completions',
+          method: 'POST',
+          body: { model: MODEL, stream: true, options: { num_ctx: 65_536 }, prompt: 'hello' },
           model: MODEL,
           res: createMockResponse(),
         });
@@ -6855,12 +6966,12 @@ describe('PoolProxyService', () => {
         expect(ids(await hermesTurn())).toEqual([null, 'core-2']);
       });
 
-      it('records a /v1 turn at the engine default even when its body names a window: Ollama drops `options` there', async () => {
+      it('records a /v1 completion at the engine default even when its body names a window: Ollama drops `options` there', async () => {
         const upstream = holdUpstream();
         const v1 = service.proxyRequest({
-          path: '/v1/chat/completions',
+          path: '/v1/completions',
           method: 'POST',
-          body: { model: MODEL, stream: true, options: { num_ctx: HERMES_NUM_CTX }, messages: [{ role: 'user', content: 'hi' }] },
+          body: { model: MODEL, stream: true, options: { num_ctx: HERMES_NUM_CTX }, prompt: 'hi' },
           model: MODEL,
           res: createMockResponse(),
         });
@@ -6870,6 +6981,25 @@ describe('PoolProxyService', () => {
         // does not state, it cannot be shown to.
         expect(ids(await hermesTurn())).toEqual(['core-2', null]);
         expect(ids(await hermesV1())).toEqual([null, 'core-2']);
+
+        upstream.release();
+        await v1;
+      });
+
+      // The pool sends it to Ollama's native route, which loads the model at that window (#2310).
+      it('records a /v1 chat completion that names a window at that window, so the native turn joins it', async () => {
+        const upstream = holdUpstream();
+        const v1 = service.proxyRequest({
+          path: '/v1/chat/completions',
+          method: 'POST',
+          body: { model: MODEL, stream: true, options: { num_ctx: HERMES_NUM_CTX }, messages: [{ role: 'user', content: 'hi' }] },
+          model: MODEL,
+          res: createMockResponse(),
+        });
+        await vi.waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
+        expect(String(vi.mocked(global.fetch).mock.calls[0]?.[0])).toMatch(/\/api\/chat$/);
+
+        expect(ids(await hermesTurn())).toEqual([null, 'core-2']);
 
         upstream.release();
         await v1;
@@ -7852,6 +7982,50 @@ describe('PoolProxyService', () => {
       expect(await withCatalog.resolveModelAlias(AUTO_MODEL)).toBe('gemma4:e2b');
     });
 
+    // The Companion OS run behind #2311: Load on gemma3:1b in Settings > AI made it the Settings >
+    // Inference model, and OpenClaw's turns (tools and `think` on each) failed in 5 ms with
+    // `"gemma3:1b" does not support thinking`, while the Hub kept handing OpenClaw qwen3.5:4b.
+    it('sends an agent turn to a capable model when the preferred one can neither call tools nor think (#2311)', async () => {
+      const withCatalog = serviceWithCatalog();
+      const logSpy = vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+      const debugSpy = vi.spyOn(Logger.prototype, 'debug').mockImplementation(() => undefined);
+      try {
+        localHas('qwen3.5:4b', 'gemma3:1b', 'nomic-embed-text:latest');
+        preferModel('gemma3-1b');
+        const fetchMock = vi.mocked(global.fetch);
+        fetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+        const res = createMockResponse();
+        const turn = {
+          model: AUTO_MODEL,
+          messages: [{ role: 'user', content: 'hi' }],
+          tools: [{ type: 'function', function: { name: 'web_search' } }],
+          think: true,
+        };
+
+        await withCatalog.proxyRequest({ path: '/api/chat', method: 'POST', body: turn, model: AUTO_MODEL, res });
+
+        expect(res.status).toHaveBeenCalledWith(200);
+        const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+        expect(JSON.parse(String(init.body)).model).toBe('qwen3.5:4b');
+        const passOverLines = (spy: typeof logSpy) => spy.mock.calls.filter(([line]) => String(line).includes('passed over the Settings')).length;
+        expect(logSpy).toHaveBeenCalledWith(
+          expect.stringContaining('passed over the Settings > Inference model "gemma3:1b" (no tool calling or thinking, which this request uses)'),
+        );
+
+        // The next turns pass it over the same way, at debug: an agent sends one every few seconds.
+        expect(await withCatalog.resolveModelAlias(AUTO_MODEL, turn)).toBe('qwen3.5:4b');
+        expect(await withCatalog.resolveModelAlias(AUTO_MODEL, turn)).toBe('qwen3.5:4b');
+        expect(passOverLines(logSpy)).toBe(1);
+        expect(passOverLines(debugSpy)).toBe(2);
+
+        // A plain chat still goes to the model the operator chose.
+        expect(await withCatalog.resolveModelAlias(AUTO_MODEL, { model: AUTO_MODEL, messages: [] })).toBe('gemma3:1b');
+      } finally {
+        logSpy.mockRestore();
+        debugSpy.mockRestore();
+      }
+    });
+
     it('ranks instead when the preferred model is nowhere in the pool', async () => {
       const withCatalog = serviceWithCatalog();
       localHas('gemma3:1b', 'qwen3.6:27b');
@@ -8228,6 +8402,372 @@ describe('PoolProxyService', () => {
       expect(await service.resolveModelAlias(AUTO_MODEL)).toBe(MODEL);
       // Twelve probes per request used to be the cost of `auto`; the snapshot answers both reads.
       expect(ollama.healthCheck).not.toHaveBeenCalled();
+    });
+  });
+
+  // A CPU-only Companion OS machine with no peers: OpenClaw's ~41,000-token turn was cut at "No
+  // response headers within 831000ms; no candidate left" three times in 41 minutes, and each retry
+  // read the prompt again from token 0 (#2310). The deadline exists to move work to another node.
+  describe('the first-response deadline when nothing is left to fail over to', () => {
+    const MODEL = 'qwen3.5:4b';
+    /** A streamed agent turn about 41,000 tokens long, as OpenClaw sends it. */
+    const TURN = { model: MODEL, stream: true, messages: [{ role: 'user', content: 'x'.repeat(164_000) }] };
+
+    function fetchThatWaitsForever(signals: AbortSignal[]): void {
+      vi.mocked(global.fetch).mockImplementation((_url, init) => {
+        const signal = init?.signal as AbortSignal;
+        signals.push(signal);
+        if (signal.aborted) return Promise.reject(signal.reason);
+        return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason)));
+      });
+    }
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("gives this node's own engine the longer budget when it is the only candidate (#2310)", async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      peerService.listConnectedPeers.mockResolvedValue([]);
+      const signals: AbortSignal[] = [];
+      fetchThatWaitsForever(signals);
+      const res = createMockResponse();
+
+      const inFlight = service.proxyRequest({ path: '/api/chat', method: 'POST', body: TURN, model: MODEL, res });
+      await vi.waitFor(() => expect(signals).toHaveLength(1));
+      const usual = firstByteBudgetMs(String(vi.mocked(global.fetch).mock.calls[0]?.[1]?.body).length);
+      expect(usual).toBeGreaterThan(800_000);
+      expect(LAST_LOCAL_BUDGET_FACTOR).toBeGreaterThan(1);
+      // Past the budget this turn used to get (about 820 s at the 50 tok/s floor): still waiting.
+      await vi.advanceTimersByTimeAsync(usual + 1_000);
+      expect(signals[0]?.aborted).toBe(false);
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      // The row carries the deadline the forward runs under, which the dashboard warns against.
+      expect(routingLog.list()[0]).toMatchObject({ outcome: 'pending', budgetMs: lastLocalBudgetMs(usual) });
+
+      // An engine that never answers is still cut, at the longer budget, and nothing is retried.
+      await vi.advanceTimersByTimeAsync(lastLocalBudgetMs(usual) - usual - 1_000);
+      await vi.waitFor(() => expect(signals[0]?.aborted).toBe(true));
+      await inFlight;
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      expect(res.status).toHaveBeenCalledWith(502);
+    });
+
+    it('keeps the longer last-local budget on Ollama native chat forwarding', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      peerService.listConnectedPeers.mockResolvedValue([]);
+      const signals: AbortSignal[] = [];
+      fetchThatWaitsForever(signals);
+      const res = createMockResponse();
+      const body = { model: MODEL, stream: true, options: { num_ctx: 65_536 }, messages: TURN.messages };
+
+      const inFlight = service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body, model: MODEL, res });
+      await vi.waitFor(() => expect(signals).toHaveLength(1));
+      expect(String(vi.mocked(global.fetch).mock.calls[0]?.[0])).toBe('http://local-ollama:11434/api/chat');
+      const usual = firstByteBudgetMs(JSON.stringify(body).length);
+      expect(routingLog.list()[0]).toMatchObject({ outcome: 'pending', budgetMs: lastLocalBudgetMs(usual) });
+
+      // Past the ordinary first-byte deadline, native forwarding is still protected by the same
+      // last-local budget as the /api/chat route above.
+      await vi.advanceTimersByTimeAsync(usual + 1_000);
+      expect(signals[0]?.aborted).toBe(false);
+
+      res.destroy();
+      await inFlight;
+      expect(signals[0]?.aborted).toBe(true);
+    });
+
+    it('ends the longer wait when the caller hangs up', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      peerService.listConnectedPeers.mockResolvedValue([]);
+      const signals: AbortSignal[] = [];
+      fetchThatWaitsForever(signals);
+      const res = createMockResponse();
+
+      const inFlight = service.proxyRequest({ path: '/api/chat', method: 'POST', body: TURN, model: MODEL, res });
+      await vi.waitFor(() => expect(signals).toHaveLength(1));
+      await vi.advanceTimersByTimeAsync(2 * 831_000);
+      expect(signals[0]?.aborted).toBe(false);
+
+      res.destroy();
+      await inFlight;
+      expect(signals[0]?.aborted).toBe(true);
+    });
+
+    it("gives this node's own engine the longer budget when it is reached last, after a peer failed", async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      const peers = [peerServing('peer-a', MODEL)];
+      peerService.listConnectedPeers.mockResolvedValue(peers);
+      peerService.getPeerById.mockImplementation(async (id) => peers.find((peer) => peer.id === id));
+      peerService.peerAuthHeaders.mockResolvedValue({ Authorization: 'Bearer raw-token' });
+      setPoolPreferences({ poolPins: [{ scope: 'default', targetKind: 'peer', peerId: 'peer-a', mode: 'prefer' }] });
+      const signals: AbortSignal[] = [];
+      vi.mocked(global.fetch).mockImplementation((url, init) => {
+        if (String(url).includes('peer-a')) return Promise.resolve(new Response('busy', { status: 503 }));
+        const signal = init?.signal as AbortSignal;
+        signals.push(signal);
+        return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason)));
+      });
+      const res = createMockResponse();
+
+      const inFlight = service.proxyRequest({ path: '/api/chat', method: 'POST', body: TURN, model: MODEL, res });
+      await vi.waitFor(() => expect(signals).toHaveLength(1));
+      expect(String(vi.mocked(global.fetch).mock.calls[0]?.[0])).toContain('peer-a');
+      await vi.advanceTimersByTimeAsync(2 * 831_000);
+      expect(signals[0]?.aborted).toBe(false);
+      const usual = firstByteBudgetMs(String(vi.mocked(global.fetch).mock.calls[1]?.[1]?.body).length);
+      expect(routingLog.list()[0]).toMatchObject({ outcome: 'pending', attempt: 2, budgetMs: lastLocalBudgetMs(usual) });
+
+      res.destroy();
+      await inFlight;
+      expect(signals[0]?.aborted).toBe(true);
+    });
+
+    it('still cuts this node at its budget when a peer can take the turn next', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      const peers = [peerServing('peer-a', MODEL, { inFlightRequests: 3 })];
+      peerService.listConnectedPeers.mockResolvedValue(peers);
+      peerService.getPeerById.mockImplementation(async (id) => peers.find((peer) => peer.id === id));
+      peerService.peerAuthHeaders.mockResolvedValue({ Authorization: 'Bearer raw-token' });
+      const signals: AbortSignal[] = [];
+      fetchThatWaitsForever(signals);
+      const res = createMockResponse();
+
+      const inFlight = service.proxyRequest({ path: '/api/chat', method: 'POST', body: TURN, model: MODEL, res });
+      await vi.waitFor(() => expect(signals).toHaveLength(1));
+      expect(String(vi.mocked(global.fetch).mock.calls[0]?.[0])).not.toContain('peer-a');
+      expect(routingLog.list()[0]?.budgetMs).toBe(firstByteBudgetMs(String(vi.mocked(global.fetch).mock.calls[0]?.[1]?.body).length));
+      await vi.advanceTimersByTimeAsync(831_000 + 1_000);
+      await vi.waitFor(() => expect(signals).toHaveLength(2));
+      expect(signals[0]?.aborted).toBe(true);
+      expect(String(vi.mocked(global.fetch).mock.calls[1]?.[0])).toContain('peer-a');
+
+      res.destroy();
+      await inFlight;
+    });
+  });
+
+  // Ollama's /v1 drops options.num_ctx, so Companion Memory and Hermes ran at the host default while
+  // OpenClaw asked for the handout's, and each switch reloaded the model (#2310).
+  describe('a /v1 chat completion that names a window, on Ollama', () => {
+    const MODEL = 'qwen3.5:4b';
+    const at = '2026-11-07T10:00:00.000Z';
+    const answer = [
+      { model: MODEL, created_at: at, message: { role: 'assistant', content: 'OK' }, done: false },
+      {
+        model: MODEL,
+        created_at: at,
+        message: { role: 'assistant', content: '' },
+        done: true,
+        done_reason: 'stop',
+        prompt_eval_count: 12,
+        eval_count: 2,
+      },
+    ]
+      .map((line) => `${JSON.stringify(line)}\n`)
+      .join('');
+
+    beforeEach(() => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      peerService.listConnectedPeers.mockResolvedValue([]);
+      vi.mocked(global.fetch).mockImplementation(async () => new Response(answer, { status: 200 }));
+    });
+
+    it("goes to Ollama's native /api/chat with that window, and the app gets OpenAI's stream back", async () => {
+      const res = createMockResponse();
+      const body = { model: MODEL, stream: true, options: { num_ctx: 65_536 }, messages: [{ role: 'user', content: 'Reply OK' }] };
+
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body, model: MODEL, res });
+
+      const [url, init] = vi.mocked(global.fetch).mock.calls[0] ?? [];
+      expect(String(url)).toBe('http://local-ollama:11434/api/chat');
+      expect(JSON.parse(String(init?.body))).toEqual({
+        model: MODEL,
+        messages: [{ role: 'user', content: 'Reply OK' }],
+        options: { num_ctx: 65_536 },
+        stream: true,
+      });
+      expect(headersSetOn(res)['content-type']).toBe('text/event-stream');
+      const sent = Buffer.concat(res.chunks).toString('utf8');
+      expect(sent).toContain('"object":"chat.completion.chunk"');
+      expect(sent).toContain('"content":"OK"');
+      expect(sent).toContain('"finish_reason":"stop"');
+      // The proxy asks for usage on every stream; the native answer's counts come back in OpenAI's shape.
+      expect(sent).toContain('"usage":{"prompt_tokens":12,"completion_tokens":2,"total_tokens":14}');
+      expect(sent.trimEnd().endsWith('data: [DONE]')).toBe(true);
+      expect(routingLog.list()[0]).toMatchObject({
+        outcome: 'served',
+        path: '/v1/chat/completions',
+        usage: { promptTokens: 12, completionTokens: 2 },
+      });
+    });
+
+    it('stays on /v1 when the request names no window and its model is not loaded', async () => {
+      vi.mocked(global.fetch).mockImplementation(async () => new Response('data: [DONE]\n\n', { status: 200 }));
+      const body = { model: MODEL, stream: true, messages: [{ role: 'user', content: 'hi' }] };
+
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body, model: MODEL, res: createMockResponse() });
+
+      expect(String(vi.mocked(global.fetch).mock.calls[0]?.[0])).toBe('http://local-ollama:11434/v1/chat/completions');
+    });
+
+    it('stays on /v1 for an engine other than Ollama, which runs the window it was started with', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      lemonade.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      vi.mocked(global.fetch).mockImplementation(async () => new Response('data: [DONE]\n\n', { status: 200 }));
+      const body = { model: MODEL, stream: true, options: { num_ctx: 65_536 }, messages: [{ role: 'user', content: 'hi' }] };
+
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body, model: MODEL, res: createMockResponse() });
+
+      const url = String(vi.mocked(global.fetch).mock.calls[0]?.[0]);
+      expect(url.endsWith('/v1/chat/completions')).toBe(true);
+      expect(url).not.toContain('local-ollama');
+    });
+
+    // Hermes names num_ctx on its main turns but not on side calls such as title generation. On /v1 a
+    // side call ran at the engine default and reloaded the model. The next main turn reloaded it again.
+    describe('one that names no window', () => {
+      const loadedAt = (contextLength: number, id = MODEL) =>
+        ollama.listResident.mockResolvedValue({
+          backend: 'ollama',
+          source: 'measured',
+          models: [{ id, engineGpuBytes: null, totalBytes: null, expiresAt: null, contextLength, quantization: null }],
+        } as never);
+      const titleCall = (content = 'Title this chat') => ({ model: MODEL, stream: false, max_tokens: 10, messages: [{ role: 'user', content }] });
+      const sentTo = () => String(vi.mocked(global.fetch).mock.calls[0]?.[0]);
+      const sentBody = () => JSON.parse(String(vi.mocked(global.fetch).mock.calls[0]?.[1]?.body));
+
+      beforeEach(() => {
+        vi.mocked(global.fetch).mockImplementation(
+          async () =>
+            new Response(
+              JSON.stringify({ model: MODEL, created_at: at, message: { role: 'assistant', content: 'A title' }, done: true, done_reason: 'stop' }),
+              {
+                status: 200,
+              },
+            ),
+        );
+      });
+
+      it('runs at the window its model is already loaded at, so nothing reloads', async () => {
+        loadedAt(65_536);
+        const res = createMockResponse();
+
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: titleCall(), model: MODEL, res });
+
+        expect(sentTo()).toBe('http://local-ollama:11434/api/chat');
+        expect(sentBody()).toMatchObject({ options: { num_ctx: 65_536, num_predict: 10 }, stream: false });
+        expect(JSON.parse(Buffer.concat(res.chunks).toString('utf8'))).toMatchObject({ object: 'chat.completion' });
+      });
+
+      it('stays on /v1 when its model is not loaded, or another model is', async () => {
+        ollama.listResident.mockResolvedValue({ backend: 'ollama', source: 'measured', models: [] } as never);
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: titleCall(), model: MODEL, res: createMockResponse() });
+        expect(sentTo()).toBe('http://local-ollama:11434/v1/chat/completions');
+
+        vi.mocked(global.fetch).mockClear();
+        loadedAt(65_536, 'gemma3:1b');
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: titleCall(), model: MODEL, res: createMockResponse() });
+        expect(sentTo()).toBe('http://local-ollama:11434/v1/chat/completions');
+      });
+
+      it('stays on /v1 when its prompt is more than half the loaded window', async () => {
+        loadedAt(4096);
+
+        await service.proxyRequest({
+          path: '/v1/chat/completions',
+          method: 'POST',
+          body: titleCall('x'.repeat(9000)),
+          model: MODEL,
+          res: createMockResponse(),
+        });
+
+        expect(sentTo()).toBe('http://local-ollama:11434/v1/chat/completions');
+      });
+
+      it('stays on /v1 when the loaded window is at or below the default this node states, which /v1 would give it', async () => {
+        configuration.getInferencePreferences.mockReturnValue({ maxNumCtx: 32_768 } as never);
+        loadedAt(8192);
+
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: titleCall(), model: MODEL, res: createMockResponse() });
+
+        expect(sentTo()).toBe('http://local-ollama:11434/v1/chat/completions');
+
+        // At the default itself `/v1` reloads nothing, so there is nothing to translate it for.
+        vi.mocked(global.fetch).mockClear();
+        loadedAt(32_768);
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: titleCall(), model: MODEL, res: createMockResponse() });
+        expect(sentTo()).toBe('http://local-ollama:11434/v1/chat/completions');
+
+        vi.mocked(global.fetch).mockClear();
+        loadedAt(65_536);
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: titleCall(), model: MODEL, res: createMockResponse() });
+        expect(sentTo()).toBe('http://local-ollama:11434/api/chat');
+      });
+
+      it('stays on /v1 when residency fails or takes too long to answer', async () => {
+        ollama.listResident.mockRejectedValue(new Error('connect ECONNREFUSED'));
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: titleCall(), model: MODEL, res: createMockResponse() });
+        expect(sentTo()).toBe('http://local-ollama:11434/v1/chat/completions');
+
+        vi.mocked(global.fetch).mockClear();
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        try {
+          ollama.listResident.mockImplementation(() => new Promise(() => undefined));
+          const sent = service.proxyRequest({
+            path: '/v1/chat/completions',
+            method: 'POST',
+            body: titleCall(),
+            model: MODEL,
+            res: createMockResponse(),
+          });
+          await vi.advanceTimersByTimeAsync(PLACEMENT_PROBE_BUDGET_MS);
+          await sent;
+        } finally {
+          vi.useRealTimers();
+        }
+        expect(sentTo()).toBe('http://local-ollama:11434/v1/chat/completions');
+      });
+
+      it('leaves a request that names a window it cannot carry on /v1, whatever is loaded', async () => {
+        loadedAt(65_536);
+        const body = {
+          model: MODEL,
+          options: { num_ctx: 8192 },
+          messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'https://example.com/a.png' } }] }],
+        };
+
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body, model: MODEL, res: createMockResponse() });
+
+        expect(sentTo()).toBe('http://local-ollama:11434/v1/chat/completions');
+      });
+    });
+
+    it("translates a peer's forwarded /v1 turn on this node's Ollama too", async () => {
+      const res = createMockResponse();
+      const body = { model: MODEL, stream: false, options: { num_ctx: 32_768 }, messages: [{ role: 'user', content: 'hi' }] };
+      vi.mocked(global.fetch).mockImplementation(
+        async () =>
+          new Response(
+            JSON.stringify({ model: MODEL, created_at: at, message: { role: 'assistant', content: 'hey' }, done: true, done_reason: 'stop' }),
+            {
+              status: 200,
+            },
+          ),
+      );
+
+      await service.forwardToLocalBackendAndRespond('ollama', '/v1/chat/completions', 'POST', body, res, 'core-6.tailxyz.ts.net', MODEL);
+
+      const [url, init] = vi.mocked(global.fetch).mock.calls[0] ?? [];
+      expect(String(url)).toBe('http://local-ollama:11434/api/chat');
+      expect(JSON.parse(String(init?.body))).toMatchObject({ options: { num_ctx: 32_768 }, stream: false });
+      const sent = JSON.parse(Buffer.concat(res.chunks).toString('utf8'));
+      expect(sent).toMatchObject({ object: 'chat.completion', choices: [{ message: { role: 'assistant', content: 'hey' }, finish_reason: 'stop' }] });
     });
   });
 

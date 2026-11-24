@@ -1,7 +1,7 @@
 import { LoggerService } from '@/core/logger/logger.service';
-import { ConfigurationService } from '@/core/config/configuration.service';
+import { ConfigurationService, type SetInferencePreferencesOptions } from '@/core/config/configuration.service';
 import { Test } from '@nestjs/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 
 vi.mock('../../app-lifecycle/app-lifecycle.service', () => ({
@@ -26,7 +26,7 @@ import { CloudFallbackService } from '../cloud-fallback.service';
 import { OllamaInstallerService } from '../ollama-installer.service';
 import { RocmInstallerService } from '../rocm-installer.service';
 import { AppCredentialsService } from '../app-credentials.service';
-import { inferencePreferencesSchema } from '../inference.dto';
+import { MASKED_API_KEY, inferencePreferencesSchema } from '../inference.dto';
 import { InferenceBackendRegistry } from '../backends/backend-registry';
 import { ModelResidencyService } from '../model-residency.service';
 import { BackendObserverService } from '../supervision/backend-observer.service';
@@ -46,6 +46,8 @@ describe('InferenceController — preferences', () => {
   let modelRegistry: MockProxy<ModelRegistryService>;
   let inferenceRefresh: { requestRefresh: ReturnType<typeof vi.fn> };
   let appCredentials: MockProxy<AppCredentialsService>;
+  let cloudFallback: MockProxy<CloudFallbackService>;
+  let router: MockProxy<InferenceRouterService>;
 
   beforeEach(async () => {
     inferenceRefresh = { requestRefresh: vi.fn() };
@@ -93,6 +95,8 @@ describe('InferenceController — preferences', () => {
     ollamaBackend = moduleRef.get(OllamaBackend);
     lemonadeBackend = moduleRef.get(LemonadeBackend);
     modelRegistry = moduleRef.get(ModelRegistryService);
+    cloudFallback = moduleRef.get(CloudFallbackService);
+    router = moduleRef.get(InferenceRouterService);
   });
 
   it('returns nulls when global preferences are unset', async () => {
@@ -141,19 +145,7 @@ describe('InferenceController — preferences', () => {
 
     const result = await controller.updatePreferences({ backend: 'lemonade' });
 
-    expect(configService.setInferencePreferences).toHaveBeenCalledWith(
-      'lemonade',
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-    );
+    expect(configService.setInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ backend: 'lemonade' }));
     expect(result).toEqual({
       preferredBackend: 'lemonade',
       preferredModel: null,
@@ -194,17 +186,12 @@ describe('InferenceController — preferences', () => {
     });
 
     expect(configService.setInferencePreferences).toHaveBeenCalledWith(
-      'ollama',
-      'hermes4-8b',
-      'nomic-embed-text',
-      'gemma4-27b',
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
+      expect.objectContaining({
+        backend: 'ollama',
+        model: 'hermes4-8b',
+        embeddingModel: 'nomic-embed-text',
+        visionModel: 'gemma4-27b',
+      }),
     );
     expect(result).toEqual({
       preferredBackend: 'ollama',
@@ -231,21 +218,106 @@ describe('InferenceController — preferences', () => {
     });
 
     expect(configService.setInferencePreferences).toHaveBeenCalledWith(
-      'vllm',
-      undefined,
-      undefined,
-      undefined,
-      'vllm-local',
-      'http://192.168.1.50:8000',
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
+      expect.objectContaining({
+        backend: 'vllm',
+        vllmApiKey: 'vllm-local',
+        vllmUrl: 'http://192.168.1.50:8000',
+      }),
     );
   }, 30_000);
 
+  it('reports a stored vLLM key masked, the way cloud provider keys are reported', async () => {
+    configService.getInferencePreferences.mockReturnValue({
+      preferredBackend: 'vllm',
+      preferredVllmApiKey: 'vllm-secret',
+      preferredVllmUrl: 'http://192.168.1.50:8000',
+    } as never);
+
+    const result = await controller.getPreferences();
+
+    expect(result).toMatchObject({ preferredVllmApiKey: MASKED_API_KEY, preferredVllmUrl: 'http://192.168.1.50:8000' });
+    expect(JSON.stringify(result)).not.toContain('vllm-secret');
+  });
+
+  it('keeps the stored vLLM key when a save sends the mask back, and answers masked', async () => {
+    configService.setInferencePreferences.mockResolvedValue({ preferredBackend: 'vllm', preferredVllmApiKey: 'vllm-secret' } as never);
+
+    const result = await controller.updatePreferences({ backend: 'vllm', vllmApiKey: MASKED_API_KEY });
+
+    // `undefined` is "leave it as stored"; `null` or an empty key still clears it.
+    expect(configService.setInferencePreferences).toHaveBeenCalledWith(
+      expect.objectContaining({
+        backend: 'vllm',
+        vllmApiKey: undefined,
+      }),
+    );
+    expect(result).toMatchObject({ preferredVllmApiKey: MASKED_API_KEY });
+  }, 30_000);
+
+  it('still clears the vLLM key on a null', async () => {
+    configService.setInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama', preferredVllmApiKey: null } as never);
+
+    await controller.updatePreferences({ backend: 'ollama', vllmApiKey: null });
+
+    expect((configService.setInferencePreferences.mock.calls[0]?.[0] as SetInferencePreferencesOptions)?.vllmApiKey).toBeNull();
+  }, 30_000);
+
+  // The stored key belongs to the server it was saved for. Re-check never sends it to another one,
+  // and a save that moves vLLM elsewhere must not either.
+  describe('a save that changes the vLLM URL', () => {
+    const savedVllmUrl = 'http://192.168.1.50:8000';
+    const savedVllmEnv = process.env.VLLM_URL;
+
+    beforeEach(() => {
+      delete process.env.VLLM_URL;
+      configService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'vllm',
+        preferredVllmApiKey: 'vllm-secret',
+        preferredVllmUrl: savedVllmUrl,
+      } as never);
+      configService.setInferencePreferences.mockResolvedValue({ preferredBackend: 'vllm', preferredVllmApiKey: null } as never);
+    });
+
+    afterEach(() => {
+      if (savedVllmEnv === undefined) delete process.env.VLLM_URL;
+      else process.env.VLLM_URL = savedVllmEnv;
+    });
+
+    const storedKeyArg = () => (configService.setInferencePreferences.mock.calls[0]?.[0] as SetInferencePreferencesOptions)?.vllmApiKey;
+
+    it('drops the stored key when the key comes back as the mask', async () => {
+      await controller.updatePreferences({ backend: 'vllm', vllmApiKey: MASKED_API_KEY, vllmUrl: 'http://192.168.1.99:8000' });
+
+      expect(storedKeyArg()).toBeNull();
+    });
+
+    it('drops the stored key when the key is left out', async () => {
+      await controller.updatePreferences({ backend: 'vllm', vllmUrl: 'http://192.168.1.99:8000' });
+
+      expect(storedKeyArg()).toBeNull();
+    });
+
+    it('drops the stored key when the URL is cleared and vLLM falls back to the default server', async () => {
+      await controller.updatePreferences({ backend: 'vllm', vllmApiKey: MASKED_API_KEY, vllmUrl: null });
+
+      expect(storedKeyArg()).toBeNull();
+    });
+
+    it('keeps the stored key for another spelling of the same server', async () => {
+      await controller.updatePreferences({ backend: 'vllm', vllmApiKey: MASKED_API_KEY, vllmUrl: 'http://192.168.1.50:8000/v1/' });
+
+      expect(storedKeyArg()).toBeUndefined();
+    });
+
+    it('stores a key typed for the new server', async () => {
+      await controller.updatePreferences({ backend: 'vllm', vllmApiKey: 'new-server-key', vllmUrl: 'http://192.168.1.99:8000' });
+
+      expect(storedKeyArg()).toBe('new-server-key');
+    });
+  });
+
   it('passes the oMLX endpoint URL through when provided', async () => {
+    configService.getInferencePreferences.mockReturnValue({ preferredBackend: 'omlx', preferredOmlxUrl: null } as never);
     configService.setInferencePreferences.mockResolvedValue({
       preferredBackend: 'omlx',
       preferredModel: null,
@@ -260,19 +332,67 @@ describe('InferenceController — preferences', () => {
     });
 
     expect(configService.setInferencePreferences).toHaveBeenCalledWith(
-      'omlx',
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      'http://192.168.1.50:8000',
-      undefined,
-      undefined,
-      undefined,
-      undefined,
+      expect.objectContaining({
+        backend: 'omlx',
+        omlxUrl: 'http://192.168.1.50:8000',
+      }),
     );
   }, 30_000);
+
+  describe("oMLX's API key", () => {
+    const savedOmlxEnv = process.env.OMLX_URL;
+    const storedKeyArg = () => (configService.setInferencePreferences.mock.calls[0]?.[0] as SetInferencePreferencesOptions)?.omlxApiKey;
+
+    beforeEach(() => {
+      delete process.env.OMLX_URL;
+      configService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'omlx',
+        preferredOmlxApiKey: 'omlx-main-key',
+        preferredOmlxUrl: null,
+      } as never);
+      configService.setInferencePreferences.mockResolvedValue({ preferredBackend: 'omlx', preferredOmlxApiKey: 'omlx-main-key' } as never);
+    });
+
+    afterEach(() => {
+      if (savedOmlxEnv === undefined) delete process.env.OMLX_URL;
+      else process.env.OMLX_URL = savedOmlxEnv;
+    });
+
+    it('is reported masked, and never in the clear', async () => {
+      const result = await controller.getPreferences();
+
+      expect(result).toMatchObject({ preferredOmlxApiKey: MASKED_API_KEY });
+      expect(JSON.stringify(result)).not.toContain('omlx-main-key');
+    });
+
+    it('is stored from a save, kept when the mask comes back, and cleared on a null', async () => {
+      const result = await controller.updatePreferences({ backend: 'omlx', omlxApiKey: 'new-key' });
+      expect(storedKeyArg()).toBe('new-key');
+      expect(JSON.stringify(result)).not.toContain('omlx-main-key');
+
+      configService.setInferencePreferences.mockClear();
+      await controller.updatePreferences({ backend: 'omlx', omlxApiKey: MASKED_API_KEY });
+      expect(storedKeyArg()).toBeUndefined();
+
+      configService.setInferencePreferences.mockClear();
+      await controller.updatePreferences({ backend: 'omlx', omlxApiKey: null });
+      expect(storedKeyArg()).toBeNull();
+    });
+
+    it('is kept when the desktop app saves the default oMLX URL it set up, and dropped for another server', async () => {
+      await controller.updatePreferences({ backend: 'omlx', omlxUrl: 'http://localhost:8000' });
+      expect(storedKeyArg()).toBeUndefined();
+
+      configService.setInferencePreferences.mockClear();
+      await controller.updatePreferences({ backend: 'omlx', omlxUrl: 'http://mac-studio.lan:8000' });
+      expect(storedKeyArg()).toBeNull();
+    });
+
+    it('accepts an oMLX key in the preferences schema', () => {
+      expect(inferencePreferencesSchema.safeParse({ backend: 'omlx', omlxApiKey: 'k3y' }).success).toBe(true);
+      expect(inferencePreferencesSchema.safeParse({ backend: 'omlx', omlxApiKey: null }).success).toBe(true);
+    });
+  });
 
   it('returns runtime models for a healthy selected backend', async () => {
     ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['mistral:latest'] } as any);
@@ -283,8 +403,17 @@ describe('InferenceController — preferences', () => {
     expect(result).toEqual({
       backend: 'ollama',
       discoveryUnavailable: false,
-      models: [{ id: 'mistral:latest', name: 'mistral:latest', state: 'available', resident: false }],
+      models: [{ id: 'mistral:latest', name: 'mistral:latest', state: 'available', resident: false, sizeBytes: null }],
     });
+  });
+
+  it('passes on the size the engine reports for a model on disk', async () => {
+    ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true } as never);
+    ollamaBackend.listModels.mockResolvedValue([{ id: 'qwen3.5:9b', name: 'qwen3.5:9b', size: 6_550_825_550, loaded: true }]);
+
+    const result = await controller.getRuntimeModels({ backend: 'ollama' } as never);
+
+    expect(result.models).toEqual([expect.objectContaining({ id: 'qwen3.5:9b', sizeBytes: 6_550_825_550 })]);
   });
 
   it('marks a runtime model resident only when the engine says it is loaded', async () => {
@@ -302,8 +431,8 @@ describe('InferenceController — preferences', () => {
     const result = await controller.getRuntimeModels({ backend: 'ollama' });
 
     expect(result.models).toEqual([
-      { id: 'mistral:latest', name: 'mistral:latest', state: 'available', resident: true },
-      { id: 'other:latest', name: 'other:latest', state: 'available', resident: false },
+      { id: 'mistral:latest', name: 'mistral:latest', state: 'available', resident: true, sizeBytes: null },
+      { id: 'other:latest', name: 'other:latest', state: 'available', resident: false, sizeBytes: null },
     ]);
   });
 
@@ -369,34 +498,8 @@ describe('InferenceController — preferences', () => {
     await controller.updatePreferences({ backend: 'ollama', maxNumCtx: 16_384 });
     await controller.updatePreferences({ backend: 'ollama', maxNumCtx: null });
 
-    expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(
-      1,
-      'ollama',
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      16_384,
-      undefined,
-    );
-    expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(
-      2,
-      'ollama',
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      null,
-      undefined,
-    );
+    expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(1, expect.objectContaining({ backend: 'ollama', maxNumCtx: 16_384 }));
+    expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(2, expect.objectContaining({ backend: 'ollama', maxNumCtx: null }));
   }, 30_000);
 
   it('bounds the context cap in the preferences schema: an integer from 2048 to 2^20, or null', () => {
@@ -416,47 +519,11 @@ describe('InferenceController — preferences', () => {
     // Both in one body: the cap and the slots land in their own positions, neither moves the other.
     await controller.updatePreferences({ backend: 'ollama', maxNumCtx: 32_768, ollamaSlots: 2 });
 
-    expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(
-      1,
-      'ollama',
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      4,
-    );
-    expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(
-      2,
-      'ollama',
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      null,
-    );
+    expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(1, expect.objectContaining({ backend: 'ollama', ollamaSlots: 4 }));
+    expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(2, expect.objectContaining({ backend: 'ollama', ollamaSlots: null }));
     expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(
       3,
-      'ollama',
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      32_768,
-      2,
+      expect.objectContaining({ backend: 'ollama', maxNumCtx: 32_768, ollamaSlots: 2 }),
     );
   }, 30_000);
 
@@ -474,8 +541,266 @@ describe('InferenceController — preferences', () => {
     expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaSlots: '4' }).success).toBe(false);
   });
 
+  it('passes the Ollama keep-alive through in its own position, a null clearing it', async () => {
+    configService.setInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama', ollamaKeepAlive: 86_400 } as never);
+
+    await controller.updatePreferences({ backend: 'ollama', ollamaKeepAlive: 86_400 });
+    await controller.updatePreferences({ backend: 'ollama', ollamaKeepAlive: null });
+
+    const keepAliveArg = (call: unknown[]) => (call[0] as SetInferencePreferencesOptions)?.ollamaKeepAlive;
+    expect(keepAliveArg(configService.setInferencePreferences.mock.calls[0] ?? [])).toBe(86_400);
+    expect(keepAliveArg(configService.setInferencePreferences.mock.calls[1] ?? [])).toBeNull();
+  }, 30_000);
+
+  it('bounds the Ollama keep-alive in the preferences schema: whole seconds from -1 (forever) to a year, or null', () => {
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaKeepAlive: 86_400 }).success).toBe(true);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaKeepAlive: -1 }).success).toBe(true);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaKeepAlive: 0 }).success).toBe(true);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaKeepAlive: null }).success).toBe(true);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaKeepAlive: -2 }).success).toBe(false);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaKeepAlive: 1.5 }).success).toBe(false);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaKeepAlive: 366 * 86_400 }).success).toBe(false);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaKeepAlive: '24h' }).success).toBe(false);
+  });
+
   it('rejects a retired backend name', () => {
     expect(inferencePreferencesSchema.safeParse({ backend: 'dspark' }).success).toBe(false);
     expect(inferencePreferencesSchema.safeParse({ backend: 'mtplx' }).success).toBe(false);
+  });
+
+  // Settings > AI deletes a cleared cloud key through this route. Running AI apps hold the key in
+  // their env, so they are refreshed the way a save refreshes them, or they would keep using it.
+  it('removes a stored cloud key and asks for the same AI app refresh a save does', async () => {
+    cloudFallback.removeProvider.mockResolvedValue(true);
+
+    await expect(controller.removeCloudProvider('openai')).resolves.toEqual({ success: true, removed: true });
+
+    expect(cloudFallback.removeProvider).toHaveBeenCalledWith('openai');
+    expect(appCredentials.invalidateCache).toHaveBeenCalled();
+    await vi.waitFor(() => expect(inferenceRefresh.requestRefresh).toHaveBeenCalledWith('cloud provider openai removed'));
+  });
+
+  it('refreshes nothing when the provider had nothing stored', async () => {
+    cloudFallback.removeProvider.mockResolvedValue(false);
+
+    await expect(controller.removeCloudProvider('google')).resolves.toEqual({ success: true, removed: false });
+
+    expect(appCredentials.invalidateCache).not.toHaveBeenCalled();
+  });
+
+  // A base URL changed through the API or MCP never showed in Settings > AI. A key entered there
+  // went to that URL.
+  describe('GET cloud-providers', () => {
+    beforeEach(() => {
+      const real = new CloudFallbackService(mock<LoggerService>(), mock<ConfigurationService>());
+      cloudFallback.getDefaultBaseUrl.mockImplementation((provider) => real.getDefaultBaseUrl(provider));
+    });
+
+    it('reports a base URL on another server, with or without a key', async () => {
+      cloudFallback.listProviders.mockReturnValue([
+        { provider: 'openai', apiKey: 'sk-stored', enabled: true, defaultModel: 'gpt-4o', baseUrl: 'https://llm-proxy.example.test/v1' },
+        { provider: 'anthropic', enabled: true, defaultModel: 'claude-opus-4', baseUrl: 'https://llm-proxy.example.test/anthropic' },
+      ]);
+
+      const providers = await controller.getCloudProviders();
+
+      expect(providers).toEqual([
+        { provider: 'openai', enabled: true, configured: true, defaultModel: 'gpt-4o', baseUrl: 'https://llm-proxy.example.test/v1' },
+        {
+          provider: 'anthropic',
+          enabled: true,
+          configured: false,
+          defaultModel: 'claude-opus-4',
+          baseUrl: 'https://llm-proxy.example.test/anthropic',
+        },
+      ]);
+      expect(JSON.stringify(providers)).not.toContain('sk-stored');
+    });
+
+    // Any signed-in member reads this route, so a password written into the URL stays on the Hub.
+    it('leaves out a user name and password written into the base URL', async () => {
+      cloudFallback.listProviders.mockReturnValue([
+        {
+          provider: 'openai',
+          apiKey: 'sk-stored',
+          enabled: true,
+          defaultModel: 'gpt-4o',
+          baseUrl: 'https://proxy-user:proxy-secret@llm-proxy.example.test/v1',
+        },
+      ]);
+
+      const providers = await controller.getCloudProviders();
+
+      expect(providers[0]?.baseUrl).toBe('https://llm-proxy.example.test/v1');
+      expect(JSON.stringify(providers)).not.toContain('proxy-secret');
+    });
+
+    it('leaves out a query string and fragment written into the base URL', async () => {
+      cloudFallback.listProviders.mockReturnValue([
+        {
+          provider: 'openai',
+          apiKey: 'sk-stored',
+          enabled: true,
+          defaultModel: 'gpt-4o',
+          baseUrl: 'https://llm-proxy.example.test/v1?api-key=query-secret#hash-secret',
+        },
+      ]);
+
+      const providers = await controller.getCloudProviders();
+
+      expect(providers[0]?.baseUrl).toBe('https://llm-proxy.example.test/v1');
+      expect(JSON.stringify(providers)).not.toMatch(/query-secret|hash-secret/);
+    });
+
+    // `proxy-user:proxy-secret@...` parses as a URL with the scheme `proxy-user:`; the second doesn't parse.
+    it('leaves the secret parts out of a base URL that is not http or https', async () => {
+      cloudFallback.listProviders.mockReturnValue([
+        {
+          provider: 'openai',
+          apiKey: 'sk-stored',
+          enabled: true,
+          defaultModel: 'gpt-4o',
+          baseUrl: 'proxy-user:proxy-secret@llm-proxy/v1?key=query-secret',
+        },
+        {
+          provider: 'anthropic',
+          apiKey: 'sk-ant',
+          enabled: true,
+          defaultModel: 'claude-opus-4',
+          baseUrl: 'https://proxy-user:proxy-secret@llm proxy/v1',
+        },
+      ]);
+
+      const providers = await controller.getCloudProviders();
+
+      expect(providers.map((p) => p.baseUrl)).toEqual(['llm-proxy/v1', 'https://llm proxy/v1']);
+      expect(JSON.stringify(providers)).not.toMatch(/proxy-secret|query-secret/);
+    });
+
+    // A `/` or `?` in the password ends the host early. Neither URL parses, so the fallback has to
+    // find the last `@`.
+    it('leaves out a password with a slash or a question mark in it', async () => {
+      cloudFallback.listProviders.mockReturnValue([
+        {
+          provider: 'openai',
+          apiKey: 'sk-stored',
+          enabled: true,
+          defaultModel: 'gpt-4o',
+          baseUrl: ' https://proxy-user:pass/word@llm-proxy.example.test/v1 ',
+        },
+        {
+          provider: 'anthropic',
+          apiKey: 'sk-ant',
+          enabled: true,
+          defaultModel: 'claude-opus-4',
+          baseUrl: 'https://proxy-user:pass?word@llm-proxy.example.test/v1',
+        },
+      ]);
+
+      const providers = await controller.getCloudProviders();
+
+      expect(providers.map((p) => p.baseUrl)).toEqual(['https://llm-proxy.example.test/v1', 'https://llm-proxy.example.test/v1']);
+      expect(JSON.stringify(providers)).not.toMatch(/pass|word/);
+    });
+
+    // Reading the URL made this route fail outright when one was stored as something other than text.
+    it('still lists the providers when a base URL is not text', async () => {
+      cloudFallback.listProviders.mockReturnValue([
+        { provider: 'openai', apiKey: 'sk-stored', enabled: true, defaultModel: 'gpt-4o', baseUrl: 42 as unknown as string },
+      ]);
+
+      await expect(controller.getCloudProviders()).resolves.toEqual([
+        { provider: 'openai', enabled: true, configured: true, defaultModel: 'gpt-4o' },
+      ]);
+    });
+
+    it("leaves the base URL out when it is the provider's own server, however it is spelled", async () => {
+      cloudFallback.listProviders.mockReturnValue([
+        { provider: 'openai', apiKey: 'sk-stored', enabled: true, defaultModel: 'gpt-4o', baseUrl: 'https://api.openai.com/v1' },
+        {
+          provider: 'anthropic',
+          apiKey: 'sk-ant-stored',
+          enabled: true,
+          defaultModel: 'claude-opus-4',
+          baseUrl: 'https://API.anthropic.com:443/v1/',
+        },
+        {
+          provider: 'google',
+          apiKey: 'AIza-stored',
+          enabled: false,
+          defaultModel: 'gemini-2.5-pro',
+          baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+        },
+        { provider: 'github-copilot', apiKey: 'ghu-stored', enabled: true, defaultModel: 'claude-opus-4', baseUrl: 'https://api.githubcopilot.com/' },
+      ]);
+
+      const providers = await controller.getCloudProviders();
+
+      expect(providers).toHaveLength(4);
+      for (const provider of providers) {
+        expect(provider).not.toHaveProperty('baseUrl');
+      }
+    });
+  });
+
+  describe('images and media endpoints', () => {
+    it('routes v1ImagesGenerations to router.routeImageGen', async () => {
+      router.routeImageGen.mockResolvedValueOnce({ data: { created: 100, data: [{ url: 'http://img.png' }] }, backend: 'localai' });
+      const res = {
+        json: vi.fn(),
+        status: vi.fn().mockReturnThis(),
+        setHeader: vi.fn(),
+        on: vi.fn(),
+        once: vi.fn(),
+        writableEnded: false,
+      } as any;
+
+      await controller.v1ImagesGenerations({ prompt: 'test image' }, res);
+      expect(router.routeImageGen).toHaveBeenCalledWith({ prompt: 'test image' }, expect.any(AbortSignal));
+      expect(res.json).toHaveBeenCalledWith({ created: 100, data: [{ url: 'http://img.png' }] });
+    });
+
+    it('handles mediaAcquire and mediaRelease calls', async () => {
+      router.activeMediaWork.mockReturnValueOnce(1);
+      const acqResult = await controller.mediaAcquire({ kind: 'comfyui', model: 'flux' });
+      expect(router.acquireMediaWork).toHaveBeenCalledWith({ kind: 'comfyui', model: 'flux' });
+      expect(acqResult).toEqual({ ok: true, activeMediaWork: 1 });
+
+      router.activeMediaWork.mockReturnValueOnce(0);
+      const relResult = await controller.mediaRelease({ kind: 'comfyui', model: 'flux' });
+      expect(router.releaseMediaWork).toHaveBeenCalledWith({ kind: 'comfyui', model: 'flux' });
+      expect(relResult).toEqual({ ok: true, activeMediaWork: 0 });
+    });
+  });
+
+  describe('GET cloud-policy', () => {
+    const savedFlag = process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+
+    afterEach(() => {
+      if (savedFlag === undefined) delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+      else process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = savedFlag;
+    });
+
+    it('reports disabled cloud fallback by default alongside configured provider presence', () => {
+      delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+      cloudFallback.hasCloudFallback.mockReturnValue(true);
+
+      expect(controller.getCloudPolicy()).toEqual({
+        allowCloudFallback: false,
+        hasCloudFallback: true,
+        envFlag: 'CI_HUB_ALLOW_CLOUD_FALLBACK',
+      });
+    });
+
+    it('reports enabled cloud fallback only when CI_HUB_ALLOW_CLOUD_FALLBACK === "true"', () => {
+      process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+      cloudFallback.hasCloudFallback.mockReturnValue(false);
+
+      expect(controller.getCloudPolicy()).toEqual({
+        allowCloudFallback: true,
+        hasCloudFallback: false,
+        envFlag: 'CI_HUB_ALLOW_CLOUD_FALLBACK',
+      });
+    });
   });
 });

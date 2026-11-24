@@ -42,6 +42,8 @@ describe('BackupsService', () => {
     configService = mock<ConfigurationService>();
     appEventsQueue = mock<AppEventsQueue>();
     appLifecycle = mock<AppLifecycleService>();
+    // The app is free: the claim runs the dispatch it is given.
+    appLifecycle.withOperationClaim.mockImplementation((_appUrn, _command, run) => run());
     appFilesManager = mock<AppFilesManager>();
     backupManager = mock<BackupManager>();
     sseService = mock<SSEService>();
@@ -68,6 +70,44 @@ describe('BackupsService', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  // #2101: a backup or restore sent while the app has another operation under way.
+  describe('while the app is busy', () => {
+    const appUrn = 'test-app:ci-marketplace' as any;
+    const busy = Object.assign(new Error('APP_ERROR_UNINSTALL_IN_PROGRESS'), { status: 409 });
+
+    beforeEach(() => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'uninstalling', config: {} } as any);
+      configService.get.mockReturnValue(false);
+      appLifecycle.withOperationClaim.mockRejectedValue(busy);
+    });
+
+    it.each([
+      ['backupApp', 'backup', () => service.backupApp({ appUrn, actor: GRANTED_ACTOR })],
+      ['restoreApp', 'restore', () => service.restoreApp({ appUrn, filename: 'b.tar.gz', actor: GRANTED_ACTOR })],
+    ] as const)('%s asks the lifecycle for the app and writes nothing when refused', async (_method, command, call) => {
+      await expect(call()).rejects.toBe(busy);
+
+      expect(appLifecycle.withOperationClaim).toHaveBeenCalledWith(appUrn, command, expect.any(Function));
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      expect(operationRegistry.register).not.toHaveBeenCalled();
+      expect(appEventsQueue.publish).not.toHaveBeenCalled();
+    });
+  });
+
+  // An event the queue refuses never reaches a worker, so nothing would settle its entry.
+  it.each([
+    ['backupApp', () => service.backupApp({ appUrn: 'test-app:ci-marketplace' as any, actor: GRANTED_ACTOR })],
+    ['restoreApp', () => service.restoreApp({ appUrn: 'test-app:ci-marketplace' as any, filename: 'b.tar.gz', actor: GRANTED_ACTOR })],
+  ] as const)('%s frees the app when its command cannot be published', async (_method, call) => {
+    appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'running', config: {} } as any);
+    configService.get.mockReturnValue(false);
+    appEventsQueue.publish.mockRejectedValue(new Error('Invalid event data'));
+
+    const { requestId } = await call();
+
+    await vi.waitFor(() => expect(operationRegistry.clear).toHaveBeenCalledWith('test-app:ci-marketplace', requestId));
   });
 
   describe('backupApp', () => {
@@ -106,6 +146,19 @@ describe('BackupsService', () => {
       await vi.waitFor(() => expect(sseService.emit).toHaveBeenCalledWith('app', { event: 'backup_error', appUrn, appStatus: 'stopped' }));
 
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ status: 'stopped' }));
+    });
+
+    // The command refused the backup before it stopped anything, so the app is still running.
+    it('keeps a running app running in the UI when the backup was refused before the stop', async () => {
+      const appUrn = 'test-app' as any;
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, name: 'test-app', status: 'running', config: {} } as any);
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'Cannot back up test-app', rolledBack: true } as any);
+      configService.get.mockReturnValue(false);
+
+      await service.backupApp({ appUrn, actor: GRANTED_ACTOR });
+      await vi.waitFor(() => expect(sseService.emit).toHaveBeenCalledWith('app', { event: 'backup_error', appUrn, appStatus: 'running' }));
+
+      expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(1, { status: 'running' });
     });
 
     it('should throw if demo mode', async () => {
@@ -295,6 +348,17 @@ describe('BackupsService', () => {
       await vi.waitFor(() => expect(logger.error).toHaveBeenCalledTimes(2));
       expect(gateChecks(appLifecycle.assertActorMay).map(([, urn]) => urn)).toEqual(['immich:ci-marketplace', 'nextcloud:ci-marketplace']);
       expect(appEventsQueue.publish).not.toHaveBeenCalled();
+    });
+  });
+  // A custom app's backups are for whoever may take one; MCP lists them through here too.
+  describe('getAppBackups on a custom app', () => {
+    it('asks the actor gate for backup rather than view', async () => {
+      appLifecycle.assertActorMay.mockResolvedValue(undefined);
+      backupManager.listBackupsByAppId.mockResolvedValue([]);
+
+      await service.getAppBackups({ appUrn: 'my-compose:_user' as AppUrn, page: 1, pageSize: 10, actor: GRANTED_ACTOR });
+
+      expect(gateChecks(appLifecycle.assertActorMay)).toEqual([[GRANTED_ACTOR, 'my-compose:_user', 'backup', undefined]]);
     });
   });
   describe('getAppBackups paging', () => {

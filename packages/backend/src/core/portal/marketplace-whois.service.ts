@@ -5,6 +5,7 @@ import { DatabaseService } from '@/core/database/database.service';
 import { app, whoisCache } from '@/core/database/drizzle/schema';
 import { LoggerService } from '@/core/logger/logger.service';
 import { FederatedIdentityRepository } from '@/modules/user/federated-identity.repository';
+import { UserRepository } from '@/modules/user/user.repository';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { PORT_EXPOSE_KIND } from '@ci-hub/common/schemas';
@@ -12,11 +13,21 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { and, eq, inArray } from 'drizzle-orm';
 import type { Request } from 'express';
 
-import { DEFAULT_MEMBER_ACTIONS, type HubAction, HUB_CAPABILITY, isHubAction, MAX_WHOIS_APP_IDS, WHOIS_CACHE_TTL_MS } from './hub-actions';
+import {
+  DEFAULT_MEMBER_ACTIONS,
+  type HubAction,
+  HUB_ACTIONS,
+  HUB_CAPABILITY,
+  isHubAction,
+  MAX_WHOIS_APP_IDS,
+  WHOIS_CACHE_TTL_MS,
+} from './hub-actions';
 import { type HubPrincipalFields, hubSessionOperatorUserId, isAppViewObserverPrincipal, isGrantExemptPrincipal } from './hub-session-operator';
 import type { LifecycleActor } from './lifecycle-actor';
 import { PortalClientService, type PortalWhoIsResponse } from './portal-client.service';
+import { assertHubManageAllowed, type HubManageVerdict } from './hub-manage-verdict';
 import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
+import { linksForCurrentPortal } from '@/modules/user/portal-links';
 
 export type GrantSurface = 'hub' | 'store';
 
@@ -43,6 +54,20 @@ type CachedWhoIs = {
 };
 
 /**
+ * What a role lookup found. `unlinked` (no Portal identity) and `no-organization` (this Hub isn't
+ * paired, or its registration can't be read) mean there was no role to ask about; `unknown` means
+ * the Portal was asked and couldn't answer.
+ */
+type ManagingRoleVerdict = 'manager' | 'not-manager' | 'unlinked' | 'no-organization' | 'unknown';
+
+/**
+ * How long the Hub-wide routes keep an owner's or admin's yes. One AI settings save is several guarded
+ * requests, and each would wait on the Portal. A demotion counts once it runs out; a no or a failure
+ * is never kept.
+ */
+const HUB_MANAGER_KEPT_MS = 60_000;
+
+/**
  * Hub UX cache of Portal org app grants (WhoIs / CapMap).
  *
  * Not commerce. A modified Hub can skip this. Portal POST install and
@@ -59,6 +84,8 @@ type CachedWhoIs = {
 export class MarketplaceWhoIsService {
   private readonly loggedUnlinked = new Set<number>();
   private readonly loggedOrgUnresolved = new Set<string>();
+  /** When each Hub-wide yes runs out, by person, Portal identity and organization. See `HUB_MANAGER_KEPT_MS`. */
+  private readonly hubManagerUntil = new Map<string, number>();
 
   constructor(
     private readonly portal: PortalClientService,
@@ -66,6 +93,7 @@ export class MarketplaceWhoIsService {
     private readonly logger: LoggerService,
     private readonly federatedIdentities: FederatedIdentityRepository,
     private readonly registration: RegistrationService,
+    private readonly users: UserRepository,
   ) {}
 
   async assertSessionAction(req: Request, appUrn: AppUrn, action: HubAction, surface: GrantSurface = 'hub'): Promise<void> {
@@ -105,7 +133,7 @@ export class MarketplaceWhoIsService {
       throw new TranslatableError('APP_ACTION_GRANT_DENIED', { action }, HttpStatus.FORBIDDEN);
     }
 
-    const map = await this.canMap(userId, appUrns, surface);
+    const map = await this.canMap(userId, appUrns, surface, action);
     for (const appUrn of appUrns) {
       // `null` (WhoIs missed, no fresh cache) is a refusal: these callers mutate.
       if (map.get(appUrn)?.includes(action) !== true) {
@@ -142,7 +170,7 @@ export class MarketplaceWhoIsService {
       return [];
     }
 
-    const map = await this.canMap(userId, appUrns, surface);
+    const map = await this.canMap(userId, appUrns, surface, action);
     return appUrns.filter((appUrn) => map.get(appUrn)?.includes(action) === true);
   }
 
@@ -161,7 +189,7 @@ export class MarketplaceWhoIsService {
     }
 
     const urns = items.map((item) => urnOf(item)).filter((urn): urn is AppUrn => urn?.includes(':') ?? false);
-    const map = await this.canMap(userId, urns, surface);
+    const map = await this.canMap(userId, urns, surface, 'view');
     return items.filter((item) => {
       const urn = urnOf(item);
       if (!urn) {
@@ -192,7 +220,7 @@ export class MarketplaceWhoIsService {
       return 'visible';
     }
 
-    const can = (await this.canMap(userId, [appUrn], surface)).get(appUrn);
+    const can = (await this.canMap(userId, [appUrn], surface, 'view')).get(appUrn);
     if (can == null || can.includes('view')) {
       return 'visible';
     }
@@ -239,18 +267,34 @@ export class MarketplaceWhoIsService {
   }
 
   /**
-   * The role question both ask, about `appUrn` or, when it is `null`, about no app: fresh, from this
-   * device's own organization, and `false` whenever it cannot be answered.
+   * The role question both ask, and a change to a custom app (`localAppGrants`), about `appUrn` or, when
+   * it is `null`, about no app: fresh, from this device's own organization, and `false` whenever it
+   * cannot be answered. `knownSubject` is a Portal subject the caller already read, so it is not read twice.
    */
-  private async readManagingRole(userId: number, appUrn: AppUrn | null, purpose: 'custom_domain' | 'api_key_full'): Promise<boolean> {
+  private async readManagingRole(
+    userId: number,
+    appUrn: AppUrn | null,
+    purpose: 'custom_domain' | 'api_key_full' | 'custom_app',
+    knownSubject?: string,
+  ): Promise<boolean> {
+    return (await this.managingRoleVerdict(userId, appUrn, purpose, knownSubject)) === 'manager';
+  }
+
+  /** {@link readManagingRole}, saying why the answer isn't "manager". */
+  private async managingRoleVerdict(
+    userId: number,
+    appUrn: AppUrn | null,
+    purpose: 'custom_domain' | 'api_key_full' | 'custom_app' | 'hub_manage',
+    knownSubject?: string,
+  ): Promise<ManagingRoleVerdict> {
     // The identity read and the urn split inside the `try` too: a database error, or a urn
     // `extractAppUrn` rejects, is another way of not knowing, not a 500.
     try {
-      const subject = await this.portalSubject(userId);
+      const subject = knownSubject ?? (await this.portalSubject(userId));
 
       if (!subject) {
         this.logUnlinked(userId);
-        return false;
+        return 'unlinked';
       }
 
       const appIds = appUrn === null ? [] : [extractAppUrn(appUrn).appName];
@@ -258,8 +302,16 @@ export class MarketplaceWhoIsService {
 
       // With no organization of our own there is no answer a role could be read from, so the Portal is not asked.
       if (!organizationId) {
-        this.logger.warn(`${purpose}_role_unverified userId=${userId} status=no-organization`);
-        return false;
+        // An unpaired Hub is set up through the Hub-wide routes, which decide this case without a role; no warning there.
+        if (purpose !== 'hub_manage') {
+          this.logger.warn(`${purpose}_role_unverified userId=${userId} status=no-organization`);
+        }
+        return 'no-organization';
+      }
+
+      const keptKey = purpose === 'hub_manage' ? `${userId}:${subject}:${organizationId}` : null;
+      if (keptKey !== null && (this.hubManagerUntil.get(keptKey) ?? 0) > Date.now()) {
+        return 'manager';
       }
 
       const response = await this.portal.whoisApps({ subject, appIds, surface: 'hub', organizationId });
@@ -267,16 +319,221 @@ export class MarketplaceWhoIsService {
       if (!response?.body || response.status < 200 || response.status >= 300) {
         // Refused all the same, but an owner turned away by an outage reads "owner or admin only", so the log says why.
         this.logger.warn(`${purpose}_role_unverified userId=${userId} status=${response ? response.status : 'no-portal'}`);
-        return false;
+        return 'unknown';
       }
 
       const role = this.pickOrg(response.body, organizationId)?.user?.role;
 
-      return role === 'owner' || role === 'admin';
+      if (role !== 'owner' && role !== 'admin') {
+        return 'not-manager';
+      }
+      if (keptKey !== null) {
+        this.keepHubManager(keptKey);
+      }
+      return 'manager';
     } catch (error) {
       this.logger.warn(`Could not read the organization role (${purpose}): ${describeNetworkError(error)}`);
+      return 'unknown';
+    }
+  }
+
+  private keepHubManager(key: string): void {
+    const now = Date.now();
+    for (const [other, until] of this.hubManagerUntil) {
+      if (until <= now) {
+        this.hubManagerUntil.delete(other);
+      }
+    }
+    this.hubManagerUntil.set(key, now + HUB_MANAGER_KEPT_MS);
+  }
+
+  /**
+   * Whether the person behind a request may change what applies to the whole Hub (its settings, keys,
+   * AI providers, updates, pool, app stores, registration and factory reset) or read the Hub's own
+   * log.
+   *
+   * The operator who claimed this Hub may, whatever their organization role, without asking the
+   * Portal: the person who set the Hub up keeps it (`isClaimingOperator`). Anyone else follows their
+   * role, asked of the Portal, never from the role stored at sign-in: an owner or admin may (a yes is
+   * kept for a minute, `HUB_MANAGER_KEPT_MS`), a member may not, and a role that can't be read is
+   * `unknown`, which refuses. Someone with no role to ask about (this Hub isn't paired, or they have
+   * no linked Portal identity) is refused, as `customAppGrant` gives an unlinked operator no
+   * role-gated right.
+   *
+   * The CLI and the host-local key are admitted by name: both prove access to the box. Every other
+   * principal is refused, the Portal push included, which only brokers app installs.
+   */
+  async hubManageVerdict(req: HubPrincipalFields): Promise<HubManageVerdict> {
+    switch (req.hubPrincipal) {
+      case 'cli':
+      case 'host-local':
+        return 'allowed';
+      case 'session':
+        break;
+      default:
+        // All the caller sees is a 403, so the log names the principal that was turned away.
+        this.logger.warn(`hub_manage_refused principal=${req.hubPrincipal ?? 'none'}`);
+        return 'refused';
+    }
+
+    const userId = hubSessionOperatorUserId(req);
+    if (userId == null) {
+      return 'refused';
+    }
+
+    return this.hubManageVerdictFor(userId);
+  }
+
+  /**
+   * {@link hubManageVerdict} for a person named by id rather than by a request: the claiming operator
+   * may, anyone else follows their role, asked of the Portal now. An MCP key asks it about the person who
+   * created the key, on every Hub-wide tool call.
+   */
+  async hubManageVerdictFor(userId: number): Promise<HubManageVerdict> {
+    if (await this.isClaimingOperator(userId)) {
+      return 'allowed';
+    }
+
+    return this.hubManageRoleVerdict(userId);
+  }
+
+  /** The organization-role half of {@link hubManageVerdict}, for anyone but the claiming operator. */
+  private async hubManageRoleVerdict(userId: number): Promise<HubManageVerdict> {
+    switch (await this.managingRoleVerdict(userId, null, 'hub_manage')) {
+      case 'manager':
+        return 'allowed';
+      case 'unknown':
+        return 'unknown';
+      default:
+        // A member, or nobody whose role could be read.
+        return 'refused';
+    }
+  }
+
+  /**
+   * {@link hubManageVerdict}, or, when the Portal can't say, the verdict from the role this Hub stored
+   * for the person ({@link storedHubManageVerdict}, read as {@link hubManageHint} reads it).
+   *
+   * For pairing a registered Hub again. A Hub whose device key the Portal rejects learns nobody's
+   * role from it. Pairing again is how that Hub recovers.
+   */
+  async hubManageVerdictForRePairing(req: HubPrincipalFields): Promise<HubManageVerdict> {
+    const verdict = await this.hubManageVerdict(req);
+    const userId = hubSessionOperatorUserId(req);
+
+    if (verdict !== 'unknown' || userId == null) {
+      return verdict;
+    }
+
+    return this.storedHubManageVerdict(userId, req.user?.orgRole);
+  }
+
+  /** Refuse a request {@link hubManageVerdict} doesn't allow: 403 for a no, 503 when the Portal couldn't say. */
+  async assertSessionMayManageHub(req: HubPrincipalFields): Promise<void> {
+    assertHubManageAllowed(await this.hubManageVerdict(req));
+  }
+
+  /**
+   * {@link hubManageVerdict} for the UI, answered without a Portal call when it can be
+   * ({@link storedHubManageVerdict}). With no role stored, the Portal is asked now. Only the UI reads
+   * this; every route that changes the Hub still asks the Portal fresh.
+   */
+  async hubManageHint(req: HubPrincipalFields): Promise<boolean> {
+    const userId = hubSessionOperatorUserId(req);
+
+    if (userId == null) {
+      return (await this.hubManageVerdict(req)) === 'allowed';
+    }
+
+    const stored = await this.storedHubManageVerdict(userId, req.user?.orgRole);
+    if (stored !== 'unknown') {
+      return stored === 'allowed';
+    }
+
+    return (await this.hubManageRoleVerdict(userId)) === 'allowed';
+  }
+
+  /**
+   * {@link storedHubManageVerdict} for a person named by id, such as the person who created an API key,
+   * with the role read from their row. The Settings key list and the MCP `tools/list` read it, so neither
+   * waits on the Portal; a Hub-wide tool call still asks fresh ({@link hubManageVerdictFor}). Someone
+   * whose access was revoked is refused whatever role is still stored for them.
+   */
+  async storedHubManageVerdictFor(userId: number): Promise<HubManageVerdict> {
+    let stored: { orgRole?: string | null; accessStatus?: string } | undefined;
+
+    try {
+      stored = await this.users.getUserDtoById(userId);
+    } catch (error) {
+      this.logger.warn(`Could not read the organization role (hub_manage): ${describeNetworkError(error)}`);
+      return 'unknown';
+    }
+
+    if (stored?.accessStatus === 'revoked') {
+      return 'refused';
+    }
+
+    return this.storedHubManageVerdict(userId, stored?.orgRole);
+  }
+
+  /**
+   * {@link hubManageVerdict} from the Hub's own records, with no Portal call. The claiming operator is
+   * read from the database. Anyone else's role is the one the Hub stored at sign-in or at the
+   * membership check (`user.orgRole`), as for {@link customAppActionsHint}. A stored owner or admin role
+   * counts only where the routes can read one: a linked person on a paired Hub. `unknown` when no role is
+   * stored for someone the Portal could be asked about, or when the records can't be read.
+   */
+  private async storedHubManageVerdict(userId: number, storedRole: string | null | undefined): Promise<HubManageVerdict> {
+    // A database blip must leave this `unknown`, not mark a key's creator as refused. So the claimer is
+    // read with `readIsClaimingOperator`, which throws where `isClaimingOperator` answers "not them": a
+    // claimer stored as a member would otherwise lose their keys' Hub-wide tools on a failed read.
+    try {
+      if (await this.readIsClaimingOperator(userId)) {
+        return 'allowed';
+      }
+
+      if (storedRole === 'member') {
+        return 'refused';
+      }
+
+      // With no role to read, the routes refuse anyone but the claiming operator. The registration is
+      // read here rather than through `deviceOrganizationId`, which reads a failed read as "unpaired".
+      if (!(await this.portalSubject(userId)) || !(await this.registration.getDeviceRegistrationInfo())?.id) {
+        return 'refused';
+      }
+    } catch (error) {
+      this.logger.warn(`Could not read the organization role (hub_manage): ${describeNetworkError(error)}`);
+      return 'unknown';
+    }
+
+    return storedRole === 'owner' || storedRole === 'admin' ? 'allowed' : 'unknown';
+  }
+
+  /**
+   * Whether this person claimed the Hub: the oldest operator row (`UserRepository.getFirstOperator`),
+   * the one `createFirstOperator` writes when the Hub is claimed and the CLI and host-local key act as.
+   * A factory reset truncates the user table and every session with it, and only a Hub with no
+   * operator can be claimed, so the next claimer takes this over and the old one, signing in again,
+   * gets a new row like anyone else.
+   *
+   * `false` when the operator rows can't be read. `false` too for a claimer whose access was revoked
+   * (`AuthService.revokeOperator`, after the Portal removed them from the organization): they can't
+   * sign in, so the keys they created must not keep the claimer's pass on the Hub-wide MCP tools.
+   * Also asked by who may give an API key full capability.
+   */
+  async isClaimingOperator(userId: number): Promise<boolean> {
+    try {
+      return await this.readIsClaimingOperator(userId);
+    } catch (error) {
+      this.logger.warn(`Could not read this Hub's first operator: ${describeNetworkError(error)}`);
       return false;
     }
+  }
+
+  /** {@link isClaimingOperator}, throwing when the operator rows can't be read. */
+  private async readIsClaimingOperator(userId: number): Promise<boolean> {
+    const first = await this.users.getFirstOperator();
+    return first?.id === userId && first.accessStatus !== 'revoked';
   }
 
   /**
@@ -337,17 +594,20 @@ export class MarketplaceWhoIsService {
   }
 
   async has(userId: number, appUrn: AppUrn, action: HubAction, surface: GrantSurface = 'hub'): Promise<boolean> {
-    const map = await this.canMap(userId, [appUrn], surface);
+    const map = await this.canMap(userId, [appUrn], surface, action);
     return map.get(appUrn)?.includes(action) === true;
   }
 
-  /** `null` can means WhoIs missed and there is no fresh cache (fail closed on mutate, fail open on list). */
-  private async canMap(userId: number, appUrns: AppUrn[], surface: GrantSurface): Promise<Map<string, HubAction[] | null>> {
+  /**
+   * `null` can means WhoIs missed and there is no fresh cache (fail closed on mutate, fail open on list).
+   * `action` is the one verb the caller checks: changing a custom app takes a role lookup a view does not.
+   */
+  private async canMap(userId: number, appUrns: AppUrn[], surface: GrantSurface, action: HubAction): Promise<Map<string, HubAction[] | null>> {
     const unique = [...new Set(appUrns)];
-    // Resolved from the local row, never from the name alone, and never written
-    // into the WhoIs cache: that cache is keyed by app name, which a catalog
-    // app can share.
-    const local = await this.portExposeGrants(unique);
+    // Resolved on this Hub, never from the name alone, and never written into
+    // the WhoIs cache: that cache is keyed by app name, which a catalog app can
+    // share.
+    const local = await this.localAppGrants(userId, unique, action);
     const rest = unique.filter((urn) => !local.has(urn));
 
     if (rest.length === 0) {
@@ -380,20 +640,35 @@ export class MarketplaceWhoIsService {
   }
 
   /**
-   * Local port-expose workloads are not Portal catalog apps. WhoIs has no row
+   * Apps in the `_user` store are made on this Hub: custom Docker apps and
+   * port-expose workloads. They are not Portal catalog apps. WhoIs has no row
    * for them, and a missing catalog name is stored as no grants, which locked
-   * the person who had just created the workload out of its page.
+   * everyone, the person who had just created the app included, out of it.
    *
-   * The exception is the row, not the name and not the `_user` store. A custom
-   * Docker app in `_user` still goes to WhoIs. A catalog app that shares the
-   * name still goes to WhoIs. Nothing is cached under the bare name. The verbs
-   * are `PORT_EXPOSE_ACTIONS`, not the full Hub set.
+   * So the Hub decides for every `_user` urn, and anyone signed in may view
+   * one. A port-expose row also gets `PORT_EXPOSE_ACTIONS`. Every other change
+   * to a `_user` app (start, stop, uninstall, configure and the rest) takes an
+   * organization owner or admin, asked of the Portal as `hasManagingRole` asks
+   * it, and a role that cannot be read refuses the change. The one exception
+   * is an operator with no linked Portal identity: see `customAppGrant`. A
+   * catalog app that shares the name still goes to WhoIs, and nothing is
+   * cached under the bare name.
+   *
+   * When the rows cannot be read, a port expose cannot be told from a custom
+   * app, so only the view is granted.
    */
-  private async portExposeGrants(urns: AppUrn[]): Promise<Map<AppUrn, HubAction[]>> {
+  private async localAppGrants(userId: number, urns: AppUrn[], action: HubAction): Promise<Map<AppUrn, HubAction[]>> {
     const out = new Map<AppUrn, HubAction[]>();
     const local = urns.filter((urn) => extractAppUrn(urn).appStoreId === '_user');
     if (local.length === 0) {
       return out;
+    }
+
+    const viewOnly = () => new Map<AppUrn, HubAction[]>(local.map((urn) => [urn, ['view']]));
+
+    // A view of any `_user` app needs neither the row nor a role, so the lists the UI polls cost nothing here.
+    if (action === 'view') {
+      return viewOnly();
     }
 
     const names = [...new Set(local.map((urn) => extractAppUrn(urn).appName))];
@@ -404,21 +679,133 @@ export class MarketplaceWhoIsService {
         .from(app)
         .where(and(eq(app.appStoreSlug, '_user'), inArray(app.appName, names)));
     } catch (error) {
-      this.logger.warn(`port_expose_grant_lookup_failed: ${describeNetworkError(error)}`);
-      return out;
+      this.logger.warn(`local_app_grant_lookup_failed: ${describeNetworkError(error)}`);
+      return viewOnly();
     }
 
-    const grantedNames = new Set(rows.filter((row) => storedConfigIsPortExpose(row.config)).map((row) => row.appName));
+    const portExposeNames = new Set(rows.filter((row) => storedConfigIsPortExpose(row.config)).map((row) => row.appName));
+    const [firstCustomApp] = local.filter((urn) => !portExposeNames.has(extractAppUrn(urn).appName));
+    // The role is the organization's, not the app's, so one answer covers every custom app here.
+    const customGrant = firstCustomApp === undefined ? [] : await this.customAppGrant(userId, firstCustomApp);
     for (const urn of local) {
-      if (grantedNames.has(extractAppUrn(urn).appName)) {
-        out.set(urn, [...PORT_EXPOSE_ACTIONS]);
-      }
+      out.set(urn, portExposeNames.has(extractAppUrn(urn).appName) ? [...PORT_EXPOSE_ACTIONS] : [...customGrant]);
     }
     return out;
   }
 
+  /**
+   * What a person may do to a custom app when asked about a change: every Hub verb for an
+   * organization owner or admin, and only the view for anyone else or when the Portal can't say.
+   *
+   * An operator with no linked Portal identity has no role to read. They keep the member fallback
+   * every app gives them (`DEFAULT_MEMBER_ACTIONS`), as they had before custom apps were decided
+   * here, so they can still start, stop and restart one but not remove or reconfigure it.
+   *
+   * `appUrn` only names the app in the role question. `null` asks about no app at all (a role-only
+   * WhoIs), for a decision about custom apps in general, such as creating one.
+   */
+  private async customAppGrant(userId: number, appUrn: AppUrn | null): Promise<HubAction[]> {
+    let subject: string | null;
+    try {
+      subject = await this.portalSubject(userId);
+    } catch (error) {
+      // A failed identity read is not knowing who this is, not "unlinked", so the change is refused.
+      this.logger.warn(`Could not read the organization role (custom_app): ${describeNetworkError(error)}`);
+      return ['view'];
+    }
+
+    if (!subject) {
+      this.logUnlinked(userId);
+      return [...DEFAULT_MEMBER_ACTIONS];
+    }
+
+    return (await this.readManagingRole(userId, appUrn, 'custom_app', subject)) ? [...HUB_ACTIONS] : ['view'];
+  }
+
+  /**
+   * What this person may do to custom apps in general, decided as `localAppGrants` decides one app:
+   * every Hub verb for an organization owner or admin, the member fallback for an operator with no
+   * linked Portal identity, and only `view` for anyone else or when the role can't be read. Creating
+   * a custom app takes `install` from this answer.
+   */
+  async customAppActionsFor(userId: number): Promise<HubAction[]> {
+    return this.customAppGrant(userId, null);
+  }
+
+  /**
+   * {@link customAppActionsFor} for the person behind a request. A named exempt principal (the CLI,
+   * the host-local key, the Portal push) may do everything, as every grant gate lets it; a caller
+   * that names no principal gets nothing.
+   */
+  async customAppActions(req: HubPrincipalFields): Promise<HubAction[]> {
+    const userId = hubSessionOperatorUserId(req);
+
+    if (userId == null) {
+      return isGrantExemptPrincipal(req) ? [...HUB_ACTIONS] : [];
+    }
+
+    return this.customAppActionsFor(userId);
+  }
+
+  /**
+   * What the UI should offer the person behind a request on a custom app, answered without a Portal
+   * call. A linked operator's role is the one the Hub stored at sign-in and refreshes with the
+   * membership check (`user.orgRole`); asking the Portal fresh took one to five seconds, and the custom
+   * app page waited on it. When no role is stored, the Portal is asked now ({@link customAppActions}).
+   *
+   * Only the UI reads this. Every action still asks the Portal fresh (`localAppGrants`), so a role
+   * changed in the last hour, or a Portal outage, can leave a button here that the Hub then refuses.
+   */
+  async customAppActionsHint(req: HubPrincipalFields): Promise<HubAction[]> {
+    const userId = hubSessionOperatorUserId(req);
+
+    if (userId == null) {
+      return this.customAppActions(req);
+    }
+
+    let subject: string | null;
+    try {
+      subject = await this.portalSubject(userId);
+    } catch (error) {
+      this.logger.warn(`Could not read the organization role (custom_app): ${describeNetworkError(error)}`);
+      return ['view'];
+    }
+
+    if (!subject) {
+      this.logUnlinked(userId);
+      return [...DEFAULT_MEMBER_ACTIONS];
+    }
+
+    switch (req.user?.orgRole) {
+      case 'owner':
+      case 'admin':
+        return [...HUB_ACTIONS];
+      case 'member':
+        return ['view'];
+      default:
+        return this.customAppActionsFor(userId);
+    }
+  }
+
+  /**
+   * Refuse a request to create a custom app unless {@link customAppActions} grants `install`: only an
+   * organization owner or admin may, and a role that can't be read is a refusal, as it is for a change.
+   */
+  async assertSessionMayCreateCustomApp(req: HubPrincipalFields): Promise<void> {
+    if ((await this.customAppActions(req)).includes('install')) {
+      return;
+    }
+
+    if (hubSessionOperatorUserId(req) == null) {
+      this.logUnrecognisedPrincipal(req, 'install');
+    }
+
+    throw new TranslatableError('CUSTOM_APP_CREATE_ROLE_REQUIRED', {}, HttpStatus.FORBIDDEN);
+  }
+
   private async portalSubject(userId: number): Promise<string | null> {
-    const links = await this.federatedIdentities.findByUserId(userId);
+    // The link the paired Portal issued, when there is one: it has never heard of another Portal's subject (#2178).
+    const links = linksForCurrentPortal(await this.federatedIdentities.findByUserId(userId), this.portal.getPublicPortalUrl());
     const link = links[0];
     return link?.subject ?? null;
   }
@@ -535,8 +922,12 @@ export class MarketplaceWhoIsService {
    * learn our own identity silently widened every grant on the appliance. It
    * now ends here as `null`, before any Portal call, and logs as a failed read
    * rather than as a device with no organization.
+   *
+   * The paid app requests name the same organization (`MarketplaceEntitlementService`,
+   * `ReposHelpers.downloadAppFiles`, `RegistryService`). On `null` they name none, since a device in
+   * one organization needs no name and a tied one gets a refusal that says so.
    */
-  private async deviceOrganizationId(): Promise<string | null> {
+  async deviceOrganizationId(): Promise<string | null> {
     let registration: Awaited<ReturnType<RegistrationService['getDeviceRegistrationInfo']>>;
 
     try {
@@ -551,7 +942,7 @@ export class MarketplaceWhoIsService {
     }
 
     if (!registration?.id) {
-      this.warnOnce('no-org-id', 'whois_org_unresolved: this device has no organization id; refusing to guess');
+      this.warnOnce('no-org-id', 'whois_org_unresolved: this device has no organization id');
 
       return null;
     }

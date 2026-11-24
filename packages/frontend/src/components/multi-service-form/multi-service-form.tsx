@@ -1,13 +1,13 @@
 import './services-form.css';
 import { Button } from '@/components/ui/Button';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { dynamicComposeFormSchema, type dynamicComposeSchema } from '@ci-hub/common/schemas';
+import { customAppComposeFormSchema, type dynamicComposeSchema } from '@ci-hub/common/schemas';
 import type { z } from 'zod';
 import { ArrowUpDown, Network, Plus, Server, Settings, Variable, X } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { JsonComposeEditor } from './json-compose-editor';
 import { useMultiServiceStore } from '@/stores/multiServiceStore';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import clsx from 'clsx';
 import { AdvancedConfig } from './elements/advanced';
 import { PortsConfig } from './elements/ports';
@@ -20,12 +20,17 @@ import i18next from 'i18next';
 import { deepClean } from '@/utils/objects';
 
 type Props = {
-  onSubmit?: (data: z.infer<typeof dynamicComposeSchema>) => void;
+  /** Saves the app. While the promise it returns is pending, Save all and Save JSON stay disabled. */
+  onSubmit?: (data: z.infer<typeof dynamicComposeSchema>) => unknown;
+  /** What the save button says: "Create app" on Create, "Save changes" on Edit. */
+  submitLabel?: string;
+  /** Shown as Cancel beside the save button. */
+  onCancel?: () => void;
 };
 
-const cleanSchema = dynamicComposeFormSchema.transform((d) => deepClean(d));
+const cleanSchema = customAppComposeFormSchema.transform((d) => deepClean(d));
 
-export const MultiServiceForm = ({ onSubmit }: Props) => {
+export const MultiServiceForm = ({ onSubmit, submitLabel, onCancel }: Props) => {
   const { t } = useTranslation();
   const { services, updateFromJson, activeService, setActiveService, addService, removeService, updateService, validate, isDirty, setIsDirty } =
     useMultiServiceStore();
@@ -35,6 +40,23 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
     error: undefined,
   });
   const [activeTab, setActiveTab] = useState('essentials');
+  // One save at a time: a double click on Save all or Save JSON sent the same request twice. The ref
+  // stops the second click before React has re-rendered the disabled button.
+  const saving = useRef(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const oneSaveAtATime = async (save: () => Promise<void>) => {
+    if (saving.current) {
+      return;
+    }
+    saving.current = true;
+    setIsSaving(true);
+    try {
+      await save();
+    } finally {
+      saving.current = false;
+      setIsSaving(false);
+    }
+  };
 
   const tabs = [
     {
@@ -138,7 +160,7 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
           type="button"
           aria-pressed={isActive}
           className={clsx(
-            'inline-flex cursor-pointer items-center gap-2 whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium transition-all',
+            'inline-flex cursor-pointer items-center gap-2 whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium transition-[color,background-color,border-color,box-shadow,opacity,transform]',
             'ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
             isActive ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground',
           )}
@@ -152,26 +174,73 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
     );
   };
 
-  const handleSubmit = async (data: z.infer<typeof dynamicComposeSchema>) => {
+  const handleSubmit = async (formData: z.infer<typeof dynamicComposeSchema>) => {
+    // The form has no fields for the per-architecture overrides, so they come from the store: the saved
+    // config's, or the ones typed in the JSON editor. Without them a save dropped the block.
+    const { overrides } = useMultiServiceStore.getState();
+    const data = overrides ? { ...formData, overrides } : formData;
     const valid = validate(data);
 
     if (valid) {
-      onSubmit?.(data);
+      await onSubmit?.(data);
     } else {
       const latestError = useMultiServiceStore.getState().error;
       toast.error(i18next.exists(latestError) ? t(latestError) : latestError);
     }
   };
 
+  // The form's own check refused a field. The store's check says which rule and where, as it does
+  // for the JSON editor, rather than a bare "Invalid configuration.".
+  const handleInvalid = () => {
+    const { overrides } = useMultiServiceStore.getState();
+    const values = form.getValues();
+    validate(overrides ? { ...values, overrides } : values);
+    const latestError = useMultiServiceStore.getState().error || 'MULTI_SERVICE_ERROR_INVALID_CONFIGURATION';
+    toast.error(i18next.exists(latestError) ? t(latestError) : latestError);
+  };
+
+  // Save JSON stores what the editor holds through onSubmit, as Save all does. Copying it into the form
+  // alone loses the change as soon as the page is left.
+  const saveJson = async () => {
+    form.clearErrors();
+
+    let parsed: Partial<Pick<z.infer<typeof dynamicComposeSchema>, 'services' | 'overrides'>>;
+    try {
+      parsed = JSON.parse(json.value);
+    } catch {
+      toast.error(t('MULTI_SERVICE_JSON_INVALID_FORMAT'));
+      return;
+    }
+
+    const applied = updateFromJson({ services: parsed.services ?? [], overrides: parsed.overrides });
+    if (!applied) {
+      return;
+    }
+
+    if (!onSubmit) {
+      toast.success(t('MULTI_SERVICE_JSON_UPDATE_SUCCESS'));
+      return;
+    }
+
+    form.setValue('services', applied);
+    await form.handleSubmit(handleSubmit, handleInvalid)();
+  };
+
   return (
-    <form className="flex flex-col" onSubmit={form.handleSubmit(handleSubmit)}>
+    <form
+      className="flex flex-col"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void oneSaveAtATime(() => form.handleSubmit(handleSubmit, handleInvalid)());
+      }}
+    >
       <div className="bg-card border rounded-lg mt-4 m-0 p-0">
         {jsonEditorOpen && <JsonComposeEditor onChange={(json, jsonError) => setJson({ value: json, error: jsonError })} />}
         {!jsonEditorOpen && (
           <div className="flex flex-col md:flex-row">
             <div className="w-full shrink-0 border-b border-border p-0 md:w-1/6 md:border-r md:border-b-0">
               <div className="flex items-center justify-between p-3">
-                <div className="font-semibold">{t('MULTI_SERVICE_SERVICES')}</div>
+                <div className="font-medium">{t('MULTI_SERVICE_SERVICES')}</div>
                 <button
                   type="button"
                   className="rounded-sm text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -225,7 +294,8 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
             </div>
             <div className="w-full min-w-0 md:w-5/6">
               <div className="px-3 pt-3">
-                <ul className="inline-flex max-w-full flex-nowrap items-center gap-1 overflow-x-auto rounded-md border border-border/50 bg-muted p-1">
+                {/* Wraps on a phone: scrolled sideways, the last tabs were cut off with nothing to say there were more. */}
+                <ul className="inline-flex max-w-full flex-wrap items-center gap-1 rounded-md border border-border/50 bg-muted p-1">
                   {activeService !== 'json' && services[activeService] && tabs.map((tab) => renderTab(tab.id, tab.label, tab.icon, activeService))}
                 </ul>
               </div>
@@ -263,46 +333,47 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
             </div>
           </div>
         )}
-        <div className="flex items-center justify-between rounded-b-lg border-t border-border p-3">
-          <Button disabled={jsonEditorOpen} type="submit" className={clsx({ hidden: jsonEditorOpen })}>
-            {t('MULTI_SERVICE_VALIDATE_ALL_SERVICES')}
-          </Button>
-          <Button
-            className={clsx({ hidden: !jsonEditorOpen })}
-            type="button"
-            disabled={Boolean(json.error)}
-            onClick={() => {
-              form.clearErrors();
-              updateFromJson(JSON.parse(json.value).services);
-            }}
-          >
-            {t('MULTI_SERVICE_JSON_SAVE')}
-          </Button>
-          <div
-            className={clsx('text-center text-sm text-muted-foreground', {
-              hidden: !jsonEditorOpen,
-            })}
-          >
+        {/* The JSON editor switch on the left; Cancel and the save on the right, the order the Hub's dialogs use. */}
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-b-lg border-t border-border p-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                saveBeforeAction(setJsonEditorOpen)((v) => !v);
+              }}
+            >
+              <span className="flex items-center">{jsonEditorOpen ? t('MULTI_SERVICE_BACK_TO_FORM') : t('MULTI_SERVICE_JSON_EDITOR')}</span>
+            </Button>
             <a
               href="https://docs.ci.computer"
               target="_blank"
               rel="noopener noreferrer"
-              className="text-sm text-muted-foreground underline-offset-2 hover:underline"
+              className={clsx('text-sm text-muted-foreground underline-offset-2 hover:underline', { hidden: !jsonEditorOpen })}
             >
               {t('MULTI_SERVICE_JSON_REFERENCE')}
             </a>
           </div>
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              saveBeforeAction(setJsonEditorOpen)((v) => !v);
-            }}
-          >
-            <span className="flex items-center">{jsonEditorOpen ? t('MULTI_SERVICE_BACK_TO_FORM') : t('MULTI_SERVICE_JSON_EDITOR')}</span>
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            {onCancel ? (
+              <Button type="button" variant="ghost" onClick={onCancel} disabled={isSaving}>
+                {t('COMMON_CANCEL')}
+              </Button>
+            ) : null}
+            <Button disabled={jsonEditorOpen || isSaving} type="submit" className={clsx({ hidden: jsonEditorOpen })}>
+              {submitLabel ?? t('MULTI_SERVICE_VALIDATE_ALL_SERVICES')}
+            </Button>
+            <Button
+              className={clsx({ hidden: !jsonEditorOpen })}
+              type="button"
+              disabled={Boolean(json.error) || isSaving}
+              onClick={() => void oneSaveAtATime(saveJson)}
+            >
+              {t('MULTI_SERVICE_JSON_SAVE')}
+            </Button>
+          </div>
         </div>
       </div>
     </form>

@@ -1,6 +1,7 @@
+import { isIP } from 'node:net';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { resolveBrowserHost } from '@/common/helpers/browser-host';
-import { isPrivateOrLocalIp } from '@/common/helpers/ip-address';
+import { isPoolProbeTarget, isPrivateOrLocalIp } from '@/common/helpers/ip-address';
 import { withTimeout } from '@/common/helpers/with-timeout';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -9,20 +10,22 @@ import { ModuleRef } from '@nestjs/core';
 import { type AppInfo, hostPortStaysOnLoopback, LOOPBACK_HOST_PORT_INTERFACE } from '@ci-hub/common/schemas';
 import type { App } from '@/core/database/drizzle/types';
 import type { AppUrn } from '@ci-hub/common/types';
-import { buildPublicWebIdentity, normalizeStoredHostname } from '@ci-hub/common/types';
+import { buildPublicWebIdentity, normalizeStoredHostname, publishesHostPort, storedHostPortForm } from '@ci-hub/common/types';
 import axios from 'axios';
 import { httpsGetExcerpt, resolveAtZoneNameservers, type ZoneAnswer } from '../registration/public-reachability';
 import { MarketplaceService } from '../marketplace/marketplace.service';
 import { RegistrationService } from '../registration/registration.service';
+import { probeAppPort } from './app-port-probe';
 import { AppsRepository } from './apps.repository';
 import { AppsReadService } from './apps-read.service';
-import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
+import { CloudflareClientService, type PublicDnsFailureReason } from '../cloudflare/cloudflare-client.service';
 // Type-only: a value import here closes a require cycle
 // (tunnel-health -> docker -> apps -> tunnel-health) that leaves the DI token
 // undefined at decoration time and stops the whole backend booting. The class is
 // pulled in dynamically at the one place it is used, as with AppLifecycleService.
 import type { TunnelHealthService as TunnelHealthServiceType } from '../cloudflare/tunnel-health.service';
 import { TailscaleService } from '../tailscale/tailscale.service';
+import type { SSEService as SSEServiceType } from '@/core/sse/sse.service';
 
 /**
  * Verdict of an app-availability probe.
@@ -72,6 +75,77 @@ function isDnsMiss(error: unknown): boolean {
   return message.includes('ENOTFOUND') || message.includes('getaddrinfo') || message.includes('ENODATA') || message.includes('EAI_AGAIN');
 }
 
+/**
+ * Whether tailscaled is refusing the Hub's Serve changes and this app's port is not already served.
+ * Asked first, because the probe of an unpublished port reads as a broken app: refused, or a TLS error
+ * when the port is plain HTTP on the host (#2273). A port served before the refusal still works, under
+ * this node's name only: a tailnet rename leaves the old listener in place and it doesn't answer the new name.
+ */
+async function isRefusedByTailscale(tailscaleService: TailscaleService, appPort: number | null, nodeFqdn: string): Promise<boolean> {
+  if (!tailscaleService.getServePermission().denied) {
+    return false;
+  }
+  const selfHost = nodeFqdn.toLowerCase();
+  const { entries } = await tailscaleService.getServeStatus();
+  return !entries.some((entry) => entry.listenPort === appPort && entry.host === selfHost);
+}
+
+/** Whether a failed fetch was refused by the host at the address, where a tailnet peer can still connect (see {@link servedAppAnswers}). */
+function wasRefused(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === 'ECONNREFUSED' || (error instanceof Error && error.message.includes('ECONNREFUSED'));
+}
+
+/** The schemes a Tailscale Serve target can use that the Hub can ask, and the port each one defaults to. */
+const SERVE_TARGET_DEFAULT_PORTS: Record<string, number | undefined> = { 'http:': 80, 'https:': 443, 'https+insecure:': 443 };
+
+/**
+ * The address a Serve target (`http://172.22.0.8:30141`, `https+insecure://172.22.0.9:443`) names, when the Hub
+ * reads it as tailscaled does. That is an IP address on a private network, which is what the Hub writes: the
+ * app container's address on its app network. A host name or `localhost` can mean one thing to the Hub's
+ * container and another to a tailscaled on the host (`host.docker.internal` is the Hub itself on the app
+ * network, and `localhost` is the Hub's own container), so those are left alone, as is any target that is not HTTP.
+ */
+function parseServedTarget(dest: string | undefined): { host: string; port: number } | null {
+  let url: URL;
+  try {
+    url = new URL(dest ?? '');
+  } catch {
+    return null;
+  }
+  const defaultPort = SERVE_TARGET_DEFAULT_PORTS[url.protocol];
+  const host = url.hostname.replace(/^\[|\]$/g, '');
+  const port = url.port ? Number(url.port) : defaultPort;
+  // `isIP` goes first because `isPoolProbeTarget` reads a name that starts with `fd` as an IPv6 address.
+  // A port of 0 is left out because Node dials it as the default port.
+  return defaultPort && port && isIP(host) && isPoolProbeTarget(host) ? { host, port } : null;
+}
+
+/**
+ * Whether the app that Tailscale Serve forwards `appPort` to answers, for a Private VPN address the Hub was
+ * refused at.
+ *
+ * The Hub dials from inside a Docker network, and a tailscaled that binds its Serve listeners to the tailscale
+ * device (`100.x.y.z%tailscale0:<port>`, seen with 1.104.7) refuses a connection that arrives over any other
+ * interface while every tailnet peer connects. Serve forwards to an address the Hub can dial, so the entry for
+ * the port under this node's current name (a renamed node keeps an old listener that doesn't answer the new
+ * name) is read and its target asked. True means Serve lists the port and the app behind it answers; the Hub
+ * can't see whether tailscaled bound the listener. False leaves the probe's own verdict as it is.
+ */
+async function servedAppAnswers(tailscaleService: TailscaleService, nodeFqdn: string, appPort: number | null): Promise<boolean> {
+  let target: { host: string; port: number } | null;
+  try {
+    const selfHost = nodeFqdn.toLowerCase();
+    const { entries } = await tailscaleService.getServeStatus();
+    const entry = entries.find((candidate) => candidate.listenPort === appPort && candidate.host === selfHost && candidate.mountPoint === '/');
+    target = parseServedTarget(entry?.dest);
+  } catch {
+    // This only turns a refusal into an answer, so a Serve status that can't be read leaves the refusal as it is.
+    return false;
+  }
+  return target !== null && (await probeAppPort(target.host, target.port, APP_PROBE_TIMEOUT_MS)) === 'answered';
+}
+
 function dnsNotFoundResult(exposureMode: string, appUrl: string): AppAvailabilityResult {
   return {
     available: false,
@@ -89,18 +163,92 @@ function dnsNotFoundResult(exposureMode: string, appUrl: string): AppAvailabilit
   };
 }
 
+type RefusedPublicAddressVerdict = Pick<AppAvailabilityResult, 'reason' | 'errorCode' | 'detail'>;
+
 /**
- * What an HTTP answer means for this app. A Cloudflare error page is the tunnel, not the app. Any
- * other response means something at that name answered.
+ * The verdict for each refusal that stands until someone acts. The probe can only see the missing DNS
+ * record, which reads as "DNS propagating", and the Portal won't publish the address however long the
+ * page waits, so these say what happened instead and no re-sync is offered.
+ *
+ * `satisfies` leaves out only the reasons that pass on their own, so a new standing reason fails to
+ * compile here instead of reading as "DNS propagating".
+ */
+const REFUSED_PUBLIC_ADDRESS_VERDICTS: Partial<Record<PublicDnsFailureReason, RefusedPublicAddressVerdict>> = {
+  subdomain_quota_exceeded: {
+    reason: 'PLAN_LIMIT',
+    errorCode: 'PUBLIC_ADDRESS_QUOTA_EXCEEDED',
+    detail: "The organization's plan has no public app addresses left, so Companion Portal refused this app one.",
+  },
+  duplicate_subdomain: {
+    reason: 'DUPLICATE_SUBDOMAIN',
+    errorCode: 'PUBLIC_ADDRESS_DUPLICATE_SUBDOMAIN',
+    detail: 'Another app on this Hub already uses this subdomain, so Companion Portal refused this app one.',
+  },
+  conflict: {
+    reason: 'ADDRESS_CONFLICT',
+    errorCode: 'PUBLIC_ADDRESS_CONFLICT',
+    detail: 'Another device already holds this public address, so Companion Portal refused it for this app.',
+  },
+  zone_unreachable: {
+    reason: 'ZONE_UNAVAILABLE',
+    errorCode: 'PUBLIC_ADDRESS_ZONE_UNAVAILABLE',
+    detail: "This app's domain is not set up for this device, so Companion Portal refused it a public address.",
+  },
+  invalid_subdomain: {
+    reason: 'INVALID_SUBDOMAIN',
+    errorCode: 'PUBLIC_ADDRESS_INVALID_SUBDOMAIN',
+    detail: "This app's subdomain is not a valid web address, so Companion Portal refused it a public address.",
+  },
+} satisfies Record<Exclude<PublicDnsFailureReason, 'api_error' | 'write_failed' | 'release_pending'>, RefusedPublicAddressVerdict>;
+
+/** Cloudflare's own error as it answers a client that does not ask for HTML, this probe included. */
+const CLOUDFLARE_PLAIN_ERROR = /^\s*error code:\s*(\d{3,4})\s*$/i;
+
+/** Statuses only Cloudflare's edge answers with. It sends 530 with a 1xxx error, such as 1033 for a tunnel with no connector. */
+function isCloudflareOnlyStatus(status: number): boolean {
+  return status === 530 || (status >= 520 && status <= 527);
+}
+
+/**
+ * A 404 nothing behind the name wrote: Traefik's own body when it has no router for the host, as while
+ * the app's containers are down, or the empty one cloudflared's catch-all rule sends for a host its
+ * ingress does not list. An app's own 404 has a body of its own, and an API-only app answers `/` that way.
+ */
+function isRouteMissing(status: number, text: string): boolean {
+  if (status !== 404) {
+    return false;
+  }
+  const body = text.trim();
+  return body === '' || body === '404 page not found';
+}
+
+/**
+ * What an HTTP answer means for this app.
+ *
+ * Every answer on a Public Web route comes through Cloudflare. An answer its edge made itself means the
+ * tunnel failed, not the app: an HTML error page for a browser, a plain `error code: 1033` for this
+ * probe, or a status only the edge uses. An answer from the Hub counts only when it can be the app's own
+ * page. A 5xx can't (the Hub's "is starting" page is a 503), and neither can a 404 for a route nobody
+ * serves (see {@link isRouteMissing}). A 401 or 403 can: an app behind its own sign-in answers a probe
+ * without a session that way.
+ *
+ * Over the Private VPN any answer still counts, as it always has, although `tailscale serve` answers 502
+ * itself when the app behind it is down.
  */
 function classifyReachedApp(exposureMode: string, appUrl: string, status: number, text: string): AppAvailabilityResult {
-  const isCloudflare = text.includes('Cloudflare Ray ID') || text.includes('cf-error-details');
+  if (exposureMode !== 'cloudflare') {
+    return { available: true, appUrl, httpStatus: status, stage: 'ready' };
+  }
 
-  if (exposureMode === 'cloudflare' && isCloudflare) {
-    const cfErrorMatch = text.match(/Error\s+(\d{3,4})/i);
-    const cfCode = cfErrorMatch ? Number(cfErrorMatch[1]) : status;
+  const isCloudflarePage = text.includes('Cloudflare Ray ID') || text.includes('cf-error-details');
+  // The edge only sends its plain error with a failing status, so an app that answers 200 with that text is still the app.
+  const plainCode = status >= 400 ? CLOUDFLARE_PLAIN_ERROR.exec(text)?.[1] : undefined;
+  const bodyCode = plainCode ?? (isCloudflarePage ? text.match(/Error\s+(\d{3,4})/i)?.[1] : undefined);
 
-    if (cfCode === 1033) {
+  if (isCloudflarePage || bodyCode !== undefined || isCloudflareOnlyStatus(status)) {
+    const cfCode = bodyCode ? Number(bodyCode) : status;
+
+    if (cfCode === 1033 || cfCode === 530) {
       return {
         available: false,
         appUrl,
@@ -154,8 +302,21 @@ function classifyReachedApp(exposureMode: string, appUrl: string, status: number
       stage: 'error',
       reason: 'CLOUDFLARE',
       errorCode: 'CF_UNKNOWN',
-      detail: cfErrorMatch ? `Cloudflare Error ${cfErrorMatch[1]}` : `Cloudflare Error (HTTP ${status})`,
+      detail: bodyCode ? `Cloudflare Error ${bodyCode}` : `Cloudflare Error (HTTP ${status})`,
       resolvable: false,
+    };
+  }
+
+  if (status >= 500 || isRouteMissing(status, text)) {
+    return {
+      available: false,
+      appUrl,
+      httpStatus: status,
+      stage: 'propagating',
+      reason: 'CLOUDFLARE',
+      errorCode: 'CF_UPSTREAM_ERROR',
+      detail: `The app's public address answered HTTP ${status} through the tunnel. The app may still be starting, or its containers may have stopped.`,
+      resolvable: true,
     };
   }
 
@@ -306,9 +467,48 @@ export class AppsService {
     // (CI-Engineering#75). It also widens the post-connect landing allowlist so a
     // LAN user is not relocated to the public origin.
     const localUrl = this.resolveDirectLocalUrl(app, info);
-    const result = await this.probeAppAvailability(app, info);
+    const probed = await this.probeAppAvailability(app, info);
+    // Only a missing record is explained by a refusal. A verdict read from an answer (a Cloudflare
+    // error, the Hub's 5xx) means the name resolves, and its code and reason drive the repair and the
+    // runtime monitor. A refusal is about the platform hostname, so it says nothing about a custom
+    // hostname, which is the address probed when the app has one.
+    const refusalCanExplain = probed.errorCode === 'DNS_NOT_FOUND' && app.exposureMode === 'cloudflare' && !normalizeStoredHostname(app.customDomain);
+    const result = refusalCanExplain ? await this.explainRefusedPublicAddress(appUrn, probed) : probed;
 
     return localUrl ? { ...result, localUrl } : result;
+  }
+
+  /**
+   * A public address the Portal refused for a reason that stands until someone acts is not on its way,
+   * however long the page waits. The probe can only see the missing DNS record, which reads as
+   * "DNS propagating", so the app page said that for as long as the refusal stood (#2312, #2271). Ask
+   * the last sync instead and say what the person can do. Any other verdict is returned unchanged.
+   */
+  private async explainRefusedPublicAddress(appUrn: AppUrn, probed: AppAvailabilityResult): Promise<AppAvailabilityResult> {
+    let refusal: PublicDnsFailureReason | null = null;
+    try {
+      // Imported here like AppLifecycleService below: a static import closes a require cycle.
+      const { ExposureSyncService } = await import('../app-lifecycle/exposure-sync.service');
+      refusal = this.moduleRef.get(ExposureSyncService, { strict: false })?.publicDnsRefusalFor(appUrn) ?? null;
+    } catch {
+      return probed;
+    }
+    const verdict = refusal ? REFUSED_PUBLIC_ADDRESS_VERDICTS[refusal] : undefined;
+    if (!verdict) {
+      return probed;
+    }
+    return { available: false, appUrl: probed.appUrl, stage: 'error', resolvable: false, ...verdict };
+  }
+
+  /** Why the last sync says the Portal refused this app a public address, for a refusal that stands until someone acts. */
+  public async publicAddressRefusalFor(appUrn: AppUrn): Promise<PublicDnsFailureReason | null> {
+    try {
+      // Imported here like AppLifecycleService below: a static import closes a require cycle.
+      const { ExposureSyncService } = await import('../app-lifecycle/exposure-sync.service');
+      return this.moduleRef.get(ExposureSyncService, { strict: false })?.publicDnsRefusalFor(appUrn) ?? null;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -318,13 +518,17 @@ export class AppsService {
    * Deliberately mirrors `hasDirectLocalAccess` in the frontend's
    * `app-access-points.tsx` rather than the looser test used by
    * {@link probeAppAvailability} below, because this value is offered to the user
-   * as a route to click. The stricter rule is what keeps two cases from getting a
-   * dead "Open on local network" button:
+   * as a route to click. An app with a stored install form is judged by the rule
+   * compose binds the host port by (`publishesHostPort`): a Private VPN or Public
+   * Web form with a closed port and no `exposedLocal` binds none, and a Private
+   * VPN form with `exposedLocal` binds one.
    *
-   *  - **Tailscale installs** may skip publishing a host port entirely unless
-   *    `openPort` was requested, so `exposedLocal` alone must not qualify.
-   *  - **Pre-`exposureMode` installs** with a dynamic config bind no fixed host
-   *    port, so they only qualify via `openPort` / `exposedLocal`.
+   * A record with no form falls back to the row columns, where `exposed_local` is
+   * true for any exposable app installed without exposure settings, so:
+   *
+   *  - **Tailscale installs** qualify only via `openPort`.
+   *  - **Pre-`exposureMode` installs** with a dynamic config qualify only via
+   *    `openPort` / `exposedLocal`.
    *
    * Offering an address that isn't served would reproduce the exact bug this
    * whole change set exists to remove, so this errs toward returning nothing.
@@ -340,10 +544,13 @@ export class AppsService {
       return undefined;
     }
 
+    const form = storedHostPortForm(app);
     const mode = app.exposureMode;
     let hasDirectLocalAccess: boolean;
 
-    if (mode === 'tailscale') {
+    if (form) {
+      hasDirectLocalAccess = publishesHostPort(form);
+    } else if (mode === 'tailscale') {
       hasDirectLocalAccess = Boolean(app.openPort);
     } else if (mode === 'cloudflare' || mode === 'local') {
       // Both bind the app port on the host, so the LAN address stays valid even
@@ -392,6 +599,8 @@ export class AppsService {
 
     // Build the app URL based on exposure mode
     let appUrl: string | undefined;
+    // Set for a Private VPN app, so a failed fetch below can ask Tailscale Serve what answers behind the address.
+    let privateVpn: { tailscaleService: TailscaleService; nodeFqdn: string; appPort: number | null } | undefined;
     if (exposureMode === 'local') {
       if (!app.port || !hasDirectLocalAccess) {
         return { available: false, appUrl: undefined, stage: 'error' };
@@ -420,7 +629,20 @@ export class AppsService {
         };
       }
 
+      if (tailscaleStatus?.nodeFqdn && (await isRefusedByTailscale(tailscaleService, appPort, tailscaleStatus.nodeFqdn))) {
+        return {
+          available: false,
+          appUrl: undefined,
+          stage: 'error',
+          reason: 'TAILSCALE_REFUSED',
+          errorCode: 'TAILSCALE_SERVE_REFUSED',
+          detail: 'Tailscale refused this change. Open Settings > Network to fix it.',
+          resolvable: false,
+        };
+      }
+
       appUrl = vpnUrl;
+      privateVpn = tailscaleStatus?.nodeFqdn ? { tailscaleService, nodeFqdn: tailscaleStatus.nodeFqdn, appPort } : undefined;
     } else {
       const cloudflareClient = this.moduleRef.get(CloudflareClientService, { strict: false });
       const hasTunnelToken = Boolean(
@@ -472,6 +694,12 @@ export class AppsService {
       return classifyReachedApp(exposureMode, appUrl, response.status, response.text);
     } catch (e) {
       const message = e instanceof Error ? e.message : 'UNKNOWN_ERROR';
+
+      // A Serve listener bound to the tailscale device refuses the Hub, which dials from a Docker network, while
+      // every tailnet peer connects. Where Serve lists the port and the app behind it answers, the address is up.
+      if (privateVpn && wasRefused(e) && (await servedAppAnswers(privateVpn.tailscaleService, privateVpn.nodeFqdn, privateVpn.appPort))) {
+        return { available: true, appUrl, stage: 'ready' };
+      }
 
       // DNS resolution failure
       if (message.includes('ENOTFOUND') || message.includes('getaddrinfo')) {
@@ -543,6 +771,8 @@ export class AppsService {
 
     const exposureMode = app.exposureMode || 'local';
     const actions: string[] = [];
+    const failures: string[] = [];
+    const restartFailure = (e: unknown) => `Failed to restart container: ${e instanceof Error ? e.message : String(e)}`;
 
     try {
       // For Cloudflare errors: re-sync state with Companion Portal
@@ -583,8 +813,46 @@ export class AppsService {
         }
       }
 
-      // For Tailscale errors: re-add serve entry
-      if (exposureMode === 'tailscale' && (check.errorCode === 'CONNECTION_REFUSED' || check.errorCode === 'PROXY_UPSTREAM_ERROR')) {
+      const tailscaleRepair =
+        exposureMode === 'tailscale' && (check.errorCode === 'CONNECTION_REFUSED' || check.errorCode === 'PROXY_UPSTREAM_ERROR');
+
+      // For upstream/proxy errors: restart the app container
+      if (check.errorCode === 'PROXY_UPSTREAM_ERROR' || check.errorCode === 'CONNECTION_REFUSED' || check.errorCode === 'CF_ORIGIN_DOWN') {
+        const { DockerService } = await import('../docker/docker.service');
+        const dockerService = this.moduleRef.get(DockerService, { strict: false });
+        if (dockerService) {
+          // Compose names containers `<project>-<service>-1`, so the app's name is never one of them.
+          try {
+            // Over the Private VPN a refusal that survives servedAppAnswers means the port isn't published, or that
+            // the app behind a published port doesn't answer. Restarting a running app publishes nothing and would
+            // cut off one that is still starting, so only containers that are down restart.
+            const containers = await dockerService.getRoutedContainerNames(appUrn, { downOnly: tailscaleRepair });
+            // `docker restart` sets the bind mounts up again and follows any link in them, as compose up
+            // does, so it gets the same check first. A refusal ends up in `failures` below.
+            if (containers.length > 0) {
+              await dockerService.assertBindMountsSafe(appUrn);
+            }
+            if (containers.length === 0 && !tailscaleRepair) {
+              failures.push(`Failed to restart container: no container found for ${app.appName}`);
+            }
+            for (const container of containers) {
+              // Stopping at a failure would leave a sibling cut off by its routed container's restart.
+              try {
+                await dockerService.restartContainer(container);
+                actions.push(`Restarted container: ${container}`);
+              } catch (e) {
+                failures.push(restartFailure(e));
+              }
+            }
+          } catch (e) {
+            failures.push(restartFailure(e));
+          }
+        }
+      }
+
+      // For Tailscale errors: re-add serve entry. After the restart, because the sync skips an app
+      // with no running container and would leave it unpublished until its next pass.
+      if (tailscaleRepair) {
         const { AppLifecycleService } = await import('../app-lifecycle/app-lifecycle.service');
         const lifecycleService = this.moduleRef.get(AppLifecycleService, { strict: false });
         if (lifecycleService) {
@@ -593,29 +861,21 @@ export class AppsService {
         }
       }
 
-      // For upstream/proxy errors: restart the app container
-      if (check.errorCode === 'PROXY_UPSTREAM_ERROR' || check.errorCode === 'CONNECTION_REFUSED' || check.errorCode === 'CF_ORIGIN_DOWN') {
-        const { DockerService } = await import('../docker/docker.service');
-        const dockerService = this.moduleRef.get(DockerService, { strict: false });
-        if (dockerService) {
-          const appName = app.appName;
-          try {
-            await dockerService.restartContainer(appName);
-            actions.push(`Restarted container: ${appName}`);
-          } catch (e) {
-            actions.push(`Failed to restart container: ${e instanceof Error ? e.message : String(e)}`);
-          }
-        }
+      const attempted = [...actions, ...failures].join('; ');
+
+      if (!attempted) {
+        return { success: false, action: 'none', detail: 'No resolution actions available for this error.' };
       }
 
+      // A repair that only failed changed nothing, so the page must not report it as done and recheck.
       if (actions.length === 0) {
-        return { success: false, action: 'none', detail: 'No resolution actions available for this error.' };
+        return { success: false, action: attempted, detail: attempted };
       }
 
       return {
         success: true,
-        action: actions.join('; '),
-        detail: `Attempted: ${actions.join('; ')}. The app may take a moment to become available.`,
+        action: attempted,
+        detail: `Attempted: ${attempted}. The app may take a moment to become available.`,
       };
     } catch (e) {
       return {
@@ -653,6 +913,20 @@ export class AppsService {
     await this.appsRepository.updateAppById(app.id, { ignoredVersion: latestVersion });
 
     this.logger.info(`Ignored version ${latestVersion} for app ${appUrn}`);
+    await this.announceIgnoredVersionChange(appUrn);
+  }
+
+  /**
+   * Shows or hides an installed app on the guest dashboard (#2422). Only the column the guest list reads
+   * and the stored form value the Settings dialog opens with change: no env, no routing, no restart, which
+   * is what a save through that dialog would do.
+   */
+  public async setGuestVisibility(appUrn: AppUrn, visible: boolean) {
+    if (!(await this.appsRepository.setGuestVisibility(appUrn, visible))) {
+      throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', {}, 404);
+    }
+
+    this.logger.info(`${visible ? 'Showed' : 'Hid'} app ${appUrn} on the guest dashboard`);
   }
 
   public async unignoreAppVersion(appUrn: AppUrn) {
@@ -665,5 +939,23 @@ export class AppsService {
     await this.appsRepository.updateAppById(app.id, { ignoredVersion: null });
 
     this.logger.info(`Unignored version for app ${appUrn}`);
+    await this.announceIgnoredVersionChange(appUrn);
+  }
+
+  /**
+   * An ignored version changes the update count and the app's update buttons (CI-Hub#2376). The
+   * count is cached for a minute, so it is dropped here, and every open page is told, since an
+   * ignore can come from another tab or the MCP tool.
+   */
+  private async announceIgnoredVersionChange(appUrn: AppUrn) {
+    this.invalidateUpdatesAvailableCache();
+    // Imported dynamically, like AppLifecycleService: SSEService imports docker.service, and a static
+    // import here would close the require cycle through it. Best effort: the change is already saved.
+    try {
+      const { SSEService } = await import('@/core/sse/sse.service');
+      this.moduleRef.get<SSEServiceType>(SSEService, { strict: false }).emit('app', { event: 'ignored_version_changed', appUrn });
+    } catch (e) {
+      this.logger.debug(`Could not announce the ignored version change of ${appUrn}: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 }

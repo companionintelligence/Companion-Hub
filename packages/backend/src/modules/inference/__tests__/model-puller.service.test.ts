@@ -1,7 +1,7 @@
 import { LoggerService } from '@/core/logger/logger.service';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
 import { Test } from '@nestjs/testing';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { HardwareInspectorService } from '../hardware-inspector.service';
 import { MemoryManagerService } from '../memory-manager.service';
@@ -12,7 +12,7 @@ import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
 import { OmlxBackend } from '../backends/omlx.backend';
-import type { CuratedModel, HardwareProfile } from '@ci-hub/common/types';
+import type { CuratedModel, HardwareProfile, TrackedModel } from '@ci-hub/common/types';
 
 const profile: HardwareProfile = {
   gpu: { available: true, vendor: 'nvidia', model: 'RTX', vramMb: 8192, unifiedMemory: false, driverVersion: '1', runtimeAvailable: true },
@@ -44,6 +44,8 @@ describe('ModelPullerService.evaluatePull', () => {
   let modelRegistry: MockProxy<ModelRegistryService>;
   let ollamaBackend: MockProxy<OllamaBackend>;
   let lemonadeBackend: MockProxy<LemonadeBackend>;
+  let omlxBackend: MockProxy<OmlxBackend>;
+  let vllmBackend: MockProxy<VllmBackend>;
   let hardwareInspector: MockProxy<HardwareInspectorService>;
 
   beforeEach(async () => {
@@ -54,6 +56,8 @@ describe('ModelPullerService.evaluatePull', () => {
     modelRegistry = mock<ModelRegistryService>();
     ollamaBackend = mock<OllamaBackend>();
     lemonadeBackend = mock<LemonadeBackend>();
+    omlxBackend = mock<OmlxBackend>();
+    vllmBackend = mock<VllmBackend>();
 
     hardwareInspector.getProfile.mockResolvedValue(profile);
     memoryManager.calculateBudget.mockResolvedValue({
@@ -98,9 +102,9 @@ describe('ModelPullerService.evaluatePull', () => {
         { provide: MemoryManagerService, useValue: memoryManager },
         { provide: HostMetricsService, useValue: hostMetrics },
         { provide: OllamaBackend, useValue: ollamaBackend },
-        { provide: VllmBackend, useValue: mock<VllmBackend>() },
+        { provide: VllmBackend, useValue: vllmBackend },
         { provide: LemonadeBackend, useValue: lemonadeBackend },
-        { provide: OmlxBackend, useValue: mock<OmlxBackend>() },
+        { provide: OmlxBackend, useValue: omlxBackend },
         InferenceBackendRegistry,
       ],
     }).compile();
@@ -114,11 +118,141 @@ describe('ModelPullerService.evaluatePull', () => {
     expect(result.alreadyInstalled).toBe(false);
   });
 
+  // oMLX does not list the catalog's `mlx-community/<name>` (0.7.3.dev1, measured on /v1/models): a model directory is
+  // listed by its own name, the Hugging Face cache by `<org>--<name>`. Matched exactly, every oMLX row read as missing.
+  describe('a model oMLX serves', () => {
+    const qwen = {
+      ...curated,
+      id: 'qwen3-8b-mlx',
+      backend: 'omlx',
+      backendModelId: 'mlx-community/Qwen3-8B-4bit',
+    } as CuratedModel;
+
+    beforeEach(() => {
+      modelRegistry.getCuratedModel.mockReturnValue(qwen);
+    });
+
+    it.each([
+      ['a model directory', 'Qwen3-8B-4bit'],
+      ['the Hugging Face cache', 'mlx-community--Qwen3-8B-4bit'],
+    ])('marks a model oMLX lists from %s as a no-op pull', async (_layout, listed) => {
+      omlxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [listed] });
+
+      const result = await service.evaluatePull('qwen3-8b-mlx');
+
+      expect(result.alreadyInstalled).toBe(true);
+    });
+
+    it('does not mark a model oMLX does not list', async () => {
+      omlxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['Qwen3-8B-8bit'] });
+
+      const result = await service.evaluatePull('qwen3-8b-mlx');
+
+      expect(result.alreadyInstalled).toBe(false);
+    });
+
+    it('downloads a model oMLX does not list through oMLX, and marks it pulled only once that succeeds', async () => {
+      modelRegistry.getModelsForTier.mockReturnValue([qwen]);
+      omlxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
+      omlxBackend.pullModel.mockResolvedValue();
+
+      expect((await service.evaluatePull('qwen3-8b-mlx')).canPull).toBe(true);
+      await service.pullModel('qwen3-8b-mlx');
+
+      expect(omlxBackend.pullModel).toHaveBeenCalledWith('mlx-community/Qwen3-8B-4bit', expect.any(Function));
+      expect(modelRegistry.updateModelState).toHaveBeenCalledWith('qwen3-8b-mlx', 'pulled');
+    });
+
+    it("records oMLX's refusal as the model's error instead of a download", async () => {
+      modelRegistry.getModelsForTier.mockReturnValue([qwen]);
+      omlxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
+      omlxBackend.pullModel.mockRejectedValue(new Error("oMLX refused to download mlx-community/Qwen3-8B-4bit: its admin API needs oMLX's API key"));
+      modelRegistry.getTrackedModel.mockReturnValue({ catalogId: 'qwen3-8b-mlx', backend: 'omlx', state: 'pulling' } as TrackedModel);
+
+      await expect(service.pullModel('qwen3-8b-mlx')).rejects.toThrow('admin API');
+
+      expect(modelRegistry.updateModelState).toHaveBeenCalledWith('qwen3-8b-mlx', 'error', expect.stringContaining('admin API'));
+      expect(modelRegistry.updateModelState).not.toHaveBeenCalledWith('qwen3-8b-mlx', 'pulled');
+    });
+  });
+
+  it('still refuses to download a vLLM model, which the server loads from the host', async () => {
+    const vllmRow = { ...curated, id: 'qwen3-vllm', backend: 'vllm', backendModelId: 'Qwen/Qwen3-4B-Instruct-2507' } as CuratedModel;
+    modelRegistry.getCuratedModel.mockReturnValue(vllmRow);
+    modelRegistry.getModelsForTier.mockReturnValue([vllmRow]);
+    vllmBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
+
+    const result = await service.evaluatePull('qwen3-vllm');
+
+    expect(result.canPull).toBe(false);
+    expect(result.reason).toContain('loads weights on the host');
+  });
+
   it('marks already-installed models as no-op pulls', async () => {
     ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['phi4-mini'] });
     const result = await service.evaluatePull('phi-4-mini');
     expect(result.alreadyInstalled).toBe(true);
     expect(result.canPull).toBe(true);
+  });
+
+  // `ollama rm` leaves the registry's entry behind until the Hub restarts. Believed over Ollama's
+  // own list, it answered "already installed", so choosing the model again downloaded nothing.
+  it('downloads a model the registry still lists as pulled once Ollama no longer has it', async () => {
+    modelRegistry.getTrackedModel.mockReturnValue({
+      catalogId: 'phi-4-mini',
+      backend: 'ollama',
+      backendModelId: 'phi4-mini',
+      state: 'pulled',
+    } as TrackedModel);
+
+    const result = await service.evaluatePull('phi-4-mini');
+
+    expect(result.alreadyInstalled).toBe(false);
+    expect(result.canPull).toBe(true);
+  });
+
+  it('still counts the registry entry as installed while Ollama cannot be asked', async () => {
+    modelRegistry.getTrackedModel.mockReturnValue({
+      catalogId: 'phi-4-mini',
+      backend: 'ollama',
+      backendModelId: 'phi4-mini',
+      state: 'pulled',
+    } as TrackedModel);
+    ollamaBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+
+    const result = await service.evaluatePull('phi-4-mini');
+
+    expect(result.alreadyInstalled).toBe(true);
+  });
+
+  // The stale `pulled` entry is still there while the new download waits in the queue. Read as done,
+  // POST /models/pull and MCP hub_pull_model answered "pulled" before anything was downloaded.
+  it('waits for the new download of a model the registry still lists as pulled', async () => {
+    modelRegistry.getTrackedModel.mockReturnValue({
+      catalogId: 'phi-4-mini',
+      backend: 'ollama',
+      backendModelId: 'phi4-mini',
+      state: 'pulled',
+    } as TrackedModel);
+    let finishPull: (() => void) | undefined;
+    ollamaBackend.pullModel.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishPull = resolve;
+        }),
+    );
+
+    await expect(service.startPull('phi-4-mini')).resolves.toMatchObject({ status: 'queued' });
+    let done = false;
+    const waited = service.waitForPullCompletion('phi-4-mini', 5_000).then(() => {
+      done = true;
+    });
+    await vi.waitFor(() => expect(finishPull).toBeDefined());
+    expect(done).toBe(false);
+
+    finishPull?.();
+    await waited;
+    expect(modelRegistry.updateModelState).toHaveBeenCalledWith('phi-4-mini', 'pulled');
   });
 
   it('blocks pull when disk is insufficient', async () => {
@@ -222,6 +356,26 @@ describe('ModelPullerService.evaluatePull', () => {
     const result = await service.evaluatePull('nomic-embed-text-v1-5-lemonade');
 
     expect(result.alreadyInstalled).toBe(true);
+  });
+
+  it("passes the cache the router's plan sized the window for, and nothing when the plan names none", async () => {
+    const quantized = {
+      ...curated,
+      id: 'qwen3-8-27b-lemonade',
+      backend: 'lemonade',
+      backendModelId: 'Qwen3.8-27B-GGUF',
+      modality: 'llm',
+      runtime: { ...curated.runtime, kvCacheType: 'q8_0' },
+    } as CuratedModel;
+    modelRegistry.getCuratedModel.mockReturnValue(quantized);
+    lemonadeBackend.engineModelId.mockImplementation((id) => id);
+
+    await service.loadModel('qwen3-8-27b-lemonade', { contextLength: 65_536, kvCacheType: 'q8_0' });
+    expect(lemonadeBackend.loadModel).toHaveBeenLastCalledWith('Qwen3.8-27B-GGUF', { embedding: false, contextLength: 65_536, kvCacheType: 'q8_0' });
+
+    // The catalog row alone decides nothing: that is the plan's to say.
+    await service.loadModel('qwen3-8-27b-lemonade', { contextLength: 32_768 });
+    expect(lemonadeBackend.loadModel).toHaveBeenLastCalledWith('Qwen3.8-27B-GGUF', { embedding: false, contextLength: 32_768 });
   });
 
   it('loads and unloads under the name the engine knows the model by', async () => {
@@ -543,11 +697,12 @@ describe('ModelPullerService download gate on the fleet', () => {
   it('lets beta-red download a row that only its derived footprint objects to, with a warning', async () => {
     const { service } = await pullerOn(10_240, 31_017, 5_550);
 
-    const result = await service.evaluatePull('qwen3-14b');
+    // qwen3-14b was the example until its footprint came from its files (9,615 MB, inside 9,728).
+    const result = await service.evaluatePull('phi4-reasoning-14b');
 
     expect(result.canPull).toBe(true);
     expect(result.reason).toBeUndefined();
-    expect(result.warning).toMatch(/estimates 10475 MB .* more than the 9728 MB of GPU memory .* at least 6675 MB/);
+    expect(result.warning).toMatch(/estimates 11371 MB .* more than the 9728 MB of GPU memory .* at least 6675 MB/);
   });
 
   it('still refuses beta-red a 22.5 GB row such as gemma4-31b', async () => {
@@ -594,12 +749,12 @@ describe('ModelPullerService download gate on the fleet', () => {
   it('queues an app pre-pull that only the derived footprint objects to, and logs the warning', async () => {
     const { service, logger, ollamaBackend } = await pullerOn(10_240, 31_017, 0);
 
-    const result = await service.startPull('qwen3-14b', { bestEffort: true });
+    const result = await service.startPull('phi4-reasoning-14b', { bestEffort: true });
     await new Promise((r) => setTimeout(r, 10));
 
     expect(result.status).toBe('queued');
-    expect(ollamaBackend.pullModel).toHaveBeenCalledWith('qwen3:14b', expect.any(Function));
-    expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/^\[ModelPuller\] qwen3-14b: The catalog estimates 10475 MB/));
+    expect(ollamaBackend.pullModel).toHaveBeenCalledWith('phi4-reasoning:14b', expect.any(Function));
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/^\[ModelPuller\] phi4-reasoning-14b: The catalog estimates 11371 MB/));
   });
 
   // The floor may only ever admit more than the catalog footprint did, never refuse a row the

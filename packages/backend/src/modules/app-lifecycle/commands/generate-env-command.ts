@@ -11,7 +11,9 @@ export class GenerateAppEnvCommand extends AppLifecycleCommand {
 
     try {
       logger.info(`Regenerating app.env file for app ${appUrn}`);
-      await this.ensureAppDir(appUrn, form);
+      // Writing the env file never needs volume folders. Making them here would block a store app's
+      // pending data copy (#2198); start creates them before compose up.
+      await this.ensureAppDir(appUrn, form, { createVolumeDirs: false });
       await appHelpers.generateEnvFile(appUrn, form);
 
       return { success: true, message: `App ${appUrn} env file regenerated successfully` };

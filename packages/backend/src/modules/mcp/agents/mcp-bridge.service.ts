@@ -1,14 +1,17 @@
+import { createHash } from 'node:crypto';
 import { Injectable, type OnModuleDestroy } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { DockerService } from '@/modules/docker/docker.service';
 import { AppsService } from '@/modules/apps/apps.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { mainServiceAddressOf } from '@/modules/apps/app-service-address';
 import { EnvUtils } from '@/modules/env/env.utils';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { ResolvedAgentConfig } from './agent-config.service';
 import type { McpToolDefinition } from '../mcp-tool-registry.service';
 import { McpStreamableHttpClient } from './mcp-streamable-http-client';
-import { McpStdioSession, StdioSilentExitError, type StdioSpawnSpec } from './mcp-stdio-session';
+import { McpServerError, McpStdioSession, StdioSilentExitError, type StdioSpawnSpec } from './mcp-stdio-session';
+import { hostDockerEnv, McpStdioLaunchPolicy } from './mcp-stdio-launch-policy';
 
 interface McpConnection {
   appUrn: AppUrn;
@@ -24,17 +27,40 @@ interface McpConnection {
   httpClient?: McpStreamableHttpClient;
   /** Reused stdio process for container_exec and host_docker listings. */
   stdioSession?: McpStdioSession;
+  /** Hash of the spawn spec (command and app.env) the stdio process was started with. */
+  stdioSpecKey?: string;
+  /**
+   * Set by disconnect (uninstall, a config change, shutdown). The connection is out of the map by
+   * then, so work still in flight for it must not start a process nothing would stop.
+   */
+  dropped?: boolean;
 }
+
+/** Hashed so the connection doesn't keep a second copy of the app's secrets. */
+const stdioSpecKey = (spec: StdioSpawnSpec): string => createHash('sha256').update(JSON.stringify(spec)).digest('hex');
 
 /** Legacy `sse` alias and canonical `streamable-http` both mean Streamable HTTP transport. */
 const isStreamableHttpTransport = (transport: string): boolean => transport === 'streamable-http' || transport === 'sse';
 
 const isHostDockerLaunch = (launch: string | undefined): boolean => launch === 'host_docker';
 
+/** What an app's bridged tool names start with: `<app>_<store>__`. */
+const toolNamePrefix = (appUrn: AppUrn): string => `${appUrn.replace(':', '_')}__`;
+
+/** A tool name as the app's server knows it, from the bare name or the prefixed one the list shows. */
+const bareToolName = (appUrn: AppUrn, toolName: string): string => {
+  const prefix = toolNamePrefix(appUrn);
+  return toolName.startsWith(prefix) ? toolName.slice(prefix.length) : toolName;
+};
+
 export interface BridgedToolInfo {
   name: string;
   description: string;
   source: 'mcp';
+}
+
+export interface BridgedToolDetail extends BridgedToolInfo {
+  inputSchema: Record<string, unknown>;
 }
 
 /**
@@ -47,10 +73,11 @@ export class McpBridgeService implements OnModuleDestroy {
 
   constructor(
     private readonly logger: LoggerService,
-    readonly _dockerService: DockerService,
+    private readonly dockerService: DockerService,
     private readonly appsService: AppsService,
     private readonly appFilesManager: AppFilesManager,
     private readonly envUtils: EnvUtils,
+    private readonly launchPolicy: McpStdioLaunchPolicy,
   ) {}
 
   onModuleDestroy() {
@@ -135,9 +162,7 @@ export class McpBridgeService implements OnModuleDestroy {
       return { error: `App ${appUrn} has no MCP server configured`, isError: true };
     }
     this.getOrCreateConnection(appUrn, agentConfig.mcp.config);
-    const prefix = `${appUrn.replace(':', '_')}__`;
-    const bareName = toolName.startsWith(prefix) ? toolName.slice(prefix.length) : toolName;
-    return this.callBridgedTool(appUrn, bareName, params);
+    return this.callBridgedTool(appUrn, bareToolName(appUrn, toolName), params);
   }
 
   /**
@@ -155,6 +180,31 @@ export class McpBridgeService implements OnModuleDestroy {
       description: tool.description,
       source: 'mcp' as const,
     }));
+  }
+
+  /**
+   * One bridged tool with its input schema, by bare or prefixed name, from what the app's server
+   * reported when the bridge connected. The list above leaves schemas out to stay small (GitHub's
+   * server has 67 tools); this is how a caller reads the arguments of the one tool it means to call.
+   * `undefined` when the bridge isn't connected or the server has no such tool.
+   */
+  describeTool(appUrn: AppUrn, toolName: string): BridgedToolDetail | undefined {
+    const conn = this.connections.get(appUrn);
+    if (!conn?.connected) return undefined;
+
+    const bareName = bareToolName(appUrn, toolName);
+    const tool = conn.tools.find((candidate) => candidate.name === bareName);
+
+    // A stdio server's tools/list goes in unchecked, so a tool without a schema gets the default the
+    // Streamable HTTP client gives one.
+    return (
+      tool && {
+        name: `${toolNamePrefix(appUrn)}${tool.name}`,
+        description: tool.description,
+        source: 'mcp',
+        inputSchema: tool.inputSchema ?? { type: 'object', properties: {} },
+      }
+    );
   }
 
   /**
@@ -178,7 +228,7 @@ export class McpBridgeService implements OnModuleDestroy {
   private async assertBridgeable(appUrn: AppUrn, conn: McpConnection): Promise<void> {
     try {
       const { app } = await this.appsService.getApp(appUrn);
-      if (!app) {
+      if (!app || app.status === 'uninstalling') {
         throw new Error(`App ${appUrn} is not installed`);
       }
       if (!isHostDockerLaunch(conn.config.launch) && app.status !== 'running') {
@@ -203,7 +253,7 @@ export class McpBridgeService implements OnModuleDestroy {
       throw new Error(`No MCP URL configured for ${appUrn}`);
     }
 
-    const url = this.resolveTemplateUrl(conn.config.url, appUrn);
+    const url = await this.resolveTemplateUrl(conn.config.url, appUrn);
     const headers = await this.buildStreamableHttpHeaders(appUrn, conn);
 
     if (!conn.httpClient) {
@@ -263,8 +313,6 @@ export class McpBridgeService implements OnModuleDestroy {
     } catch (err) {
       if (err instanceof StdioSilentExitError) {
         this.logger.warn(`MCP stdio server for ${appUrn} exited silently (early stdin close?) — retrying once`);
-        conn.stdioSession?.close();
-        conn.stdioSession = undefined;
         return this.stdioRequestOnce(appUrn, conn, request, timeoutMs);
       }
       throw err;
@@ -278,30 +326,58 @@ export class McpBridgeService implements OnModuleDestroy {
     timeoutMs: number,
   ): Promise<unknown> {
     const session = await this.getOrCreateStdioSession(appUrn, conn);
-    return session.request(request.method, request.params, timeoutMs);
+    try {
+      return await session.request(request.method, request.params, timeoutMs);
+    } catch (err) {
+      // Drop only the session that failed. A changed app.env may have replaced it while this request
+      // was in flight. Closing the replacement would fail the request that started it.
+      if (!(err instanceof McpServerError) && conn.stdioSession === session) {
+        session.close();
+        conn.stdioSession = undefined;
+      }
+      throw err;
+    }
   }
 
   private async getOrCreateStdioSession(appUrn: AppUrn, conn: McpConnection): Promise<McpStdioSession> {
-    if (conn.stdioSession?.alive) {
+    // Built on every request: a process keeps the environment it started with, so a token changed in
+    // the app's settings only reaches the server through a new process.
+    const { spec, appEnvEmpty } = await this.buildStdioSpawnSpec(appUrn, conn);
+    // Every spawn, not just the first: the listing can change under an app updated in place.
+    await this.launchPolicy.assertAllowed(appUrn, spec);
+    const specKey = stdioSpecKey(spec);
+    // An empty read (app.env missing, or caught mid-write) says nothing about the token, so it
+    // doesn't restart a server that is up.
+    const envUnknown = appEnvEmpty;
+    if (conn.stdioSession?.alive && (conn.stdioSpecKey === specKey || envUnknown)) {
       return conn.stdioSession;
     }
     conn.stdioSession?.close();
-    const spec = await this.buildStdioSpawnSpec(appUrn, conn);
+    conn.stdioSession = undefined;
+    if (conn.dropped) {
+      throw new Error(`MCP connection for ${appUrn} was closed`);
+    }
     const session = new McpStdioSession(appUrn, spec, (chunk) => {
       this.logger.warn(`MCP stdio stderr (${appUrn}): ${chunk}`);
     });
     conn.stdioSession = session;
+    conn.stdioSpecKey = specKey;
     return session;
   }
 
-  private async buildStdioSpawnSpec(appUrn: AppUrn, conn: McpConnection): Promise<StdioSpawnSpec> {
+  private async buildStdioSpawnSpec(appUrn: AppUrn, conn: McpConnection): Promise<{ spec: StdioSpawnSpec; appEnvEmpty: boolean }> {
     const launch = conn.config.launch ?? 'container_exec';
-    const appEnv = await this.loadAppEnvRecord(appUrn);
+    // Only a host_docker process gets app.env. A `docker exec` runs with the container's own
+    // environment, so a change to app.env must not restart it.
+    const appEnv = launch === 'host_docker' ? await this.loadAppEnvRecord(appUrn) : {};
     return {
-      launch,
-      command: conn.config.command ?? [],
-      container: conn.config.container ?? this.defaultMainContainerName(appUrn),
-      env: appEnv,
+      spec: {
+        launch,
+        command: conn.config.command ?? [],
+        container: conn.config.container ?? this.defaultMainContainerName(appUrn),
+        env: launch === 'host_docker' ? hostDockerEnv(appEnv) : {},
+      },
+      appEnvEmpty: Object.keys(appEnv).length === 0,
     };
   }
 
@@ -350,8 +426,10 @@ export class McpBridgeService implements OnModuleDestroy {
     // Check if app is still reachable
     try {
       const { app } = await this.appsService.getApp(appUrn);
-      if (!app) {
-        conn.connected = false;
+      if (!app || app.status === 'uninstalling') {
+        // Uninstall drops the connection itself. This covers a server that outlived the app anyway. It
+        // also refuses a call made while the uninstall runs, which would start one after the drop.
+        this.dropApp(appUrn);
         return { error: `App ${appUrn} is not installed`, isError: true };
       }
       if (!isHostDockerLaunch(conn.config.launch) && app.status !== 'running') {
@@ -415,9 +493,13 @@ export class McpBridgeService implements OnModuleDestroy {
     try {
       return await this.stdioRequest(appUrn, conn, { method: 'tools/call', params: { name: toolName, arguments: params } }, 30000);
     } catch (err) {
+      // The server answered with an error (a 422 from GitHub, a bad argument): it is working, and
+      // restarting it would only cost the next call a fresh `docker run`.
+      if (err instanceof McpServerError) {
+        return { error: err.message, isError: true };
+      }
+      // stdioRequestOnce has already dropped the session that failed.
       conn.connected = false;
-      conn.stdioSession?.close();
-      conn.stdioSession = undefined;
       return { error: err instanceof Error ? err.message : 'MCP stdio call failed', isError: true };
     }
   }
@@ -443,38 +525,60 @@ export class McpBridgeService implements OnModuleDestroy {
     return JSON.stringify(a) === JSON.stringify(b);
   }
 
-  /** Read an auth token from app.env first, then Hub process env. */
+  /**
+   * Read an auth token from the app's own app.env, and nowhere else.
+   *
+   * `token_env` is a manifest field any store can publish, and the bridge sends the value to the URL
+   * the same manifest names. It used to fall back to the Hub's own environment, so
+   * `"token_env": "JWT_SECRET"` mailed the Hub's signing key to the app. app.env holds only what the
+   * app already has (its settings plus the allowlisted Hub keys), so reading it gives nothing away.
+   */
   private async resolveAuthToken(appUrn: AppUrn, tokenEnv: string): Promise<string | undefined> {
     try {
       const appEnv = await this.appFilesManager.getAppEnv(appUrn);
-      const fromApp = this.envUtils.envStringToMap(appEnv.content ?? '').get(tokenEnv);
-      if (fromApp) return fromApp;
+      return this.envUtils.envStringToMap(appEnv.content ?? '').get(tokenEnv) || undefined;
     } catch {
-      // fall through
+      return undefined;
     }
-    return process.env[tokenEnv];
   }
 
   /**
    * S-AMB-3.4: Exponential backoff (1s, 2s, 4s, max 30s)
    */
   private scheduleRetry(appUrn: AppUrn, conn: McpConnection): void {
-    if (conn.retryTimer) return;
+    if (conn.retryTimer || conn.dropped) return;
 
     const delay = Math.min(1000 * 2 ** conn.retryCount, 30000);
     conn.retryCount++;
 
     conn.retryTimer = setTimeout(() => {
       conn.retryTimer = undefined;
+      if (conn.dropped) return;
       this.connectAndDiscover(appUrn, conn).catch((err) => {
         this.logger.warn(`MCP retry failed for ${appUrn}: ${err instanceof Error ? err.message : 'Unknown'}`);
       });
     }, delay);
   }
 
+  /**
+   * Forget an app's MCP connection: stop its server and the tools it advertised. Uninstall calls
+   * this. A host_docker server is a `docker run` the bridge started itself, outside the app's compose
+   * project. `compose down` never reaches it and it holds the app's credentials in its environment.
+   */
+  dropApp(appUrn: AppUrn): void {
+    const conn = this.connections.get(appUrn);
+    if (!conn) return;
+    this.disconnect(conn);
+    conn.tools = [];
+    this.connections.delete(appUrn);
+  }
+
+  /** Every caller removes the connection from the map right after, so it is closed for good. */
   private disconnect(conn: McpConnection): void {
+    conn.dropped = true;
     if (conn.retryTimer) {
       clearTimeout(conn.retryTimer);
+      conn.retryTimer = undefined;
     }
     if (conn.abortController) {
       conn.abortController.abort();
@@ -487,8 +591,21 @@ export class McpBridgeService implements OnModuleDestroy {
     conn.connected = false;
   }
 
-  private resolveTemplateUrl(url: string, appUrn: AppUrn): string {
-    const [storeSlug, appName] = appUrn.split(':') as [string, string];
-    return url.replace(/\$\{APP_HOST\}/g, `${appName}-${storeSlug}`).replace(/\$\{APP_PORT\}/g, '');
+  /**
+   * `${APP_HOST}` is the app's main service's address on the app's own network, not a name: the bridge
+   * sends the app's token along, and another app could answer for a name (see `mainServiceAddressOf`).
+   * Throws when that service is not running, so nothing is sent.
+   */
+  private async resolveTemplateUrl(url: string, appUrn: AppUrn): Promise<string> {
+    let resolved = url.replace(/\$\{APP_PORT\}/g, '');
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: the listing's own template, not a JS one
+    if (resolved.includes('${APP_HOST}')) {
+      const address = await mainServiceAddressOf(this.appFilesManager, this.dockerService, appUrn);
+      if (!address) {
+        throw new Error(`App ${appUrn} has no running main service for its MCP server`);
+      }
+      resolved = resolved.replace(/\$\{APP_HOST\}/g, address);
+    }
+    return resolved;
   }
 }

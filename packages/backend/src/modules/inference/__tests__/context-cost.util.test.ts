@@ -3,10 +3,13 @@ import type { CuratedModel, HardwareProfile } from '@ci-hub/common/types';
 import type { InferenceBackend } from '../backends/backend.interface';
 import {
   GEOMETRY_COVERS_EVERY_SLOT_ARCHITECTURES,
+  ggufContextCost,
+  OLLAMA_EXTRA_MB_PER_TOKEN,
   kvSequencesFor,
   OLLAMA_SINGLE_SLOT_ARCHITECTURES,
   probeContextCost,
   probeLocalSizing,
+  scaleCacheCost,
 } from '../context-cost.util';
 
 const model = (kvMbPerToken?: number) => ({ id: 'm', backendModelId: 'engine-m', runtime: { kvMbPerToken } }) as unknown as CuratedModel;
@@ -37,6 +40,26 @@ describe('probeContextCost', () => {
   it("pairs the catalog's figure with the files the engine lists, for an engine that has no geometry (Lemonade)", async () => {
     const backend = { weightsOnDiskMb: vi.fn().mockResolvedValue(17_630) } as unknown as InferenceBackend;
     await expect(probeContextCost(backend, model(0.0667))).resolves.toEqual({ kvMbPerToken: 0.0667, weightMb: 17_630, source: 'catalog' });
+  });
+
+  // An engine that will run the model with an 8-bit cache says so, and every caller sizes that cache.
+  it('scales the cost by what the engine says its quantized cache costs, and only by a sane share', async () => {
+    const lemonade = (scale: unknown) =>
+      ({ weightsOnDiskMb: vi.fn().mockResolvedValue(17_630), kvCacheScale: vi.fn().mockReturnValue(scale) }) as unknown as InferenceBackend;
+    await expect(probeContextCost(lemonade(34 / 64), model(0.0667))).resolves.toEqual({
+      kvMbPerToken: 0.0667 * (34 / 64),
+      weightMb: 17_630,
+      source: 'catalog',
+    });
+    for (const nonsense of [1, 0, -0.5, 1.5, Number.NaN, undefined]) {
+      await expect(probeContextCost(lemonade(nonsense), model(0.0667))).resolves.toMatchObject({ kvMbPerToken: 0.0667 });
+    }
+    const throwing = {
+      kvCacheScale: () => {
+        throw new Error('boom');
+      },
+    } as unknown as InferenceBackend;
+    await expect(probeContextCost(throwing, model(0.0667))).resolves.toMatchObject({ kvMbPerToken: 0.0667 });
   });
 
   it('answers null when nothing can say, and never throws for a failing probe', async () => {
@@ -83,6 +106,82 @@ describe('probeContextCost', () => {
       source: 'catalog',
       architecture: 'qwen35',
     });
+  });
+});
+
+// Lemonade reports no geometry, so an unmeasured Lemonade model was charged the ladder's 0.25 MB a token.
+describe('the cost read from a Lemonade model file header', () => {
+  const lemonadeRow = (id: string) => ({ id, backend: 'lemonade', backendModelId: id, runtime: {} }) as unknown as CuratedModel;
+  const silent = { weightsOnDiskMb: vi.fn().mockResolvedValue(17_689) } as unknown as InferenceBackend;
+
+  it('charges Qwen 3.5 27B its 16 cached layers, 0.0625 MB a token', async () => {
+    await expect(probeContextCost(silent, lemonadeRow('qwen3-5-27b-lemonade'), 'f16')).resolves.toEqual({
+      kvMbPerToken: 0.0625,
+      weightMb: 17_689,
+      source: 'gguf',
+      architecture: 'qwen35',
+    });
+  });
+
+  // 20 sliding layers × 40,960 bytes a cached token, each cache holding its 512-token window plus a 512-token batch.
+  it('charges sliding-window layers once, at their window, and scales both parts for an 8-bit cache', async () => {
+    expect(ggufContextCost({ id: 'gemma4-e4b-lemonade' })).toEqual({ kvMbPerToken: 16_384 / 1024 ** 2, fixedKvMb: 40, architecture: 'gemma4' });
+    await expect(probeContextCost(silent, lemonadeRow('gemma4-e4b-lemonade'), 'q8_0')).resolves.toMatchObject({
+      kvMbPerToken: (16_384 / 1024 ** 2) * (34 / 64),
+      fixedKvMb: 40 * (34 / 64),
+    });
+  });
+
+  it('yields to a smaller figure calibrated from a load, or to a measured row', async () => {
+    const engine = { kvMbPerToken: 0.05, weightMb: 17_000, source: 'calibrated' as const };
+    const seen = { contextCostForModel: vi.fn().mockResolvedValue(engine) } as unknown as InferenceBackend;
+    await expect(probeContextCost(seen, lemonadeRow('qwen3-5-27b-lemonade'), 'f16')).resolves.toEqual(engine);
+
+    const measuredRow = { ...lemonadeRow('qwen3-5-27b-lemonade'), runtime: { kvMbPerToken: 0.07 } } as unknown as CuratedModel;
+    await expect(probeContextCost(silent, measuredRow, 'f16')).resolves.toMatchObject({ kvMbPerToken: 0.07, source: 'catalog' });
+  });
+});
+
+// Measured 2026-11-10: Ollama holds 0.001-0.012 MB a token beyond the cache (OLLAMA_EXTRA_MB_PER_TOKEN).
+describe('the cost read from an Ollama model file header', () => {
+  const ollamaRow = (id: string, backendModelId: string) => ({ id, backend: 'ollama', backendModelId, runtime: {} }) as unknown as CuratedModel;
+
+  it('charges a model not yet downloaded its cache plus what Ollama holds beside it', async () => {
+    await expect(probeContextCost({} as InferenceBackend, ollamaRow('qwen3-5-9b', 'qwen3.5:9b'))).resolves.toEqual({
+      kvMbPerToken: 0.03125 + OLLAMA_EXTRA_MB_PER_TOKEN,
+      extraMbPerToken: OLLAMA_EXTRA_MB_PER_TOKEN,
+      weightMb: null,
+      source: 'gguf',
+      architecture: 'qwen35',
+    });
+  });
+
+  // OLLAMA_KV_CACHE_TYPE shrinks the cache; the buffers beside it stay (OLLAMA_EXTRA_MB_PER_TOKEN).
+  it("scales only the cache share at Ollama's stated cache type, keeping the buffers beside it", async () => {
+    const stated = { kvCacheScale: () => 34 / 64 } as unknown as InferenceBackend;
+    const cost = await probeContextCost(stated, ollamaRow('qwen3-5-9b', 'qwen3.5:9b'));
+    expect(cost?.kvMbPerToken).toBeCloseTo(0.03125 * (34 / 64) + OLLAMA_EXTRA_MB_PER_TOKEN, 12);
+    expect(scaleCacheCost({ kvMbPerToken: 0.1, fixedKvMb: 40, weightMb: null, source: 'geometry' }, 0.5)).toEqual({
+      kvMbPerToken: 0.05,
+      fixedKvMb: 20,
+      weightMb: null,
+      source: 'geometry',
+    });
+  });
+
+  // Ollama's geometry for gemma4: per-layer head counts dropped, 512-token sliding layers counted in full.
+  it("replaces Ollama's own geometry, which loses per-layer heads and sliding windows, but keeps its weights", async () => {
+    const geometry = { kvMbPerToken: 0.09375, weightMb: 9_163, source: 'geometry' as const, architecture: 'gemma4' };
+    const backend = { contextCostForModel: vi.fn().mockResolvedValue(geometry) } as unknown as InferenceBackend;
+    await expect(probeContextCost(backend, ollamaRow('gemma4-e2b', 'gemma4:e2b'))).resolves.toMatchObject({
+      source: 'gguf',
+      weightMb: 9_163,
+      architecture: 'gemma4',
+    });
+    // Smaller is not enough for Ollama's geometry to win: it has no allowance for the buffers beside the cache.
+    const small = { ...geometry, kvMbPerToken: 0.001 };
+    const smallBackend = { contextCostForModel: vi.fn().mockResolvedValue(small) } as unknown as InferenceBackend;
+    await expect(probeContextCost(smallBackend, ollamaRow('qwen3-5-9b', 'qwen3.5:9b'))).resolves.toMatchObject({ source: 'gguf' });
   });
 });
 
@@ -140,6 +239,7 @@ describe('probeLocalSizing', () => {
 
     await expect(probeLocalSizing({ backendType: 'ollama', backend, model: llama, profile, statedOllamaSlots: 4, sightings })).resolves.toEqual({
       kvMbPerToken: 0.125,
+      fixedKvMb: null,
       weightMb: 4_693,
       kvSlots: 4,
       sighting,
@@ -163,6 +263,7 @@ describe('probeLocalSizing', () => {
     const sightings = { footprintSighting: vi.fn().mockRejectedValue(new Error('sampler down')) };
     await expect(probeLocalSizing({ backendType: 'ollama', backend, model: llama, profile, statedOllamaSlots: null, sightings })).resolves.toEqual({
       kvMbPerToken: 0.125,
+      fixedKvMb: null,
       weightMb: 4_693,
       kvSlots: 1,
       sighting: null,

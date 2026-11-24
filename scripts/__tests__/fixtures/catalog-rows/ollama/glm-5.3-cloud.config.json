@@ -1,0 +1,16 @@
+{
+  "architecture": "amd64",
+  "base_name": "glm-5.3",
+  "capabilities": ["completion", "thinking", "tools"],
+  "context_length": 1048576,
+  "embedding_length": 0,
+  "file_type": "FP8",
+  "model_type": "753B",
+  "os": "linux",
+  "remote_host": "https://ollama.com",
+  "remote_model": "glm-5.3",
+  "rootfs": {
+    "diff_ids": [],
+    "type": "layers"
+  }
+}

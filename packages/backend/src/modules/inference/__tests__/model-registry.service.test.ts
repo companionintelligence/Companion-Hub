@@ -445,7 +445,10 @@ describe('ModelRegistryService', () => {
             const ids = service.getRecommendedModelsForHardware(tier, profile({ ...hw, tier })).map((m) => m.id);
 
             expect(ids.slice(0, 2)).toEqual(['qwen3-5-4b', 'gemma4-e4b']);
-            expect(ids).not.toContain('gemma4-e2b');
+            // gemma4-e2b is offered too once its footprint is its 4,375 MiB of files plus the runner (5,143 MB,
+            // inside 5,734) — below the default, which is what the 4 GB pin above guards. The load estimate
+            // charges the same 5,143 once it is pulled, so this offer is one the load path will honour.
+            expect(ids.indexOf('gemma4-e2b')).toBeGreaterThan(0);
           },
         );
       });
@@ -689,6 +692,38 @@ describe('ModelRegistryService', () => {
 
     it('reads only non-empty string ids, once each', async () => {
       await fs.promises.writeFile(PINNED_MODELS_PATH, JSON.stringify({ pinned: ['gemma4-e4b', '', 7, null, 'gemma4-e4b'] }), 'utf8');
+      await expect(readPinnedModels()).resolves.toEqual({ pinned: ['gemma4-e4b'] });
+    });
+
+    // A factory reset left the file, so the reset Hub read the old pins back and pinned them again.
+    it('forgets every pin, in memory and on disk, so the next process pins nothing', async () => {
+      service.trackModel('nomic-embed-text', 'loaded');
+      service.pinModel('nomic-embed-text');
+      service.trackModel('gemma4-e4b', 'loaded');
+      service.pinModel('gemma4-e4b');
+      // Pinned in the file only: this process has not tracked it.
+      await writePinnedModels({ pinned: ['nomic-embed-text', 'gemma4-e4b', 'gemma3-1b'] });
+      await service.restorePins();
+
+      await service.forgetPins();
+
+      expect(service.getPinnedCatalogIds()).toEqual([]);
+      expect(service.isPinned('gemma3-1b')).toBe(false);
+      expect(service.getTrackedModel('nomic-embed-text')).toMatchObject({ state: 'loaded', pinned: false });
+      expect(service.getTrackedModel('gemma4-e4b')).toMatchObject({ state: 'loaded', pinned: false });
+      expect(fs.existsSync(PINNED_MODELS_PATH)).toBe(false);
+      expect((await restart()).getPinnedCatalogIds()).toEqual([]);
+    });
+
+    it('keeps only the pins made after it, with a write of the old ones still queued', async () => {
+      service.trackModel('nomic-embed-text', 'loaded');
+      service.pinModel('nomic-embed-text');
+
+      await service.forgetPins();
+      service.trackModel('gemma4-e4b', 'loaded');
+      service.pinModel('gemma4-e4b');
+      await service.pinsPersisted();
+
       await expect(readPinnedModels()).resolves.toEqual({ pinned: ['gemma4-e4b'] });
     });
   });

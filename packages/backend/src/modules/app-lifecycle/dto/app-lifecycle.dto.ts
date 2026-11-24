@@ -3,6 +3,7 @@ import { createZodDto } from '@/common/zod-dto';
 import { optionalCpuLimitSchema } from '@/common/validation/cpu-limit';
 import { optionalMemoryLimitSchema } from '@/common/validation/memory-limit';
 import isFQDN from 'validator/lib/isFQDN';
+import { MCP_ACCESS_CHOICES } from '@ci-hub/common/types';
 
 export const appFormSchema = z
   .object({
@@ -21,6 +22,13 @@ export const appFormSchema = z
      * restarts anything.
      */
     autoRestartOnDomainChange: z.boolean().optional(),
+    /**
+     * The installer's answer to the app's request for the Hub's MCP tools, which the app's own key
+     * would use on the apps beside it. Only an install takes it, and only from a person who may give
+     * it (`AppLifecycleService.installApp`); it lands on `app.mcp_access` and never in the stored form.
+     * Changing it later is `PUT :urn/hub-access/mcp`.
+     */
+    mcpAccess: z.enum(MCP_ACCESS_CHOICES).optional(),
     localSubdomain: z
       .string()
       .regex(/^[a-zA-Z0-9-]{1,63}$/)
@@ -162,6 +170,11 @@ const cancelOperationResponseSchema = z.object({
 
 export class AppFormBody extends createZodDto(appFormSchema) {}
 
+/** A person's answer to an app's request for the Hub's MCP tools (`PUT :urn/hub-access/mcp`). */
+export const mcpAccessBodySchema = z.object({ access: z.enum(MCP_ACCESS_CHOICES) });
+
+export class McpAccessBody extends createZodDto(mcpAccessBodySchema) {}
+
 export class UninstallAppBody extends createZodDto(uninstallAppBodySchema) {}
 
 export class ResetAppBody extends createZodDto(resetAppBodySchema) {}
@@ -186,3 +199,52 @@ const validateConfigResultSchema = z.object({
 });
 
 export class ValidateConfigResultDto extends createZodDto(validateConfigResultSchema) {}
+
+const rehydrationSkipCodeSchema = z.enum(['already_running', 'busy', 'unlisted', 'no_target', 'refused', 'failed']);
+
+const rehydrationStateSchema = z.object({
+  completedAt: z.string(),
+  queuedUrns: z.array(z.string()),
+  startedUrns: z.array(z.string()),
+  skipped: z.array(
+    z.object({
+      name: z.string(),
+      reason: z.string(),
+      appUrn: z.string().optional(),
+      code: rehydrationSkipCodeSchema.optional(),
+      params: z.record(z.string(), z.string()).optional(),
+    }),
+  ),
+});
+
+const restoreSummarySchema = z.object({
+  completedAt: z.string(),
+  restored: z.array(z.object({ name: z.string(), urn: z.string(), status: z.string(), usesAi: z.boolean() })),
+  notRestored: z.array(
+    z.object({
+      name: z.string(),
+      urn: z.string().optional(),
+      reason: z.string(),
+      code: rehydrationSkipCodeSchema.optional(),
+      params: z.record(z.string(), z.string()).optional(),
+    }),
+  ),
+  aiModelChosen: z.boolean(),
+});
+
+const rehydrateStatusSchema = z.object({
+  completed: z.boolean(),
+  /** Absent rather than `null` when no restore has finished: the generated client cannot express `| null`. */
+  state: rehydrationStateSchema.optional(),
+  restoreIntent: z.boolean(),
+  /** A pairing's apps check has not yet decided whether there is anything to restore. */
+  checking: z.boolean(),
+  /** This pairing's restore began or finished, nobody has seen it yet and the caller may manage the Hub. */
+  noticePending: z.boolean(),
+  /** What the finished restore brought back, while `noticePending`. */
+  summary: restoreSummarySchema.optional(),
+});
+
+export class RehydrateStatusDto extends createZodDto(rehydrateStatusSchema) {}
+
+export class AcknowledgeRestoreResponseDto extends createZodDto(z.object({ success: z.boolean() })) {}

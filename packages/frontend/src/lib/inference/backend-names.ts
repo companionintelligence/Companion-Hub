@@ -10,6 +10,7 @@ export const BACKEND_DISPLAY_NAMES: Record<InferenceBackendType, string> = {
   vllm: 'vLLM',
   lemonade: 'Lemonade',
   omlx: 'oMLX',
+  localai: 'LocalAI',
 };
 
 export function backendDisplayName(backend: InferenceBackendType): string {

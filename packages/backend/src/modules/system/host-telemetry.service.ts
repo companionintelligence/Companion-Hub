@@ -3,7 +3,7 @@ import { hostEventLog, hostTelemetrySample } from '@/core/database/drizzle/schem
 import { LoggerService } from '@/core/logger/logger.service';
 import { DOCKERODE } from '@/modules/docker/constants';
 import { Inject, Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { lt } from 'drizzle-orm';
+import { lt, sql } from 'drizzle-orm';
 import type Dockerode from 'dockerode';
 import { SystemService } from './system.service';
 
@@ -52,6 +52,17 @@ export type HostTelemetryHistorySample = {
   apps: TelemetryAppPoint[] | null;
   source: string;
 };
+
+/** One point of a {@link HostTelemetryService.getWindow} series: the averages over its bucket. */
+export type HostTelemetryWindowPoint = {
+  sampledAt: string;
+  cpuLoad: number | null;
+  memoryUsed: number | null;
+  memoryTotal: number | null;
+};
+
+/** Points per window at most, so 48 hours costs the browser what 30 minutes does. */
+const HOST_TELEMETRY_WINDOW_POINTS = 360;
 
 export type HostEventRow = {
   createdAt: string;
@@ -213,6 +224,40 @@ export class HostTelemetryService implements OnModuleInit, OnModuleDestroy {
       limit: Math.min(Math.max(limit, 1), 2000),
     });
     return rows.reverse().map((row) => this.toHistorySample(row));
+  }
+
+  /**
+   * Host CPU and memory over the last `minutes`, averaged into equal buckets so the series has at
+   * most {@link HOST_TELEMETRY_WINDOW_POINTS} points whatever the span. Thirty minutes keeps the
+   * collector's own 5-second points; 48 hours is 8-minute averages.
+   *
+   * `sampled_at` holds UTC wall-clock time with no zone (see {@link toUtcIso}), so the window is
+   * measured against `now()` read in UTC, never against the session's own zone. It starts at the
+   * first whole bucket, so a partial bucket at the far end doesn't make it 361 points.
+   */
+  async getWindow(minutes: number): Promise<{ points: HostTelemetryWindowPoint[]; bucketSeconds: number; minutes: number }> {
+    const retentionMinutes = HOST_TELEMETRY_RETENTION_MS / 60_000;
+    const span = Math.min(Math.max(Math.round(Number.isFinite(minutes) ? minutes : 30), 5), retentionMinutes);
+    const step = HOST_TELEMETRY_INTERVAL_MS / 1000;
+    const bucketSeconds = Math.max(step, Math.ceil((span * 60) / HOST_TELEMETRY_WINDOW_POINTS / step) * step);
+    const table = hostTelemetrySample;
+    const result = await this.db.execute<{ bucket: string; cpu_load: number | null; memory_used: number | null; memory_total: number | null }>(sql`
+      SELECT to_char(date_bin(make_interval(secs => ${bucketSeconds}), ${table.sampledAt}, TIMESTAMP '2000-01-01'), 'YYYY-MM-DD"T"HH24:MI:SS') AS bucket,
+             avg(${table.cpuLoad})::float8 AS cpu_load,
+             avg(${table.memoryUsed})::float8 AS memory_used,
+             max(${table.memoryTotal}) AS memory_total
+        FROM ${table}
+       WHERE ${table.sampledAt} >= date_bin(make_interval(secs => ${bucketSeconds}), (now() AT TIME ZONE 'UTC') - make_interval(mins => ${span}), TIMESTAMP '2000-01-01')
+                                  + make_interval(secs => ${bucketSeconds})
+       GROUP BY 1
+       ORDER BY 1`);
+    const points = result.rows.map((row) => ({
+      sampledAt: toUtcIso(row.bucket),
+      cpuLoad: row.cpu_load === null ? null : Number(row.cpu_load),
+      memoryUsed: row.memory_used === null ? null : Number(row.memory_used),
+      memoryTotal: row.memory_total === null ? null : Number(row.memory_total),
+    }));
+    return { points, bucketSeconds, minutes: span };
   }
 
   async getRuntimeHistory(limit = 24): Promise<Array<{ sampledAt: string; apps: TelemetryAppPoint[] }>> {

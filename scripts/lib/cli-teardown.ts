@@ -19,6 +19,7 @@ import {
   planAppTeardown,
   removeManagedAppProjects,
 } from '../hub-cleanup-lib.js';
+import { resolveUpStartMode, type StartFlags } from './cli-args.js';
 import { buildEnvOverrides, getEnvFileOrExit } from './cli-compose-env.js';
 import { startHub } from './cli-lifecycle.js';
 import { run, runBestEffort, runCapture } from './cli-proc.js';
@@ -147,9 +148,17 @@ export function downHub(env: HubEnv, options?: { volumes?: boolean }) {
   removeProjectContainers('ci-hub', hubDocker(undefined));
 }
 
-export async function restartHub(env: HubEnv, detached = false) {
+const NO_START_FLAGS: StartFlags = { detached: false, attached: false };
+
+/**
+ * `restart` and `recreate` start the stack again with the mode `cihub up` would pick for the same
+ * flags ({@link resolveUpStartMode}): outside a checkout that is detached unless `--attached` was
+ * given. Attached, the command stays on `docker compose up`. A Ctrl+C or a signal to it then makes
+ * compose stop the containers.
+ */
+export async function restartHub(env: HubEnv, flags: StartFlags = NO_START_FLAGS) {
   downHub(env);
-  await startHub(env === 'local' ? 'local-dev' : detached ? 'detached' : 'attached', env);
+  await startHub(resolveUpStartMode(env, flags), env);
 }
 
 function pathIsWithin(base: string, target: string): boolean {
@@ -457,6 +466,16 @@ export function describeAppTeardown(plan: AppTeardownPlan): string[] {
 }
 
 /**
+ * The box `cihub reset` and `cihub uninstall` show before they ask. `notes` follow the list. With
+ * nothing listed it says so, unless Docker could not list containers, which is not "nothing".
+ */
+export function printAppTeardownPlan(title: string, plan: AppTeardownPlan, notes: string[] = []): void {
+  const planned = describeAppTeardown(plan);
+  const lines = planned.length > 0 || !plan.listed ? planned : [dim('None: no installed apps, and nothing else on the Hub network.')];
+  printMessageBox(title, [...lines, ...notes], 'yellow');
+}
+
+/**
  * Where reset deletes host files: the whole canonical tree and the Hub's files in the tunnel folder
  * beside it (appliance), or the root folder and its tunnel folder (checkout; see
  * checkoutHostDataTargets).
@@ -562,12 +581,7 @@ export async function resetHub(env: HubEnv, force: boolean, dryRun = false): Pro
   // operator should see those by name before agreeing to remove them. See planAppTeardown.
   const plan = planAppTeardown(docker.capture, { removeVolumes: true });
   if (!listedOrRefuse(plan)) return false;
-  const planned = describeAppTeardown(plan);
-  printMessageBox(
-    `Apps and containers this reset ${dryRun ? 'would remove' : 'removes'}`,
-    planned.length > 0 ? planned : [dim('None: no installed apps, and nothing else on the Hub network.')],
-    'yellow',
-  );
+  printAppTeardownPlan(`Apps and containers this reset ${dryRun ? 'would remove' : 'removes'}`, plan);
   if (dryRun) {
     printMessageBox(
       'Dry run: nothing was removed',
@@ -732,8 +746,8 @@ function resetIncompleteLines(env: HubEnv, dockerLeft: DockerLeftovers, hostData
   return lines;
 }
 
-export async function recreateHub(env: HubEnv, detached = false, force = false) {
+export async function recreateHub(env: HubEnv, flags: StartFlags = NO_START_FLAGS, force = false) {
   const resetComplete = await resetHub(env, force);
   if (!resetComplete) return;
-  await startHub(env === 'local' ? 'local-dev' : detached ? 'detached' : 'attached', env);
+  await startHub(resolveUpStartMode(env, flags), env);
 }

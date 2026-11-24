@@ -2,12 +2,17 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.service';
 import { DockerService } from '@/modules/docker/docker.service';
+import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { PortManagerService } from '@/modules/network/port-manager.service';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
 import { ApiKeyService } from '@/modules/api-keys/api-key.service';
+import { McpBridgeService } from '@/modules/mcp/agents/mcp-bridge.service';
 import type { AppUrn } from '@ci-hub/common/types';
 import { isPortExposeApp } from '@ci-hub/common/schemas';
 import { AppLifecycleCommand } from './command';
+import { handOverKeptImages, sortImagesByOtherApps } from './pull-app-images';
+import { describeLeftovers, removeAppDataWithPrivilegedFallback } from './remove-app-data';
+import { AppLinkService } from '@/modules/app-links/app-link.service';
 
 export class UninstallAppCommand extends AppLifecycleCommand {
   constructor(
@@ -42,13 +47,10 @@ export class UninstallAppCommand extends AppLifecycleCommand {
         logger.warn(`Failed to release ports for ${appUrn}: ${err}`);
       }
 
-      // Capture image IDs before compose down so we can remove pulled images by
-      // immutable ID even when tags/compose refs are no longer resolvable.
-      const snapshotImageIds = isPortExpose ? [] : await dockerService.snapshotAppImageIds(appUrn);
-
       try {
         if (!isPortExpose) {
-          const downCommand = this.deleteAllData ? 'down --remove-orphans -v --rmi all' : 'down --remove-orphans --rmi all';
+          // `local` removes only the images compose built for this app; the pulled ones are removed by ID below.
+          const downCommand = this.deleteAllData ? 'down --remove-orphans -v --rmi local' : 'down --remove-orphans --rmi local';
           await dockerService.composeApp(appUrn, downCommand);
           logger.info(`Successfully cleaned up all Docker resources for ${appUrn}`);
         }
@@ -57,9 +59,30 @@ export class UninstallAppCommand extends AppLifecycleCommand {
       }
 
       if (!isPortExpose) {
+        // apps.yml keeps a route to the starting page for each app router while its containers are
+        // gone (CI-Hub#1944), so rebuild it now, as Stop does; until then the removed app's address
+        // would still answer with that page instead of a 404. Straight after compose down, which has
+        // already removed the containers, and before the cleanup below, which can throw. ModuleRef.get
+        // throws for a provider it cannot resolve, and the containers are gone by now, so that must
+        // not fail the uninstall.
+        try {
+          await this.moduleRef.get(TraefikConfigService, { strict: false })?.regenerateTraefikConfig(0);
+        } catch (err) {
+          logger.warn(`Failed to rebuild the Traefik routes after removing ${appUrn}: ${err}`);
+        }
+
+        // The images this app's installs, updates and starts pulled for it, as recorded when each brought them in, and
+        // any another app handed over. Only these are removed, with Delete all data on or off, since an image is not the
+        // app's data. An image that was on the computer before any app stays. So does one a container still uses and one
+        // another installed app names, which goes on that app's record. All of this runs after compose down, which can
+        // take minutes: another uninstall or an install in that time changes the answer and a stale one removes too much.
+        const pulledImages = await appFilesManager.readPulledImages(appUrn);
+        const { removable, keptFor } = await sortImagesByOtherApps(this.moduleRef, appUrn, pulledImages.imageIds);
+
         // Explicit post-down cleanup is a safety net for partial teardown states.
-        await dockerService.removeAppImages(appUrn, snapshotImageIds);
+        await dockerService.removeAppImages(appUrn, removable, pulledImages.imageTags);
         await dockerService.removeAppNetworks(appUrn);
+        await handOverKeptImages(this.moduleRef, appUrn, keptFor, pulledImages.imageTags);
       }
 
       // Sync Cloudflare state (app removal will be reflected)
@@ -75,6 +98,14 @@ export class UninstallAppCommand extends AppLifecycleCommand {
         // Don't fail the uninstallation if Cloudflare sync fails
       }
 
+      // Forget the operator's link approvals naming this app and take its link networks down, so a later
+      // install of an app of the same id asks again.
+      try {
+        await this.moduleRef.get(AppLinkService, { strict: false })?.forgetApp(appUrn);
+      } catch {
+        // AppLinkService may not be available; the next reconcile removes the networks anyway.
+      }
+
       // Deregister agent webhook if registered (R-HOOK-3)
       try {
         const agentNotifyService = this.moduleRef.get(AgentNotifyService, { strict: false });
@@ -83,6 +114,15 @@ export class UninstallAppCommand extends AppLifecycleCommand {
         }
       } catch {
         // AgentNotifyService may not be available
+      }
+
+      // A host_docker MCP listing's server is a `docker run` the bridge started itself, outside the
+      // compose project removed above, with the app's credentials in its environment. Stop it and
+      // forget the app's tools.
+      try {
+        this.moduleRef.get(McpBridgeService, { strict: false })?.dropApp(appUrn);
+      } catch (error) {
+        logger.warn(`Failed to stop the MCP bridge for ${appUrn}: ${error}`);
       }
 
       // SEC-MCP-8: revoke the app's managed key (all scopes) so its Hub access dies with the app.
@@ -101,7 +141,7 @@ export class UninstallAppCommand extends AppLifecycleCommand {
       let dataRemoved = true;
       let dataRemnantHostPath: string | undefined;
       if (this.deleteAllData) {
-        const outcome = await this.removeAppDataWithPrivilegedFallback(appFilesManager, dockerService, logger, appUrn);
+        const outcome = await removeAppDataWithPrivilegedFallback(appFilesManager, dockerService, logger, appUrn);
         dataRemoved = outcome.removed;
         dataRemnantHostPath = outcome.hostPath;
       }
@@ -111,10 +151,7 @@ export class UninstallAppCommand extends AppLifecycleCommand {
       // couldn't remove it), report success WITHOUT claiming a clean removal and carry
       // the host path so the user can be shown a manual cleanup command (#907).
       if (!folderRemoved || !dataRemoved) {
-        const leftovers: string[] = [];
-        if (!folderRemoved) leftovers.push('app folder');
-        if (!dataRemoved) leftovers.push('app data');
-        const leftover = leftovers.join(' and ');
+        const leftover = describeLeftovers(folderRemoved, dataRemoved);
 
         logger.warn(
           `App ${appUrn} uninstalled, but its ${leftover} could not be fully removed; a disk remnant may remain${dataRemnantHostPath ? ` at ${dataRemnantHostPath}` : ''} (see the filesystem error above — often a container-created root-owned path).`,
@@ -132,53 +169,5 @@ export class UninstallAppCommand extends AppLifecycleCommand {
     } catch (err) {
       return this.handleAppError(err, appUrn, 'uninstall');
     }
-  }
-
-  /**
-   * Remove the app's data dir, escalating to a privileged (root) cleanup when the
-   * non-root delete hits a permission error (a container-created root-owned path such
-   * as MinIO's `.minio.sys`). Returns whether it's gone and — when it isn't — the HOST
-   * path to surface for a manual `rm`.
-   */
-  private async removeAppDataWithPrivilegedFallback(
-    appFilesManager: AppFilesManager,
-    dockerService: DockerService,
-    logger: LoggerService,
-    appUrn: AppUrn,
-  ): Promise<{ removed: boolean; hostPath?: string }> {
-    const first = await appFilesManager.deleteAppDataDirDetailed(appUrn);
-    if (first.removed) {
-      return { removed: true };
-    }
-
-    // The host path is ONLY for user-facing guidance (the manual `rm` command), so
-    // resolving it must never turn an otherwise-successful uninstall into a failure.
-    // getAppDataHostDir can throw on a misconfigured non-absolute ROOT_FOLDER_HOST;
-    // treat that as "path unavailable" (a generic remnant warning) rather than aborting.
-    let hostPath: string | undefined;
-    try {
-      hostPath = appFilesManager.getAppDataHostDir(appUrn);
-    } catch (err) {
-      logger.warn(
-        `App ${appUrn}: could not resolve host app-data path for manual-cleanup guidance: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-
-    // Only a permission error is worth escalating to root — anything else won't be
-    // fixed by root either, so surface the manual path straight away.
-    if (!first.permissionDenied) {
-      return { removed: false, hostPath };
-    }
-
-    logger.warn(`App ${appUrn} app-data not removable as non-root; attempting a privileged cleanup of ${hostPath ?? 'its data directory'}`);
-    const emptied = await dockerService.removeAppDataDirAsRoot(appUrn);
-    // The helper only empties the dir (never the mountpoint), so the Hub still removes
-    // the now-empty directory itself — re-verify from the Hub's own view.
-    if (emptied && (await appFilesManager.deleteAppDataDir(appUrn))) {
-      logger.info(`App ${appUrn} app-data removed via privileged cleanup`);
-      return { removed: true };
-    }
-
-    return { removed: false, hostPath };
   }
 }

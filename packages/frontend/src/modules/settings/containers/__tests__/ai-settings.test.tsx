@@ -1,7 +1,8 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
+import { resetMobileClientCacheForTests } from '@/lib/mobile-connection';
 import { AiSettingsContainer } from '../ai-settings';
 import { toast } from 'sonner';
 
@@ -10,14 +11,18 @@ const {
   fetchInferencePreferences,
   fetchInferenceTrackedModels,
   fetchInferenceRuntimeModels,
+  fetchCloudFallbackPolicy,
   fetchConfiguredCloudProviders,
   fetchOllamaInstallStatus,
   fetchVllmInstallStatus,
   fetchLemonadeInstallStatus,
+  fetchOmlxInstallStatus,
   saveInferencePreferences,
+  saveOmlxApiKey,
   rescanInferenceHardware,
   pinInferenceModel,
   saveCloudProviderConfig,
+  removeCloudProviderConfig,
   ensurePullsStarted,
   unpinInferenceModel,
   unloadInferenceModel,
@@ -27,14 +32,18 @@ const {
   fetchInferencePreferences: vi.fn(),
   fetchInferenceTrackedModels: vi.fn(),
   fetchInferenceRuntimeModels: vi.fn(),
+  fetchCloudFallbackPolicy: vi.fn(),
   fetchConfiguredCloudProviders: vi.fn(),
   fetchOllamaInstallStatus: vi.fn(),
   fetchVllmInstallStatus: vi.fn(),
   fetchLemonadeInstallStatus: vi.fn(),
+  fetchOmlxInstallStatus: vi.fn(),
   saveInferencePreferences: vi.fn(),
+  saveOmlxApiKey: vi.fn(),
   rescanInferenceHardware: vi.fn(),
   pinInferenceModel: vi.fn(),
   saveCloudProviderConfig: vi.fn(),
+  removeCloudProviderConfig: vi.fn(),
   ensurePullsStarted: vi.fn(),
   unpinInferenceModel: vi.fn(),
   unloadInferenceModel: vi.fn(),
@@ -46,14 +55,18 @@ vi.mock('@/lib/inference/inference-api', () => ({
   fetchInferencePreferences,
   fetchInferenceTrackedModels,
   fetchInferenceRuntimeModels,
+  fetchCloudFallbackPolicy,
   fetchConfiguredCloudProviders,
   fetchOllamaInstallStatus,
   fetchVllmInstallStatus,
   fetchLemonadeInstallStatus,
+  fetchOmlxInstallStatus,
   saveInferencePreferences,
+  saveOmlxApiKey,
   rescanInferenceHardware,
   pinInferenceModel,
   saveCloudProviderConfig,
+  removeCloudProviderConfig,
   // ai-settings imports and calls this on the deselection path; without it here that path throws
   // `unpinInferenceModel is not a function` into handleSave's catch and reports a failed save.
   unpinInferenceModel,
@@ -133,18 +146,42 @@ vi.mock('@/modules/onboarding/components/ai-setup/icons', () => ({
 }));
 
 vi.mock('@/modules/onboarding/components/ai-setup/backend-selection-card', () => ({
-  BackendSelectionCard: ({ selected, onSelect }: any) => (
+  BackendSelectionCard: ({ selected, recommended, onSelect }: any) => (
     <div>
       <div data-testid="selected-backend">{selected}</div>
+      <div data-testid="recommended-backend">{recommended}</div>
       <button type="button" data-testid="select-lemonade" onClick={() => onSelect('lemonade')}>
         select lemonade
+      </button>
+      <button type="button" data-testid="select-vllm" onClick={() => onSelect('vllm')}>
+        select vllm
       </button>
     </div>
   ),
 }));
 
 vi.mock('@/modules/onboarding/components/ai-setup/cloud-provider-card', () => ({
-  CloudProviderCard: () => <div data-testid="cloud-provider-card" />,
+  // Clearing a field is the card's own job (cloud-provider-card.test.tsx); this double only hands
+  // the container what a cleared field reports.
+  CloudProviderCard: ({ providers, onUpdate }: any) => (
+    <div data-testid="cloud-provider-card">
+      <span data-testid="cloud-providers-held">{providers.map((provider: any) => provider.provider).join(',')}</span>
+      <button
+        type="button"
+        data-testid="clear-cloud-keys"
+        onClick={() => onUpdate(providers.map((provider: any) => ({ ...provider, apiKey: '', enabled: false })))}
+      >
+        clear
+      </button>
+      <button
+        type="button"
+        data-testid="remove-cloud-urls"
+        onClick={() => onUpdate(providers.map((provider: any) => (provider.baseUrl ? { ...provider, removed: true } : provider)))}
+      >
+        remove
+      </button>
+    </div>
+  ),
 }));
 
 vi.mock('@/modules/onboarding/components/ai-setup/resource-summary-bar', () => ({
@@ -239,11 +276,14 @@ describe('AiSettingsContainer', () => {
       models: [{ id: 'llama3.2:latest', name: 'llama3.2:latest', state: 'loaded' }],
     });
     fetchConfiguredCloudProviders.mockResolvedValue([]);
+    fetchCloudFallbackPolicy.mockResolvedValue({ allowCloudFallback: false, hasCloudFallback: false, envFlag: 'CI_HUB_ALLOW_CLOUD_FALLBACK' });
     fetchOllamaInstallStatus.mockResolvedValue({ ready: true, running: true, endpointUrl: 'http://localhost:11434' });
     fetchVllmInstallStatus.mockResolvedValue({ ready: true, running: true, endpointUrl: 'http://localhost:8000' });
     fetchLemonadeInstallStatus.mockResolvedValue({ ready: true, running: true, endpointUrl: 'http://localhost:13305' });
+    fetchOmlxInstallStatus.mockResolvedValue({ ready: true, running: true, endpointUrl: 'http://host.docker.internal:8000' });
     saveInferencePreferences.mockResolvedValue(undefined);
     rescanInferenceHardware.mockResolvedValue(undefined);
+    removeCloudProviderConfig.mockResolvedValue(undefined);
     ensurePullsStarted.mockResolvedValue({});
   });
 
@@ -266,6 +306,96 @@ describe('AiSettingsContainer', () => {
 
     await waitFor(() => expect(screen.getByTestId('selected-backend')).toHaveTextContent('vllm'));
     expect(fetchInferenceOnboardingProfile).toHaveBeenCalledWith('vllm');
+  });
+
+  it('shows an engine that answers when nothing is saved and the recommended one does not', async () => {
+    // An NVIDIA PC with Ollama running and no vLLM, on a Hub that never saved an engine.
+    fetchInferencePreferences.mockResolvedValue({});
+    fetchInferenceOnboardingProfile.mockImplementation(async (backend?: string) => ({
+      ...profile,
+      recommendedModels: [llm('m1', 'ollama')],
+      availableModels: [llm('m1', 'ollama')],
+      installedCatalogIds: backend === 'ollama' ? ['m1'] : [],
+      backends: {
+        recommended: 'vllm',
+        available: [
+          { type: 'ollama', running: true, healthy: true, modelsLoaded: 4 },
+          { type: 'vllm', running: false, healthy: false, modelsLoaded: 0 },
+        ],
+      },
+    }));
+
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('selected-backend')).toHaveTextContent('ollama'));
+    expect(screen.getByTestId('recommended-backend')).toHaveTextContent('ollama');
+    // Asked about no engine, the endpoint answered for vLLM; the list shown must be Ollama's.
+    expect(fetchInferenceOnboardingProfile).toHaveBeenCalledWith('ollama');
+    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-m1')).toBeChecked());
+    await waitFor(() => expect(fetchInferenceRuntimeModels).toHaveBeenCalledWith('ollama'));
+    expect(fetchInferenceRuntimeModels).not.toHaveBeenCalledWith('vllm');
+  });
+
+  it('shows an engine that answers in the phone app too, which installs none itself', async () => {
+    // The iOS and Android app is a Tauri webview as well, so a Tauri check alone would treat it as the desktop app.
+    const tauriWindow = window as Window & { __TAURI_INTERNALS__?: { invoke: () => Promise<unknown> } };
+    const userAgent = navigator.userAgent;
+    resetMobileClientCacheForTests();
+    Object.defineProperty(navigator, 'userAgent', { configurable: true, value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)' });
+    tauriWindow.__TAURI_INTERNALS__ = { invoke: vi.fn().mockResolvedValue(undefined) };
+    try {
+      fetchInferencePreferences.mockResolvedValue({});
+      fetchInferenceOnboardingProfile.mockResolvedValue({
+        ...profile,
+        backends: {
+          recommended: 'vllm',
+          available: [
+            { type: 'ollama', running: true, healthy: true, modelsLoaded: 4 },
+            { type: 'vllm', running: false, healthy: false, modelsLoaded: 0 },
+          ],
+        },
+      });
+
+      renderAiSettings();
+
+      await waitFor(() => expect(screen.getByTestId('selected-backend')).toHaveTextContent('ollama'));
+      expect(screen.getByTestId('recommended-backend')).toHaveTextContent('ollama');
+    } finally {
+      delete tauriWindow.__TAURI_INTERNALS__;
+      Object.defineProperty(navigator, 'userAgent', { configurable: true, value: userAgent });
+      resetMobileClientCacheForTests();
+    }
+  });
+
+  it('shows an engine that answers in the desktop window too, because Settings installs none', async () => {
+    // The desktop window keeps the hardware's pick in setup, where it installs that engine. Settings never does.
+    const tauriWindow = window as Window & { __TAURI_INTERNALS__?: { invoke: () => Promise<unknown> } };
+    const userAgent = navigator.userAgent;
+    resetMobileClientCacheForTests();
+    Object.defineProperty(navigator, 'userAgent', { configurable: true, value: 'Mozilla/5.0 (X11; Linux x86_64)' });
+    tauriWindow.__TAURI_INTERNALS__ = { invoke: vi.fn().mockResolvedValue(undefined) };
+    try {
+      fetchInferencePreferences.mockResolvedValue({});
+      fetchInferenceOnboardingProfile.mockResolvedValue({
+        ...profile,
+        backends: {
+          recommended: 'vllm',
+          available: [
+            { type: 'ollama', running: true, healthy: true, modelsLoaded: 4 },
+            { type: 'vllm', running: false, healthy: false, modelsLoaded: 0 },
+          ],
+        },
+      });
+
+      renderAiSettings();
+
+      await waitFor(() => expect(screen.getByTestId('selected-backend')).toHaveTextContent('ollama'));
+      expect(screen.getByTestId('recommended-backend')).toHaveTextContent('ollama');
+    } finally {
+      delete tauriWindow.__TAURI_INTERNALS__;
+      Object.defineProperty(navigator, 'userAgent', { configurable: true, value: userAgent });
+      resetMobileClientCacheForTests();
+    }
   });
 
   it('persists backend changes on save', async () => {
@@ -297,6 +427,141 @@ describe('AiSettingsContainer', () => {
     });
   });
 
+  // The Hub reports a stored vLLM key as the mask. Saving with the field untouched keeps that key.
+  it('keeps the stored vLLM key when its masked field is saved untouched', async () => {
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'vllm', preferredVllmApiKey: '••••••••' });
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('selected-backend')).toHaveTextContent('vllm'));
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+    await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalled());
+    const body = saveInferencePreferences.mock.calls[0]?.[0] as { backend: string; vllmApiKey?: string | null };
+    expect(body.backend).toBe('vllm');
+    // Left out, not null: null would clear the key.
+    expect(body).not.toHaveProperty('vllmApiKey', null);
+    expect(body.vllmApiKey).toBeUndefined();
+  });
+
+  // The field is a password input, so the mask looks like any key. Typing after the dots enters a new
+  // key; read as the mask, the save would have kept the old one.
+  it('saves a key typed into the masked field in place of the mask', async () => {
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'vllm', preferredVllmApiKey: '••••••••' });
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    const field = await screen.findByTestId('vllm-api-key-input');
+    await waitFor(() => expect(field).toHaveValue('••••••••'));
+    await user.type(field, 'sk-new');
+    expect(field).toHaveValue('sk-new');
+
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+    await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalled());
+    expect(saveInferencePreferences.mock.calls[0]?.[0]).toMatchObject({ backend: 'vllm', vllmApiKey: 'sk-new' });
+  });
+
+  // A save on another engine clears the stored vLLM key. The mask still in the field stood for it, and
+  // a later vLLM save left the key out, so the field showed a key the Hub no longer had.
+  it('drops the mask once the Hub reports no stored vLLM key', async () => {
+    fetchInferencePreferences
+      .mockResolvedValueOnce({ preferredBackend: 'vllm', preferredVllmApiKey: '••••••••' })
+      .mockResolvedValue({ preferredBackend: 'lemonade', preferredVllmApiKey: null });
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('vllm-api-key-input')).toHaveValue('••••••••'));
+    await user.click(screen.getByTestId('select-lemonade'));
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+    await waitFor(() => expect(fetchInferencePreferences).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByTestId('ai-settings-save-btn')).not.toBeDisabled());
+
+    await user.click(screen.getByTestId('select-vllm'));
+    expect(await screen.findByTestId('vllm-api-key-input')).toHaveValue('');
+  });
+
+  it('keeps the mask when the preferences cannot be read', async () => {
+    fetchInferencePreferences.mockResolvedValueOnce({ preferredBackend: 'vllm', preferredVllmApiKey: '••••••••' }).mockResolvedValue(null);
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('vllm-api-key-input')).toHaveValue('••••••••'));
+    await user.click(screen.getByTestId('rescan-btn'));
+    await waitFor(() => expect(fetchInferencePreferences).toHaveBeenCalledTimes(2));
+    // With no preferences the panel shows the recommended engine, so come back to vLLM to read the field.
+    await waitFor(() => expect(fetchConfiguredCloudProviders).toHaveBeenCalledTimes(2));
+    await user.click(screen.getByTestId('select-vllm'));
+
+    expect(await screen.findByTestId('vllm-api-key-input')).toHaveValue('••••••••');
+  });
+
+  // The Hub sends a stored vLLM key only to the server it was saved for, and drops it when a save
+  // moves vLLM elsewhere. The field shows that before the save instead of a key that won't be used.
+  describe('the masked vLLM key when the URL changes', () => {
+    const savedUrl = 'http://192.168.1.50:8000';
+
+    beforeEach(() => {
+      fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'vllm', preferredVllmApiKey: '••••••••', preferredVllmUrl: savedUrl });
+    });
+
+    async function typeVllmUrl(user: ReturnType<typeof userEvent.setup>, url: string) {
+      const field = screen.getByTestId('vllm-endpoint-url-input');
+      await user.clear(field);
+      await user.type(field, url);
+    }
+
+    async function save(user: ReturnType<typeof userEvent.setup>) {
+      await user.click(screen.getByTestId('ai-settings-save-btn'));
+      await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+      await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalled());
+      return saveInferencePreferences.mock.calls[0]?.[0] as { vllmUrl?: string | null; vllmApiKey?: string | null };
+    }
+
+    it('empties the key field, says the saved key goes, and saves without it', async () => {
+      const user = userEvent.setup();
+      renderAiSettings();
+      await waitFor(() => expect(screen.getByTestId('vllm-api-key-input')).toHaveValue('••••••••'));
+      expect(screen.queryByTestId('vllm-api-key-notice')).not.toBeInTheDocument();
+
+      await typeVllmUrl(user, 'http://192.168.1.99:8000');
+
+      expect(screen.getByTestId('vllm-api-key-input')).toHaveValue('');
+      expect(screen.getByTestId('vllm-api-key-notice')).toHaveTextContent('The saved key was for the previous URL');
+      expect(await save(user)).toMatchObject({ vllmUrl: 'http://192.168.1.99:8000', vllmApiKey: null });
+    });
+
+    it('saves a key typed for the new URL', async () => {
+      const user = userEvent.setup();
+      renderAiSettings();
+      await waitFor(() => expect(screen.getByTestId('vllm-api-key-input')).toHaveValue('••••••••'));
+
+      await typeVllmUrl(user, 'http://192.168.1.99:8000');
+      await user.type(screen.getByTestId('vllm-api-key-input'), 'new-server-key');
+
+      expect(screen.queryByTestId('vllm-api-key-notice')).not.toBeInTheDocument();
+      expect(await save(user)).toMatchObject({ vllmUrl: 'http://192.168.1.99:8000', vllmApiKey: 'new-server-key' });
+    });
+
+    it('shows the mask again when the URL goes back to the saved one, and keeps the key', async () => {
+      const user = userEvent.setup();
+      renderAiSettings();
+      await waitFor(() => expect(screen.getByTestId('vllm-api-key-input')).toHaveValue('••••••••'));
+
+      await typeVllmUrl(user, 'http://192.168.1.99:8000');
+      await typeVllmUrl(user, savedUrl);
+
+      expect(screen.getByTestId('vllm-api-key-input')).toHaveValue('••••••••');
+      expect(screen.queryByTestId('vllm-api-key-notice')).not.toBeInTheDocument();
+      const body = await save(user);
+      expect(body.vllmUrl).toBe(savedUrl);
+      expect(body.vllmApiKey).toBeUndefined();
+    });
+  });
+
   // #1109: the backend-switch effect listed `profile` in its dependency array while writing it
   // with a freshly-fetched object, so every switch started an unbounded refetch loop (165 requests
   // in 400ms). The shared-fixture mock used elsewhere hides this — React bails out on identical
@@ -317,6 +582,29 @@ describe('AiSettingsContainer', () => {
 
     // Exactly one profile refetch for the new backend — not one per render.
     expect(fetchInferenceOnboardingProfile.mock.calls.length).toBe(before + 1);
+  });
+
+  it('says so when the profile for the engine switched to cannot be loaded, because the Hub stopped answering', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+
+    try {
+      const user = userEvent.setup();
+      renderAiSettings();
+      await waitFor(() => expect(screen.getByTestId('selected-backend')).toHaveTextContent('vllm'));
+
+      fetchInferenceOnboardingProfile.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+      await user.click(screen.getByTestId('select-lemonade'));
+
+      await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Failed to load AI settings: Failed to fetch'));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
   });
 
   it('re-seeds the selection for the backend it switches to', async () => {
@@ -464,6 +752,172 @@ describe('AiSettingsContainer', () => {
     expect(pinInferenceModel).not.toHaveBeenCalled();
   });
 
+  // A running Ollama bound to loopback refuses the Docker bridge and a firewall times it out, so
+  // none of these can be reported as "isn't running". The failure itself stays in the message.
+  it.each([
+    'connect ECONNREFUSED 172.17.0.1:11434',
+    'connect EHOSTUNREACH 172.17.0.1:11434',
+    'connect ETIMEDOUT 172.17.0.1:11434',
+    'getaddrinfo EAI_AGAIN host.docker.internal',
+    'timeout of 5000ms exceeded',
+    'socket hang up',
+    'aborted',
+    'ConnectTimeoutError: Connect Timeout Error',
+  ])('says the Hub cannot reach the engine when a download fails with %s', async (reason) => {
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama' });
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled([], [llm('q27', 'ollama')]));
+    ensurePullsStarted.mockResolvedValue({ q27: reason });
+
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await user.click(await screen.findByTestId('recommended-model-checkbox-q27'));
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+    await waitFor(() => expect(toast.warning).toHaveBeenCalled());
+    expect(toast.warning).toHaveBeenCalledWith(
+      'AI settings saved with 1 model issue(s).',
+      expect.objectContaining({
+        description: `The Hub can't reach Ollama, so q27 couldn't download (${reason}). Check that Ollama is running and accepts connections from the Hub, then save again.`,
+      }),
+    );
+  });
+
+  describe('on oMLX', () => {
+    it('downloads a ticked oMLX model through the Hub, and does not pin it: oMLX loads it on the first request', async () => {
+      const { waitForModelPulls } = await import('@/lib/inference/tracked-models');
+      vi.mocked(waitForModelPulls).mockResolvedValueOnce({ errorsById: {}, pulledIds: new Set(['q8']), progressById: { q8: 100 }, allDone: true });
+      fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'omlx' });
+      fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled([], [llm('q8', 'omlx')]));
+
+      const user = userEvent.setup();
+      renderAiSettings();
+
+      await user.click(await screen.findByTestId('recommended-model-checkbox-q8'));
+      await user.click(screen.getByTestId('ai-settings-save-btn'));
+      await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+      await waitFor(() => expect(ensurePullsStarted).toHaveBeenCalledWith(['q8'], false));
+      await waitFor(() => expect(toast.success).toHaveBeenCalled());
+      expect(pinInferenceModel).not.toHaveBeenCalled();
+    });
+
+    it('asks for nothing for a model oMLX already lists', async () => {
+      fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'omlx', preferredModel: 'q8' });
+      fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['q8'], [llm('q8', 'omlx')]));
+
+      const user = userEvent.setup();
+      renderAiSettings();
+
+      await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-q8')).toBeChecked());
+      await user.click(screen.getByTestId('ai-settings-save-btn'));
+      await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+      await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalled());
+      expect(ensurePullsStarted).not.toHaveBeenCalled();
+      expect(pinInferenceModel).not.toHaveBeenCalled();
+    });
+
+    it("keeps oMLX's stored key while its masked field is untouched, and saves one typed in its place", async () => {
+      fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'omlx', preferredOmlxApiKey: '••••••••' });
+      const user = userEvent.setup();
+      renderAiSettings();
+
+      const field = await screen.findByTestId('omlx-api-key-input');
+      await waitFor(() => expect(field).toHaveValue('••••••••'));
+      await user.click(screen.getByTestId('ai-settings-save-btn'));
+      await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+      await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalled());
+      expect((saveInferencePreferences.mock.calls[0]?.[0] as { omlxApiKey?: string | null } | undefined)?.omlxApiKey).toBeUndefined();
+
+      saveInferencePreferences.mockClear();
+      await user.type(field, 'omlx-new-key');
+      expect(field).toHaveValue('omlx-new-key');
+      await user.click(screen.getByTestId('ai-settings-save-btn'));
+      await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+      await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalled());
+      expect(saveInferencePreferences.mock.calls[0]?.[0]).toMatchObject({ backend: 'omlx', omlxApiKey: 'omlx-new-key' });
+    });
+
+    describe('the key the desktop app can give oMLX', () => {
+      type TauriWindow = Window & { __TAURI_INTERNALS__?: { invoke: (command: string) => Promise<unknown> } };
+      afterEach(() => {
+        delete (window as TauriWindow).__TAURI_INTERNALS__;
+      });
+      const desktopApp = () => {
+        const invoke = vi.fn(async (command: string) => {
+          if (command === 'omlx_admin_key_status_command') return { keySet: false };
+          if (command === 'omlx_setup_admin_key_command') return { apiKey: 'ci-hub-new-key' };
+          return null;
+        });
+        (window as TauriWindow).__TAURI_INTERNALS__ = { invoke };
+        return invoke;
+      };
+
+      it('is offered while the Hub has no oMLX key, and stores the one it sets', async () => {
+        desktopApp();
+        saveOmlxApiKey.mockResolvedValue(undefined);
+        fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'omlx' });
+        const user = userEvent.setup();
+        renderAiSettings();
+
+        await user.click(await screen.findByTestId('omlx-admin-key-set-btn'));
+
+        await waitFor(() => expect(screen.getByTestId('omlx-admin-key-value')).toHaveTextContent('ci-hub-new-key'));
+        expect(saveOmlxApiKey).toHaveBeenCalledWith('ci-hub-new-key', 'omlx');
+        expect(screen.getByTestId('omlx-api-key-input')).toHaveValue('••••••••');
+      });
+
+      it('keeps the new key in the field, so Save stores it, while the URL field names another server than the saved one', async () => {
+        desktopApp();
+        saveOmlxApiKey.mockResolvedValue(undefined);
+        fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'omlx', preferredOmlxUrl: 'http://studio.lan:8000' });
+        const user = userEvent.setup();
+        renderAiSettings();
+
+        const url = await screen.findByTestId('omlx-endpoint-url-input');
+        await waitFor(() => expect(url).toHaveValue('http://studio.lan:8000'));
+        await user.clear(url);
+        await user.type(url, 'http://localhost:8000');
+        await user.click(await screen.findByTestId('omlx-admin-key-set-btn'));
+
+        await waitFor(() => expect(screen.getByTestId('omlx-api-key-input')).toHaveValue('ci-hub-new-key'));
+        await user.click(screen.getByTestId('ai-settings-save-btn'));
+        await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+        await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalled());
+        expect(saveInferencePreferences.mock.calls[0]?.[0]).toMatchObject({ omlxUrl: 'http://localhost:8000', omlxApiKey: 'ci-hub-new-key' });
+      });
+
+      it('is not offered when the Hub already stores a key', async () => {
+        const invoke = desktopApp();
+        fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'omlx', preferredOmlxApiKey: '••••••••' });
+        renderAiSettings();
+
+        await waitFor(() => expect(screen.getByTestId('omlx-api-key-input')).toHaveValue('••••••••'));
+        expect(screen.queryByTestId('omlx-admin-key-prompt')).not.toBeInTheDocument();
+        expect(invoke).not.toHaveBeenCalledWith('omlx_admin_key_status_command');
+      });
+    });
+
+    it("leaves oMLX's key alone when another engine is saved", async () => {
+      fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'omlx', preferredOmlxApiKey: '••••••••' });
+      const user = userEvent.setup();
+      renderAiSettings();
+
+      await waitFor(() => expect(screen.getByTestId('selected-backend')).toHaveTextContent('omlx'));
+      await user.click(screen.getByTestId('select-lemonade'));
+      await user.click(screen.getByTestId('ai-settings-save-btn'));
+      await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+      await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalled());
+      const body = saveInferencePreferences.mock.calls[0]?.[0] as { backend: string; omlxApiKey?: string | null };
+      expect(body.backend).toBe('lemonade');
+      expect(body).not.toHaveProperty('omlxApiKey', null);
+      expect(body.omlxApiKey).toBeUndefined();
+    });
+  });
+
   it('pre-selects models the backend reports installed even when the tracked registry is empty', async () => {
     // The tracked registry lives in memory in the Hub and is never rebuilt, so it is empty after a
     // restart and for any vLLM model (which the Hub never pulls). The backend still serves them.
@@ -489,6 +943,138 @@ describe('AiSettingsContainer', () => {
 
     // Seeding from the tracked registry alone left this null, which clears the stored default.
     await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ model: 'm1' })));
+  });
+
+  it('keeps the saved chat model when Save is pressed with nothing changed', async () => {
+    // o2 ranks first among the checked models. Save used to write it over the saved o1, which
+    // restarted every app onto another model although nothing on the page was changed.
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['o1', 'o2'], [llm('o2', 'ollama'), llm('o1', 'ollama')]));
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama', preferredModel: 'o1' });
+
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-o2')).toBeChecked());
+    expect(screen.getByTestId('recommended-model-checkbox-o1')).toBeChecked();
+
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+    await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ backend: 'ollama', model: 'o1' })));
+  });
+
+  it('keeps the saved vision and embedding models when Save is pressed with nothing changed', async () => {
+    // v2 and e2 rank first among the checked models; the Hub has v1 and e1 saved.
+    const seeing = (id: string) => ({ ...llm(id, 'ollama'), metadata: { capabilities: { vision: true } } });
+    const embedder = (id: string) => ({ ...llm(id, 'ollama'), modality: 'embedding' });
+    fetchInferenceOnboardingProfile.mockResolvedValue(
+      profileWithInstalled(['o1', 'v1', 'v2', 'e1', 'e2'], [llm('o1', 'ollama'), seeing('v2'), seeing('v1'), embedder('e2'), embedder('e1')]),
+    );
+    fetchInferencePreferences.mockResolvedValue({
+      preferredBackend: 'ollama',
+      preferredModel: 'o1',
+      preferredVisionModel: 'v1',
+      preferredEmbeddingModel: 'e1',
+    });
+
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-v2')).toBeChecked());
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+    await waitFor(() =>
+      expect(saveInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ model: 'o1', visionModel: 'v1', embeddingModel: 'e1' })),
+    );
+  });
+
+  it('ranks the vision models again once one of their checkboxes is changed', async () => {
+    const seeing = (id: string) => ({ ...llm(id, 'ollama'), metadata: { capabilities: { vision: true } } });
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['o1', 'v1', 'v2'], [llm('o1', 'ollama'), seeing('v2'), seeing('v1')]));
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama', preferredModel: 'o1', preferredVisionModel: 'v2' });
+
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-v2')).toBeChecked());
+    await user.click(screen.getByTestId('recommended-model-checkbox-v2'));
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+    await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ visionModel: 'v1' })));
+  });
+
+  it('ranks the checked models again once a chat model checkbox is changed', async () => {
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['o1', 'o2'], [llm('o2', 'ollama'), llm('o1', 'ollama')]));
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama', preferredModel: 'o1' });
+
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-o1')).toBeChecked());
+    await user.click(screen.getByTestId('recommended-model-checkbox-o1'));
+
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+    await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ backend: 'ollama', model: 'o2' })));
+  });
+
+  it('does not carry the saved chat model over to another engine', async () => {
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['o1'], [llm('o1', 'ollama')]));
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama', preferredModel: 'o1' });
+
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-o1')).toBeChecked());
+    await user.click(screen.getByTestId('select-lemonade'));
+    await waitFor(() => expect(screen.getByTestId('selected-backend')).toHaveTextContent('lemonade'));
+
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+    await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ backend: 'lemonade', model: null })));
+  });
+
+  it('keeps a chat model Lemonade downloaded under its own name after switching engines and back', async () => {
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['l1'], [llm('l1', 'lemonade')]));
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'lemonade', preferredModel: 'user.Custom-GGUF' });
+
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('selected-backend')).toHaveTextContent('lemonade'));
+    await user.click(screen.getByTestId('select-vllm'));
+    await waitFor(() => expect(screen.getByTestId('selected-backend')).toHaveTextContent('vllm'));
+    await user.click(screen.getByTestId('select-lemonade'));
+    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-l1')).toBeChecked());
+
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+    await waitFor(() =>
+      expect(saveInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ backend: 'lemonade', model: 'user.Custom-GGUF' })),
+    );
+  });
+
+  it('ranks the chat model again when a Re-check finds the saved one gone', async () => {
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['l1', 'l2'], [llm('l1', 'lemonade'), llm('l2', 'lemonade')]));
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'lemonade', preferredModel: 'l1' });
+
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-l1')).toBeChecked());
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['l2'], [llm('l1', 'lemonade'), llm('l2', 'lemonade')]));
+    await user.click(screen.getByTestId('lemonade-recheck-btn'));
+    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-l1')).not.toBeChecked());
+
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+    await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ backend: 'lemonade', model: 'l2' })));
   });
 
   it('keeps installed models selected while a pull is in progress', async () => {
@@ -587,6 +1173,7 @@ describe('AiSettingsContainer', () => {
     await waitFor(() => expect(screen.getByTestId('load-model-Qwen3-Coder-30B')).toBeInTheDocument());
     await user.click(screen.getByTestId('load-model-Qwen3-Coder-30B'));
     await waitFor(() => expect(loadInferenceModel).toHaveBeenCalledWith('Qwen3-Coder-30B', 'ollama'));
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Qwen3-Coder-30B loaded. Save to make it the chat model.'));
 
     await user.click(screen.getByTestId('ai-settings-save-btn'));
     await user.click(screen.getByTestId('ai-settings-confirm-btn'));
@@ -594,6 +1181,59 @@ describe('AiSettingsContainer', () => {
     await waitFor(() =>
       expect(saveInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ backend: 'ollama', model: 'Qwen3-Coder-30B' })),
     );
+  });
+
+  // Ollama lists a model pulled without a tag as `name:latest`. Taken for a chat model the catalog
+  // does not know, the embedder became the chat model the next Save wrote.
+  it.each([
+    ['its catalog name', 'nomic-embed-text'],
+    ["Ollama's :latest name", 'nomic-embed-text:latest'],
+  ])('loads an embedder listed under %s without making it the chat model', async (_name, engineId) => {
+    const nomic = { ...llm('nomic', 'ollama'), backendModelId: 'nomic-embed-text', modality: 'embedding', displayName: 'Nomic Embed Text' };
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['o1', 'nomic'], [llm('o1', 'ollama'), nomic]));
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama', preferredModel: 'o1', preferredEmbeddingModel: 'nomic' });
+    fetchInferenceRuntimeModels.mockResolvedValue({
+      backend: 'ollama',
+      discoveryUnavailable: false,
+      models: [{ id: engineId, name: engineId, state: 'available', resident: false }],
+    });
+    loadInferenceModel.mockResolvedValue(undefined);
+
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId(`load-model-${engineId}`)).toBeInTheDocument());
+    await user.click(screen.getByTestId(`load-model-${engineId}`));
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Nomic Embed Text loaded.'));
+
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+    await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ model: 'o1', embeddingModel: 'nomic' })));
+  });
+
+  it("stops keeping an embedder an earlier Save wrote as the chat model under Ollama's :latest name", async () => {
+    const nomic = { ...llm('nomic', 'ollama'), backendModelId: 'nomic-embed-text', modality: 'embedding', displayName: 'Nomic Embed Text' };
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['o1', 'nomic'], [llm('o1', 'ollama'), nomic]));
+    fetchInferencePreferences.mockResolvedValue({
+      preferredBackend: 'ollama',
+      preferredModel: 'nomic-embed-text:latest',
+      preferredEmbeddingModel: 'nomic',
+    });
+    fetchInferenceRuntimeModels.mockResolvedValue({
+      backend: 'ollama',
+      discoveryUnavailable: false,
+      models: [{ id: 'nomic-embed-text:latest', name: 'nomic-embed-text:latest', state: 'available', resident: false }],
+    });
+
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('load-model-nomic-embed-text:latest')).toBeInTheDocument());
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+    await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ model: 'o1', embeddingModel: 'nomic' })));
   });
 
   it('warns that an emptying save unpins every pinned model', async () => {
@@ -681,6 +1321,78 @@ describe('AiSettingsContainer', () => {
     expect(screen.getByTestId('ai-settings-confirm-description')).toHaveTextContent(/restart your apps that use AI models/);
   });
 
+  // Clearing a saved key sent nothing for it: the save said "AI settings saved" and the Hub kept the
+  // key, still enabled, so unknown models and AI apps went on using that provider.
+  it('deletes a saved cloud key whose field was cleared, before the save restarts AI apps', async () => {
+    fetchConfiguredCloudProviders.mockResolvedValue([{ provider: 'openai', apiKey: '••••••••', enabled: true, stored: true }]);
+
+    const user = userEvent.setup();
+    renderAiSettings();
+    await waitFor(() => expect(screen.getByTestId('cloud-providers-held')).toHaveTextContent('openai'));
+
+    await user.click(screen.getByTestId('clear-cloud-keys'));
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+    await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalled());
+    expect(removeCloudProviderConfig).toHaveBeenCalledWith('openai');
+    expect(saveCloudProviderConfig).not.toHaveBeenCalled();
+    // First, as the other cloud saves are: the preferences save is what restarts AI apps.
+    expect(removeCloudProviderConfig.mock.invocationCallOrder[0]).toBeLessThan(saveInferencePreferences.mock.invocationCallOrder[0] ?? 0);
+  });
+
+  it('keeps a saved cloud key whose field was left alone', async () => {
+    fetchConfiguredCloudProviders.mockResolvedValue([{ provider: 'openai', apiKey: '••••••••', enabled: true, stored: true }]);
+
+    const user = userEvent.setup();
+    renderAiSettings();
+    await waitFor(() => expect(screen.getByTestId('cloud-providers-held')).toHaveTextContent('openai'));
+
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+    await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalled());
+    expect(saveCloudProviderConfig).toHaveBeenCalledWith({ provider: 'openai', enabled: true });
+    expect(removeCloudProviderConfig).not.toHaveBeenCalled();
+  });
+
+  // Settings sends no URL, so a provider set to another server without a key had no way back to the
+  // provider's own server short of the API.
+  describe('a provider set to another server without a key', () => {
+    const keyless = { provider: 'anthropic', apiKey: '', enabled: true, baseUrl: 'https://llm-proxy.example.test/v1' };
+
+    it('is deleted when Remove was pressed', async () => {
+      fetchConfiguredCloudProviders.mockResolvedValue([keyless]);
+
+      const user = userEvent.setup();
+      renderAiSettings();
+      await waitFor(() => expect(screen.getByTestId('cloud-providers-held')).toHaveTextContent('anthropic'));
+
+      await user.click(screen.getByTestId('remove-cloud-urls'));
+      await user.click(screen.getByTestId('ai-settings-save-btn'));
+      await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+      await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalled());
+      expect(removeCloudProviderConfig).toHaveBeenCalledWith('anthropic');
+      expect(saveCloudProviderConfig).not.toHaveBeenCalled();
+    });
+
+    it('is left as it is by a save that did not touch it', async () => {
+      fetchConfiguredCloudProviders.mockResolvedValue([keyless]);
+
+      const user = userEvent.setup();
+      renderAiSettings();
+      await waitFor(() => expect(screen.getByTestId('cloud-providers-held')).toHaveTextContent('anthropic'));
+
+      await user.click(screen.getByTestId('ai-settings-save-btn'));
+      await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+      await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalled());
+      expect(removeCloudProviderConfig).not.toHaveBeenCalled();
+      expect(saveCloudProviderConfig).not.toHaveBeenCalled();
+    });
+  });
+
   it('shows rescan error toast and skips profile refresh when rescan returns non-OK', async () => {
     rescanInferenceHardware.mockRejectedValue(new Error('HTTP 503'));
 
@@ -698,5 +1410,20 @@ describe('AiSettingsContainer', () => {
     });
 
     expect(fetchInferenceOnboardingProfile).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the fail-closed Cloud Inference Boundary notice when CI_HUB_ALLOW_CLOUD_FALLBACK is false', async () => {
+    renderAiSettings();
+
+    const banner = await screen.findByTestId('cloud-fallback-policy-banner');
+    expect(banner).toHaveTextContent('Cloud Inference Boundary: Fail-Closed Local Routing (CI_HUB_ALLOW_CLOUD_FALLBACK=false)');
+  });
+
+  it('shows the enabled Cloud Inference Fallback warning when CI_HUB_ALLOW_CLOUD_FALLBACK is true', async () => {
+    fetchCloudFallbackPolicy.mockResolvedValue({ allowCloudFallback: true, hasCloudFallback: true, envFlag: 'CI_HUB_ALLOW_CLOUD_FALLBACK' });
+    renderAiSettings();
+
+    const banner = await screen.findByTestId('cloud-fallback-policy-banner');
+    expect(banner).toHaveTextContent('Cloud Inference Fallback Enabled (CI_HUB_ALLOW_CLOUD_FALLBACK=true)');
   });
 });

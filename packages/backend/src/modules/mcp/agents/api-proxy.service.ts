@@ -4,6 +4,9 @@ import { LoggerService } from '@/core/logger/logger.service';
 import type { LifecycleActor } from '@/core/portal/lifecycle-actor';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { mainServiceAddressOf } from '@/modules/apps/app-service-address';
+import { DockerService } from '@/modules/docker/docker.service';
+import { EnvUtils } from '@/modules/env/env.utils';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { AgentOpenApiAuth } from '@ci-hub/common/schemas';
 import { appApiAction } from '../http-method-access';
@@ -31,9 +34,11 @@ interface OpenApiOperationRef {
 @Injectable()
 export class ApiProxyService {
   constructor(
-    readonly _appFilesManager: AppFilesManager,
+    private readonly appFilesManager: AppFilesManager,
     private readonly logger: LoggerService,
     private readonly appLifecycle: AppLifecycleService,
+    private readonly envUtils: EnvUtils,
+    private readonly dockerService: DockerService,
   ) {}
 
   /**
@@ -115,7 +120,7 @@ export class ApiProxyService {
     await this.appLifecycle.assertActorMay(options.actor, appUrn, appApiAction(options), { appCall: true });
 
     try {
-      const baseUrl = this.resolveAppBaseUrl(appUrn);
+      const baseUrl = await this.resolveAppBaseUrl(appUrn);
       const url = new URL(options.path, baseUrl);
 
       /*
@@ -144,7 +149,7 @@ export class ApiProxyService {
 
       // Inject auth (S-AOA-2.2, S-APX-1.2), looked up only now that the caller is admitted.
       const auth = typeof options.auth === 'function' ? await options.auth() : options.auth;
-      this.injectAuth(headers, auth);
+      await this.injectAuth(appUrn, headers, auth);
 
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 30000);
@@ -188,23 +193,45 @@ export class ApiProxyService {
   }
 
   /**
-   * Resolve the base URL for an app container: `<store>-<app>`, from the URN's segments, which are
-   * refused unless they can only ever name a host.
+   * Resolve the base URL for an app: its main service's address on the app's own network.
+   *
+   * ⚠ NOT A NAME. This request carries the app's credential, and the Hub is on every app's network,
+   * where Docker answers a name from whichever network claims it first. It was `<store>-<app>`, which
+   * any other app could claim by naming a service so (see `mainServiceAddressOf`).
    */
-  private resolveAppBaseUrl(appUrn: AppUrn): URL {
+  private async resolveAppBaseUrl(appUrn: AppUrn): Promise<URL> {
     const { appName, appStoreId } = extractAppUrn(appUrn);
 
     if (!APP_HOST_SEGMENT.test(appName) || !APP_HOST_SEGMENT.test(appStoreId)) {
       throw new Error(`${appUrn} is not an app the proxy can address`);
     }
 
-    return new URL(`http://${appStoreId}-${appName}`);
+    const address = await mainServiceAddressOf(this.appFilesManager, this.dockerService, appUrn);
+    if (!address) {
+      throw new Error(`${appUrn} has no running main service to send the request to`);
+    }
+    return new URL(`http://${address}`);
   }
 
-  private injectAuth(headers: Record<string, string>, auth?: AgentOpenApiAuth): void {
+  /**
+   * ⚠ `token_env` NAMES A VARIABLE IN THE APP'S OWN app.env, NEVER THE HUB'S. It is a manifest field
+   * any store can publish, and this request goes to that app. Read from the Hub's environment,
+   * `"token_env": "JWT_SECRET"` made every `hub_call_app_api` deliver the Hub's signing key to the
+   * app — which its own managed key could ask for whenever it liked.
+   */
+  private async readAppEnvToken(appUrn: AppUrn, name: string): Promise<string | undefined> {
+    try {
+      const appEnv = await this.appFilesManager.getAppEnv(appUrn);
+      return this.envUtils.envStringToMap(appEnv.content ?? '').get(name) || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async injectAuth(appUrn: AppUrn, headers: Record<string, string>, auth?: AgentOpenApiAuth): Promise<void> {
     if (!auth || auth.type === 'none') return;
 
-    const tokenValue = auth.token_env ? process.env[auth.token_env] : undefined;
+    const tokenValue = auth.token_env ? await this.readAppEnvToken(appUrn, auth.token_env) : undefined;
     if (!tokenValue) return;
 
     switch (auth.type) {

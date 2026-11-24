@@ -1,5 +1,6 @@
-import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
+import type { CuratedModel, InferenceBackendType, TrackedModel } from '@ci-hub/common/types';
 import { canonicalModelId } from '@/common/helpers/hub-pool';
+import { omlxModelKey, omlxModelsMatch, servedOmlxId } from '@/common/helpers/omlx-model-id';
 
 /** True when an Ollama tag name matches a catalog model's native backend id. */
 export function isOllamaTagForModel(tagName: string, backendModelId: string): boolean {
@@ -32,6 +33,29 @@ export function isOllamaTagForCatalogModel(tagName: string, backendModelId: stri
     }
   }
   return true;
+}
+
+/** Whether a tracked state says the download finished: `pulled`, `loaded` or `pinned`. */
+export function isPulledState(state: string | undefined): boolean {
+  return state === 'pulled' || state === 'loaded' || state === 'pinned';
+}
+
+/**
+ * Whether the registry's record that the Hub pulled a model still counts it as on disk.
+ *
+ * Not once Ollama has listed what it holds. The record lives in memory and nothing drops it when
+ * the model is deleted outside the Hub (`ollama rm`), so believing it over `/api/tags` handed apps a
+ * model that answered every request with a 404 until the Hub restarted. Ollama's health check is
+ * that `/api/tags` read, so a healthy answer lists everything on disk. Other engines keep the
+ * record: Lemonade answers healthy with an empty list when its model read fails, so a model missing
+ * from that list proves nothing.
+ *
+ * `listedBy` is the engine whose model list the caller holds, or null when that engine could not
+ * be asked.
+ */
+export function trackedPullCounts(tracked: Pick<TrackedModel, 'state' | 'backend'> | undefined, listedBy: InferenceBackendType | null): boolean {
+  if (!tracked || !isPulledState(tracked.state)) return false;
+  return !(tracked.backend === 'ollama' && listedBy === 'ollama');
 }
 
 /**
@@ -92,25 +116,36 @@ export function withoutLemonadeUserNamespace(modelId: string): string {
  * 10.2.0 lists the embedder the Hub registers as `user.nomic-embed-text-v1.5-GGUF` while the catalog
  * row says `nomic-embed-text-v1.5-GGUF`, and an exact match there let an operator's load evict that
  * embedder although it was pinned. Only Lemonade: `user.` means nothing to any other engine.
+ *
+ * oMLX lists a model as `Qwen3-8B-4bit` or `mlx-community--Qwen3-8B-4bit`, where the catalog says
+ * `mlx-community/Qwen3-8B-4bit`, so the three share a key ({@link omlxModelKey}). A key cannot compare
+ * organizations; {@link sameEngineModelId} does, for oMLX.
  */
 export function engineModelKey(backend: InferenceBackendType, modelId: string): string {
+  if (backend === 'omlx') return canonicalModelId(omlxModelKey(modelId));
   return canonicalModelId(backend === 'lemonade' ? withoutLemonadeUserNamespace(modelId) : modelId);
 }
 
-/** Whether `a` and `b` name one model on `backend`, under {@link engineModelKey}'s folding. */
+/** Whether `a` and `b` name one model on `backend`, under {@link engineModelKey}'s folding (oMLX: {@link omlxModelsMatch}). */
 export function sameEngineModelId(backend: InferenceBackendType, a: string, b: string): boolean {
+  if (backend === 'omlx') return a === b || omlxModelsMatch(a, b);
   return a === b || engineModelKey(backend, a) === engineModelKey(backend, b);
 }
 
 /**
  * The spelling under which `servedModelIds` names a catalog model, or null when it does not.
  *
- * Exact for every engine. A Lemonade row also answers to `user.<backendModelId>`, the name a
+ * Exact for every engine but oMLX. A Lemonade row also answers to `user.<backendModelId>`, the name a
  * Lemonade older than the bare public aliases lists a Hub-registered model under — without this the
  * Hub never saw the embedder it had just registered as installed, and handed apps a bare name the
  * server rejected.
+ *
+ * oMLX names a model after its directory or Hugging Face cache entry, and lists the catalog's
+ * `mlx-community/<name>` only if an operator aliased a model to it, so a row there is found under any
+ * spelling oMLX gives it ({@link servedOmlxId}). Before that, every oMLX row read as not installed.
  */
 export function servedIdForCatalogModel(model: CuratedModel, servedModelIds: Iterable<string>): string | null {
+  if (model.backend === 'omlx') return servedOmlxId(model.backendModelId, servedModelIds);
   const served = new Set(servedModelIds);
   if (served.has(model.backendModelId)) return model.backendModelId;
   if (model.backend === 'lemonade') {
@@ -120,9 +155,23 @@ export function servedIdForCatalogModel(model: CuratedModel, servedModelIds: Ite
   return null;
 }
 
-/** True when a served model id matches a catalog model's backend id (exact for vLLM/HF ids; see {@link servedIdForCatalogModel}). */
+/** True when a served model id matches a catalog model's backend id (exact for vLLM/HF ids, folded for oMLX; see {@link servedIdForCatalogModel}). */
 export function isServedModelForCatalog(model: CuratedModel, servedModelIds: string[]): boolean {
   return servedIdForCatalogModel(model, servedModelIds) !== null;
+}
+
+/**
+ * The id to put in an app's environment to name the chat or utility model `model`, on the engine that lists
+ * `servedModelIds`: the spelling oMLX lists for it, else the catalog's `backendModelId`, which every other
+ * engine is handed as it always was.
+ *
+ * The spelling matters for oMLX: the catalog's `mlx-community/<name>` is a 404 when oMLX serves the model
+ * from the Hugging Face cache, where the only name is `mlx-community--<name>`, and with `model_fallback` on
+ * oMLX answers it from its default model instead. Lemonade's `user.<id>` spelling is applied where the Hub
+ * registers a model (`LemonadeBackend.engineModelId`), not here.
+ */
+export function handoutIdForCatalogModel(model: CuratedModel, servedModelIds: Iterable<string>): string {
+  return (model.backend === 'omlx' ? servedIdForCatalogModel(model, servedModelIds) : null) ?? model.backendModelId;
 }
 
 /** Map live served model ids to catalog ids for models on the given backend. */
@@ -138,9 +187,7 @@ export function resolveInstalledCatalogIdsFromServedModels(
       continue;
     }
 
-    const trackedState = getTrackedState?.(model.id);
-    const trackedPulled = trackedState === 'pulled' || trackedState === 'loaded' || trackedState === 'pinned';
-    if (trackedPulled || isServedModelForCatalog(model, servedModelIds)) {
+    if (isPulledState(getTrackedState?.(model.id)) || isServedModelForCatalog(model, servedModelIds)) {
       installed.push(model.id);
     }
   }
@@ -160,9 +207,7 @@ export function resolveInstalledCatalogIds(
   const installed: string[] = [];
   const others = Array.from(catalogBackendModelIds);
   for (const model of catalog) {
-    const trackedState = getTrackedState?.(model.id);
-    const trackedPulled = trackedState === 'pulled' || trackedState === 'loaded' || trackedState === 'pinned';
-    if (isCuratedModelInstalled(model, ollamaTags, trackedPulled, others)) {
+    if (isCuratedModelInstalled(model, ollamaTags, isPulledState(getTrackedState?.(model.id)), others)) {
       installed.push(model.id);
     }
   }

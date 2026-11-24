@@ -90,7 +90,10 @@ pub(crate) fn ensure_hub_compose_file(compose_path: &Path, data_dir: &Path) -> R
 /// Uses a regenerate-and-preserve approach:
 /// - Preserved values (read from existing .env, generated if missing): ROOT_FOLDER_HOST, JWT_SECRET, POSTGRES_PASSWORD
 /// - Preserved value learned at pairing (kept, never re-derived once a Portal has answered): DOMAIN
-/// - Derived values (always recomputed from the current binary): INTERNAL_IP, CI_CLOUD_URL, CI_HUB_VERSION, CI_HUB_IMAGE, DOCKER_PLATFORM, DEVICE_ID
+/// - Preserved device ID (the one the Hub registered as, else the one in .env, else read from the host): DEVICE_ID
+/// - Preserved operator opt-outs, kept only when set to true: TAILSCALE_SERVE_USER_DISABLED, HUB_ALLOW_FOREIGN_DEVICE_ID
+/// - Preserved operator opt-out, kept only when set to false: MCP_ENABLED
+/// - Derived values (always recomputed from the current binary): INTERNAL_IP, CI_CLOUD_URL, CI_HUB_VERSION, CI_HUB_IMAGE, DOCKER_PLATFORM
 /// - CI_CLOUD_URL follows the desktop-only Portal URL override file when it holds a valid origin; see `portal_url`
 ///
 /// Returns the initialized desktop data paths and Traefik preflight result.
@@ -186,11 +189,15 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
     // Build .env content with deterministic key order
     let env_content = render_runtime_env_content(&data_dir, &existing);
 
-    // Write the primary runtime env file (port manager will append dynamic port vars after this)
+    // Write the primary runtime env file, keeping the port lines the last start wrote
     let old_content = std::fs::read_to_string(&env_path).unwrap_or_default();
     // Strip port vars from old content for comparison (port manager manages those)
     let env_changed = strip_port_vars(&old_content) != env_content;
-    std::fs::write(&env_path, &env_content).map_err(|e| {
+    write_private_file(
+        &env_path,
+        launch_env_file_content(&env_content, &old_content),
+    )
+    .map_err(|e| {
         let message = format!("Failed to write {}: {}", env_path.display(), e);
         let _ = append_desktop_log_for(&data_dir, "initialize", &message);
         with_view_logs_hint(message)
@@ -198,7 +205,7 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
 
     let compat_env_path = compat_hub_env_path_for(&data_dir);
     if compat_env_path != env_path {
-        let _ = std::fs::write(&compat_env_path, &env_content);
+        let _ = write_private_file(&compat_env_path, &env_content);
     }
 
     log_lines.push(format!("  {} changed: {}", env_path.display(), env_changed));
@@ -469,20 +476,36 @@ pub(crate) fn generate_container_docker_config(
     Ok(())
 }
 
+/// Whether `line` is one the port manager owns. It writes them when it starts the Hub.
+fn is_port_var_line(line: &str) -> bool {
+    crate::port_manager::port_env_vars().any(|var| {
+        line.strip_prefix(var)
+            .is_some_and(|rest| rest.starts_with('='))
+    })
+}
+
+/// The env file a launch writes: `rendered`, then the port lines of `previous`. Only a start writes
+/// the ports, and a launch that finds the Hub running and unchanged doesn't start it, so the file
+/// keeps the ones the last start chose. Dropping them made every launch hash a different file from
+/// the one that start saved, and recreate the stack (Companion-Hub#1931).
+pub(crate) fn launch_env_file_content(rendered: &str, previous: &str) -> String {
+    let mut content = rendered.to_string();
+    for line in previous.lines().filter(|line| is_port_var_line(line)) {
+        if !content.is_empty() && !content.ends_with('\n') {
+            content.push('\n');
+        }
+        content.push_str(line);
+        content.push('\n');
+    }
+    content
+}
+
 /// Strip dynamic port variables from .env content for comparison purposes.
-/// Port manager owns these vars and rewrites them each launch.
+/// Port manager owns these vars (see [`crate::port_manager::port_env_vars`]).
 pub(crate) fn strip_port_vars(content: &str) -> String {
-    let port_vars = [
-        "API_PORT=",
-        "POSTGRES_PORT=",
-        "RABBITMQ_PORT=",
-        "TRAEFIK_DASHBOARD_PORT=",
-        "HTTP_PORT=",
-        "HTTPS_PORT=",
-    ];
     content
         .lines()
-        .filter(|line| !port_vars.iter().any(|pv| line.starts_with(pv)))
+        .filter(|line| !is_port_var_line(line))
         .collect::<Vec<_>>()
         .join("\n")
         + "\n"

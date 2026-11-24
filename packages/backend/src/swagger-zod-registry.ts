@@ -1,13 +1,19 @@
 import type { ZodDto } from '@/common/zod-dto';
-import { AcknowledgeWelcomeBody, AppContextDto, UserContextDto, UserSettingsBody } from './app.dto';
+import { AcknowledgeWelcomeBody, AppContextDto, HubAccessDto, UserContextDto, UserSettingsBody } from './app.dto';
 import { StreamAppLogsQueryDto, StreamHubLogsQueryDto } from './core/sse/dto/sse.dto';
-import { CreateApiKeyBody, UpdateApiKeyBody } from './modules/api-keys/api-key-admin.dto';
+import { ApiKeyListDto, CreateApiKeyBody, UpdateApiKeyBody } from './modules/api-keys/api-key-admin.dto';
 import {
   BrowserHandoffMintBody,
   BrowserHandoffMintDto,
   ChangePasswordBody,
   ChangeUsernameBody,
   CheckResetPasswordRequestDto,
+  DidChallengeBody,
+  DidChallengeDto,
+  DidLinkDto,
+  DidLinksDto,
+  DidProofBody,
+  DidUnlinkBody,
   DisableTotpBody,
   GetTotpUriBody,
   GetTotpUriDto,
@@ -18,6 +24,7 @@ import {
   PasswordResetRequestBody,
   PasswordResetRequestDto,
   PasswordResetVerifyResponseDto,
+  PortalDesktopConfigDto,
   PortalDesktopExchangeDto,
   PortalSessionHintDto,
   RegisterBody,
@@ -29,10 +36,13 @@ import {
   VerifyTotpBody,
 } from './modules/auth/dto/auth.dto';
 import {
+  AcknowledgeRestoreResponseDto,
   AppFormBody,
   CancelOperationBody,
   CancelOperationResponseDto,
   LifecycleRequestDto,
+  McpAccessBody,
+  RehydrateStatusDto,
   ResetAppBody,
   UninstallAppBody,
   UpdateAppBody,
@@ -45,6 +55,7 @@ import {
   GetConfigDiffDto,
   GetRandomPortDto,
   GuestAppsDto,
+  GuestVisibilityBodyDto,
   InstalledAppUrnsDto,
   MyAppsDto,
   UpdatesAvailableDto,
@@ -56,13 +67,17 @@ import {
   CreateCustomAppDto,
   CreateCustomAppResponseDto,
   CreatePortExposeAppDto,
+  CustomAppAccessDto,
   UpdateAppMetadataDto,
   UpdateCustomAppDto,
   UpdatePortExposeAppDto,
 } from './modules/custom-apps/dto/custom-apps.dto';
 import {
+  CloudFallbackPolicyDto,
+  LoadModelBody,
   OnboardingProfileQueryDto,
   RuntimeModelsQueryDto,
+  UnloadModelBody,
   UpdateInferencePreferencesBody,
   UpdateRocmInstallStateBody,
 } from './modules/inference/inference.dto';
@@ -92,19 +107,23 @@ import { McpInstallSchemaDto, McpProbeResultDto, ValidateConfigResultDto } from 
 import { FactoryResetDto } from './modules/system/dto/factory-reset.dto';
 import { LoadDto, SystemResourcesDto } from './modules/system/dto/system.dto';
 import { DesktopReleaseDto } from './modules/system-update/dto/desktop-release.dto';
+import { UpdateBlocksDto } from './modules/system-update/dto/update-blocks.dto';
 import { GetUserConfigDto, UpdateUserConfigDto } from './modules/user-config/dto/user-config.dto';
 import { PublicWebRepairBody } from './modules/public-web/public-web.dto';
 import { TailscaleStatusDto } from './modules/tailscale/tailscale.dto';
+import { TrainingJobManifestBody } from './modules/training/training.dto';
 
 /** Every Zod-backed DTO referenced in OpenAPI `components.schemas`. */
 export const SWAGGER_ZOD_DTOS: ZodDto[] = [
   AppDataListingDto,
   AcknowledgeWelcomeBody,
   AppContextDto,
+  HubAccessDto,
   UserContextDto,
   UserSettingsBody,
   StreamAppLogsQueryDto,
   StreamHubLogsQueryDto,
+  ApiKeyListDto,
   CreateApiKeyBody,
   UpdateApiKeyBody,
   BrowserHandoffMintBody,
@@ -112,6 +131,12 @@ export const SWAGGER_ZOD_DTOS: ZodDto[] = [
   ChangePasswordBody,
   ChangeUsernameBody,
   CheckResetPasswordRequestDto,
+  DidChallengeBody,
+  DidChallengeDto,
+  DidLinkDto,
+  DidLinksDto,
+  DidProofBody,
+  DidUnlinkBody,
   DisableTotpBody,
   GetTotpUriBody,
   GetTotpUriDto,
@@ -122,6 +147,7 @@ export const SWAGGER_ZOD_DTOS: ZodDto[] = [
   PasswordResetRequestBody,
   PasswordResetRequestDto,
   PasswordResetVerifyResponseDto,
+  PortalDesktopConfigDto,
   PortalDesktopExchangeDto,
   PortalSessionHintDto,
   RegisterBody,
@@ -135,6 +161,9 @@ export const SWAGGER_ZOD_DTOS: ZodDto[] = [
   CancelOperationBody,
   CancelOperationResponseDto,
   LifecycleRequestDto,
+  McpAccessBody,
+  RehydrateStatusDto,
+  AcknowledgeRestoreResponseDto,
   ResetAppBody,
   UninstallAppBody,
   UpdateAppBody,
@@ -144,6 +173,7 @@ export const SWAGGER_ZOD_DTOS: ZodDto[] = [
   GetConfigDiffDto,
   GetRandomPortDto,
   GuestAppsDto,
+  GuestVisibilityBodyDto,
   InstalledAppUrnsDto,
   UpdatesAvailableDto,
   MyAppsDto,
@@ -157,11 +187,15 @@ export const SWAGGER_ZOD_DTOS: ZodDto[] = [
   CreateCustomAppDto,
   CreateCustomAppResponseDto,
   CreatePortExposeAppDto,
+  CustomAppAccessDto,
   UpdateAppMetadataDto,
   UpdateCustomAppDto,
   UpdatePortExposeAppDto,
+  CloudFallbackPolicyDto,
   OnboardingProfileQueryDto,
   RuntimeModelsQueryDto,
+  LoadModelBody,
+  UnloadModelBody,
   UpdateInferencePreferencesBody,
   UpdateRocmInstallStateBody,
   PairingUpgradeBody,
@@ -191,8 +225,10 @@ export const SWAGGER_ZOD_DTOS: ZodDto[] = [
   LoadDto,
   SystemResourcesDto,
   DesktopReleaseDto,
+  UpdateBlocksDto,
   GetUserConfigDto,
   UpdateUserConfigDto,
   PublicWebRepairBody,
   TailscaleStatusDto,
+  TrainingJobManifestBody,
 ];

@@ -1,5 +1,5 @@
 import { TUNNEL_MARKER_HEADERS } from './hub-pool';
-import { isPrivateOrLocalIp, normalizeIpLiteral } from './ip-address';
+import { isPrivateOrLocalIp, isTailnetIp, normalizeIpLiteral } from './ip-address';
 
 /**
  * The slice of an Express request the origin check reads. Structural, so a test can pass a plain
@@ -18,8 +18,21 @@ export interface OriginCheckedRequest {
  *   or ULA — the check `InternalNetworkGuard` makes.
  * - `tunnel-marker`: a header only Cloudflare's edge adds (`cf-ray` and friends) is present.
  * - `forwarded-hop`: a hop in `x-forwarded-for` that parses as an address is public.
+ * - `tailnet-address`: only when asked for (`tailnetIsOutside`): the resolved address, or a forwarded
+ *   hop, is a tailnet address.
  */
-export type InternalOriginRefusal = 'public-address' | 'tunnel-marker' | 'forwarded-hop';
+export type InternalOriginRefusal = 'public-address' | 'tunnel-marker' | 'forwarded-hop' | 'tailnet-address';
+
+export interface InternalOriginOptions {
+  /**
+   * Count a caller whose resolved address, or any forwarded hop, is a tailnet address as OUTSIDE the
+   * appliance. Default `false`: the tailnet is inside, as it has been since the pool shipped (a paired
+   * Hub is "as internal as one from the Docker bridge", see `isPrivateOrLocalIp`). Only a route that
+   * wants a credential from tailnet callers sets it (`InferenceAccessGuard` under
+   * `HUB_INFERENCE_TAILNET_AUTH=require-key`); every other caller of this function keeps the default.
+   */
+  tailnetIsOutside?: boolean;
+}
 
 /**
  * Prove a request originated inside the appliance, or say why it did not.
@@ -42,12 +55,13 @@ export type InternalOriginRefusal = 'public-address' | 'tunnel-marker' | 'forwar
  *    path, and the safe reading of an address that cannot be read is "not inside".
  *
  * This is an origin check, not caller authentication: it answers "did this arrive from inside",
- * never "who sent it". `InferenceAccessGuard` uses it as the leg that needs no credential, and
+ * never "who sent it". With `tailnetIsOutside` a fourth check applies: a tailnet address, as the resolved
+ * address or as any forwarded hop, is refused too (`tailnet-address`). `InferenceAccessGuard` uses it as the leg that needs no credential, and
  * refuses a request it cannot place inside unless that request carries an `inference` API key.
  * `InternalOriginGuard` is its guard form for routes that are app-only and take no credential at
  * all, such as the app credentials handout.
  */
-export function internalOriginRefusal(request: OriginCheckedRequest): InternalOriginRefusal | null {
+export function internalOriginRefusal(request: OriginCheckedRequest, options: InternalOriginOptions = {}): InternalOriginRefusal | null {
   const ip = normalizeIpLiteral(request.ip ?? request.socket?.remoteAddress);
   if (!ip || !isPrivateOrLocalIp(ip)) {
     return 'public-address';
@@ -62,11 +76,18 @@ export function internalOriginRefusal(request: OriginCheckedRequest): InternalOr
 
   const forwardedFor = headers['x-forwarded-for'];
   const chain = Array.isArray(forwardedFor) ? forwardedFor.join(',') : (forwardedFor ?? '');
-  for (const hop of chain.split(',')) {
-    const hopIp = normalizeIpLiteral(hop);
+  const hops = chain.split(',').map((hop) => normalizeIpLiteral(hop));
+  for (const hopIp of hops) {
     if (hopIp && !isPrivateOrLocalIp(hopIp)) {
       return 'forwarded-hop';
     }
+  }
+
+  // Last, so every existing reason keeps its priority. A tailnet client reaches a Hub through
+  // `tailscale serve` (or the sidecar), so the resolved address is the proxy's own private one and the
+  // client is the tailnet hop in the forwarded chain; a client on the port directly is the address.
+  if (options.tailnetIsOutside && (isTailnetIp(ip) || hops.some((hopIp) => isTailnetIp(hopIp)))) {
+    return 'tailnet-address';
   }
 
   return null;

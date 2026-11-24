@@ -9,6 +9,7 @@ import {
   chooseInitialStep,
   classifyPairFailure,
   countPoolModels,
+  messageOf,
   needsPolling,
   normalizeOs,
   normalizeTier,
@@ -182,6 +183,26 @@ describe('classifyPairFailure', () => {
   ] as const)('maps %s to %s', (status, expected) => {
     expect(classifyPairFailure(status)).toBe(expected);
   });
+
+  // A 400 is also what a malformed name or PIN gets, so the key is what says the other Hub refused it.
+  it('tells a PIN the other Hub refused apart from any other 400', () => {
+    expect(classifyPairFailure(400, 'HUB_POOL_PAIR_ERROR_PIN_REFUSED')).toBe('pin');
+    expect(classifyPairFailure(400, 'Peer node FQDN must be a bare hostname')).toBe('invalid');
+    expect(classifyPairFailure(409, 'HUB_POOL_PAIR_ERROR_PIN_REFUSED')).toBe('already');
+  });
+});
+
+describe('messageOf', () => {
+  it('reads the key off a TranslatableError and the message off a parsed body', () => {
+    expect(messageOf(new Error('HUB_POOL_PAIR_ERROR_PIN_REFUSED'))).toBe('HUB_POOL_PAIR_ERROR_PIN_REFUSED');
+    expect(messageOf({ statusCode: 400, message: 'HUB_POOL_PAIR_ERROR_PIN_REFUSED' })).toBe('HUB_POOL_PAIR_ERROR_PIN_REFUSED');
+  });
+
+  it('is undefined when there is no string message', () => {
+    expect(messageOf(undefined)).toBeUndefined();
+    expect(messageOf({ message: ['pin must be six digits'] })).toBeUndefined();
+    expect(messageOf('Bad Request')).toBeUndefined();
+  });
 });
 
 describe('statusOf', () => {
@@ -343,6 +364,20 @@ describe('model counts', () => {
     ]);
 
     // llama3.2:3b is local and on p1; qwen3:8b only on p1; 'only-on-d' is cached on an unreachable peer.
+    expect(countPoolModels(pool)).toBe(2);
+  });
+
+  it("countPoolModels leaves out a switched-off peer's models even while it stays connected", () => {
+    const pool = poolWith([
+      poolPeer({ id: 'p1' }),
+      poolPeer({
+        id: 'p2',
+        nodeFqdn: 'hub-d.example-tailnet.ts.net',
+        enabled: false,
+        lastCapabilities: { hardwareTier: 'server', updatedAt: 'x', backends: [{ type: 'ollama', healthy: true, modelsLoaded: ['only-on-d'] }] },
+      }),
+    ]);
+
     expect(countPoolModels(pool)).toBe(2);
   });
 });

@@ -1,11 +1,14 @@
-import { Body, Controller, Param, Patch, Post, UploadedFile, UseGuards, UseInterceptors, BadRequestException } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Req, UploadedFile, UseGuards, UseInterceptors, BadRequestException } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import type { Request } from 'express';
+import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { AuthGuard } from '../auth/auth.guard';
 import { CustomAppService } from './custom-apps.service';
 import { PortExposeService } from './port-expose.service';
 import {
   CreateCustomAppDto,
   CreateCustomAppResponseDto,
+  CustomAppAccessDto,
   CreatePortExposeAppDto,
   UpdateAppMetadataDto,
   UpdateCustomAppDto,
@@ -19,6 +22,7 @@ export class CustomAppController {
   constructor(
     private readonly customAppService: CustomAppService,
     private readonly portExposeService: PortExposeService,
+    private readonly whois: MarketplaceWhoIsService,
   ) {}
 
   @Post('port-expose')
@@ -36,10 +40,26 @@ export class CustomAppController {
     );
   }
 
+  /**
+   * What the UI should offer the signed-in person on a custom app: every Hub verb for an organization
+   * owner or admin, the member fallback for an operator with no linked Portal identity, and only `view`
+   * for anyone else. It reads the role the Hub stored at sign-in rather than asking the Portal, so the
+   * page shows its controls at once (`customAppActionsHint`). The routes still ask the Portal fresh and
+   * decide.
+   */
+  @Get('access')
+  @UseGuards(AuthGuard)
+  @ApiResponse({ type: CustomAppAccessDto })
+  async getCustomAppAccess(@Req() req: Request) {
+    return CustomAppAccessDto.parse({ actions: await this.whois.customAppActionsHint(req) }, { reportOnly: true });
+  }
+
   @Post()
   @UseGuards(AuthGuard)
   @ApiResponse({ type: CreateCustomAppResponseDto })
-  async createCustomApp(@Body() body: CreateCustomAppDto) {
+  async createCustomApp(@Body() body: CreateCustomAppDto, @Req() req: Request) {
+    // Only an organization owner or admin may create a custom app; a role that can't be read refuses it.
+    await this.whois.assertSessionMayCreateCustomApp(req);
     const result = await this.customAppService.createCustomApp(body);
     return CreateCustomAppResponseDto.parse(
       {
@@ -62,8 +82,11 @@ export class CustomAppController {
   @Patch(':urn')
   @UseGuards(AuthGuard)
   @ApiResponse({})
-  async updateCustomApp(@Param('urn') appUrn: string, @Body() body: UpdateCustomAppDto) {
-    return await this.customAppService.updateCustomApp(castAppUrn(appUrn), body.config);
+  async updateCustomApp(@Param('urn') urn: string, @Body() body: UpdateCustomAppDto, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    // Changing a custom app takes an organization owner or admin; `MarketplaceWhoIsService` decides that for `configure` on a `_user` app.
+    await this.whois.assertSessionAction(req, appUrn, 'configure');
+    return await this.customAppService.updateCustomApp(appUrn, body.config);
   }
 
   @Post(':urn/image')
@@ -82,7 +105,10 @@ export class CustomAppController {
     },
   })
   @ApiResponse({ status: 200, description: 'Logo uploaded successfully' })
-  async uploadAppImage(@Param('urn') appUrn: string, @UploadedFile() file?: { buffer: Buffer; mimetype: string }) {
+  async uploadAppImage(@Param('urn') urn: string, @Req() req: Request, @UploadedFile() file?: { buffer: Buffer; mimetype: string }) {
+    const appUrn = castAppUrn(urn);
+    await this.whois.assertSessionAction(req, appUrn, 'configure');
+
     if (!file) {
       throw new BadRequestException('No image file provided');
     }
@@ -95,14 +121,16 @@ export class CustomAppController {
       throw new BadRequestException('Only JPG files are allowed');
     }
 
-    await this.customAppService.uploadAppImage(castAppUrn(appUrn), file.buffer);
+    await this.customAppService.uploadAppImage(appUrn, file.buffer);
     return { success: true };
   }
 
   @Patch(':urn/metadata')
   @UseGuards(AuthGuard)
   @ApiResponse({})
-  async updateAppMetadata(@Param('urn') appUrn: string, @Body() body: UpdateAppMetadataDto) {
-    return await this.customAppService.updateAppMetadata(castAppUrn(appUrn), body.data);
+  async updateAppMetadata(@Param('urn') urn: string, @Body() body: UpdateAppMetadataDto, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    await this.whois.assertSessionAction(req, appUrn, 'configure');
+    return await this.customAppService.updateAppMetadata(appUrn, body.data);
   }
 }

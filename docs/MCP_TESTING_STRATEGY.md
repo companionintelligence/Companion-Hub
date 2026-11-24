@@ -123,10 +123,10 @@ The curated set, each **verified `→ok` against the live container** (2026-06-1
 
 | Probe class | Apps (tool) | Runs |
 |-------------|-------------|------|
-| **offline, read-only, no-cred** | `filesystem-mcp` (`list_directory`), `chess-mcp` (`new_game`), `brewers-almanack-mcp` (`search_styles`), `git-mcp` (`git_status` on the boot-`git init`'d scratch repo), `sqlite-mcp` (`list_tables`), `n8n-mcp` (`tools_documentation`) | every sweep |
-| **network-touching** (`net:true`) | `fetch-mcp` (`fetch`), `youtube-transcript-mcp` (`get_video_info`), `lego-oracle-mcp` (`browse_themes`) | only with `QA_MCP_PROBE_NET=1` |
+| **offline, read-only, no-cred** | `filesystem-mcp` (`list_directory`), `chess-mcp` (`new_game`), `brewers-almanack-mcp` (`search_styles`), `git-mcp` (`git_status` on the boot-`git init`'d scratch repo), `sqlite-mcp` (`list_tables`), `n8n-mcp` (`tools_documentation`), `memory-mcp` (`read_graph`), `sequential-thinking-mcp` (`sequentialthinking`), `time-mcp` (`get_current_time`), `everything-mcp` (`echo`) | every sweep |
+| **network-touching** (`net:true`) | `fetch-mcp` (`fetch`), `youtube-transcript-mcp` (`get_video_info`), `lego-oracle-mcp` (`browse_themes`), `brave-search-mcp` (`brave_web_search`) | only with `QA_MCP_PROBE_NET=1` |
 | **backing-service** (`BACKING_SERVICES`) | `postgres-mcp` (`query "SELECT 1"` against a `postgres:16-alpine` sidecar) | every sweep, self-gates to backing-up |
-| **no probe — every tool needs creds** | `reddit-mcp` (all tools hit the authed Reddit API → only `tool-error` without keys), plus the secret/host-gated apps below | handshake is the ceiling |
+| **no probe — every tool needs creds** | `reddit-mcp`, `slack-mcp` (all tools hit authed APIs → only `tool-error` without keys), plus the secret/host-gated apps below | handshake is the ceiling |
 
 > The probe args are chosen against each tool's **real** `inputSchema.required` (read live, not
 > from the stripped manifest schema). Regression guard: the previous `brewers-almanack-mcp` probe
@@ -169,22 +169,29 @@ of the backend-degraded `warn`: the thing technically runs but isn't what the ca
 
 ## Integration into the harness (implemented)
 
-`qa-stream.ts`'s `no_gui` branch routes MCP apps to the protocol smoke via a **guarded dynamic
-import** (so a node missing the sibling file degrades only MCP apps, never the whole run):
+`qa-stream.ts` routes MCP apps to the protocol smoke via a **guarded dynamic import** (so a node
+missing the sibling file degrades only MCP apps, never the whole run). For non-MCP apps, `no_gui`
+suppresses screenshots but does not suppress service testing: the regular HTTP/TCP readiness path
+runs when the main compose service declares a probe port. Services without a probe port and
+UDP-only services are reported as skips with a specific reason. A silent TCP service that does not
+match a supported wire-protocol probe is also reported as unsupported rather than passed or timed
+out.
 
 ```ts
-if (config.no_gui) {
-  if (config.mcp) {
-    try {
-      const { qaMcpApp } = await import('./qa-mcp.ts');
-      return await qaMcpApp(appId, { emit, containerName, result }); // qa-stream-${appId} → watchdog covers it
-    } catch (e) {
-      result.score = 'skip'; result.failKind = 'mcp-module';
-      result.notes = `MCP app but qa-mcp module unavailable: ${e}`; return result;
-    }
+const route = classifyQaRoute(config, config.no_gui && !config.mcp ? loadComposeConfig() : undefined);
+if (route.kind === 'mcp') {
+  try {
+    const { qaMcpApp } = await import('./qa-mcp.ts');
+    return await qaMcpApp(appId, { emit, containerName, result });
+  } catch (e) {
+    result.score = 'skip'; result.failKind = 'mcp-module';
+    result.notes = `MCP app but qa-mcp module unavailable: ${e}`; return result;
   }
-  result.score = 'skip'; result.notes = 'no_gui: non-MCP CLI service, no HTTP to verify'; return result;
 }
+if (route.kind === 'skip') {
+  result.score = 'skip'; result.notes = `no_gui: ${route.reason}`; return result;
+}
+// `route.kind === 'headless'` continues through the normal HTTP/TCP probe and skips screenshots.
 ```
 
 `qaMcpApp` (in `scripts/qa-mcp.ts`) returns the `result` record — it does **not** emit its own
@@ -222,10 +229,10 @@ live `tools/list` is a superset of its declared manifest — i.e. **no manifest 
 catalog** (the `github-mcp` refresh was the last). Re-run it after any catalog bump; it's the
 coverage signal.
 
-**19 pass** — boots + handshake + manifest ⊇ declared:
-`brewers-almanack` · `chess` · `doordash` · `excalidraw` · `fetch` · `filesystem` · `git` ·
-`github` (67 tools) · `lego-oracle` · `n8n` · `notion` (22) · `obsidian` · `onlyoffice` (23) ·
-`playwright` (25) · `postgres` · `reddit` · `sqlite` · `unreal-engine` (35) · `youtube-transcript`.
+**25 pass** — boots + handshake + manifest ⊇ declared:
+`brave-search` (2) · `brewers-almanack` · `chess` · `doordash` · `everything` (16) · `excalidraw` · `fetch` · `filesystem` · `git` ·
+`github` (67 tools) · `lego-oracle` · `memory` (9) · `n8n` · `notion` (22) · `obsidian` · `onlyoffice` (23) ·
+`playwright` (25) · `postgres` · `reddit` · `sequential-thinking` (1) · `slack` (8) · `sqlite` · `time` (2) · `unreal-engine` (35) · `youtube-transcript`.
 
 **6 skip** — un-testable headless, correctly classified (not failures):
 

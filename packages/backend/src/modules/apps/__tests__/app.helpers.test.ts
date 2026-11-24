@@ -20,6 +20,7 @@ import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { MemoryConnectionService } from '@/modules/memory-connect/memory-connection.service';
 import { ForwardAuthSecretResolver } from '@/modules/auth/forward-auth-secret.resolver';
 import { ProxyTrustService } from '@/modules/network/proxy-trust.service';
+import { SubnetManagerService } from '@/modules/network/subnet-manager.service';
 
 // APP_DATA_DIR is a host path built with Node's platform-aware path.join, so it uses
 // `\` on Windows. Normalize to POSIX separators before asserting so these path tests
@@ -41,6 +42,9 @@ describe('AppHelpers', () => {
   let portalClient: MockProxy<PortalClientService>;
   let appsRepository: MockProxy<AppsRepository>;
   const testAppUrn: AppUrn = createAppUrn('test-app', 'test-store');
+  // First-party Memory is known by where it was installed from, never by its manifest's `id`/`source`.
+  const OFFICIAL_MEMORY_URN: AppUrn = createAppUrn('ci-memory', 'ci-marketplace');
+  const SOURCE_BUILD_URN: AppUrn = createAppUrn('ci-server', '_user');
 
   beforeEach(async () => {
     // Clear call history between tests: useMocker reuses mock instances, so a
@@ -233,8 +237,20 @@ describe('AppHelpers', () => {
       const written = envUtils.envMapToString.mock.calls.at(-1)?.[0] as Map<string, string>;
 
       expect(written.get('CI_CLOUD_URL')).toBe('https://portal.example');
-      expect(written.get('GOOGLE_MAPS_KEY')).toBe('operator-maps-key');
       expect(written.get('PORTAL_OIDC_ISSUER')).toBe('https://portal.example');
+      // The operator's Google Maps key is not every app's: only first-party Memory's.
+      expect(written.has('GOOGLE_MAPS_KEY')).toBe(false);
+    });
+
+    it("keeps the operator's maps key for first-party Memory, over Portal's", async () => {
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory', urn: OFFICIAL_MEMORY_URN });
+      envUtils.envStringToMap.mockReturnValue(new Map([['GOOGLE_MAPS_KEY', 'operator-maps-key']]));
+
+      // The URN env generation is called with decides provenance, as `getInstalledAppInfo` stamps it.
+      await appHelpers.generateEnvFile(OFFICIAL_MEMORY_URN, {});
+
+      const written = envUtils.envMapToString.mock.calls.at(-1)?.[0] as Map<string, string>;
+      expect(written.get('GOOGLE_MAPS_KEY')).toBe('operator-maps-key');
     });
 
     it('SECURITY: a manifest cannot name a Hub-only secret as its Memory env and inherit it', async () => {
@@ -254,6 +270,67 @@ describe('AppHelpers', () => {
       const written = envUtils.envMapToString.mock.calls.at(-1)?.[0] as Map<string, string>;
       expect(written.has('CI_HUB_FORWARD_AUTH_SECRET')).toBe(false);
       expect(written.has('JWT_SECRET')).toBe(false);
+    });
+
+    /*
+     * The Hub's .env holds secrets no denylist names (`.env.example` documents TAILSCALE_AUTHKEY and
+     * NODE_AUTH_TOKEN), so only an official-store app may pin its Memory env from it.
+     */
+    it('SECURITY: a third-party app cannot name another Hub .env key as its Memory env and inherit it', async () => {
+      envUtils.envStringToMap.mockReturnValue(
+        new Map([
+          ['TAILSCALE_AUTHKEY', 'tskey-auth-secret'],
+          ['NODE_AUTH_TOKEN', 'registry-token'],
+        ]),
+      );
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({
+        ...mockAppInfo,
+        hub_integration: { memory: { url_env: 'NODE_AUTH_TOKEN', token_env: 'TAILSCALE_AUTHKEY' } },
+      } as AppInfo);
+
+      await appHelpers.generateEnvFile(testAppUrn, {});
+
+      const written = envUtils.envMapToString.mock.calls.at(-1)?.[0] as Map<string, string>;
+      expect(written.has('TAILSCALE_AUTHKEY')).toBe(false);
+      expect(written.has('NODE_AUTH_TOKEN')).toBe(false);
+    });
+
+    it('keeps an operator-pinned Memory env for an official-store app', async () => {
+      envUtils.envStringToMap.mockReturnValue(new Map([['CI_SERVER_TOKEN', 'operator-pinned-token']]));
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({
+        ...mockAppInfo,
+        hub_integration: { memory: { url_env: 'CI_SERVER_URL', token_env: 'CI_SERVER_TOKEN' } },
+      } as AppInfo);
+
+      await appHelpers.generateEnvFile(createAppUrn('test-app', 'ci-marketplace'), {});
+
+      const written = envUtils.envMapToString.mock.calls.at(-1)?.[0] as Map<string, string>;
+      expect(written.get('CI_SERVER_TOKEN')).toBe('operator-pinned-token');
+    });
+
+    describe('the Cloudflare tunnel token', () => {
+      beforeEach(() => {
+        envUtils.envStringToMap.mockReturnValue(new Map());
+        deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(
+          fromPartial({ tunnelToken: 'tunnel-token', tunnelId: 'tunnel-id' }),
+        );
+      });
+
+      it('goes to the official store cloudflared', async () => {
+        await appHelpers.generateEnvFile(createAppUrn('cloudflared', 'ci-marketplace'), {});
+
+        const written = envUtils.envMapToString.mock.calls.at(-1)?.[0] as Map<string, string>;
+        expect(written.get('TUNNEL_TOKEN')).toBe('tunnel-token');
+        expect(written.get('TUNNEL_ID')).toBe('tunnel-id');
+      });
+
+      it('SECURITY: does not go to an app named cloudflared from another store', async () => {
+        await appHelpers.generateEnvFile(createAppUrn('cloudflared', 'test-store'), {});
+
+        const written = envUtils.envMapToString.mock.calls.at(-1)?.[0] as Map<string, string>;
+        expect(written.has('TUNNEL_TOKEN')).toBe(false);
+        expect(written.has('TUNNEL_ID')).toBe(false);
+      });
     });
 
     describe('Companion Memory credential injection', () => {
@@ -313,15 +390,17 @@ describe('AppHelpers', () => {
       });
 
       it('marks manual when the operator set a token and there is no brokered connection', async () => {
+        // An operator pin in the Hub's .env reaches only an official-store app.
+        const officialUrn = createAppUrn('test-app', 'ci-marketplace');
         const envMap = new Map<string, string>([['CI_SERVER_TOKEN', 'operator-set']]);
         envUtils.envStringToMap.mockReturnValue(envMap);
         appFilesManager.getInstalledAppInfo.mockResolvedValue(memoryConsumerApp);
         memoryConnection.getInjectableCreds.mockResolvedValue(null);
 
-        await appHelpers.generateEnvFile(testAppUrn, {});
+        await appHelpers.generateEnvFile(officialUrn, {});
 
         // markManual is idempotent at the service layer; env-gen just delegates.
-        expect(memoryConnection.markManual).toHaveBeenCalledWith(testAppUrn);
+        expect(memoryConnection.markManual).toHaveBeenCalledWith(officialUrn);
         // The operator's own value is left untouched.
         expect(envMap.get('CI_SERVER_TOKEN')).toBe('operator-set');
       });
@@ -670,21 +749,25 @@ describe('AppHelpers', () => {
       expect(envMap.has('HUB_API_KEY')).toBe(false);
     });
 
-    it('passes the hops the Hub can vouch for as HUB_TRUSTED_PROXY_CIDRS, and removes a stale value when there are none', async () => {
-      const proxyTrust = { trustedProxyCidrs: vi.fn() };
+    it("passes the hops the app may trust as HUB_TRUSTED_PROXY_CIDRS, with Traefik's address on the app's own network, and removes a stale value when there are none", async () => {
+      const proxyTrust = { appTrustedProxyCidrs: vi.fn() };
+      const subnets = { allocateSubnet: vi.fn().mockResolvedValue('10.128.12.0/24') };
       const moduleRefGet = vi
         .spyOn(moduleRefForHelpers, 'get')
-        .mockImplementation((token: unknown) => (token === ProxyTrustService ? proxyTrust : undefined));
+        .mockImplementation((token: unknown) => (token === ProxyTrustService ? proxyTrust : token === SubnetManagerService ? subnets : undefined));
       try {
-        proxyTrust.trustedProxyCidrs.mockReturnValue(['10.128.0.0/29', '172.19.0.7/32']);
+        proxyTrust.appTrustedProxyCidrs.mockReturnValue(['10.128.0.3/32', '10.128.12.254/32']);
         const envMap = new Map<string, string>();
         envUtils.envStringToMap.mockReturnValue(envMap);
         await appHelpers.generateEnvFile(testAppUrn, {});
-        expect(envMap.get('HUB_TRUSTED_PROXY_CIDRS')).toBe('10.128.0.0/29,172.19.0.7/32');
+        expect(envMap.get('HUB_TRUSTED_PROXY_CIDRS')).toBe('10.128.0.3/32,10.128.12.254/32');
+        // The app's subnet decides Traefik's address there; it is allocated now if the app has none yet.
+        expect(subnets.allocateSubnet).toHaveBeenCalledWith(testAppUrn);
+        expect(proxyTrust.appTrustedProxyCidrs).toHaveBeenCalledWith('10.128.12.0/24');
 
-        // Traefik gone, edge network gone: the app must not keep trusting an
-        // address Docker may hand to another container next.
-        proxyTrust.trustedProxyCidrs.mockReturnValue([]);
+        // Nothing to vouch for: the app must not keep trusting an address Docker may hand to another
+        // container next.
+        proxyTrust.appTrustedProxyCidrs.mockReturnValue([]);
         const stale = new Map<string, string>([['HUB_TRUSTED_PROXY_CIDRS', '172.19.0.7/32']]);
         envUtils.envStringToMap.mockReturnValue(stale);
         await appHelpers.generateEnvFile(testAppUrn, {});
@@ -1118,7 +1201,7 @@ describe('AppHelpers', () => {
 
       // Assert
       expect(envMap.get('RANDOM_VAR')).toBe(randomString);
-      expect(envUtils.createRandomString).toHaveBeenCalledWith('RANDOM_VAR', 16, undefined);
+      expect(envUtils.createRandomString).toHaveBeenCalledWith(testAppUrn, 'RANDOM_VAR', 16, undefined);
     });
 
     it('should write the transformed env map to file', async () => {
@@ -1658,6 +1741,11 @@ describe('AppHelpers', () => {
     });
 
     describe('R-ENV: MCP env injection for agent harness apps', () => {
+      // A person let these apps use the Hub's tools (`app.mcp_access`); see the MCP access block below.
+      beforeEach(() => {
+        appsRepository.getAppMcpAccess.mockResolvedValue('write');
+      });
+
       // BUG-MCP-1: single Streamable HTTP endpoint (/api/mcp); the old /sse + /messages pair is gone.
       it('R-ENV-1/2: should inject HUB_URL and the single HUB_MCP_URL when hub_integration.mcp_client is true', async () => {
         const envMap = new Map<string, string>();
@@ -1725,6 +1813,76 @@ describe('AppHelpers', () => {
         } finally {
           delete process.env.API_PORT;
         }
+      });
+
+      it('mints the key at the level the person granted', async () => {
+        envUtils.envStringToMap.mockReturnValue(new Map());
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, hub_integration: { mcp_client: true } } as AppInfo);
+        appsRepository.getAppMcpAccess.mockResolvedValue('read');
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(apiKeys.provisionManagedKey).toHaveBeenCalledWith(expect.objectContaining({ scopes: ['mcp'], mcpCapability: 'read' }));
+      });
+
+      describe.each([
+        ['nobody has answered', null],
+        ['the answer was no', 'none'],
+      ])('SECURITY: when %s', (_label, access) => {
+        it('gives the app no MCP key and takes away one it holds', async () => {
+          const envMap = new Map<string, string>();
+          envUtils.envStringToMap.mockReturnValue(envMap);
+          appFilesManager.getAppEnv.mockResolvedValue({ path: '/data/app.env', content: 'HUB_MCP_API_KEY=old-key' });
+          appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, hub_integration: { mcp_client: true } } as AppInfo);
+          appsRepository.getAppMcpAccess.mockResolvedValue(access);
+
+          await appHelpers.generateEnvFile(testAppUrn, {});
+
+          expect(apiKeys.provisionManagedKey).not.toHaveBeenCalled();
+          expect(apiKeys.revokeManagedByApp).toHaveBeenCalledWith(testAppUrn);
+          expect(envMap.has('HUB_MCP_API_KEY')).toBe(false);
+          expect(envMap.has('HUB_MCP_URL')).toBe(false);
+        });
+      });
+
+      describe('an app installed before the Hub asked', () => {
+        const officialUrn = createAppUrn('ci-openclaw', 'ci-marketplace');
+
+        beforeEach(() => {
+          envUtils.envStringToMap.mockImplementation((content: string) => new Map(content ? [['HUB_MCP_API_KEY', 'held-key']] : []));
+          appFilesManager.getAppEnv.mockResolvedValue({ path: '/data/app.env', content: 'HUB_MCP_API_KEY=held-key' });
+          appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, hub_integration: { mcp_client: true } } as AppInfo);
+          appsRepository.getAppMcpAccess.mockResolvedValue(null);
+          apiKeys.provisionManagedKey.mockResolvedValue('held-key');
+        });
+
+        it("keeps an official-store app's MCP key at its level, and records that as the answer", async () => {
+          apiKeys.findManagedByApp.mockResolvedValue(fromPartial({ scopes: ['mcp'], capability: 'read' }));
+
+          await appHelpers.generateEnvFile(officialUrn, {});
+
+          expect(appsRepository.setAppMcpAccess).toHaveBeenCalledWith(officialUrn, 'read');
+          expect(apiKeys.provisionManagedKey).toHaveBeenCalledWith(expect.objectContaining({ scopes: ['mcp'], mcpCapability: 'read' }));
+        });
+
+        it('SECURITY: does not keep one for an app from another store', async () => {
+          apiKeys.findManagedByApp.mockResolvedValue(fromPartial({ scopes: ['mcp'], capability: 'write' }));
+
+          await appHelpers.generateEnvFile(createAppUrn('ci-openclaw', 'test-store'), {});
+
+          expect(appsRepository.setAppMcpAccess).not.toHaveBeenCalled();
+          expect(apiKeys.provisionManagedKey).not.toHaveBeenCalled();
+          expect(apiKeys.revokeManagedByApp).toHaveBeenCalled();
+        });
+
+        it('gives an official-store app that holds no MCP key none', async () => {
+          apiKeys.findManagedByApp.mockResolvedValue(null);
+
+          await appHelpers.generateEnvFile(officialUrn, {});
+
+          expect(appsRepository.setAppMcpAccess).not.toHaveBeenCalled();
+          expect(apiKeys.provisionManagedKey).not.toHaveBeenCalled();
+        });
       });
 
       it('R-ENV/SEC-MCP-8: provisions a dedicated managed key and injects it as HUB_MCP_API_KEY', async () => {
@@ -1901,7 +2059,7 @@ describe('AppHelpers', () => {
       it('injects bare OIDC_ISSUER_URL for the legacy first-party app id (ci-memory)', async () => {
         const envMap = new Map<string, string>();
         envUtils.envStringToMap.mockReturnValue(envMap);
-        const firstPartyApp = { ...mockAppInfo, id: 'ci-memory' };
+        const firstPartyApp = { ...mockAppInfo, id: 'ci-memory', urn: OFFICIAL_MEMORY_URN };
         appFilesManager.getInstalledAppInfo.mockResolvedValue(firstPartyApp);
 
         await appHelpers.generateEnvFile(testAppUrn, {});
@@ -1912,7 +2070,7 @@ describe('AppHelpers', () => {
       it('injects bare OIDC_ISSUER_URL for a legacy first-party app by CI-Server source', async () => {
         const envMap = new Map<string, string>();
         envUtils.envStringToMap.mockReturnValue(envMap);
-        const firstPartyApp = { ...mockAppInfo, source: 'https://github.com/companionintelligence/CI-Server' };
+        const firstPartyApp = { ...mockAppInfo, source: 'https://github.com/companionintelligence/CI-Server', urn: SOURCE_BUILD_URN };
         appFilesManager.getInstalledAppInfo.mockResolvedValue(firstPartyApp);
 
         await appHelpers.generateEnvFile(testAppUrn, {});
@@ -1927,6 +2085,7 @@ describe('AppHelpers', () => {
         const firstPartyOidcApp = {
           ...mockAppInfo,
           id: 'ci-memory',
+          urn: OFFICIAL_MEMORY_URN,
           hub_integration: { oidc: { issuer_env: 'CUSTOM_ISSUER', issuer_path: '/api/auth' } },
         };
         appFilesManager.getInstalledAppInfo.mockResolvedValue(firstPartyOidcApp);
@@ -1983,7 +2142,7 @@ describe('AppHelpers', () => {
       it('injects the enabled flag, bare-origin issuer and JWKS URI for ci-memory', async () => {
         const envMap = new Map<string, string>();
         envUtils.envStringToMap.mockReturnValue(envMap);
-        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory' });
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory', urn: OFFICIAL_MEMORY_URN });
 
         await appHelpers.generateEnvFile(testAppUrn, {});
 
@@ -2000,6 +2159,7 @@ describe('AppHelpers', () => {
         appFilesManager.getInstalledAppInfo.mockResolvedValue({
           ...mockAppInfo,
           source: 'https://github.com/companionintelligence/CI-Server',
+          urn: SOURCE_BUILD_URN,
         });
 
         await appHelpers.generateEnvFile(testAppUrn, {});
@@ -2022,7 +2182,7 @@ describe('AppHelpers', () => {
             userSettings: { appDataPath: '/opt/ci-hub', domain: 'example.com' },
           }),
         );
-        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory' });
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory', urn: OFFICIAL_MEMORY_URN });
 
         await appHelpers.generateEnvFile(testAppUrn, {});
 
@@ -2036,6 +2196,7 @@ describe('AppHelpers', () => {
         appFilesManager.getInstalledAppInfo.mockResolvedValue({
           ...mockAppInfo,
           id: 'ci-memory',
+          urn: OFFICIAL_MEMORY_URN,
           hub_integration: { oidc: { issuer_env: 'CUSTOM_ISSUER', issuer_path: '/api/auth' } },
         });
 
@@ -2064,7 +2225,7 @@ describe('AppHelpers', () => {
           ['PORTAL_OIDC_ISSUER', 'https://portal.internal'],
         ]);
         envUtils.envStringToMap.mockReturnValue(envMap);
-        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory' });
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory', urn: OFFICIAL_MEMORY_URN });
 
         await appHelpers.generateEnvFile(testAppUrn, {});
 
@@ -2089,7 +2250,7 @@ describe('AppHelpers', () => {
             userSettings: { appDataPath: '/opt/ci-hub', domain: 'example.com' },
           }),
         );
-        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory' });
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory', urn: OFFICIAL_MEMORY_URN });
 
         await appHelpers.generateEnvFile(testAppUrn, {});
 
@@ -2102,7 +2263,7 @@ describe('AppHelpers', () => {
       it('injects GOOGLE_MAPS_KEY and GEOCODING_API_KEY from Portal for ci-memory', async () => {
         const envMap = new Map<string, string>();
         envUtils.envStringToMap.mockReturnValue(envMap);
-        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory' });
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory', urn: OFFICIAL_MEMORY_URN });
         portalClient.fetchMapsConfig.mockResolvedValue({ configured: true, apiKey: 'AIzaSyPortalMapsKey' });
 
         await appHelpers.generateEnvFile(testAppUrn, {});
@@ -2114,10 +2275,10 @@ describe('AppHelpers', () => {
       it('does not overwrite an operator-set GOOGLE_MAPS_KEY', async () => {
         const envMap = new Map<string, string>([['GOOGLE_MAPS_KEY', 'operator-key']]);
         envUtils.envStringToMap.mockReturnValue(envMap);
-        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory' });
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory', urn: OFFICIAL_MEMORY_URN });
         portalClient.fetchMapsConfig.mockResolvedValue({ configured: true, apiKey: 'AIzaSyPortalMapsKey' });
 
-        await appHelpers.generateEnvFile(testAppUrn, {});
+        await appHelpers.generateEnvFile(OFFICIAL_MEMORY_URN, {});
 
         expect(envMap.get('GOOGLE_MAPS_KEY')).toBe('operator-key');
         expect(portalClient.fetchMapsConfig).not.toHaveBeenCalled();
@@ -2151,13 +2312,49 @@ describe('AppHelpers', () => {
             userSettings: { appDataPath: '/opt/ci-hub', domain: 'example.com' },
           }),
         );
-        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory' });
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory', urn: OFFICIAL_MEMORY_URN });
 
         await appHelpers.generateEnvFile(testAppUrn, {});
 
         expect(envMap.get('HUB_API_KEY')).toBe('portal-device-key');
         expect(envMap.get('HUB_DEVICE_ID')).toBe('hub-device-id');
         expect(envMap.get('CI_CLOUD_URL')).toBe('https://hub.ci.computer');
+      });
+
+      // `id` and `source` are manifest fields any store can publish. A copycat that claimed both was
+      // handed this Hub's Portal device key (2026-11-18).
+      it.each([
+        ['claims the id ci-memory', { id: 'ci-memory', urn: createAppUrn('ci-memory', 'someones-store') }],
+        [
+          'names the CI-Server repository as its source',
+          { source: 'https://github.com/companionintelligence/CI-Server', urn: createAppUrn('ci-server', 'someones-store') },
+        ],
+        [
+          'claims both from another store',
+          { id: 'ci-memory', source: 'https://github.com/companionintelligence/CI-Server', urn: createAppUrn('lookalike', 'someones-store') },
+        ],
+      ])('gives no Portal device key, maps key or Portal sign-in config to a store app that %s', async (_case, claims) => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        config.getConfig.mockReturnValue(
+          fromPartial({
+            internalIp: '127.0.0.1',
+            envFilePath: '/data/.env',
+            rootFolderHost: '/opt/ci-hub',
+            domain: 'example.com',
+            ciHubApiKey: 'portal-device-key',
+            ciCloudUrl: 'https://hub.ci.computer',
+            userSettings: { appDataPath: '/opt/ci-hub', domain: 'example.com' },
+          }),
+        );
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, ...claims });
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        // HUB_DEVICE_ID is every app's (an identifier, not a credential); the key that goes with it is not.
+        for (const key of ['HUB_API_KEY', 'GOOGLE_MAPS_KEY', 'PORTAL_OIDC_ENABLED', 'OIDC_ISSUER_URL']) {
+          expect(envMap.has(key), key).toBe(false);
+        }
       });
 
       it('never gives Memory the move key, which is what keeps a device key leaked from it from moving the Hub', async () => {
@@ -2175,7 +2372,7 @@ describe('AppHelpers', () => {
             userSettings: { appDataPath: '/opt/ci-hub', domain: 'example.com' },
           }),
         );
-        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory' });
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory', urn: OFFICIAL_MEMORY_URN });
 
         await appHelpers.generateEnvFile(testAppUrn, {});
 
@@ -2189,6 +2386,7 @@ describe('AppHelpers', () => {
         appFilesManager.getInstalledAppInfo.mockResolvedValue({
           ...mockAppInfo,
           source: 'https://github.com/companionintelligence/CI-Server',
+          urn: SOURCE_BUILD_URN,
         });
 
         await appHelpers.generateEnvFile(testAppUrn, {});
@@ -2210,7 +2408,7 @@ describe('AppHelpers', () => {
             userSettings: { appDataPath: '/opt/ci-hub', domain: 'example.com' },
           }),
         );
-        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory' });
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory', urn: OFFICIAL_MEMORY_URN });
 
         await appHelpers.generateEnvFile(testAppUrn, {});
 
@@ -2231,7 +2429,7 @@ describe('AppHelpers', () => {
             userSettings: { appDataPath: '/opt/ci-hub', domain: 'example.com' },
           }),
         );
-        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory' });
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory', urn: OFFICIAL_MEMORY_URN });
 
         await appHelpers.generateEnvFile(testAppUrn, {});
 

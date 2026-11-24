@@ -78,9 +78,18 @@ describe('readUserConsentFrom', () => {
   });
 
   it('treats a missing file as "no preference yet", not a failed read', () => {
-    // A fresh appliance has no settings.json. Failing closed here would mean
-    // opt-out-by-default, which is not the shipped posture.
+    // A fresh appliance has no settings.json. That is "no choice yet", which under
+    // the opt-in default sends nothing. It is not a failed read.
     expect(readUserConsentFrom(writeSettings(null))).toBe('unset');
+  });
+
+  it('fails closed when a settings.json it has read before is missing, as during a save on a Windows data folder', () => {
+    // A save renames a new settings.json over the old one. On a Windows data folder a read that
+    // overlaps the rename can get ENOENT, and reading that as a fresh appliance turned reporting
+    // back on for a user who had turned it off.
+    expect(readUserConsentFrom(writeSettings('{"allowErrorMonitoring": false}'))).toBe(false);
+
+    expect(readUserConsentFrom(writeSettings(null))).toBe('unreadable');
   });
 
   it('treats an absent key as "no preference yet"', () => {
@@ -137,9 +146,11 @@ describe('currentUserConsent caching', () => {
 });
 
 describe('resolveConsentDecision', () => {
-  it('permits reporting when nothing objects', () => {
+  it('reports only after an explicit opt-in', () => {
     expect(resolveConsentDecision({ env: {}, consent: true })).toEqual({ enabled: true, reason: null });
-    expect(resolveConsentDecision({ env: {}, consent: 'unset' })).toEqual({ enabled: true, reason: null });
+    // No choice yet is not consent: a fresh appliance reports nothing.
+    expect(resolveConsentDecision({ env: {}, consent: 'unset' })).toEqual({ enabled: false, reason: 'user-disabled' });
+    expect(resolveConsentDecision({ env: {}, consent: false })).toEqual({ enabled: false, reason: 'user-disabled' });
   });
 
   it('applies the documented precedence: local-only > env opt-out > user setting', () => {

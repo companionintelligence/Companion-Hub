@@ -71,19 +71,23 @@ const telemetryAppPointSchema = z.object({
   containerCount: z.number(),
 });
 
+/**
+ * One telemetry row. With `?minutes=` the endpoint serves averages over equal buckets instead of raw
+ * rows, and those carry only the time, CPU and memory, so everything after them is optional.
+ */
 const hostTelemetrySampleSchema = z.object({
   sampledAt: z.string(),
   cpuLoad: z.number().nullable(),
-  cpuCores: z.number().nullable(),
   memoryUsed: z.number().nullable(),
   memoryTotal: z.number().nullable(),
-  diskUsed: z.number().nullable(),
-  diskTotal: z.number().nullable(),
-  percentUsedMemory: z.number().nullable(),
-  dockerAvailable: z.boolean().nullable(),
-  dockerInfo: z.record(z.string(), z.unknown()).nullable(),
-  apps: z.array(telemetryAppPointSchema).nullable(),
-  source: z.string(),
+  cpuCores: z.number().nullable().optional(),
+  diskUsed: z.number().nullable().optional(),
+  diskTotal: z.number().nullable().optional(),
+  percentUsedMemory: z.number().nullable().optional(),
+  dockerAvailable: z.boolean().nullable().optional(),
+  dockerInfo: z.record(z.string(), z.unknown()).nullable().optional(),
+  apps: z.array(telemetryAppPointSchema).nullable().optional(),
+  source: z.string().optional(),
 });
 
 const hostEventSchema = z.object({
@@ -97,6 +101,10 @@ const hostEventSchema = z.object({
 export class HostTelemetryHistoryDto extends createZodDto(
   z.object({
     samples: z.array(hostTelemetrySampleSchema),
+    /** The span served, after clamping into the retention. Present only with `?minutes=`. */
+    minutes: z.number().optional(),
+    /** How many seconds each point averages. Present only with `?minutes=`. */
+    bucketSeconds: z.number().optional(),
   }),
 ) {}
 

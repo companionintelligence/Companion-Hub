@@ -15,6 +15,10 @@ concurrency:
   group: e2e-extended-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+# Read-only: both jobs check out code and run tests, and write nothing back.
+permissions:
+  contents: read
+
 jobs:
   cross-domain:
     if: >-

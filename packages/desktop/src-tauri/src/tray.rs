@@ -27,19 +27,66 @@ pub(crate) fn clear_tunnel_token_result(problems: &[String]) -> String {
     }
 }
 
+/// What saving the window geometry reads from the window, so a test can stand in for one.
+pub(crate) trait GeometrySource {
+    fn is_maximized(&self) -> bool;
+    fn is_minimized(&self) -> bool;
+    fn outer_position(&self) -> Option<tauri::PhysicalPosition<i32>>;
+    fn inner_size(&self) -> Option<tauri::PhysicalSize<u32>>;
+}
+
+impl<R: tauri::Runtime> GeometrySource for tauri::WebviewWindow<R> {
+    fn is_maximized(&self) -> bool {
+        tauri::WebviewWindow::is_maximized(self).unwrap_or(false)
+    }
+
+    fn is_minimized(&self) -> bool {
+        tauri::WebviewWindow::is_minimized(self).unwrap_or(false)
+    }
+
+    fn outer_position(&self) -> Option<tauri::PhysicalPosition<i32>> {
+        tauri::WebviewWindow::outer_position(self).ok()
+    }
+
+    fn inner_size(&self) -> Option<tauri::PhysicalSize<u32>> {
+        tauri::WebviewWindow::inner_size(self).ok()
+    }
+}
+
+pub(crate) struct SavedGeometry {
+    pub position: Option<tauri::PhysicalPosition<i32>>,
+    pub size: Option<tauri::PhysicalSize<u32>>,
+}
+
+/// The position and size the next launch restores, or `None` for a maximized or minimized window.
+///
+/// The size is the inner one, because the restore in `main.rs` passes it to `set_size`, which sets
+/// the inner size. The outer size also counts the invisible resize borders Windows keeps around the
+/// undecorated window, so saving it made the window bigger on every launch (Companion-Hub#1932).
+pub(crate) fn window_geometry_to_save(window: &impl GeometrySource) -> Option<SavedGeometry> {
+    // A maximized window would bake the full screen size into the store, and a minimized one
+    // reports Windows' parking spot (-32000, -32000) with an empty client area, which would open
+    // the next launch off screen. Keep the last normal geometry instead.
+    if window.is_maximized() || window.is_minimized() {
+        return None;
+    }
+    Some(SavedGeometry {
+        position: window.outer_position(),
+        size: window.inner_size(),
+    })
+}
+
 pub(crate) fn save_window_geometry(app_handle: &tauri::AppHandle) {
     if let Some(win) = app_handle.get_webview_window("main") {
-        // A maximized window would bake the full screen size into the store;
-        // keep the last normal geometry instead.
-        if win.is_maximized().unwrap_or(false) {
+        let Some(geometry) = window_geometry_to_save(&win) else {
             return;
-        }
+        };
         if let Ok(store) = app_handle.store("settings.json") {
-            if let Ok(pos) = win.outer_position() {
+            if let Some(pos) = geometry.position {
                 store.set("window_x", serde_json::json!(pos.x));
                 store.set("window_y", serde_json::json!(pos.y));
             }
-            if let Ok(size) = win.outer_size() {
+            if let Some(size) = geometry.size {
                 store.set("window_width", serde_json::json!(size.width));
                 store.set("window_height", serde_json::json!(size.height));
             }
@@ -168,9 +215,11 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     // Load the tray icon defensively: prefer the packaged file, fall back to the
     // embedded bytes, and if both fail (corrupt asset / unusual packaging) build
     // the tray without an icon instead of panicking. A missing tray icon must
-    // never abort startup.
-    let tray_icon = Image::from_path("icons/icon.png")
-        .or_else(|_| Image::from_bytes(include_bytes!("../icons/icon.png")))
+    // never abort startup. The image is the small Hub mark (packages/frontend/hub-brand),
+    // not icon.png: macOS draws a template icon from its alpha channel alone, and the full
+    // mark's thin gaps close up at menu-bar size and leave a solid disc.
+    let tray_icon = Image::from_path("icons/tray.png")
+        .or_else(|_| Image::from_bytes(include_bytes!("../icons/tray.png")))
         .map_err(|error| log::warn!("Tray icon unavailable, continuing without one: {error}"))
         .ok();
 
@@ -270,7 +319,7 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
 
-                    match crate::hub_manager::stop_managed_app_containers() {
+                    match crate::hub_manager::stop_managed_app_containers(&data) {
                         Ok(Some(summary)) => {
                             let _ = crate::hub_manager::append_desktop_log_for(
                                 &data,
@@ -336,7 +385,7 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                             }
 
                             // 2. Stop any managed app containers (best-effort).
-                            match crate::hub_manager::stop_managed_app_containers() {
+                            match crate::hub_manager::stop_managed_app_containers(&data) {
                                 Ok(Some(summary)) => {
                                     let _ = crate::hub_manager::append_desktop_log_for(
                                         &data,
@@ -507,6 +556,18 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                     crate::hub_manager::HubStatus::Running
                         | crate::hub_manager::HubStatus::Starting
                 );
+                // The decision reads the container only through `hub_status`. A missing
+                // container reads Stopped, which routes to the start path.
+                // A sticky start failure holds the watchdog until its automatic retry is due. The
+                // retry fires only while the Hub is down, so it never restarts a container that
+                // came up on its own.
+                let start_failed = crate::hub_manager::is_start_failed(&data_dir_for_watchdog);
+                let retry_due = start_failed
+                    && !api_container_up
+                    && crate::hub_manager::automatic_retry_due(
+                        &data_dir_for_watchdog,
+                        crate::hub_manager::now_ms(),
+                    );
                 let action = if !compose_ready {
                     // Desktop initialize copies compose into the data dir; don't race it.
                     crate::hub_manager::HubWatchdogAction::None
@@ -516,21 +577,29 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                         cooldown_secs,
                         stack_dev_mode
                             || crate::hub_manager::is_user_stopped(&data_dir_for_watchdog),
-                        crate::hub_manager::is_start_failed(&data_dir_for_watchdog),
+                        start_failed && !retry_due,
                         api_container_up,
                         crate::hub_manager::is_docker_available(),
+                        crate::hub_manager::hub_start_in_progress(),
                     )
                 };
                 match action {
                     crate::hub_manager::HubWatchdogAction::None => {}
                     crate::hub_manager::HubWatchdogAction::StartHub => {
-                        let _ = crate::hub_manager::append_desktop_log(
-                            "tray.watchdog",
-                            &format!(
+                        let message = if retry_due {
+                            format!(
+                                "Automatic retry {} of {} after a failed start — starting hub.",
+                                crate::hub_manager::start_retry_state(&data_dir_for_watchdog)
+                                    .failures,
+                                crate::hub_manager::MAX_AUTOMATIC_RETRIES
+                            )
+                        } else {
+                            format!(
                                 "Hub API unreachable for {} consecutive checks — auto-starting hub.",
                                 consecutive_failures
-                            ),
-                        );
+                            )
+                        };
+                        let _ = crate::hub_manager::append_desktop_log("tray.watchdog", &message);
                         last_watchdog_start = Some(std::time::Instant::now());
                         consecutive_failures = 0;
                         let compose = compose_path_for_watchdog.clone();
@@ -538,7 +607,7 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                         let data = data_dir_for_watchdog.clone();
                         tauri::async_runtime::spawn(async move {
                             match tokio::task::spawn_blocking(move || {
-                                crate::hub_manager::start_hub(&compose, &env, &data)
+                                crate::hub_manager::start_hub_automatic(&compose, &env, &data)
                             })
                             .await
                             {
@@ -617,7 +686,112 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{clear_tunnel_token_result, CLEAR_TUNNEL_TOKEN_CONFIRM};
+    use super::{
+        clear_tunnel_token_result, window_geometry_to_save, GeometrySource,
+        CLEAR_TUNNEL_TOKEN_CONFIRM,
+    };
+    use tauri::{PhysicalPosition, PhysicalSize};
+
+    /// The main window as Windows lays it out at 125% scaling. Decorations are off, but tao keeps
+    /// invisible resize borders around the window, 9 + 9 px across and 9 + 1 px down. The outer
+    /// size counts them and the inner size does not.
+    struct WindowsMainWindow {
+        position: PhysicalPosition<i32>,
+        outer: PhysicalSize<u32>,
+    }
+
+    impl WindowsMainWindow {
+        const BORDERS: PhysicalSize<u32> = PhysicalSize {
+            width: 18,
+            height: 10,
+        };
+
+        /// The window a launch opens. The restore in `main.rs` hands the saved position to
+        /// `set_position`, which places the outer frame, and the saved size to `set_size`, which
+        /// sets the inner size.
+        fn opened_with(position: PhysicalPosition<i32>, size: PhysicalSize<u32>) -> Self {
+            Self {
+                position,
+                outer: PhysicalSize::new(
+                    size.width + Self::BORDERS.width,
+                    size.height + Self::BORDERS.height,
+                ),
+            }
+        }
+
+        /// The size the user sees, since the borders are invisible.
+        fn visible_size(&self) -> PhysicalSize<u32> {
+            PhysicalSize::new(
+                self.outer.width - Self::BORDERS.width,
+                self.outer.height - Self::BORDERS.height,
+            )
+        }
+    }
+
+    impl GeometrySource for WindowsMainWindow {
+        fn is_maximized(&self) -> bool {
+            false
+        }
+
+        fn is_minimized(&self) -> bool {
+            false
+        }
+
+        fn outer_position(&self) -> Option<PhysicalPosition<i32>> {
+            Some(self.position)
+        }
+
+        fn inner_size(&self) -> Option<PhysicalSize<u32>> {
+            Some(self.visible_size())
+        }
+    }
+
+    /// A minimized window as Windows reports it: parked at (-32000, -32000) with no client area.
+    struct MinimizedWindow;
+
+    impl GeometrySource for MinimizedWindow {
+        fn is_maximized(&self) -> bool {
+            false
+        }
+
+        fn is_minimized(&self) -> bool {
+            true
+        }
+
+        fn outer_position(&self) -> Option<PhysicalPosition<i32>> {
+            Some(PhysicalPosition::new(-32000, -32000))
+        }
+
+        fn inner_size(&self) -> Option<PhysicalSize<u32>> {
+            Some(PhysicalSize::new(0, 0))
+        }
+    }
+
+    /// Quit from the tray while the window is minimized must not save the parking spot, or the next
+    /// launch opens the window off screen.
+    #[test]
+    fn a_minimized_window_keeps_the_geometry_saved_before() {
+        assert!(window_geometry_to_save(&MinimizedWindow).is_none());
+    }
+
+    /// The window grew by its invisible borders on every launch: 960×700, then 978×710, then
+    /// 996×720 (Companion-Hub#1932).
+    #[test]
+    fn the_window_reopens_at_the_size_and_place_it_was_closed_at() {
+        let place = PhysicalPosition::new(240, 120);
+        let size = PhysicalSize::new(960, 700);
+        let mut window = WindowsMainWindow::opened_with(place, size);
+
+        for launch in 1..=3 {
+            let saved = window_geometry_to_save(&window).expect("the window is not maximized");
+            window = WindowsMainWindow::opened_with(
+                saved.position.expect("a position"),
+                saved.size.expect("a size"),
+            );
+            assert_eq!(window.visible_size(), size, "size after launch {launch}");
+            assert_eq!(window.position, place, "place after launch {launch}");
+        }
+    }
 
     #[test]
     fn confirm_says_clear_tunnel_token_stops_apps_and_removes_only_the_token() {

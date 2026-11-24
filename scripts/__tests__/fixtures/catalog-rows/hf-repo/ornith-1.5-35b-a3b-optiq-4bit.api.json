@@ -1,0 +1,87 @@
+{
+  "id": "mlx-community/Ornith-1.5-35B-A3B-OptiQ-4bit",
+  "sha": "fd32a7e29b14ba2094f05b16cbd68a79afb5c147",
+  "gated": false,
+  "private": false,
+  "disabled": false,
+  "pipeline_tag": "image-text-to-text",
+  "library_name": "mlx",
+  "lastModified": "2026-10-30T10:14:24.000Z",
+  "safetensors": {
+    "parameters": {
+      "U32": 34659450880,
+      "BF16": 447731056
+    },
+    "total": 34660608768
+  },
+  "siblings": [
+    {
+      "rfilename": ".gitattributes",
+      "size": 1570
+    },
+    {
+      "rfilename": "README.md",
+      "size": 3126
+    },
+    {
+      "rfilename": "chat_template.jinja",
+      "size": 7536
+    },
+    {
+      "rfilename": "config.json",
+      "size": 115819
+    },
+    {
+      "rfilename": "generation_config.json",
+      "size": 202
+    },
+    {
+      "rfilename": "kv_config.json",
+      "size": 660
+    },
+    {
+      "rfilename": "model-00001-of-00005.safetensors",
+      "size": 5237029614
+    },
+    {
+      "rfilename": "model-00002-of-00005.safetensors",
+      "size": 5255557236
+    },
+    {
+      "rfilename": "model-00003-of-00005.safetensors",
+      "size": 5363303738
+    },
+    {
+      "rfilename": "model-00004-of-00005.safetensors",
+      "size": 5194924022
+    },
+    {
+      "rfilename": "model-00005-of-00005.safetensors",
+      "size": 1114121185
+    },
+    {
+      "rfilename": "model.safetensors.index.json",
+      "size": 206754
+    },
+    {
+      "rfilename": "optiq/metadata.json",
+      "size": 56478
+    },
+    {
+      "rfilename": "optiq/mtp.safetensors",
+      "size": 487458943
+    },
+    {
+      "rfilename": "optiq/optiq_vision.safetensors",
+      "size": 893179543
+    },
+    {
+      "rfilename": "tokenizer.json",
+      "size": 19989325
+    },
+    {
+      "rfilename": "tokenizer_config.json",
+      "size": 1161
+    }
+  ]
+}

@@ -339,9 +339,11 @@ describe.skipIf(process.platform === 'win32')('Linux uninstall scripts in a sand
 describe('Windows uninstall cleanup of the tunnel folder', () => {
   const ps = read(PS_SCRIPT);
 
+  // Only with -DeleteAppData; windows-uninstall-cleanup.test.ts runs Remove-HubUserFiles both ways.
   it('cleans %APPDATA%\\tunnel for the current user and every profile', () => {
-    expect(ps).toContain("Remove-HubTunnelFiles (Join-Path $appData 'tunnel')");
-    expect(ps).toContain("Remove-HubTunnelFiles (Join-Path $profilePath 'AppData\\Roaming\\tunnel')");
+    expect(ps).toContain("Remove-HubTunnelFiles (Join-Path $RoamingAppData 'tunnel')");
+    expect(ps).toContain("Remove-HubUserFiles $appData $localAppData ([Environment]::GetFolderPath('Startup'))");
+    expect(ps).toContain("Remove-HubUserFiles (Join-Path $profilePath 'AppData\\Roaming')");
   });
 
   it('NSIS hook skips the whole cleanup when the uninstaller runs in update mode', () => {

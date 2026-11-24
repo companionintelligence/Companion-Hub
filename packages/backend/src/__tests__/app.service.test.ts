@@ -9,7 +9,7 @@ import { RegistryService } from '@/utils/registry/registry.service';
 import { faker } from '@faker-js/faker';
 import { Test } from '@nestjs/testing';
 import { fromPartial } from '@total-typescript/shoehorn';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import { DOCKERODE } from '@/modules/docker/docker.module';
 import Dockerode from 'dockerode';
@@ -22,6 +22,14 @@ import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.servi
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { PortManagerService } from '@/modules/network/port-manager.service';
 import { APP_SESSION_KEY_PREFIX, SESSION_KEY_PREFIX } from '@/modules/auth/session.manager';
+import { SystemEventsQueue } from '@/modules/queue/entities/system-events';
+import { TranslatableError } from '@/common/error/translatable-error';
+
+const { detectHubContainer } = vi.hoisted(() => ({ detectHubContainer: vi.fn(() => true) }));
+vi.mock('@/modules/inference/backends/host-url.util', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/modules/inference/backends/host-url.util')>()),
+  detectHubContainer,
+}));
 
 describe('AppService', () => {
   let appService: AppService;
@@ -36,9 +44,15 @@ describe('AppService', () => {
   let appLifecycleService = mock<AppLifecycleService>();
   let appsRepository = mock<AppsRepository>();
   let portManagerService = mock<PortManagerService>();
+  let systemEventsQueue = mock<SystemEventsQueue>();
 
   beforeEach(async () => {
     dockerode = mock<Dockerode>();
+    detectHubContainer.mockReturnValue(true);
+    // One fresh mock per token. `useMocker(mock)` hands the class itself to `mock()` as the mock's
+    // implementation, so the mock functions were stored on the class and every test wrapped the last
+    // test's: setups leaked from test to test, and the module took twice as long to build each time.
+    const mocks = new Map<unknown, unknown>();
     const moduleRef = await Test.createTestingModule({
       providers: [
         AppService,
@@ -49,7 +63,10 @@ describe('AppService', () => {
         },
       ],
     })
-      .useMocker(mock)
+      .useMocker((token) => {
+        if (!mocks.has(token)) mocks.set(token, mock());
+        return mocks.get(token);
+      })
       .compile();
 
     appService = moduleRef.get(AppService);
@@ -63,6 +80,7 @@ describe('AppService', () => {
     appLifecycleService = moduleRef.get(AppLifecycleService);
     appsRepository = moduleRef.get(AppsRepository);
     portManagerService = moduleRef.get(PortManagerService);
+    systemEventsQueue = moduleRef.get(SystemEventsQueue);
 
     databaseService.waitUntilReady.mockResolvedValue(undefined);
     databaseService.migrate.mockResolvedValue(undefined);
@@ -74,6 +92,7 @@ describe('AppService', () => {
     marketplaceService.initialize.mockResolvedValue(undefined);
     appsRepository.getApps.mockResolvedValue([]);
     portManagerService.migrateExistingApp.mockResolvedValue(undefined as never);
+    portManagerService.setMainPort.mockResolvedValue(true);
     appLifecycleService.restartRunningApps.mockResolvedValue(undefined);
     configurationService.getConfig.mockReturnValue(
       fromPartial({
@@ -276,26 +295,270 @@ describe('AppService', () => {
     });
   });
 
+  /*
+   * The compose file mounts the ACME store as a file and never creates it, so a missing one keeps
+   * Traefik from starting at all. After a reboot Docker leaves that Traefik exited (CI-Hub#2055).
+   */
+  describe('copyAssets keeps Traefik ACME store in place', () => {
+    const acmeStoragePath = path.join(DATA_DIR, 'state', 'traefik', 'acme_storage.json');
+    const traefikConfigPath = path.join(DATA_DIR, 'state', 'traefik', 'config', 'traefik.yml');
+    let traefik: {
+      inspect: ReturnType<typeof vi.fn>;
+      start: ReturnType<typeof vi.fn>;
+      restart: ReturnType<typeof vi.fn>;
+    };
+
+    const copy = async () => {
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(APP_DIR);
+      vi.stubEnv('HUB_EDGE_CLOUDFLARED_IP', '');
+      try {
+        await appService.copyAssets();
+      } finally {
+        cwdSpy.mockRestore();
+        vi.unstubAllEnvs();
+      }
+    };
+
+    beforeEach(() => {
+      configurationService.getConfig.mockReturnValue(
+        fromPartial({ directories: { appDir: APP_DIR, dataDir: DATA_DIR, appDataDir: APP_DATA_DIR }, userSettings: { persistTraefikConfig: false } }),
+      );
+      (fs as unknown as FsMock).__applyMockFiles({
+        [path.join(APP_DIR, 'assets', 'traefik', 'traefik.yml')]: 'entryPoints: {}\n',
+        [path.join(APP_DIR, 'assets', 'traefik', 'dynamic', 'dynamic.yml')]: 'http: {}\n',
+      });
+      // What a reboot leaves behind when the store was missing at boot.
+      traefik = {
+        inspect: vi.fn().mockResolvedValue({ State: { Status: 'exited', Running: false, ExitCode: 127 } }),
+        start: vi.fn().mockResolvedValue(undefined),
+        restart: vi.fn().mockResolvedValue(undefined),
+      };
+      dockerode.getContainer.mockReturnValue(traefik as never);
+      detectHubContainer.mockReturnValue(true);
+    });
+
+    it('creates a missing store that only its owner can read, then starts the exited Traefik', async () => {
+      await copy();
+
+      expect(await fs.promises.readFile(acmeStoragePath, 'utf8')).toBe('{}');
+      expect((await fs.promises.stat(acmeStoragePath)).mode & 0o777).toBe(0o600);
+      expect(dockerode.getContainer).toHaveBeenCalledWith('traefik');
+      expect(traefik.start).toHaveBeenCalledTimes(1);
+
+      // The next boot finds the store and leaves Traefik alone.
+      await copy();
+      expect(traefik.start).toHaveBeenCalledTimes(1);
+    });
+
+    it('never touches a store that exists, or Traefik', async () => {
+      await fs.promises.mkdir(path.dirname(acmeStoragePath), { recursive: true });
+      await fs.promises.writeFile(acmeStoragePath, '{"letsencrypt":{"Certificates":[]}}', { mode: 0o600 });
+
+      await copy();
+
+      expect(await fs.promises.readFile(acmeStoragePath, 'utf8')).toBe('{"letsencrypt":{"Certificates":[]}}');
+      expect(traefik.start).not.toHaveBeenCalled();
+    });
+
+    // Docker will not bind a file onto the directory a container that ran with one has at its mount
+    // point, so swapping the directory for a file would keep that Traefik from starting at all.
+    it('leaves a directory at the store path alone but still restarts Traefik for a changed traefik.yml', async () => {
+      await fs.promises.mkdir(acmeStoragePath, { recursive: true });
+      await fs.promises.mkdir(path.dirname(traefikConfigPath), { recursive: true });
+      await fs.promises.writeFile(traefikConfigPath, 'entryPoints:\n  web:\n    address: ":80"\n');
+      traefik.inspect.mockResolvedValue({ State: { Status: 'running', Running: true } });
+
+      await copy();
+
+      expect((await fs.promises.stat(acmeStoragePath)).isDirectory()).toBe(true);
+      expect(traefik.restart).toHaveBeenCalledTimes(1);
+      expect(traefik.start).not.toHaveBeenCalled();
+      expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('is a directory, so Traefik cannot get certificates'));
+    });
+
+    it('does not restart a running Traefik for a changed traefik.yml when the store could not be created', async () => {
+      await fs.promises.mkdir(path.dirname(traefikConfigPath), { recursive: true });
+      await fs.promises.writeFile(traefikConfigPath, 'entryPoints:\n  web:\n    address: ":80"\n');
+      traefik.inspect.mockResolvedValue({ State: { Status: 'running', Running: true } });
+      const create = vi.spyOn(FilesystemService.prototype, 'createFileIfMissing').mockResolvedValueOnce('failed');
+
+      try {
+        await copy();
+      } finally {
+        create.mockRestore();
+      }
+
+      expect(traefik.restart).not.toHaveBeenCalled();
+      expect(traefik.start).not.toHaveBeenCalled();
+    });
+
+    it('creates the store before a changed traefik.yml restarts a running Traefik and does not start it again', async () => {
+      await fs.promises.mkdir(path.dirname(traefikConfigPath), { recursive: true });
+      await fs.promises.writeFile(traefikConfigPath, 'entryPoints:\n  web:\n    address: ":80"\n');
+      traefik.inspect.mockResolvedValue({ State: { Status: 'running', Running: true } });
+      let storeExistedAtRestart = false;
+      traefik.restart.mockImplementation(async () => {
+        storeExistedAtRestart = fs.existsSync(acmeStoragePath);
+      });
+
+      await copy();
+
+      expect(traefik.restart).toHaveBeenCalledTimes(1);
+      expect(storeExistedAtRestart).toBe(true);
+      expect(traefik.start).not.toHaveBeenCalled();
+    });
+
+    // On the host, a container named `traefik` belongs to an installed Hub, not to this backend.
+    it('creates the store but starts no Traefik when the backend runs from source on the host', async () => {
+      detectHubContainer.mockReturnValue(false);
+
+      await copy();
+
+      expect(await fs.promises.readFile(acmeStoragePath, 'utf8')).toBe('{}');
+      expect(traefik.inspect).not.toHaveBeenCalled();
+      expect(traefik.start).not.toHaveBeenCalled();
+    });
+
+    it('starts a Traefik that compose created but could not start', async () => {
+      traefik.inspect.mockResolvedValue({ State: { Status: 'created', Running: false } });
+
+      await copy();
+
+      expect(traefik.start).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      { Status: 'restarting', Running: false, Restarting: true },
+      { Status: 'paused', Running: true, Paused: true },
+    ])('leaves a $Status Traefik alone', async (state) => {
+      traefik.inspect.mockResolvedValue({ State: state });
+
+      await copy();
+
+      expect(await fs.promises.readFile(acmeStoragePath, 'utf8')).toBe('{}');
+      expect(traefik.start).not.toHaveBeenCalled();
+    });
+
+    describe('when Docker does not answer', () => {
+      // Not in a finally: a test that times out never reaches one. Later tests would then run on fake timers.
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('finishes the boot', async () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        traefik.inspect.mockReturnValue(new Promise(() => undefined));
+        const pending = copy();
+        while (traefik.inspect.mock.calls.length === 0) {
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+        await vi.advanceTimersByTimeAsync(15_000);
+
+        await expect(pending).resolves.toBeUndefined();
+        expect(traefik.start).not.toHaveBeenCalled();
+        expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('Docker did not inspect Traefik within 15s'));
+      });
+    });
+
+    it('takes a Traefik that something else started first as started, with no warning', async () => {
+      traefik.start.mockRejectedValue(Object.assign(new Error('(HTTP code 304) container already started'), { statusCode: 304 }));
+
+      await expect(copy()).resolves.toBeUndefined();
+
+      expect(traefik.start).toHaveBeenCalledTimes(1);
+      expect(loggerService.warn).not.toHaveBeenCalledWith(expect.stringContaining('Could not start Traefik'));
+    });
+
+    it('finishes the boot when Traefik cannot be started or does not exist', async () => {
+      traefik.start.mockRejectedValue(new Error('driver failed programming external connectivity'));
+      await expect(copy()).resolves.toBeUndefined();
+      expect(traefik.start).toHaveBeenCalledTimes(1);
+
+      await fs.promises.rm(acmeStoragePath);
+      traefik.inspect.mockRejectedValue(Object.assign(new Error('no such container: traefik'), { statusCode: 404 }));
+      await expect(copy()).resolves.toBeUndefined();
+      expect(await fs.promises.readFile(acmeStoragePath, 'utf8')).toBe('{}');
+    });
+  });
+
   describe('bootstrap', () => {
     it('continues bootstrap when docker socket access is denied during network prune', async () => {
       const error = Object.assign(new Error('connect EACCES /var/run/docker.sock'), { code: 'EACCES' });
-      dockerode.pruneNetworks.mockRejectedValue(error);
+      dockerode.listNetworks.mockRejectedValue(error);
 
       await expect(appService.bootstrap()).resolves.toBeUndefined();
       expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('Skipping Docker network prune during bootstrap'));
     });
 
+    /*
+     * A save left the table behind until saves kept it in step, so an app can sit on a row port with an
+     * allocation still on an older one. The table then calls a free port taken and misses a taken one.
+     */
+    it('puts the main allocation of each app on the port its row publishes', async () => {
+      appsRepository.getApps.mockResolvedValue([
+        { appName: 'port-test', appStoreSlug: '_user', port: 18558 },
+        { appName: 'no-port', appStoreSlug: '_user', port: null },
+      ] as never);
+
+      await appService.bootstrap();
+
+      expect(portManagerService.setMainPort).toHaveBeenCalledExactlyOnceWith('port-test:_user', 18558);
+    });
+
+    it('logs an app whose port another allocation holds in the table', async () => {
+      appsRepository.getApps.mockResolvedValue([{ appName: 'port-test', appStoreSlug: '_user', port: 18558 }] as never);
+      portManagerService.setMainPort.mockResolvedValue(false);
+
+      await appService.bootstrap();
+
+      expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('Port 18558 of port-test:_user is already allocated'));
+    });
+
     it('prunes only Hub-managed networks, never every idle network on the host', async () => {
       // A bare prune deletes the network of every stopped compose stack on the machine
       // (Docker counts only running containers as "in use"), which broke `make dev` in
-      // sibling checkouts after each reboot. The filter is the whole fix.
-      dockerode.pruneNetworks.mockResolvedValue({ NetworksDeleted: [] });
+      // sibling checkouts after each reboot. The label filter keeps the boot off them.
+      dockerode.listNetworks.mockResolvedValue([]);
 
       await appService.bootstrap();
       await new Promise((resolve) => setTimeout(resolve, 0));
 
-      expect(dockerode.pruneNetworks).toHaveBeenCalledTimes(1);
-      expect(dockerode.pruneNetworks).toHaveBeenCalledWith({ filters: { label: ['ci-hub.managed=true'] } });
+      expect(dockerode.listNetworks).toHaveBeenCalledWith({ filters: { label: ['ci-hub.managed=true'] } });
+      expect(dockerode.pruneNetworks).not.toHaveBeenCalled();
+    });
+
+    it('keeps the network of an app whose containers Stop Hub left stopped (#2313)', async () => {
+      const remove = vi.fn().mockResolvedValue(undefined);
+      dockerode.listNetworks.mockResolvedValue([
+        { Name: 'excalidraw_ci-marketplace_network', Id: 'net-stopped', Labels: { 'ci-hub.managed': 'true' } },
+        { Name: 'old-app_ci-marketplace_network', Id: 'net-orphan', Labels: { 'ci-hub.managed': 'true' } },
+      ] as never);
+      dockerode.listContainers.mockResolvedValue([
+        { State: 'exited', NetworkSettings: { Networks: { 'excalidraw_ci-marketplace_network': { NetworkID: 'net-stopped' } } } },
+      ] as never);
+      dockerode.getNetwork.mockReturnValue({ remove } as never);
+
+      await appService.bootstrap();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(dockerode.getNetwork).toHaveBeenCalledExactlyOnceWith('net-orphan');
+      expect(remove).toHaveBeenCalledTimes(1);
+      expect(loggerService.info).toHaveBeenCalledWith('Docker networks pruned: old-app_ci-marketplace_network');
+    });
+
+    it('logs a network the prune could not remove', async () => {
+      dockerode.listNetworks.mockResolvedValue([
+        { Name: 'stuck_ci-marketplace_network', Id: 'net-stuck', Labels: { 'ci-hub.managed': 'true' } },
+      ] as never);
+      dockerode.listContainers.mockResolvedValue([] as never);
+      dockerode.getNetwork.mockReturnValue({ remove: vi.fn().mockRejectedValue(new Error('(HTTP code 500) server error')) } as never);
+
+      await appService.bootstrap();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(loggerService.warn).toHaveBeenCalledWith(
+        'Docker network prune could not remove stuck_ci-marketplace_network: (HTTP code 500) server error',
+      );
     });
 
     it('schedules a background app store catalog sync after marketplace init', async () => {
@@ -426,6 +689,169 @@ describe('AppService', () => {
         forwardAuthSecret: '[redacted]',
         __prod__: false,
       });
+    });
+  });
+
+  /*
+   * An uninstall of the desktop app that keeps its data removes every app container but keeps the
+   * cache, so a reinstall of the same version skipped the version-change restart. The apps stayed
+   * down and the status sync reported each one as a crash (Companion-Hub#1980).
+   */
+  describe('bootstrap on the version the cache already holds', () => {
+    const wordpress = { id: 1, appName: 'wordpress', appStoreSlug: 'ci-marketplace', status: 'running', config: {} };
+
+    beforeEach(() => {
+      configurationService.getConfig.mockReturnValue(
+        fromPartial({
+          version: '1.0.0',
+          __prod__: true,
+          directories: { appDir: APP_DIR, dataDir: DATA_DIR, appDataDir: APP_DATA_DIR },
+          userSettings: { logLevel: 'info', persistTraefikConfig: false },
+        }),
+      );
+      cacheService.get.mockImplementation((key: string) => (key === 'buster' ? '1.0.0' : undefined));
+      dockerode.listContainers.mockResolvedValue([]);
+      appsRepository.updateAppByIdIfStatus.mockResolvedValue(true);
+      appLifecycleService.startApp.mockResolvedValue({ requestId: 'req-1' });
+    });
+
+    it('starts a running app that has no containers before it schedules the status sync', async () => {
+      appsRepository.getApps.mockResolvedValue([wordpress] as never);
+
+      await appService.bootstrap();
+
+      expect(appLifecycleService.restartRunningApps).not.toHaveBeenCalled();
+      expect(appLifecycleService.startApp).toHaveBeenCalledTimes(1);
+      expect(appLifecycleService.startApp).toHaveBeenCalledWith({
+        appUrn: 'wordpress:ci-marketplace',
+        skipPull: true,
+        onlyRecreateChanged: true,
+        actor: { kind: 'system', reason: 'bootstrap-recreate' },
+      });
+      // The start moves the row to `starting`, so the first sync cannot read it as a crash.
+      const syncCall = systemEventsQueue.publishRepeatable.mock.calls.findIndex(([event]) => event.command === 'sync_app_statuses');
+      expect(syncCall).toBeGreaterThanOrEqual(0);
+      expect(appLifecycleService.startApp.mock.invocationCallOrder[0]).toBeLessThan(
+        systemEventsQueue.publishRepeatable.mock.invocationCallOrder[syncCall],
+      );
+    });
+
+    it('leaves stopped apps, apps with containers, and port-expose apps alone', async () => {
+      appsRepository.getApps.mockResolvedValue([
+        { id: 2, appName: 'plane', appStoreSlug: 'ci-marketplace', status: 'stopped', config: {} },
+        { id: 3, appName: 'flatnotes', appStoreSlug: 'ci-marketplace', status: 'running', config: {} },
+        { id: 4, appName: 'ggs', appStoreSlug: '_user', status: 'running', config: { kind: 'port-expose', port: 3000 } },
+      ] as never);
+      // Stopped with `docker stop`, as the desktop's Stop Hub leaves it: the status sync reads it.
+      dockerode.listContainers.mockImplementation((async (options?: Dockerode.ContainerListOptions) =>
+        options?.filters && JSON.stringify(options.filters).includes('ci-hub.managed=true')
+          ? [
+              {
+                Id: 'f1',
+                State: 'exited',
+                Status: 'Exited (0) 1 hour ago',
+                Labels: { 'ci-hub.managed': 'true', 'ci-hub.appurn': 'flatnotes:ci-marketplace' },
+              },
+            ]
+          : []) as never);
+
+      await appService.bootstrap();
+
+      expect(appLifecycleService.startApp).not.toHaveBeenCalled();
+    });
+
+    /*
+     * A start the queue never took puts back the status it read. Left `running` with no containers,
+     * the app was what the first status sync reports as a crash.
+     */
+    it('moves the app to starting before it starts it', async () => {
+      appsRepository.getApps.mockResolvedValue([wordpress] as never);
+
+      await appService.bootstrap();
+
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(1, 'running', { status: 'starting' });
+      expect(appsRepository.updateAppByIdIfStatus.mock.invocationCallOrder[0]).toBeLessThan(appLifecycleService.startApp.mock.invocationCallOrder[0]);
+    });
+
+    describe('when the queue is not up yet', () => {
+      const refusal = () => new TranslatableError('APP_ERROR_QUEUE_UNAVAILABLE', { command: 'start' }, 503);
+
+      beforeEach(() => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        appsRepository.getApps.mockResolvedValue([wordpress] as never);
+      });
+
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('starts the app once the queue is up, and leaves it starting meanwhile', async () => {
+        appLifecycleService.startApp.mockRejectedValueOnce(refusal());
+        systemEventsQueue.unavailableReason.mockReturnValueOnce("Queue 'system-events-queue' is unavailable while RabbitMQ is connecting.");
+
+        await appService.bootstrap();
+        expect(appLifecycleService.startApp).toHaveBeenCalledTimes(1);
+
+        await vi.advanceTimersByTimeAsync(2_000);
+
+        await vi.waitFor(() => expect(appLifecycleService.startApp).toHaveBeenCalledTimes(2));
+        expect(appLifecycleService.startApp).toHaveBeenLastCalledWith(expect.objectContaining({ appUrn: 'wordpress:ci-marketplace' }));
+        expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalledWith(1, expect.anything(), { status: 'stopped' });
+      });
+
+      it('marks the app stopped when the queue refuses it again', async () => {
+        appLifecycleService.startApp.mockRejectedValue(refusal());
+        systemEventsQueue.unavailableReason.mockReturnValue("Queue 'system-events-queue' is unavailable while RabbitMQ is connecting.");
+
+        await appService.bootstrap();
+        await vi.advanceTimersByTimeAsync(10 * 60_000);
+
+        await vi.waitFor(() => expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(1, 'starting', { status: 'stopped' }));
+        expect(appLifecycleService.startApp).toHaveBeenCalledTimes(2);
+      });
+    });
+
+    it('marks an app stopped at once when its start fails for another reason', async () => {
+      appsRepository.getApps.mockResolvedValue([wordpress] as never);
+      appLifecycleService.startApp.mockRejectedValue(new Error('connection to the database was lost'));
+
+      await expect(appService.bootstrap()).resolves.toBeUndefined();
+
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(1, 'starting', { status: 'stopped' });
+      expect(appLifecycleService.startApp).toHaveBeenCalledTimes(1);
+    });
+
+    // The boot waits on this listing before the Hub listens, so a Docker that never answers must not hold it.
+    it('finishes the boot without starting anything when Docker does not list the containers', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        appsRepository.getApps.mockResolvedValue([wordpress] as never);
+        dockerode.listContainers.mockReturnValue(new Promise(() => undefined) as never);
+
+        let settled = false;
+        const booting = appService.bootstrap().finally(() => {
+          settled = true;
+        });
+        for (let tick = 0; tick < 40 && !settled; tick++) {
+          await vi.advanceTimersByTimeAsync(1_000);
+        }
+
+        await expect(booting).resolves.toBeUndefined();
+        expect(appLifecycleService.startApp).not.toHaveBeenCalled();
+        expect(systemEventsQueue.publishRepeatable).toHaveBeenCalledWith({ command: 'sync_app_statuses' }, '*/5 * * * *');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('leaves the apps to the version-change restart on an upgrade', async () => {
+      appsRepository.getApps.mockResolvedValue([wordpress] as never);
+      cacheService.get.mockReturnValue('0.9.0');
+
+      await appService.bootstrap();
+
+      expect(appLifecycleService.restartRunningApps).toHaveBeenCalledTimes(1);
+      expect(appLifecycleService.startApp).not.toHaveBeenCalled();
     });
   });
 });

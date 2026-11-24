@@ -101,9 +101,15 @@ export function describePullStartError(err: unknown): string {
   return sdkErrorMessage(err);
 }
 
-/** Start each download; returns why the Hub refused, by model id. A failed request counts as refused. */
-export async function ensurePullsStarted(modelIds: string[], bestEffort = true): Promise<Record<string, string>> {
-  const refusedById: Record<string, string> = {};
+/**
+ * Start each download; returns why the Hub refused, by model id. A failed request counts as refused.
+ * `refusedById` is filled as each answer arrives, so a caller that stops waiting keeps those it has.
+ */
+export async function ensurePullsStarted(
+  modelIds: string[],
+  bestEffort = true,
+  refusedById: Record<string, string> = {},
+): Promise<Record<string, string>> {
   for (const modelId of modelIds) {
     try {
       const reason = await ensurePullStarted(modelId, bestEffort);

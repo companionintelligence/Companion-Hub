@@ -175,4 +175,35 @@ describe('HubPoolLoadService', () => {
       expect(load.externalLoad('peer-2', 1)).toBe(0);
     });
   });
+
+  describe('media workload tracking', () => {
+    it('tracks media workload and increments localInFlight queue depth', () => {
+      const load = new HubPoolLoadService();
+      expect(load.activeMediaWork()).toBe(0);
+      expect(load.localInFlight()).toBe(0);
+
+      load.acquireMedia({ kind: 'image' });
+      expect(load.activeMediaWork()).toBe(1);
+      expect(load.localInFlight()).toBe(1);
+
+      load.acquireMedia({ kind: 'comfyui' });
+      expect(load.activeMediaWork()).toBe(2);
+      expect(load.localInFlight()).toBe(2);
+
+      load.releaseMedia({ kind: 'image' });
+      expect(load.activeMediaWork()).toBe(1);
+      expect(load.localInFlight()).toBe(1);
+
+      load.releaseMedia();
+      expect(load.activeMediaWork()).toBe(0);
+      expect(load.localInFlight()).toBe(0);
+    });
+
+    it('handles releaseMedia when active count is already zero gracefully', () => {
+      const load = new HubPoolLoadService();
+      load.releaseMedia();
+      expect(load.activeMediaWork()).toBe(0);
+      expect(load.localInFlight()).toBe(0);
+    });
+  });
 });

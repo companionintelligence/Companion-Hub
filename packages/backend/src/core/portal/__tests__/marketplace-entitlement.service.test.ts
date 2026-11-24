@@ -6,15 +6,18 @@ import { TranslatableError } from '@/common/error/translatable-error';
 import { DatabaseService } from '@/core/database/database.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { EVERY_ADDRESS_FAILED, axiosEveryAddressFailed } from '@/tests/utils/network-failures';
+import type { MarketplaceWhoIsService } from '../marketplace-whois.service';
 import { PortalClientService } from '../portal-client.service';
-import { MarketplaceEntitlementService } from '../marketplace-entitlement.service';
+import { ENTITLEMENT_CACHE_TTL_MS, MarketplaceEntitlementService } from '../marketplace-entitlement.service';
 
 const APP_URN = 'immich:ci-marketplace' as AppUrn;
+const ORGANIZATION_ID = 'org-of-this-hub';
 
 describe('MarketplaceEntitlementService', () => {
   let portal: ReturnType<typeof mock<PortalClientService>>;
   let database: ReturnType<typeof mock<DatabaseService>>;
   let logger: ReturnType<typeof mock<LoggerService>>;
+  let whois: ReturnType<typeof mock<MarketplaceWhoIsService>>;
   let service: MarketplaceEntitlementService;
   let cacheRows: Array<{
     appUrn: string;
@@ -28,6 +31,8 @@ describe('MarketplaceEntitlementService', () => {
     portal = mock<PortalClientService>();
     database = mock<DatabaseService>();
     logger = mock<LoggerService>();
+    whois = mock<MarketplaceWhoIsService>();
+    whois.deviceOrganizationId.mockResolvedValue(ORGANIZATION_ID);
     cacheRows = [];
 
     database.db = {
@@ -47,7 +52,7 @@ describe('MarketplaceEntitlementService', () => {
       }),
     } as unknown as DatabaseService['db'];
 
-    service = new MarketplaceEntitlementService(portal, database, logger);
+    service = new MarketplaceEntitlementService(portal, database, logger, whois);
   });
 
   it('allows a free or unknown Portal app', async () => {
@@ -60,6 +65,105 @@ describe('MarketplaceEntitlementService', () => {
     portal.checkAppEntitlement.mockResolvedValue({ status: 200, entitled: true, reason: 'org_entitled' });
 
     await expect(service.assertForInstall(APP_URN)).resolves.toBeUndefined();
+  });
+
+  describe("naming this Hub's organization", () => {
+    it('asks about the organization this Hub is in', async () => {
+      portal.checkAppEntitlement.mockResolvedValue({ status: 200, entitled: true, reason: 'org_entitled' });
+
+      await service.assertForInstall(APP_URN);
+
+      expect(portal.checkAppEntitlement).toHaveBeenCalledWith('immich', ORGANIZATION_ID);
+    });
+
+    it('names nothing when this Hub could not learn its organization while a device in one organization still gets its answer', async () => {
+      whois.deviceOrganizationId.mockResolvedValue(null);
+      portal.checkAppEntitlement.mockResolvedValue({ status: 200, entitled: true, reason: 'org_entitled' });
+
+      await expect(service.assertForInstall(APP_URN)).resolves.toBeUndefined();
+
+      expect(portal.checkAppEntitlement).toHaveBeenCalledWith('immich', null);
+    });
+
+    it('reads a 402 for the named organization as payment needed and keeps it', async () => {
+      portal.checkAppEntitlement.mockResolvedValue({
+        status: 402,
+        entitled: false,
+        reason: 'not_entitled',
+        paymentUrl: 'https://portal.example/store/immich',
+      });
+
+      await expect(service.assertForInstall(APP_URN)).rejects.toMatchObject({
+        status: HttpStatus.PAYMENT_REQUIRED,
+        message: 'APP_INSTALL_PORTAL_DOWNLOAD_PAYMENT_REQUIRED',
+      });
+      expect(cacheRows).toEqual([expect.objectContaining({ entitled: false })]);
+    });
+  });
+
+  describe.each([
+    { status: 409, code: 'ORGANIZATION_REQUIRED', key: 'APP_INSTALL_PORTAL_ORGANIZATION_REQUIRED' },
+    { status: 403, code: 'DEVICE_NOT_IN_ORGANIZATION', key: 'APP_INSTALL_PORTAL_DEVICE_NOT_IN_ORGANIZATION' },
+  ])('Portal answering $status $code, which is about the organization and not about payment', ({ status, code, key }) => {
+    const row = (entitled: boolean, ageMs = 0) => ({
+      appUrn: APP_URN,
+      entitled,
+      reason: entitled ? 'org_entitled' : 'not_entitled',
+      paymentUrl: entitled ? null : 'https://portal.example/store/immich',
+      cachedAt: new Date(Date.now() - ageMs).toISOString(),
+    });
+
+    beforeEach(() => {
+      portal.checkAppEntitlement.mockResolvedValue({ status, code });
+    });
+
+    it('stops an install and an update with a message saying so, instead of an unreachable Portal', async () => {
+      await expect(service.assertForInstall(APP_URN)).rejects.toMatchObject({ status, message: key });
+      await expect(service.assertForUpdate(APP_URN)).rejects.toMatchObject({ status, message: key });
+    });
+
+    it('stops them on a fresh "entitled" row too, since the bundle download would get the same answer', async () => {
+      cacheRows = [row(true)];
+
+      await expect(service.assertForInstall(APP_URN)).rejects.toMatchObject({ status, message: key });
+      await expect(service.assertForUpdate(APP_URN)).rejects.toMatchObject({ status, message: key });
+    });
+
+    it('does not cache it as "not entitled"', async () => {
+      await expect(service.assertForInstall(APP_URN)).rejects.toBeInstanceOf(TranslatableError);
+      await expect(service.assertForStart(APP_URN)).resolves.toBeUndefined();
+
+      expect(cacheRows).toEqual([]);
+    });
+
+    it('starts an installed app with nothing cached, because a start needs no download', async () => {
+      await expect(service.assertForStart(APP_URN)).resolves.toBeUndefined();
+    });
+
+    it('starts an installed app on an expired "not entitled" row and leaves the row alone', async () => {
+      const expired = row(false, ENTITLEMENT_CACHE_TTL_MS + 1000);
+      cacheRows = [expired];
+
+      await expect(service.assertForStart(APP_URN)).resolves.toBeUndefined();
+
+      expect(cacheRows).toEqual([expired]);
+    });
+
+    it('still refuses a start on a fresh "not entitled" row: that was a real answer, as for an unreachable Portal', async () => {
+      cacheRows = [row(false)];
+
+      await expect(service.assertForStart(APP_URN)).rejects.toMatchObject({
+        status: HttpStatus.PAYMENT_REQUIRED,
+        message: 'APP_INSTALL_PORTAL_DOWNLOAD_PAYMENT_REQUIRED',
+      });
+    });
+  });
+
+  it('takes the same status without the code as not an answer: a proxy in front of Portal says nothing about organizations', async () => {
+    portal.checkAppEntitlement.mockResolvedValue({ status: 409 });
+
+    await expect(service.assertForInstall(APP_URN)).rejects.toMatchObject({ message: 'PORTAL_REQUEST_FAILED' });
+    await expect(service.assertForStart(APP_URN)).resolves.toBeUndefined();
   });
 
   it('refuses a paid app without entitlement', async () => {

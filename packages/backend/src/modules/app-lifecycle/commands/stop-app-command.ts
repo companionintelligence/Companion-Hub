@@ -33,7 +33,8 @@ export class StopAppCommand extends AppLifecycleCommand {
 
       logger.info(`Stopping app ${appUrn}`);
 
-      await this.ensureAppDir(appUrn, form);
+      // Stopping never needs volume folders, and making them could block a pending store data copy (#2198).
+      await this.ensureAppDir(appUrn, form, { createVolumeDirs: false });
 
       if (!form.skipEnv) {
         logger.info(`Regenerating app.env file for app ${appUrn}`);
@@ -42,7 +43,8 @@ export class StopAppCommand extends AppLifecycleCommand {
 
       await dockerService.composeApp(appUrn, 'down --remove-orphans');
 
-      // Regenerate Traefik file-based config after app stops to remove its routes
+      // Regenerate Traefik file-based config after the app stops. Its own routes go with the
+      // containers while its route to the Hub's "is stopped" page stays (APP_DOWN_KEPT_STATUSES).
       const effectiveExposure = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
       if (effectiveExposure !== 'local') {
         logger.debug(`Regenerating Traefik config after stopping exposed app ${appUrn}`);

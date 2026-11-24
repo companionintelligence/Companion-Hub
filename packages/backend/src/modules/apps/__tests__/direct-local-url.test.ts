@@ -74,6 +74,37 @@ describe('resolveDirectLocalUrl', () => {
     });
   });
 
+  // #2377: an app with a stored install form gets the link exactly when compose binds the host port.
+  describe('apps with a stored install form', () => {
+    it('offers the LAN address for a Private VPN form exposed on the local network, whatever the row says', () => {
+      const service = makeService();
+      const config = { exposureMode: 'tailscale', exposedLocal: true, openPort: false };
+
+      expect(service.resolveDirectLocalUrl({ ...APP, exposureMode: 'tailscale', config }, INFO)).toBe('http://192.168.1.9:8080');
+    });
+
+    it('offers nothing for a Private VPN form with a closed port, even where the row says exposedLocal', () => {
+      const service = makeService();
+      const config = { exposureMode: 'tailscale', openPort: false };
+
+      expect(service.resolveDirectLocalUrl({ ...APP, exposureMode: 'tailscale', exposedLocal: true, config }, INFO)).toBeUndefined();
+    });
+
+    it('offers nothing for a Public Web form with a closed port and no exposedLocal', () => {
+      const service = makeService();
+      const config = { exposureMode: 'cloudflare', openPort: false };
+
+      expect(service.resolveDirectLocalUrl({ ...APP, exposureMode: 'cloudflare', config }, INFO)).toBeUndefined();
+    });
+
+    it('offers the LAN address for a Public Web form that kept exposedLocal', () => {
+      const service = makeService();
+      const config = { exposureMode: 'cloudflare', exposedLocal: true, openPort: false };
+
+      expect(service.resolveDirectLocalUrl({ ...APP, exposureMode: 'cloudflare', config }, INFO)).toBe('http://192.168.1.9:8080');
+    });
+  });
+
   describe('pre-exposureMode installs', () => {
     it('offers nothing for a dynamic-config app with no published port', () => {
       const service = makeService();

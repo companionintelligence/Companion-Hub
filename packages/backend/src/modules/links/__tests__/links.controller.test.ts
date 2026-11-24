@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { LinksController } from '../links.controller';
 import { LinksService } from '../links.service';
+import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 
 describe('LinksController', () => {
@@ -15,6 +16,7 @@ describe('LinksController', () => {
       providers: [
         { provide: LinksService, useValue: mock<LinksService>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
+        { provide: ConfigurationService, useValue: mock<ConfigurationService>() },
       ],
     }).compile();
 

@@ -25,6 +25,20 @@ export function portalRemoveDeviceUrl(portalUrl: string, deviceId: string): stri
   return `${portalUrl.replace(/\/+$/, '')}/home?remove_device=${encodeURIComponent(deviceId)}`;
 }
 
+/** Opens the signed-in Companion Account settings, where the person can request account deletion. */
+export function portalAccountSettingsUrl(portalUrl: string | null | undefined): string {
+  const fallback = 'https://hub.ci.computer/user-settings';
+  if (!portalUrl) return fallback;
+
+  try {
+    const portal = new URL(portalUrl);
+    if (portal.protocol !== 'https:' && portal.hostname !== 'localhost' && portal.hostname !== '127.0.0.1') return fallback;
+    return new URL('/user-settings', portal.origin).toString();
+  } catch {
+    return fallback;
+  }
+}
+
 /** Asks the Hub for one removal check. Network and server failures read as `not_checked`, so the watch keeps going. */
 export async function checkHubRemoval(): Promise<HubRemovalCheck> {
   try {

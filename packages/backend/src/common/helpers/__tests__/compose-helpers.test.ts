@@ -1,7 +1,7 @@
 import type { Architecture } from '@/common/constants';
 import type { ServiceInput } from '@ci-hub/common/schemas';
 import { describe, expect, it } from 'vitest';
-import { mergeArchitectureOverrides } from '../compose-helpers';
+import { mergeArchitectureOverrides, oneShotServiceNames } from '../compose-helpers';
 
 describe('mergeArchitectureOverrides', () => {
   const baseServices: ServiceInput[] = [
@@ -161,6 +161,41 @@ describe('mergeArchitectureOverrides', () => {
     expect(result).toEqual(expected);
   });
 
+  it('should recursively merge nested objects', () => {
+    const baseServicesWithUlimits: ServiceInput[] = [
+      {
+        name: 'app',
+        image: 'app:latest',
+        ulimits: { nofile: { soft: 1024, hard: 2048 } },
+      },
+    ];
+    const overrides = [
+      {
+        architecture: 'amd64' as Architecture,
+        services: [{ name: 'app', ulimits: { nofile: { soft: 4096 } } }],
+      },
+    ];
+
+    const result = mergeArchitectureOverrides(baseServicesWithUlimits, overrides, 'amd64');
+
+    expect(result[0]?.ulimits).toEqual({ nofile: { soft: 4096, hard: 2048 } });
+  });
+
+  it('should ignore prototype-polluting keys from an override', () => {
+    const services: ServiceInput[] = [{ name: 'app', image: 'app:latest', sysctls: { safe: 1 } }];
+    const overrides = JSON.parse(
+      '{"architecture":"amd64","services":[{"name":"app","sysctls":{"__proto__":{"polluted":true},"constructor":{"prototype":{"polluted":true}}}}]}',
+    );
+
+    const result = mergeArchitectureOverrides(services, overrides, 'amd64');
+    const sysctls = result[0]?.sysctls ?? {};
+
+    expect(Object.getPrototypeOf(sysctls)).toBe(Object.prototype);
+    expect(Object.hasOwn(sysctls, '__proto__')).toBe(false);
+    expect(Object.hasOwn(sysctls, 'constructor')).toBe(false);
+    expect(({} as { polluted?: boolean }).polluted).toBeUndefined();
+  });
+
   it('should handle multiple architecture overrides', () => {
     const overrides = [
       {
@@ -221,5 +256,49 @@ describe('mergeArchitectureOverrides', () => {
 
     const result = mergeArchitectureOverrides(baseServices, overrides, 'amd64');
     expect(result).toEqual(baseServices);
+  });
+});
+
+describe('oneShotServiceNames', () => {
+  it('counts a restart: "no" service that nothing depends on staying up', () => {
+    expect(
+      oneShotServiceNames([
+        { name: 'sync', restart: 'no' },
+        { name: 'web', isMain: true },
+      ]),
+    ).toEqual(new Set(['sync']));
+  });
+
+  it('counts one that a dependent only waits on to finish, whatever else depends on it', () => {
+    const services: ServiceInput[] = [
+      { name: 'migrate', image: 'a', restart: 'no' },
+      { name: 'api', image: 'a', dependsOn: { migrate: { condition: 'service_completed_successfully' } } },
+    ];
+
+    expect(oneShotServiceNames(services)).toEqual(new Set(['migrate']));
+  });
+
+  it('does not count one a dependent needs running or healthy', () => {
+    const services: ServiceInput[] = [
+      { name: 'started', image: 'a', restart: 'no' },
+      { name: 'healthy', image: 'a', restart: 'no' },
+      { name: 'listed', image: 'a', restart: 'no' },
+      {
+        name: 'web',
+        image: 'a',
+        dependsOn: { started: { condition: 'service_started' }, healthy: { condition: 'service_healthy' } },
+      },
+      { name: 'worker', image: 'a', dependsOn: ['listed'] },
+    ];
+
+    expect(oneShotServiceNames(services)).toEqual(new Set());
+  });
+
+  it('never counts the main service', () => {
+    expect(oneShotServiceNames([{ name: 'web', restart: 'no', isMain: true }])).toEqual(new Set());
+  });
+
+  it('does not count a service Docker keeps bringing back', () => {
+    expect(oneShotServiceNames([{ name: 'a', restart: 'unless-stopped' }, { name: 'b', restart: 'on-failure' }, { name: 'c' }])).toEqual(new Set());
   });
 });

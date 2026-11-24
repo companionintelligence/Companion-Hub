@@ -17,7 +17,20 @@ describe('PATCH /api/user-settings — inference preferences', () => {
     refresh = mock<AiAppInferenceRefreshService>();
     // Only the two collaborators this route touches matter; the rest are inert stand-ins.
     const unused = () => mock<never>();
-    controller = new AppController(unused(), unused(), configuration, unused(), unused(), unused(), unused(), unused(), unused(), unused(), refresh);
+    controller = new AppController(
+      unused(),
+      unused(),
+      configuration,
+      unused(),
+      unused(),
+      unused(),
+      unused(),
+      unused(),
+      unused(),
+      unused(),
+      refresh,
+      unused(),
+    );
   });
 
   it('refreshes AI apps through the same service as PATCH /api/inference/preferences when a preference changes', async () => {
@@ -45,7 +58,7 @@ describe('PATCH /api/user-settings — inference preferences', () => {
   });
 
   it('leaves AI apps alone for a write that touches no inference setting', async () => {
-    await controller.updateUserSettings({ themeColor: 'blue', allowAutoThemes: false } as never);
+    await controller.updateUserSettings({ themeColor: 'blue' } as never);
 
     expect(refresh.requestRefresh).not.toHaveBeenCalled();
   });

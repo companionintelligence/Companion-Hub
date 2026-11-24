@@ -43,7 +43,7 @@ function AppSection({
     <section className="w-full space-y-4">
       <div className="flex items-end justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-semibold text-foreground">{title}</h2>
+          <h2 className="text-2xl font-medium text-foreground">{title}</h2>
           <p className="text-muted-foreground">{subtitle}</p>
         </div>
         {(hasMore || isExpanded) && !isLoading && !isError && (

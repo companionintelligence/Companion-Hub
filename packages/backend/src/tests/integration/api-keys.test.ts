@@ -78,6 +78,41 @@ describe('API keys and who created them', () => {
   });
 
   /*
+   * A revoked person's own keys go with them (#2062). Managed app keys and
+   * everyone else's keys stay.
+   */
+  it("deletes a person's unmanaged keys and leaves managed and other people's keys", async () => {
+    const leaver = await insertUser('leaver@acme.com');
+    const owner = await insertUser('owner@acme.com');
+    const leaverKey = await insertKey('agent', leaver.id);
+    const leaverManaged = await insertKey('importer', leaver.id, 'importer:ci-store');
+    const ownerKey = await insertKey('n8n', owner.id);
+
+    await expect(repo.deleteUnmanagedByCreator(leaver.id)).resolves.toBe(1);
+
+    expect(await repo.findById(leaverKey.id)).toBeUndefined();
+    expect(await repo.findById(leaverManaged.id)).toBeDefined();
+    expect(await repo.findById(ownerKey.id)).toBeDefined();
+  });
+
+  it('deletes the unmanaged keys of everyone revoked as their rows stand now', async () => {
+    const revoked = await insertUser('revoked@acme.com');
+    const readmitted = await insertUser('back@acme.com');
+    await db.update(user).set({ accessStatus: 'revoked' }).where(eq(user.id, revoked.id));
+    const revokedKey = await insertKey('agent', revoked.id);
+    const revokedManaged = await insertKey('importer', revoked.id, 'importer:ci-store');
+    const readmittedKey = await insertKey('n8n', readmitted.id);
+    const legacyKey = await insertKey('legacy', null);
+
+    await expect(repo.deleteUnmanagedOfRevokedCreators()).resolves.toBe(1);
+
+    expect(await repo.findById(revokedKey.id)).toBeUndefined();
+    expect(await repo.findById(revokedManaged.id)).toBeDefined();
+    expect(await repo.findById(readmittedKey.id)).toBeDefined();
+    expect(await repo.findById(legacyKey.id)).toBeDefined();
+  });
+
+  /*
    * `RESTART IDENTITY` hands the next account the ids the reset freed, so a key
    * that survived would act as whoever signs in first. Every kind goes: one a
    * person created, one nobody is recorded as creating, and an app's managed key.

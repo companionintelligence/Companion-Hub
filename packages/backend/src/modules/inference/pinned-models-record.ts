@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from '@/common/constants';
+import { removeWithTemporary } from '@/common/helpers/file-helpers';
 
 /**
  * The catalog models the operator pinned on this node, kept on disk so a Hub restart does not unpin
@@ -36,6 +37,11 @@ export async function readPinnedModels(file = PINNED_MODELS_PATH): Promise<Pinne
   const pinned = (parsed as Record<string, unknown>).pinned;
   if (!Array.isArray(pinned)) return null;
   return { pinned: [...new Set(pinned.filter((id): id is string => typeof id === 'string' && id.length > 0))] };
+}
+
+/** Remove the persisted pins with any write a crash left behind. */
+export function removePinnedModels(file = PINNED_MODELS_PATH): Promise<void> {
+  return removeWithTemporary(file);
 }
 
 export async function writePinnedModels(record: PinnedModelsRecord, file = PINNED_MODELS_PATH): Promise<void> {

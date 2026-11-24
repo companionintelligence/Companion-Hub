@@ -1,11 +1,12 @@
 import { MobileLoadError } from '@/components/mobile/mobile-load-error';
-import { AppContextProvider, useAppContext } from '@/context/app-context';
+import { AppContextProvider, GuestAppContextProvider, useAppContext } from '@/context/app-context';
 import { useUserContext } from '@/context/user-context';
 import { isMobileClient } from '@/lib/mobile-connection';
 import { useMobileLoadTimeout } from '@/lib/use-mobile-load-timeout';
 import { getRehydrateStatus } from '@/api-client/sdk.gen';
 import { sdkResult } from '@/lib/sdk-unwrap';
 import { getStoredDriftChoice } from '@/lib/registration-state-drift';
+import { opensRestorePage, restoreSeenInThisTab, setupRoute, type RestoreStatus } from '@/modules/auth/helpers/restore-status';
 import { GuestDashboard } from '@/modules/dashboard/pages/guest-dashboard';
 import { QueryErrorResetBoundary } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
@@ -25,40 +26,23 @@ function AuthenticatedContent({ children }: { children: React.ReactNode }) {
   const { t } = useTranslation();
   const location = useLocation();
   const [restoreRedirectChecked, setRestoreRedirectChecked] = useState(false);
-  const [shouldRestoreApps, setShouldRestoreApps] = useState(false);
+  const [restoreStatus, setRestoreStatus] = useState<RestoreStatus | null>(null);
 
+  // Asked on every sign-in, not only in the tab that chose "Restore existing device": the Hub restores
+  // on its own after pairing. The person who signs in next may be anywhere (see opensRestorePage).
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
-      const driftChoice = getStoredDriftChoice();
-      if (driftChoice !== 'restore') {
-        if (!cancelled) {
-          setShouldRestoreApps(false);
-          setRestoreRedirectChecked(true);
-        }
-        return;
-      }
-
       try {
         const statusResult = await sdkResult(getRehydrateStatus());
-        if (!statusResult.ok) {
-          if (!cancelled) {
-            setShouldRestoreApps(false);
-            setRestoreRedirectChecked(true);
-          }
-          return;
-        }
-
-        const status = statusResult.data as { completed?: boolean; restoreIntent?: boolean };
-        const pendingRestore = !status.completed && (driftChoice === 'restore' || Boolean(status.restoreIntent));
         if (!cancelled) {
-          setShouldRestoreApps(pendingRestore);
-          setRestoreRedirectChecked(true);
+          setRestoreStatus(statusResult.ok ? (statusResult.data ?? null) : null);
         }
       } catch {
+        // No answer is not a restore: carry on to the requested page.
+      } finally {
         if (!cancelled) {
-          setShouldRestoreApps(false);
           setRestoreRedirectChecked(true);
         }
       }
@@ -68,6 +52,8 @@ function AuthenticatedContent({ children }: { children: React.ReactNode }) {
       cancelled = true;
     };
   }, []);
+
+  const shouldRestoreApps = opensRestorePage(restoreStatus, getStoredDriftChoice(), restoreSeenInThisTab(restoreStatus));
 
   const appLoadTimedOut = useMobileLoadTimeout(isAppLoading || !restoreRedirectChecked);
 
@@ -108,7 +94,7 @@ function AuthenticatedContent({ children }: { children: React.ReactNode }) {
   // keep the requested page (its own queries surface the outage) rather than
   // walking an onboarded operator into the wizard.
   if (!loadFailed && !user.hasCompletedOnboarding) {
-    return <Navigate to="/onboarding" replace />;
+    return <Navigate to={setupRoute(restoreStatus)} replace />;
   }
 
   return (
@@ -147,7 +133,7 @@ export default () => {
 
   if (isLoading) {
     return (
-      <div className="flex min-h-screen items-center justify-center p-5">
+      <div className="flex min-h-dvh items-center justify-center p-5">
         <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-muted-foreground" />
       </div>
     );
@@ -158,41 +144,45 @@ export default () => {
   }
 
   if (isGuestDashboardEnabled && !isLoggedIn) {
-    return <GuestDashboard />;
+    return (
+      <GuestAppContextProvider>
+        <GuestDashboard />
+      </GuestAppContextProvider>
+    );
   }
 
   return (
     <RouteWrapper>
-      <QueryErrorResetBoundary>
-        {({ reset }) => (
-          <ErrorBoundary
-            fallbackRender={({ error, resetErrorBoundary }) => (
-              <DashboardLayoutSuspense>
-                <ErrorPage error={error as Error} onReset={resetErrorBoundary} />
-              </DashboardLayoutSuspense>
-            )}
-            onReset={reset}
-            onError={(error, info) => {
-              if (recoverFromChunkLoadError(error)) {
-                return;
-              }
-              captureHubException(error, { componentStack: info.componentStack ?? undefined });
-            }}
-          >
-            <Suspense
-              fallback={
-                <div className="flex min-h-[40vh] items-center justify-center p-5">
-                  <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-muted-foreground" />
-                </div>
-              }
+      <AppContextProvider>
+        <QueryErrorResetBoundary>
+          {({ reset }) => (
+            <ErrorBoundary
+              fallbackRender={({ error, resetErrorBoundary }) => (
+                <DashboardLayoutSuspense>
+                  <ErrorPage error={error as Error} onReset={resetErrorBoundary} />
+                </DashboardLayoutSuspense>
+              )}
+              onReset={reset}
+              onError={(error, info) => {
+                if (recoverFromChunkLoadError(error)) {
+                  return;
+                }
+                captureHubException(error, { componentStack: info.componentStack ?? undefined });
+              }}
             >
-              <AppContextProvider>
+              <Suspense
+                fallback={
+                  <div className="flex min-h-[40vh] items-center justify-center p-5">
+                    <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-muted-foreground" />
+                  </div>
+                }
+              >
                 <AuthenticatedContent>{outlet}</AuthenticatedContent>
-              </AppContextProvider>
-            </Suspense>
-          </ErrorBoundary>
-        )}
-      </QueryErrorResetBoundary>
+              </Suspense>
+            </ErrorBoundary>
+          )}
+        </QueryErrorResetBoundary>
+      </AppContextProvider>
     </RouteWrapper>
   );
 };

@@ -16,15 +16,17 @@ describe('DockerReadFacade.runningContainerAddressesForApps', () => {
     facade = new DockerReadFacade({ warn: vi.fn(), debug: vi.fn() } as never, { listContainers } as never);
   });
 
-  it('collects every network address of running containers of the named apps, any store, either label set', async () => {
+  // A name is any store's to choose; the store half of the URN is the Hub's record of provenance.
+  it('collects every network address of running containers of exactly the named URNs, either label set, and no other store', async () => {
     listContainers.mockResolvedValue([
       container('ci-openclaw:ci-marketplace', { 'ci-hub_network': '172.19.0.9', 'ci-openclaw_ci-marketplace_network': '10.128.12.3' }),
-      container('openclaw:someones-store', { 'ci-hub_network': '172.19.0.14' }, true),
+      container('openclaw:ci-marketplace', { 'ci-hub_network': '172.19.0.14' }, true),
+      container('openclaw:someones-store', { 'openclaw_someones-store_network': '10.128.20.2' }),
       container('ci-memory:ci-marketplace', { 'ci-hub_network': '172.19.0.5' }),
       container('ci-hermes:ci-marketplace', { 'ci-hub_network': '172.19.0.6' }),
     ]);
 
-    const addresses = await facade.runningContainerAddressesForApps(['openclaw', 'ci-openclaw']);
+    const addresses = await facade.runningContainerAddressesForApps(['openclaw:ci-marketplace', 'ci-openclaw:ci-marketplace']);
 
     expect([...addresses].sort()).toEqual(['10.128.12.3', '172.19.0.14', '172.19.0.9']);
   });
@@ -32,7 +34,7 @@ describe('DockerReadFacade.runningContainerAddressesForApps', () => {
   it('asks Docker for RUNNING managed containers only', async () => {
     listContainers.mockResolvedValue([]);
 
-    await facade.runningContainerAddressesForApps(['openclaw']);
+    await facade.runningContainerAddressesForApps(['openclaw:ci-marketplace']);
 
     for (const call of listContainers.mock.calls) {
       expect(call[0]).toMatchObject({ all: false });
@@ -48,6 +50,6 @@ describe('DockerReadFacade.runningContainerAddressesForApps', () => {
   it('answers empty when Docker fails, so the guard refuses rather than falls open', async () => {
     listContainers.mockRejectedValue(new Error('socket EACCES'));
 
-    await expect(facade.runningContainerAddressesForApps(['openclaw'])).resolves.toEqual(new Set());
+    await expect(facade.runningContainerAddressesForApps(['openclaw:ci-marketplace'])).resolves.toEqual(new Set());
   });
 });

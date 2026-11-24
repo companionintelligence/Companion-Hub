@@ -3,6 +3,7 @@ import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { extractDeviceSlug } from '@ci-hub/common/types';
 import type { Request } from 'express';
 import { AuthGuard } from '@/modules/auth/auth.guard';
+import { HubManagerGuard } from '@/modules/auth/hub-manager.guard';
 import { DemoModeGuard } from '@/common/guards/demo-mode.guard';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { FactoryResetDto } from './dto/factory-reset.dto';
@@ -17,11 +18,12 @@ export class FactoryResetController {
   ) {}
 
   @Post('factory-reset')
-  @UseGuards(AuthGuard, DemoModeGuard)
+  @UseGuards(AuthGuard, HubManagerGuard, DemoModeGuard)
   @ApiOperation({ summary: 'Wipe all Hub state and return to first-operator setup' })
   @ApiResponse({ status: 200, description: 'Factory reset completed' })
   @ApiResponse({ status: 400, description: 'Confirmation does not match this device name' })
   @ApiResponse({ status: 403, description: 'Operator authentication required' })
+  @ApiResponse({ status: 409, description: "The Hub's data folder is the top of a disk or a home folder, so nothing was changed" })
   async factoryReset(@Req() req: Request, @Body() body: FactoryResetDto) {
     if (!req.user?.operator) {
       throw new ForbiddenException('Only Hub operators can perform a factory reset');
@@ -36,6 +38,6 @@ export class FactoryResetController {
       throw new BadRequestException('Confirmation does not match this device name');
     }
 
-    return this.factoryResetService.execute();
+    return this.factoryResetService.execute({ removeAppsFromPortal: body.removeAppsFromPortal === true });
   }
 }

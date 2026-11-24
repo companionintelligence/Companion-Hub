@@ -46,7 +46,7 @@ export interface QrCodeProps {
   size?: number;
   /** Error-correction level. Forced to `H` whenever `mark` is set. */
   level?: 'L' | 'M' | 'Q' | 'H';
-  /** Draw the CI mark in the centre, excavating the modules underneath. */
+  /** Draw the Hub mark in the centre, excavating the modules underneath. */
   mark?: boolean;
   /** Rendered above the code. */
   caption?: ReactNode;
