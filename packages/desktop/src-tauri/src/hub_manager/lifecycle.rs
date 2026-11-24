@@ -864,13 +864,48 @@ pub fn stop_hub_for_update(compose_path: &Path, env_path: &Path) -> Result<Strin
 pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> {
     let _stack_change = StackChange::begin();
     let data_dir = get_hub_data_dir();
-    // Record that the user intentionally stopped the Hub so the next launch
-    // does not auto-restart it.
-    if !stack_dev_mode_enabled() {
-        mark_user_stopped(&data_dir);
+    marking_user_stopped(
+        &data_dir,
+        || stop_hub_stack(compose_path, env_path, &data_dir),
+        hub_container_still_up,
+    )
+}
+
+/// Runs `stop` with the Hub marked as stopped by the user, so neither the watchdog nor the next
+/// launch starts it again while it goes down. A stop that fails with the Hub still up drops the
+/// mark again: kept, it would leave that Hub down for good if it later fell over. A failed
+/// `down` can still have taken the Hub down, and then the mark stays so the watchdog doesn't
+/// start it again. A mark from an earlier Stop Hub is never dropped here.
+pub(crate) fn marking_user_stopped(
+    data_dir: &Path,
+    stop: impl FnOnce() -> Result<String, String>,
+    hub_still_up: impl FnOnce() -> bool,
+) -> Result<String, String> {
+    let marks = !stack_dev_mode_enabled() && !is_user_stopped(data_dir);
+    if marks {
+        mark_user_stopped(data_dir);
     }
     START_IMAGE_DOWNLOADS_SEEN.store(false, Ordering::SeqCst);
 
+    let result = stop();
+    if marks && result.is_err() && hub_still_up() {
+        clear_user_stopped(data_dir);
+        let _ = append_desktop_log_for(
+            data_dir,
+            "hub.stop",
+            "The Hub is still running after the failed stop, so it is no longer marked as stopped by the user.",
+        );
+    }
+    result
+}
+
+/// Whether the Hub container is running (or restarting) right now.
+fn hub_container_still_up() -> bool {
+    let state = inspect_container_state_health(hub_container_name());
+    state.starts_with("running:") || state.starts_with("restarting:")
+}
+
+fn stop_hub_stack(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Result<String, String> {
     // If Docker is not available there are no containers to tear down.
     // Return success immediately rather than letting `docker compose down`
     // fail with a confusing plugin-flag error (e.g. "unknown flag: --env-file").
@@ -886,6 +921,8 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
         let _ = append_desktop_log_for(&data_dir, "hub.stop", &message);
         return Ok(message);
     }
+
+    ensure_docker_compose_can_stop_hub_stack(&data_dir)?;
 
     let _ = append_desktop_log_for(
         &data_dir,

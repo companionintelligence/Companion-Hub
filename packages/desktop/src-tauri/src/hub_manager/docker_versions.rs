@@ -56,9 +56,18 @@ fn older_than(found: &Option<String>, minimum: DockerVersion) -> Option<&str> {
 
 /// The message to stop on when Compose is too old to read the stack file at all.
 pub(crate) fn docker_compose_too_old_message(versions: &DockerVersions) -> Option<String> {
+    docker_compose_too_old(versions, "start")
+}
+
+/// The same for Stop Hub, which runs the stack file through Compose too.
+pub(crate) fn docker_compose_too_old_to_stop_message(versions: &DockerVersions) -> Option<String> {
+    docker_compose_too_old(versions, "stop")
+}
+
+fn docker_compose_too_old(versions: &DockerVersions, action: &str) -> Option<String> {
     let found = older_than(&versions.compose, MIN_DOCKER_COMPOSE_VERSION)?;
     Some(format!(
-        "Companion Hub needs Docker Compose {}.{} or newer. This computer has Compose {found}. Update Docker, then start the Hub again.",
+        "Companion Hub needs Docker Compose {}.{} or newer. This computer has Compose {found}. Update Docker, then {action} the Hub again.",
         MIN_DOCKER_COMPOSE_VERSION.0, MIN_DOCKER_COMPOSE_VERSION.1
     ))
 }
@@ -77,6 +86,32 @@ pub(crate) fn read_docker_versions() -> DockerVersions {
     DockerVersions {
         compose: docker_stdout(&["compose", "version", "--short"]),
         engine: docker_stdout(&["version", "--format", "{{.Server.Version}}"]),
+    }
+}
+
+/// Refuse to stop on a Compose too old for the stack file. `docker compose down` reads the file
+/// as `up` does and fails with the same error, which does not say that Docker is too old.
+pub(crate) fn ensure_docker_compose_can_stop_hub_stack(data_dir: &Path) -> Result<(), String> {
+    check_docker_compose_for_stop(
+        data_dir,
+        &DockerVersions {
+            compose: docker_stdout(&["compose", "version", "--short"]),
+            engine: None,
+        },
+    )
+}
+
+/// [`ensure_docker_compose_can_stop_hub_stack`] on versions already read, for the tests.
+pub(crate) fn check_docker_compose_for_stop(
+    data_dir: &Path,
+    versions: &DockerVersions,
+) -> Result<(), String> {
+    match docker_compose_too_old_to_stop_message(versions) {
+        Some(message) => {
+            let _ = append_desktop_log_for(data_dir, "hub.stop", &message);
+            Err(message)
+        }
+        None => Ok(()),
     }
 }
 

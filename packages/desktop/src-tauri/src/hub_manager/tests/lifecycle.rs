@@ -239,3 +239,72 @@ fn config_hash_ignores_the_learned_zone_and_nothing_else() {
         "only DOMAIN itself is left out"
     );
 }
+
+/// A failed Stop Hub left the Hub running and still marked as stopped by the user, so the next
+/// launch and the watchdog would have left it down once it fell over.
+#[test]
+fn a_stop_that_fails_does_not_leave_the_hub_marked_as_stopped() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let data_dir = tempdir.path();
+
+    let result = marking_user_stopped(
+        data_dir,
+        || {
+            assert!(
+                is_user_stopped(data_dir),
+                "marked while the stop runs, so nothing starts the Hub meanwhile"
+            );
+            Err("docker compose down failed.".to_string())
+        },
+        || true,
+    );
+
+    assert_eq!(result, Err("docker compose down failed.".to_string()));
+    assert!(!is_user_stopped(data_dir));
+}
+
+#[test]
+fn a_stop_that_works_leaves_the_hub_marked_as_stopped() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+
+    let result = marking_user_stopped(
+        tempdir.path(),
+        || Ok("Hub stopped".to_string()),
+        || panic!("a stop that works doesn't ask whether the Hub is up"),
+    );
+
+    assert_eq!(result, Ok("Hub stopped".to_string()));
+    assert!(is_user_stopped(tempdir.path()));
+}
+
+/// `down` can fail after it has removed the Hub's containers. Dropping the mark then would let
+/// the watchdog start the Hub the user just stopped.
+#[test]
+fn a_stop_that_fails_with_the_hub_already_down_keeps_the_mark() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+
+    let result = marking_user_stopped(
+        tempdir.path(),
+        || Err("docker compose down failed.".to_string()),
+        || false,
+    );
+
+    assert!(result.is_err());
+    assert!(is_user_stopped(tempdir.path()));
+}
+
+/// A Hub stopped earlier stays stopped when a later stop, such as Clear Tunnel Token's, fails.
+#[test]
+fn a_failed_stop_keeps_the_mark_from_an_earlier_stop() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    mark_user_stopped(tempdir.path());
+
+    let result = marking_user_stopped(
+        tempdir.path(),
+        || Err("docker compose down failed.".to_string()),
+        || true,
+    );
+
+    assert!(result.is_err());
+    assert!(is_user_stopped(tempdir.path()));
+}
