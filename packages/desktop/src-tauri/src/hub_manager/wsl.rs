@@ -119,9 +119,8 @@ fn wsl_listing_names(listing: &str) -> impl Iterator<Item = &str> {
         .map(|line| line.trim().trim_matches('\u{0}').trim())
 }
 
-/// Run a shell script as root inside a WSL2 distro (`wsl -d <distro> -u root -- sh -lc`).
-/// Returns whether it exited 0. WSL_UTF8 keeps wsl.exe output UTF-8; CREATE_NO_WINDOW
-/// suppresses a console flash. Shared by the GPU and Ollama in-distro setup steps.
+/// Run a shell script as root inside a WSL2 distro (`wsl -d <distro> -u root -e sh -lc`).
+/// Returns whether it exited 0. Shared by the GPU and Ollama in-distro setup steps.
 #[cfg(windows)]
 pub(crate) fn run_wsl_root_script(distro: &str, script: &str) -> bool {
     run_wsl_root_script_capture(distro, script).is_some()
@@ -131,69 +130,52 @@ pub(crate) fn run_wsl_root_script(distro: &str, script: &str) -> bool {
 /// failure), so callers can branch on a marker the script echoes.
 #[cfg(windows)]
 pub(crate) fn run_wsl_root_script_capture(distro: &str, script: &str) -> Option<String> {
+    run_wsl_root_script_output(distro, script).ok()
+}
+
+/// Runs `script` as root in `distro` and returns its trimmed stdout, or why it failed: the exit code
+/// and the end of stderr.
+///
+/// `-e` matters. After `--`, wsl.exe hands the rest of its command line to the distro's shell to
+/// parse again, so a script's `$dir` became empty and its quotes were eaten before `sh` saw it (the
+/// TLS script died with "mkdir: cannot create directory ''"). With `-e`, wsl.exe execs `sh` with the
+/// arguments as Windows splits them, and Rust quotes them by those same rules, so the script arrives
+/// byte for byte. Stdin stays free, so an `apt-get` in the script can't read the rest of it.
+/// WSL_UTF8 keeps wsl.exe output UTF-8; CREATE_NO_WINDOW suppresses a console flash.
+#[cfg(windows)]
+pub(crate) fn run_wsl_root_script_output(distro: &str, script: &str) -> Result<String, String> {
     let mut command = Command::new("wsl.exe");
     command.creation_flags(CREATE_NO_WINDOW);
     command.env("WSL_UTF8", "1");
-    command.args(["-d", distro, "-u", "root", "--", "sh", "-lc", script]);
-    let output = command.output().ok()?;
-    if !output.status.success() {
-        return None;
+    command.args(["-d", distro, "-u", "root", "-e", "sh", "-lc", script]);
+    let output = command
+        .output()
+        .map_err(|error| format!("Couldn't run wsl.exe: {error}"))?;
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
     }
-    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    Err(wsl_script_failure(
+        output.status.code(),
+        &String::from_utf8_lossy(&output.stderr),
+    ))
 }
 
-/// Runs `script` as root in `distro`, handed to `sh` on stdin byte for byte, and returns its trimmed
-/// stdout, or why it failed with the exit code and stderr. For a script whose text must arrive
-/// unchanged: as an argument after `wsl.exe --` it goes to the distro's shell to be parsed again, and
-/// a multi-line script with quotes in it fails there before it runs.
-#[cfg(windows)]
-pub(crate) fn run_wsl_root_script_stdin(distro: &str, script: &str) -> Result<String, String> {
-    use std::io::Write;
-    use std::process::Stdio;
-
-    let mut child = Command::new("wsl.exe")
-        .creation_flags(CREATE_NO_WINDOW)
-        .env("WSL_UTF8", "1")
-        .args(["-d", distro, "-u", "root", "-e", "sh"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("Couldn't run wsl.exe: {error}"))?;
-    // Written whole and closed, so sh reads to the end of the script and then finishes.
-    let written = child
-        .stdin
-        .take()
-        .map(|mut stdin| stdin.write_all(script.as_bytes()));
-    let output = child
-        .wait_with_output()
-        .map_err(|error| format!("Couldn't wait for wsl.exe: {error}"))?;
-    if let Some(Err(error)) = written {
-        return Err(format!("Couldn't hand the script to wsl.exe: {error}"));
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if output.status.success() {
-        return Ok(stdout);
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr);
+/// Why a script run in WSL failed: its exit code and the end of its stderr, which says what failed
+/// (a long apt or openssl transcript before it is mostly noise).
+#[cfg(any(test, windows))]
+pub(crate) fn wsl_script_failure(code: Option<i32>, stderr: &str) -> String {
     let stderr = stderr.trim();
-    // The end of stderr says what failed; a long apt or openssl transcript is mostly noise.
-    let tail: String = {
-        let chars: Vec<char> = stderr.chars().collect();
-        chars[chars.len().saturating_sub(600)..].iter().collect()
-    };
-    Err(format!(
-        "{} {}",
-        output.status.code().map_or_else(
-            || "It ended without an exit code.".to_string(),
-            |code| format!("It exited with code {code}.")
-        ),
-        if tail.is_empty() {
-            "It printed nothing on stderr.".to_string()
-        } else {
-            format!("stderr: {tail}")
-        }
-    ))
+    let chars: Vec<char> = stderr.chars().collect();
+    let tail: String = chars[chars.len().saturating_sub(600)..].iter().collect();
+    let code = code.map_or_else(
+        || "It ended without an exit code.".to_string(),
+        |code| format!("It exited with code {code}."),
+    );
+    if tail.is_empty() {
+        format!("{code} It printed nothing on stderr.")
+    } else {
+        format!("{code} stderr: {tail}")
+    }
 }
 
 /// Install + configure nvidia-container-toolkit inside the WSL2 distro so the native

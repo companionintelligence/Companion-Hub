@@ -10,8 +10,8 @@ use crate::hub_manager::{
     default_gateway_from_route_table, docker_answers_for_launch, engine_distro_from_listing,
     is_own_address, restore_wsl_engine_logon_script, wait_for_wsl_engine,
     write_update_listener_host, wsl2_engine_user_script, wsl_engine_logon_script,
-    wsl_engine_should_revive, wsl_keepalive_args, EngineWait, KeepaliveProcess, KeepaliveStart,
-    KeepaliveState, WslKeepalive,
+    wsl_engine_should_revive, wsl_keepalive_args, wsl_script_failure, EngineWait, KeepaliveProcess,
+    KeepaliveStart, KeepaliveState, WslKeepalive,
 };
 
 fn engine(kind: DockerEngineKind) -> PinnedDockerEngine {
@@ -459,4 +459,20 @@ fn the_wsl_bind_script_guards_only_our_own_bind() {
         status.success(),
         "the distro script is not valid POSIX shell"
     );
+}
+
+#[test]
+fn a_failed_wsl_script_reports_its_exit_code_and_the_end_of_stderr() {
+    assert_eq!(
+        wsl_script_failure(Some(1), "mkdir: cannot create directory '': No such file or directory\n"),
+        "It exited with code 1. stderr: mkdir: cannot create directory '': No such file or directory"
+    );
+    assert_eq!(
+        wsl_script_failure(None, "  \n"),
+        "It ended without an exit code. It printed nothing on stderr."
+    );
+    let long = format!("{}the end", "apt noise ".repeat(200));
+    let message = wsl_script_failure(Some(100), &long);
+    assert!(message.ends_with("the end"));
+    assert!(message.len() < 700);
 }

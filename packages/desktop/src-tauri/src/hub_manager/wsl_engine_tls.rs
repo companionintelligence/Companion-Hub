@@ -260,7 +260,7 @@ pub(crate) fn ensure_wsl_engine_tls(data_dir: &Path) -> Result<(), String> {
         .ok_or_else(|| "No Ubuntu WSL distro was found for the Docker engine.".to_string())?;
 
     let output =
-        run_wsl_root_script_stdin(&distro, &wsl_engine_tls_root_script()).map_err(|why| {
+        run_wsl_root_script_output(&distro, &wsl_engine_tls_root_script()).map_err(|why| {
             format!("Couldn't set up TLS for Docker in the WSL distro \"{distro}\". {why}")
         })?;
     let marker = last_line(&output).to_string();
