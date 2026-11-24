@@ -36,6 +36,21 @@ describe('Titlebar', () => {
     expect(screen.getByRole('img', { name: 'Companion Hub' })).toBeInTheDocument();
   });
 
+  it.each([
+    ['Linux and Windows', 'linux', '40px'],
+    ['macOS', 'macos', '28px'],
+  ])('is drawn exactly as tall as --titlebar-height says on %s', async (_shell, osType, height) => {
+    Object.defineProperty(window, '__TAURI_OS_PLUGIN_INTERNALS__', { value: { os_type: osType }, configurable: true });
+    const { container } = render(<Titlebar />);
+
+    // The header, dialogs and the page are placed by --titlebar-height. A bar sized by a rem class
+    // (h-10, 42.5px at the 17px root) came out taller, and every page ran past the window.
+    await waitFor(() => expect(document.documentElement.style.getPropertyValue('--titlebar-height')).toBe(height));
+    const bar = container.firstElementChild as HTMLElement;
+    expect(bar.style.height).toBe(height);
+    expect(bar.className).not.toMatch(/\bh-\d/);
+  });
+
   it('calls the app Companion Hub in every language, never CI Hub or CI-Hub', () => {
     const files = Object.entries(TRANSLATIONS);
     expect(files.length).toBeGreaterThan(1);
