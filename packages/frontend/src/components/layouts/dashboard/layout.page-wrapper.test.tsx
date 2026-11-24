@@ -1,4 +1,4 @@
-import { render, screen } from '@/tests/test-utils';
+import { act, render, screen } from '@/tests/test-utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { DashboardLayout } from '@/components/layouts/dashboard/layout';
@@ -10,8 +10,10 @@ const { appContext, registration } = vi.hoisted(() => ({
     isLoading: false,
     loadFailed: false,
   },
-  registration: { data: null as unknown },
+  registration: { data: null as unknown, refetch: vi.fn() },
 }));
+const { handleSessionExpired } = vi.hoisted(() => ({ handleSessionExpired: vi.fn() }));
+vi.mock('@/lib/session-expired', () => ({ handleSessionExpired }));
 
 vi.mock('@/lib/mobile-connection', () => ({
   isMobileClient: () => false,
@@ -64,6 +66,26 @@ function renderAt(path: string) {
 describe('DashboardLayout page wrapper', () => {
   beforeEach(() => {
     registration.data = null;
+    handleSessionExpired.mockClear();
+  });
+
+  // The device deleted in the Portal, a reset from another tab: Home and Settings stayed up (#2556).
+  it('sends an open page on when the Hub stops being paired', async () => {
+    vi.useFakeTimers();
+    try {
+      const unpaired = { phase: 'unregistered', registered: false, degradedReasons: [] };
+      registration.data = unpaired;
+      registration.refetch.mockResolvedValue({ data: unpaired });
+
+      renderAt('/home');
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3_000);
+      });
+
+      expect(handleSessionExpired).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('shows the Portal notice on the page when check-ins keep failing', () => {
