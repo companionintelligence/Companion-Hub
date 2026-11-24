@@ -277,14 +277,14 @@ describe('RestoreAppsPage', () => {
       expect(navigate).not.toHaveBeenCalled();
     });
 
-    // Apps on This machine only or Private VPN never reach the Portal, so the lists above can't name them (#2553).
-    it('says apps kept on this machine or the Private VPN are not brought back', async () => {
+    // Store apps and custom apps on This machine only or Private VPN never reach the Portal, so the lists above can't name them (#2553).
+    it('says which apps a reinstall does not bring back', async () => {
       await act(async () => {
         render(<RestoreAppsPage />);
       });
 
       expect(await screen.findByTestId('restore-summary-local-apps')).toHaveTextContent(
-        "Apps you installed on This machine only or Private VPN aren't kept in your CI Account, so pairing again doesn't bring them back.",
+        "App Store apps and custom apps on This machine only or Private VPN aren't kept, so pairing again doesn't bring them back.",
       );
     });
 
