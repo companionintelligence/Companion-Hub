@@ -148,6 +148,9 @@ function runtimeHealthQueryKey(appUrn: string) {
   return ['app-runtime-health', appUrn];
 }
 
+/** The app's Hub access panel in its settings (hub-access.tsx): its app key and identity verification. */
+export const appHubAccessQueryKey = (appUrn: string) => ['app-hub-access', appUrn];
+
 /**
  * Refetch every app record after the Hub comes back. What a restart changed was announced while no
  * browser was connected. No app query polls, so an open page kept what it had read before (#2286).
@@ -189,6 +192,12 @@ export function invalidateAppQueries(queryClient: QueryClient, appUrn: string) {
    * once instead of showing the previous run's verdict for up to a poll.
    */
   void queryClient.invalidateQueries({ queryKey: runtimeHealthQueryKey(appUrn) });
+  /*
+   * Rotate in the Hub access panel restarts the app, and the restart is what gives it a new key and
+   * identity secret. The panel read them while the app was still restarting and kept "not
+   * provisioned" until Settings was opened again (#2540). The same goes for an MCP access answer.
+   */
+  void queryClient.invalidateQueries({ queryKey: appHubAccessQueryKey(appUrn) });
 }
 
 function setCachedAppStatus(

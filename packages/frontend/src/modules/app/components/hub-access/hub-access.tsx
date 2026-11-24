@@ -10,6 +10,7 @@ import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import { asLegacyTranslate } from '@/lib/i18n/legacy-translate';
 import type { McpAccessChoice } from '@ci-hub/common/types';
+import { appHubAccessQueryKey } from '../../helpers/app-sse-cache';
 import { McpAccessSection } from './mcp-access-section';
 
 /** Mirrors the backend hub-access view (GET /api/app-lifecycle/:urn/hub-access). Never carries raw values. */
@@ -22,8 +23,6 @@ export interface HubAccessStatus {
   /** The app's request for the Hub's MCP tools and the answer to it; `null` when its manifest does not ask. Older Hubs omit it. */
   mcp?: { access: McpAccessChoice | null; keyCapability: string | null } | null;
 }
-
-export const hubAccessQueryKey = (appUrn: string) => ['app-hub-access', appUrn];
 
 interface HubAccessProps {
   appUrn: string;
@@ -52,7 +51,7 @@ export const HubAccess = ({ appUrn, hasUnsavedChanges = false }: HubAccessProps)
   const [confirming, setConfirming] = useState(false);
 
   const query = useQuery({
-    queryKey: hubAccessQueryKey(appUrn),
+    queryKey: appHubAccessQueryKey(appUrn),
     queryFn: async () => {
       // throwOnError: the generated client resolves (not rejects) on non-2xx by default, which
       // would mask a failed fetch as `data: undefined`.
@@ -69,7 +68,7 @@ export const HubAccess = ({ appUrn, hasUnsavedChanges = false }: HubAccessProps)
     mutationFn: () => client.post({ url: `/api/app-lifecycle/${encodeURIComponent(appUrn)}/hub-access/rotate`, throwOnError: true }),
     onSuccess: async () => {
       toast.success(t('APP_SETTINGS_HUB_ACCESS_ROTATED'));
-      await queryClient.invalidateQueries({ queryKey: hubAccessQueryKey(appUrn) });
+      await queryClient.invalidateQueries({ queryKey: appHubAccessQueryKey(appUrn) });
     },
     // A 409 names the operation holding the app ("still starting, try again"); nothing was rotated.
     onError: (error) =>
@@ -141,7 +140,9 @@ export const HubAccess = ({ appUrn, hasUnsavedChanges = false }: HubAccessProps)
         </p>
       )}
 
-      {status.mcp && <McpAccessSection appUrn={appUrn} mcp={status.mcp} queryKey={hubAccessQueryKey(appUrn)} hasUnsavedChanges={hasUnsavedChanges} />}
+      {status.mcp && (
+        <McpAccessSection appUrn={appUrn} mcp={status.mcp} queryKey={appHubAccessQueryKey(appUrn)} hasUnsavedChanges={hasUnsavedChanges} />
+      )}
 
       {/* Confirmation gate: rotating restarts the app, so it must not fire on a single click. */}
       {confirming && (

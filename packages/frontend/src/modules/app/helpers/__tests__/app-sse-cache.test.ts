@@ -27,9 +27,10 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
 /**
  * Queries `invalidateAppQueries` refreshes for one app: installed apps, installed
  * urns, the app row, app context, the Public Web report that says whether a
- * bound custom domain is still dark, and the app's runtime health.
+ * bound custom domain is still dark, the app's runtime health and its Hub access
+ * panel.
  */
-const INVALIDATED_PER_APP_EVENT = 6;
+const INVALIDATED_PER_APP_EVENT = 7;
 
 describe('handleAppSseEvent', () => {
   let queryClient: {

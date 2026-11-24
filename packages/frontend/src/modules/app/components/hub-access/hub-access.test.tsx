@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import en from '@ci-hub/common/i18n/translations/en.json';
 import enUS from '@ci-hub/common/i18n/translations/en-US.json';
 import { TranslatableError } from '@/types/error.types';
+import { handleAppSseEvent } from '../../helpers/app-sse-cache';
 import { HubAccess } from './hub-access';
 
 // "Hub access" section of the app settings dialog: Hub-provisioned trust material (app key +
@@ -15,7 +16,8 @@ import { HubAccess } from './hub-access';
 
 const h = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
 vi.mock('@/api-client/client.gen', () => ({
-  client: { get: (...args: unknown[]) => h.get(...args), post: (...args: unknown[]) => h.post(...args) },
+  // getConfig: the generated query keys the app's SSE handling marks stale read the base URL off it.
+  client: { get: (...args: unknown[]) => h.get(...args), post: (...args: unknown[]) => h.post(...args), getConfig: () => ({}) },
 }));
 
 vi.mock('react-i18next', () => {
@@ -47,7 +49,7 @@ const WITH_KEY = {
 function renderHubAccess(props: { hasUnsavedChanges?: boolean } = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
-  return render(<HubAccess appUrn={APP_URN} {...props} />, { wrapper });
+  return { qc, ...render(<HubAccess appUrn={APP_URN} {...props} />, { wrapper }) };
 }
 
 describe('HubAccess', () => {
@@ -153,6 +155,32 @@ describe('HubAccess', () => {
     await waitFor(() => expect(h.get.mock.calls.length).toBeGreaterThan(getCalls));
     // Confirm dismissed after rotating.
     expect(screen.queryByTestId('hub-access-confirm')).toBeNull();
+  });
+
+  // CI-Hub#2540: the rotate answers while the app is still restarting, so the read that follows finds no
+  // key yet. The panel kept that until Settings was reopened, though the app came back with a new key.
+  it('shows the new key once the app is back from the rotate restart', async () => {
+    const user = userEvent.setup();
+    const NEW_KEY = { ...WITH_KEY, appKey: { ...WITH_KEY.appKey, prefix: '5eed0b0b' } };
+    h.get.mockResolvedValue({ data: WITH_KEY });
+    h.post.mockResolvedValue({ data: { requestId: 'req-1' } });
+
+    const { qc } = renderHubAccess();
+    await waitFor(() => expect(screen.getByTestId('hub-access')).toBeTruthy());
+
+    // While the app restarts it holds nothing: the old key is revoked and the new one not minted yet.
+    h.get.mockResolvedValue({ data: { appKey: null, identityVerification: false, provisioned: true } });
+    await user.click(screen.getByTestId('hub-access-rotate'));
+    await user.click(screen.getByTestId('hub-access-rotate-confirm'));
+    await waitFor(() => expect(screen.getByText('APP_SETTINGS_HUB_ACCESS_IDENTITY_OFF')).toBeTruthy());
+    expect(screen.queryByTestId('hub-access-key')).toBeNull();
+
+    // The restart provisions the new material, and the Hub says the app is running again.
+    h.get.mockResolvedValue({ data: NEW_KEY });
+    handleAppSseEvent(qc, { event: 'restart_success', appUrn: APP_URN, appStatus: 'running' });
+
+    await waitFor(() => expect(screen.getByText('5eed0b0b…')).toBeTruthy());
+    expect(screen.getByText('APP_SETTINGS_HUB_ACCESS_IDENTITY_ON')).toBeTruthy();
   });
 
   // Every app gets the same confirm, so it may promise only what holds for all of them. CI Memory has no app key
