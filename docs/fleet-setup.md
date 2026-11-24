@@ -83,11 +83,36 @@ whether another Hub carries the same ID:
 - If no other Hub does, keep the ID: set `HUB_ALLOW_FOREIGN_DEVICE_ID=true` in the same env file and
   recreate the Hub container. `cihub doctor` then reports the ID as kept from another machine and does
   not fail.
-- If another Hub does, decide which one keeps the Portal device. Give the other one its own ID with the
-  steps above, and reset its registration from **Settings** before you pair it again.
+- If another Hub does, decide which one keeps the Portal device. Give the other one its own ID as
+  described in [Changing a registered Hub's device ID](#changing-a-registered-hubs-device-id).
 
 If you moved a Hub to new hardware on purpose and it must keep its Portal device, set
 `HUB_ALLOW_FOREIGN_DEVICE_ID=true` as well.
+
+### Changing a registered Hub's device ID
+
+When a Hub pairs, it writes the device ID it paired under to `state/registered-device-id` in its data
+folder, and from then on that record wins over `DEVICE_ID`. Changing `DEVICE_ID` later, by hand or
+through an older desktop app, doesn't change the ID the Hub checks in with. The Hub logs a warning
+with the last characters of both IDs instead. Windows desktop 0.3.4 wrote the registry `MachineGuid`
+into `DEVICE_ID` once Windows removed `wmic`, and Portal refused those Hubs until the record won.
+
+A registration reset keeps the record, whether it comes from **Settings > Reset registration**, from
+Portal reporting the device removed, or from a factory reset, so the Hub pairs again under the ID
+Portal knows. Only Start fresh ("Set up as new device" on the pairing page, or
+`cihub register --fresh`) removes it. To change a registered Hub's device ID on purpose:
+
+1. Reset its registration from **Settings**. `cihub register` stops at "Already registered" on a
+   registered Hub, so this comes first.
+2. Set `DEVICE_ID` in the env file and recreate the Hub container: `cihub up <env>`.
+3. Pair it as a new device: `cihub register --fresh --code <code>`. Portal sees it as a new device.
+
+With the desktop app, the order changes, because every launch copies the record into `DEVICE_ID`.
+After the reset, choose **Start fresh** on the pairing page, then quit the app, set `DEVICE_ID`,
+reopen the app, and pair.
+
+The copied-ID check judges the record when there is one, because that is the ID the Hub pairs under,
+and a data folder copied from another node brings it along. The same steps give such a Hub its own ID.
 
 ## Operators and accounts: three identity planes
 
@@ -105,8 +130,8 @@ there is no fleet-wide operator account, and adding a node means onboarding it s
 
 A Hub operator is linked to a Portal user through `federated_identity`, keyed on the verified
 `(issuer, subject)` OIDC pair. That link is what lets Portal evaluate org grants for the person in
-front of a Hub session. An operator with no federated row is treated as a compiled member rather than
-an owner. See CI-Engineering `architecture/identity/unified-identity-plan.md`.
+front of a Hub session. An operator with no Portal link (no `federated_identity` row, or only a `did:`
+one made by sign in with a DID) is treated as a compiled member rather than an owner. See CI-Engineering `architecture/identity/unified-identity-plan.md`.
 
 **A device key is not a user, and an API key is neither.** `cihub api-key create` mints an MCP-scoped
 key for tools; it is refused by the pool routes and by Portal. Two narrower scopes exist, each alone
@@ -335,17 +360,18 @@ afterwards: a `0.0.0.0` with no guard is the exposure this mode exists to avoid.
 status probe reads the guard as `systemctl is-active` — no sudo — which for a `RemainAfterExit`
 oneshot is evidence, not a hint: rules that failed leave the unit `failed`, not `active`.
 
-Two nodes are deliberately not touched by this path. **beta-1** runs Ollama as a user-scope unit
-(`ollama-local.service` under `ci`'s `systemd --user`) with the system unit disabled; enabling the
-system unit there would start a second daemon on the same port, so the installer refuses with the
-reason — before running ollama.com's installer, which would do exactly that. And a node with no
-tailnet address fails the tailnet bind rather than falling back to something else. The beta-1
-refusal is decided by the socket, not the unit's name: **core-2** runs an `ollama-tunnel.service`
+Two kinds of node are deliberately not touched by this path. The first runs Ollama as a user-scope
+unit (`ollama-local.service` under a login user's `systemd --user`) with the system unit disabled;
+enabling the system unit there would start a second daemon on the same port, so the installer refuses
+with the reason — before running ollama.com's installer, which would do exactly that. beta-1 was such
+a node until 2026-10-23, when its Ollama moved to the system `ollama.service`; it is managed like any
+other node now. The second has no tailnet address: it fails the tailnet bind rather than falling back
+to something else. The user-scope refusal is decided by the socket, not the unit's name: **core-2** runs an `ollama-tunnel.service`
 under `ci`'s `systemd --user` too — an ssh forward to beta-1 — while its system `ollama.service` is
 what serves `:11434`, and it is managed like any other node, with a note naming the tunnel unit
 (see [the listener rule in `CLI.md`](CLI.md#ollamas-bind-one-file-read-back)). That is the only
 case the name gives way to: a serving system unit. With **nothing** on `:11434` beside an active
-`ollama*` user unit the node is still skipped — beta-1 mid-restart looks exactly like that, and the
+`ollama*` user unit the node is still skipped — a user-unit node mid-restart looks exactly like that, and the
 probe has no way to tell a tunnel from a daemon that has not bound yet — and so is a listener the
 probe cannot classify, unless its uid belongs to no login user.
 

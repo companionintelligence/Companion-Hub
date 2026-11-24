@@ -65,12 +65,12 @@ export const ColorSelector: React.FC<ColorSelectorProps> = ({ name = 'color', la
             aria-label={color}
             onClick={() => handleChange(color)}
             className={clsx(
-              'relative h-8 w-8 rounded-full transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+              'relative h-8 w-8 rounded-full transition-[color,background-color,border-color,box-shadow,opacity,transform] duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
               COLOR_MAP[color],
               value === color ? 'ring-2 ring-offset-2 ring-offset-background ring-foreground scale-110' : 'hover:scale-110',
             )}
           >
-            {value === color && <Check className="absolute inset-0 m-auto h-4 w-4 text-white drop-shadow-sm" strokeWidth={3} />}
+            {value === color && <Check className="absolute inset-0 m-auto h-4 w-4 text-white" strokeWidth={3} />}
             <input type="radio" name={name} value={color} checked={value === color} onChange={() => handleChange(color)} className="sr-only" />
           </button>
         ))}

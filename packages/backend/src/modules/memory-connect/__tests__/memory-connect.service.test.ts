@@ -1,5 +1,8 @@
+import { HttpStatus } from '@nestjs/common';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { MemoryConnectService } from '../memory-connect.service';
+import { TranslatableError } from '@/common/error/translatable-error';
+import { RESTARTS_THAT_WAIT_FOR_THE_APP } from '@/modules/app-lifecycle/app-lifecycle.service';
+import { MemoryConnectService, MemoryConsentUnreachableException } from '../memory-connect.service';
 
 /**
  * Unit tests for the connect orchestration: consent-URL construction, the
@@ -33,9 +36,10 @@ function makeService() {
     markSkipped: vi.fn().mockResolvedValue(undefined),
     clear: vi.fn().mockResolvedValue(undefined),
     remove: vi.fn().mockResolvedValue(undefined),
-    getInjectableCreds: vi.fn().mockResolvedValue({ url: 'http://gateway:8642', token: 'tok' }),
-    credsFromRow: vi.fn().mockReturnValue({ url: 'http://gateway:8642', token: 'tok' }),
+    getInjectableCreds: vi.fn().mockResolvedValue({ url: 'http://ci-memory:8642', token: 'tok' }),
+    credsFromRow: vi.fn().mockReturnValue({ url: 'http://ci-memory:8642', token: 'tok' }),
     listConnected: vi.fn().mockResolvedValue([]),
+    getActiveConnection: vi.fn().mockResolvedValue(undefined),
   };
   const pending = { create: vi.fn().mockReturnValue('state-nonce'), consume: vi.fn(), recordOutcome: vi.fn() };
   const deviceRegistration = { getFirstDeviceRegistration: vi.fn().mockResolvedValue({ hubSubdomain: 'core2-x' }) };
@@ -43,10 +47,19 @@ function makeService() {
     getConfig: vi.fn().mockReturnValue({ domain: 'example.org', userSettings: { internalIp: '192.168.1.9', port: 80 } }),
   };
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+  // The restart a credential change applies itself with, once it holds the app.
+  const held = { restart: vi.fn().mockResolvedValue({ requestId: 'r-1' }), restartAndWait: vi.fn().mockResolvedValue(true) };
   const lifecycle = {
     restartApp: vi.fn().mockResolvedValue({ requestId: 'r-1' }),
     restartAppAndWait: vi.fn().mockResolvedValue(true),
     regenerateAppEnv: vi.fn().mockResolvedValue(true),
+    held,
+    withAppHeld: vi.fn(async (_appUrn: string, run: (app: typeof held) => Promise<unknown>) => run(held)),
+    withAppHeldUnlessBusy: vi.fn(
+      async (_appUrn: string, run: (app: typeof held) => Promise<unknown>): Promise<{ result: unknown } | { busy: string }> => ({
+        result: await run(held),
+      }),
+    ),
   };
   // applyAndRestart only restarts an app that is actually up — a stopped app must
   // not be started by a rotation sweep or a status poll. Default to running so the
@@ -75,7 +88,8 @@ function makeService() {
 
 const PROVIDER = {
   appUrn: 'ci-memory:local',
-  internalUrl: 'http://gateway:8642',
+  internalUrl: 'http://10.128.11.2:8642',
+  consumerUrl: 'http://ci-memory:8642',
   publicUrl: 'https://ci-memory.example.org',
 };
 
@@ -150,6 +164,156 @@ describe('MemoryConnectService.startConnect', () => {
   });
 });
 
+/**
+ * A local-only ci-memory on a listen-all Hub is addressed as 127.0.0.1, which is the visitor's own machine
+ * unless the visitor is on the Hub. Its port answers on every interface, so a visitor who reached the Hub
+ * machine directly is sent to ci-memory on the same host; anyone else is refused rather than sent home.
+ */
+describe('MemoryConnectService.startConnect with a loopback ci-memory address', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const LOOPBACK_PROVIDER = {
+    appUrn: 'ci-memory:local',
+    internalUrl: 'http://10.128.11.2:8642',
+    consumerUrl: 'http://ci-memory:8642',
+    publicUrl: 'http://127.0.0.1:8642',
+    hostPortOnLoopback: false,
+  };
+
+  function listenAllService() {
+    const made = makeService();
+    made.resolver.findProvider.mockResolvedValue(LOOPBACK_PROVIDER);
+    made.config.getConfig.mockReturnValue({ domain: 'example.org', localDomain: 'ci.lan', userSettings: { internalIp: '0.0.0.0', port: 80 } });
+    return made;
+  }
+
+  const consentOrigin = async (service: MemoryConnectService, host: string) =>
+    new URL(await service.startConnect('ci-openclaw:local', undefined, 'user-1', { host })).origin;
+
+  it('sends a LAN caller to ci-memory on the address it reached the Hub on', async () => {
+    const { service } = listenAllService();
+
+    expect(await consentOrigin(service, '192.168.1.9:5002')).toBe('http://192.168.1.9:8642');
+  });
+
+  it('treats a single-label LAN name as the Hub machine', async () => {
+    const { service } = listenAllService();
+
+    expect(await consentOrigin(service, 'hubbox:5002')).toBe('http://hubbox:8642');
+  });
+
+  it('sends a Private VPN caller to ci-memory on its tailnet name', async () => {
+    const { service } = listenAllService();
+
+    expect(await consentOrigin(service, 'hubbox.tail1234.ts.net')).toBe('http://hubbox.tail1234.ts.net:8642');
+  });
+
+  it('keeps the loopback address for a browser on the Hub machine', async () => {
+    const { service } = listenAllService();
+
+    expect(await consentOrigin(service, '127.0.0.1:5002')).toBe('http://127.0.0.1:8642');
+    expect(await consentOrigin(service, 'localhost:5002')).toBe('http://127.0.0.1:8642');
+  });
+
+  it('refuses a caller on the public origin instead of sending it to its own machine', async () => {
+    const { service, pending } = listenAllService();
+
+    await expect(service.startConnect('ci-openclaw:local', undefined, 'user-1', { host: 'core2-x.example.org' })).rejects.toBeInstanceOf(
+      MemoryConsentUnreachableException,
+    );
+    expect(pending.create).not.toHaveBeenCalled();
+  });
+
+  it('sends a caller on a local-domain name to ci-memory under that name', async () => {
+    const { service } = listenAllService();
+
+    expect(await consentOrigin(service, 'hub.ci.lan')).toBe('http://hub.ci.lan:8642');
+  });
+
+  it('refuses a caller whose host it cannot read', async () => {
+    const { service } = listenAllService();
+
+    await expect(service.startConnect('ci-openclaw:local', undefined, 'user-1', {})).rejects.toBeInstanceOf(MemoryConsentUnreachableException);
+    await expect(service.startConnect('ci-openclaw:local', undefined, 'user-1', { host: 'evil.com@192.168.1.9' })).rejects.toBeInstanceOf(
+      MemoryConsentUnreachableException,
+    );
+  });
+
+  it('refuses a LAN caller when ci-memory keeps its host port on loopback', async () => {
+    const { service, resolver } = listenAllService();
+    resolver.findProvider.mockResolvedValue({ ...LOOPBACK_PROVIDER, hostPortOnLoopback: true });
+
+    await expect(service.startConnect('ci-openclaw:local', undefined, 'user-1', { host: '192.168.1.9' })).rejects.toBeInstanceOf(
+      MemoryConsentUnreachableException,
+    );
+  });
+
+  it('leaves a routable ci-memory address alone for every caller', async () => {
+    const { service, resolver } = listenAllService();
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+
+    expect(await consentOrigin(service, '192.168.1.9')).toBe('https://ci-memory.example.org');
+    expect(await consentOrigin(service, 'core2-x.example.org')).toBe('https://ci-memory.example.org');
+  });
+});
+
+/**
+ * OpenClaw and Hermes keep their host port on loopback, so their own address is 127.0.0.1. After consent
+ * the flow must not land a browser elsewhere on that address: it is the browser's own machine.
+ */
+describe('MemoryConnectService.startConnect landing after consent for a loopback-only app', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  function loopbackAppService() {
+    const made = makeService();
+    made.resolver.findProvider.mockResolvedValue(PROVIDER);
+    made.resolver.getAppAccessUrls.mockResolvedValue({ publicUrl: 'http://127.0.0.1:18789', primaryAvailable: true });
+    made.config.getConfig.mockReturnValue({ domain: 'example.org', userSettings: { internalIp: '0.0.0.0', port: 80 } });
+    return made;
+  }
+
+  it("lands a LAN caller on the app's Hub page instead of its loopback address", async () => {
+    const { service, pending } = loopbackAppService();
+
+    await service.startConnect('ci-openclaw:ci-marketplace', undefined, 'user-1', { host: '192.168.1.9' });
+
+    expect(pending.create).toHaveBeenCalledWith(
+      'ci-openclaw:ci-marketplace',
+      'https://core2-x.example.org/apps/ci-marketplace/ci-openclaw',
+      'user-1',
+    );
+  });
+
+  it('does not accept the loopback app address as `next` from a caller off the Hub machine', async () => {
+    const { service, pending } = loopbackAppService();
+
+    await service.startConnect('ci-openclaw:ci-marketplace', 'http://127.0.0.1:18789/chat', 'user-1', { host: 'core2-x.example.org' });
+
+    expect(pending.create).toHaveBeenCalledWith(
+      'ci-openclaw:ci-marketplace',
+      'https://core2-x.example.org/apps/ci-marketplace/ci-openclaw',
+      'user-1',
+    );
+  });
+
+  it('keeps the loopback app address for a browser on the Hub machine', async () => {
+    const { service, pending } = loopbackAppService();
+
+    await service.startConnect('ci-openclaw:ci-marketplace', undefined, 'user-1', { host: 'localhost:5002' });
+
+    expect(pending.create).toHaveBeenCalledWith('ci-openclaw:ci-marketplace', 'http://127.0.0.1:18789', 'user-1');
+  });
+
+  it('still lands on the Hub root when the app has no address at all', async () => {
+    const { service, pending, resolver } = loopbackAppService();
+    resolver.getAppAccessUrls.mockResolvedValue({});
+
+    await service.startConnect('ci-openclaw:ci-marketplace', undefined, 'user-1', { host: '192.168.1.9' });
+
+    expect(pending.create).toHaveBeenCalledWith('ci-openclaw:ci-marketplace', 'https://core2-x.example.org', 'user-1');
+  });
+});
+
 describe('MemoryConnectService.handleCallback', () => {
   beforeEach(() => vi.clearAllMocks());
 
@@ -173,22 +337,19 @@ describe('MemoryConnectService.handleCallback', () => {
     // The store resolves the state for THIS user and the presented code (hashed),
     // so a fresh consent grant is distinguishable from a browser replay.
     expect(pending.consume).toHaveBeenCalledWith('state-nonce', 'user-1', expect.stringMatching(/^[0-9a-f]{64}$/));
-    expect(exchange.exchange).toHaveBeenCalledWith('http://gateway:8642', 'the-code');
+    expect(exchange.exchange).toHaveBeenCalledWith('http://10.128.11.2:8642', 'the-code');
+    // The Hub exchanged at the gateway's address; the app is handed the name its link gives the gateway.
     expect(connections.storeConnected).toHaveBeenCalledWith(
       'ci-openclaw:local',
-      'http://gateway:8642',
+      'http://ci-memory:8642',
       'raw-key',
       '2026-10-07T00:00:00.000Z',
       'user-1',
     );
     // The restart is scheduled (fire-and-track, skipPull — env-only change), NOT
     // awaited to completion: the browser must not hang out the compose cycle.
-    expect(lifecycle.restartApp).toHaveBeenCalledWith({
-      appUrn: 'ci-openclaw:local',
-      skipPull: true,
-      actor: { kind: 'system', reason: 'memory-connect' },
-    });
-    expect(lifecycle.restartAppAndWait).not.toHaveBeenCalled();
+    expect(lifecycle.held.restart).toHaveBeenCalledWith({ skipPull: true, reason: 'memory-connect' });
+    expect(lifecycle.held.restartAndWait).not.toHaveBeenCalled();
     // The real outcome is recorded so a later replay repeats this exact redirect.
     expect(pending.recordOutcome).toHaveBeenCalledWith('state-nonce', FINISHING_PATH);
     expect(result).toEqual({ next: FINISHING_PATH });
@@ -204,7 +365,7 @@ describe('MemoryConnectService.handleCallback', () => {
     const result = await service.handleCallback('the-code', 'state-nonce', 'user-1');
 
     expect(lifecycle.regenerateAppEnv).toHaveBeenCalledWith('ci-openclaw:local');
-    expect(lifecycle.restartApp).not.toHaveBeenCalled();
+    expect(lifecycle.held.restart).not.toHaveBeenCalled();
     expect(result).toEqual({ next: 'https://app.example.org/' });
     // Every consumed outcome records its actual redirect — deferred lands on
     // the app URL, so a replay repeats that, never the finishing interstitial.
@@ -216,13 +377,43 @@ describe('MemoryConnectService.handleCallback', () => {
     pending.consume.mockReturnValue(CONSUMED);
     resolver.findProvider.mockResolvedValue(PROVIDER);
     exchange.exchange.mockResolvedValue({ appUrn: 'ci-openclaw:local', key: 'raw-key', expiresAt: '2026-10-07T00:00:00.000Z' });
-    lifecycle.restartApp.mockRejectedValue(new Error('queue unavailable'));
+    lifecycle.held.restart.mockRejectedValue(new Error('queue unavailable'));
 
     const result = await service.handleCallback('the-code', 'state-nonce', 'user-1');
 
     expect(result).toEqual({ next: 'https://app.example.org/' });
     expect(pending.recordOutcome).toHaveBeenCalledWith('state-nonce', 'https://app.example.org/');
     expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('failed to apply the connection change'), expect.any(Error));
+  });
+
+  // A grant can be taken away while the person is on CI Memory's consent page.
+  it('refuses at the callback, before any exchange, when the restart grant is gone', async () => {
+    const { service, resolver, exchange, connections, pending, lifecycle } = makeService();
+    pending.consume.mockReturnValue(CONSUMED);
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    const mayConnect = vi.fn().mockResolvedValue(false);
+
+    const result = await service.handleCallback('the-code', 'state-nonce', 'user-1', mayConnect);
+
+    expect(mayConnect).toHaveBeenCalledWith('ci-openclaw:local');
+    expect(exchange.exchange).not.toHaveBeenCalled();
+    expect(exchange.revoke).not.toHaveBeenCalled();
+    expect(connections.storeConnected).not.toHaveBeenCalled();
+    expect(lifecycle.held.restart).not.toHaveBeenCalled();
+    expect(pending.recordOutcome).toHaveBeenCalledWith('state-nonce', '/?memoryConnect=denied');
+    expect(result).toEqual({ next: '/?memoryConnect=denied', error: true });
+  });
+
+  it('finishes the connect when the person still holds the restart grant', async () => {
+    const { service, resolver, exchange, pending } = makeService();
+    pending.consume.mockReturnValue(CONSUMED);
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    exchange.exchange.mockResolvedValue({ appUrn: 'ci-openclaw:local', key: 'raw-key', expiresAt: '2026-10-07T00:00:00.000Z' });
+
+    const result = await service.handleCallback('the-code', 'state-nonce', 'user-1', vi.fn().mockResolvedValue(true));
+
+    expect(exchange.exchange).toHaveBeenCalledWith('http://10.128.11.2:8642', 'the-code');
+    expect(result).toEqual({ next: FINISHING_PATH });
   });
 
   it('rejects an invalid/expired state without exchanging', async () => {
@@ -243,7 +434,7 @@ describe('MemoryConnectService.handleCallback', () => {
 
     expect(exchange.exchange).not.toHaveBeenCalled();
     expect(connections.storeConnected).not.toHaveBeenCalled();
-    expect(lifecycle.restartApp).not.toHaveBeenCalled();
+    expect(lifecycle.held.restart).not.toHaveBeenCalled();
     // Same landing as an unknown/expired state, so a probing non-initiator can't
     // tell 'foreign' from 'unknown', and the real user whose session drifted
     // still gets a failure toast.
@@ -267,7 +458,7 @@ describe('MemoryConnectService.handleCallback', () => {
 
     expect(exchange.exchange).not.toHaveBeenCalled();
     expect(connections.storeConnected).not.toHaveBeenCalled();
-    expect(lifecycle.restartApp).not.toHaveBeenCalled();
+    expect(lifecycle.held.restart).not.toHaveBeenCalled();
     expect(result).toEqual({ next: FINISHING_PATH });
   });
 
@@ -287,7 +478,7 @@ describe('MemoryConnectService.handleCallback', () => {
     const result = await service.handleCallback('the-code', 'state-nonce', 'user-1');
 
     expect(exchange.exchange).not.toHaveBeenCalled();
-    expect(lifecycle.restartApp).not.toHaveBeenCalled();
+    expect(lifecycle.held.restart).not.toHaveBeenCalled();
     expect(result).toEqual({ next: 'https://app.example.org/' });
   });
 
@@ -302,14 +493,13 @@ describe('MemoryConnectService.handleCallback', () => {
 
     const result = await service.handleCallback('fresh-code', 'state-nonce', 'user-1');
 
-    expect(exchange.exchange).toHaveBeenCalledWith('http://gateway:8642', 'fresh-code');
+    expect(exchange.exchange).toHaveBeenCalledWith('http://10.128.11.2:8642', 'fresh-code');
     expect(connections.storeConnected).toHaveBeenCalled();
-    expect(lifecycle.restartApp).toHaveBeenCalledWith({
-      appUrn: 'ci-openclaw:local',
-      skipPull: true,
-      actor: { kind: 'system', reason: 'memory-connect' },
-    });
+    expect(lifecycle.held.restart).toHaveBeenCalledWith({ skipPull: true, reason: 'memory-connect' });
     expect(result).toEqual({ next: FINISHING_PATH });
+    // Restarted under the hold the callback took before the exchange, never by waiting for the app.
+    expect(lifecycle.withAppHeldUnlessBusy).toHaveBeenCalledWith('ci-openclaw:local', expect.any(Function));
+    expect(RESTARTS_THAT_WAIT_FOR_THE_APP.has('memory-connect')).toBe(false);
   });
 
   it('returns the app URL with error on app mismatch (does not store), so the user lands back on the app', async () => {
@@ -418,23 +608,42 @@ describe('MemoryConnectService side effects', () => {
     expect(connections.markSkipped).toHaveBeenCalledWith('ci-openclaw:local', undefined);
   });
 
-  it('getStatus revokes a running token owned by a different Hub person', async () => {
+  it('getStatus for another Hub person leaves the connection someone else made alone (#2080)', async () => {
     const { service, resolver, exchange, connections, lifecycle } = makeService();
     resolver.findProvider.mockResolvedValue(PROVIDER);
-    connections.getRow.mockResolvedValue({
+    connections.getRow.mockResolvedValue({ id: 1, state: 'connected', hubUserId: 1, encryptedKey: 'enc', serverUrl: 'http://ci-memory:8642' });
+    connections.getActiveConnection.mockResolvedValue({
+      id: 1,
       state: 'connected',
       hubUserId: 1,
       encryptedKey: 'enc',
-      serverUrl: 'http://gateway:8642',
+      serverUrl: 'http://ci-memory:8642',
     });
     connections.getState.mockResolvedValue('unconfigured');
 
+    const status = await service.getStatus('ci-openclaw:local', undefined, '2');
+
+    // The caller's own state, so the wrapper offers them a connect of their own.
+    expect(status.state).toBe('unconfigured');
+    expect(connections.getState).toHaveBeenCalledWith('ci-openclaw:local', '2');
+    expect(exchange.revoke).not.toHaveBeenCalled();
+    expect(connections.clear).not.toHaveBeenCalled();
+    expect(lifecycle.held.restart).not.toHaveBeenCalled();
+    expect(lifecycle.held.restartAndWait).not.toHaveBeenCalled();
+  });
+
+  it("getStatus leaves another person's token alone while another operation holds the app, for a later poll", async () => {
+    const { service, resolver, exchange, connections, lifecycle } = makeService();
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    connections.getRow.mockResolvedValue({ state: 'connected', hubUserId: 1, encryptedKey: 'enc', serverUrl: 'http://ci-memory:8642' });
+    connections.getState.mockResolvedValue('connected');
+    lifecycle.withAppHeldUnlessBusy.mockResolvedValue({ busy: 'start' });
+
     await service.getStatus('ci-openclaw:local', undefined, '2');
 
-    expect(exchange.revoke).toHaveBeenCalledWith('http://gateway:8642', 'ci-openclaw:local');
-    expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local', 1);
-    expect(lifecycle.restartApp).toHaveBeenCalled();
-    expect(connections.getState).toHaveBeenCalledWith('ci-openclaw:local', '2');
+    expect(exchange.revoke).not.toHaveBeenCalled();
+    expect(connections.clear).not.toHaveBeenCalled();
+    expect(lifecycle.held.restart).not.toHaveBeenCalled();
   });
 
   it('disconnect revokes on ci-memory, clears state, and restarts', async () => {
@@ -443,9 +652,24 @@ describe('MemoryConnectService side effects', () => {
 
     await service.disconnect('ci-openclaw:local');
 
-    expect(exchange.revoke).toHaveBeenCalledWith('http://gateway:8642', 'ci-openclaw:local');
+    expect(exchange.revoke).toHaveBeenCalledWith('http://10.128.11.2:8642', 'ci-openclaw:local');
     expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local', undefined);
-    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local', skipPull: true });
+    expect(lifecycle.withAppHeld).toHaveBeenCalledWith('ci-openclaw:local', expect.any(Function));
+    expect(lifecycle.held.restartAndWait).toHaveBeenCalledWith({ skipPull: true });
+    expect(lifecycle.restartAppAndWait).not.toHaveBeenCalled();
+  });
+
+  // Revoking and then waiting for the app left it on a revoked key for as long as the operation
+  // holding it lasted, and kept the request open as long.
+  it('disconnect is refused with the 409 of the operation holding the app, and revokes nothing', async () => {
+    const { service, resolver, exchange, connections, lifecycle } = makeService();
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    lifecycle.withAppHeld.mockRejectedValue(new TranslatableError('APP_ERROR_START_IN_PROGRESS', { id: 'ci-openclaw' }, HttpStatus.CONFLICT));
+
+    await expect(service.disconnect('ci-openclaw:local')).rejects.toMatchObject({ status: HttpStatus.CONFLICT });
+
+    expect(exchange.revoke).not.toHaveBeenCalled();
+    expect(connections.clear).not.toHaveBeenCalled();
   });
 
   it('disconnect does not START an app the user had stopped, but DOES scrub its env', async () => {
@@ -459,7 +683,7 @@ describe('MemoryConnectService side effects', () => {
     await service.disconnect('ci-openclaw:local');
 
     expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local', undefined);
-    expect(lifecycle.restartAppAndWait).not.toHaveBeenCalled();
+    expect(lifecycle.held.restartAndWait).not.toHaveBeenCalled();
     expect(lifecycle.regenerateAppEnv).toHaveBeenCalledWith('ci-openclaw:local');
   });
 
@@ -475,7 +699,7 @@ describe('MemoryConnectService side effects', () => {
       await service.disconnect('ci-openclaw:local');
 
       expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local', undefined);
-      expect(lifecycle.restartAppAndWait).not.toHaveBeenCalled();
+      expect(lifecycle.held.restartAndWait).not.toHaveBeenCalled();
       expect(lifecycle.regenerateAppEnv).toHaveBeenCalledWith('ci-openclaw:local');
     },
   );
@@ -485,11 +709,11 @@ describe('MemoryConnectService side effects', () => {
     resolver.findProvider.mockResolvedValue(PROVIDER);
     exchange.revoke.mockResolvedValue(false); // CI-Server never confirmed revocation
 
-    await expect(service.disconnect('ci-openclaw:local')).rejects.toThrow(/still connected/);
+    await expect(service.disconnect('ci-openclaw:local')).rejects.toMatchObject({ message: 'MEMORY_CONNECT_DISCONNECT_NOT_CONFIRMED', status: 503 });
 
     // Must NOT falsely report disconnected while the key is still live server-side.
     expect(connections.clear).not.toHaveBeenCalled();
-    expect(lifecycle.restartAppAndWait).not.toHaveBeenCalled();
+    expect(lifecycle.held.restartAndWait).not.toHaveBeenCalled();
   });
 
   it('disconnect clears locally when the provider is unresolvable (nothing to revoke)', async () => {
@@ -508,7 +732,7 @@ describe('MemoryConnectService side effects', () => {
 
     await service.handleUninstall('ci-openclaw:local');
 
-    expect(exchange.revoke).toHaveBeenCalledWith('http://gateway:8642', 'ci-openclaw:local');
+    expect(exchange.revoke).toHaveBeenCalledWith('http://10.128.11.2:8642', 'ci-openclaw:local');
     expect(connections.remove).toHaveBeenCalledWith('ci-openclaw:local');
     expect(lifecycle.restartAppAndWait).not.toHaveBeenCalled();
   });
@@ -516,17 +740,34 @@ describe('MemoryConnectService side effects', () => {
   it('getUiStatus clears a stale connection AND restarts the app when ci-memory rejects the stored key', async () => {
     const { service, resolver, exchange, connections, lifecycle } = makeService();
     resolver.findProvider.mockResolvedValue(PROVIDER);
-    connections.getRow.mockResolvedValue({ state: 'connected', keyExpiresAt: '2026-10-07T00:00:00.000Z' });
+    const stale = { id: 4, hubUserId: 3, state: 'connected', keyExpiresAt: '2026-10-07T00:00:00.000Z' };
+    connections.getRow.mockResolvedValue(stale);
+    connections.getActiveConnection.mockResolvedValue(stale);
     exchange.isKeyValid.mockResolvedValue(false); // ci-memory reset → key dead
 
-    const status = await service.getUiStatus('ci-openclaw:local');
+    const status = await service.getUiStatus('ci-openclaw:local', undefined, '3');
 
-    expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local');
+    // The row that was checked, by its owner: the app's newest row can belong to someone else.
+    expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local', 3);
     // Must restart so the container drops the dead credential and re-prompts.
-    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local', skipPull: true });
+    expect(lifecycle.held.restartAndWait).toHaveBeenCalledWith({ skipPull: true });
     expect(status.state).toBe('unconfigured');
     // The stale key's expiry is cleared alongside the connection.
     expect(status.keyExpiresAt).toBeNull();
+  });
+
+  it('getUiStatus leaves a rejected key to a later poll while another operation holds the app', async () => {
+    const { service, resolver, exchange, connections, lifecycle } = makeService();
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    connections.getRow.mockResolvedValue({ state: 'connected', keyExpiresAt: '2026-10-07T00:00:00.000Z' });
+    exchange.isKeyValid.mockResolvedValue(false);
+    lifecycle.withAppHeldUnlessBusy.mockResolvedValue({ busy: 'update' });
+
+    const status = await service.getUiStatus('ci-openclaw:local');
+
+    expect(connections.clear).not.toHaveBeenCalled();
+    expect(lifecycle.restartAppAndWait).not.toHaveBeenCalled();
+    expect(status.state).toBe('connected');
   });
 
   it('getUiStatus short-circuits for a non-consumer app without probing the provider', async () => {
@@ -548,6 +789,7 @@ describe('MemoryConnectService side effects', () => {
       // memory integration, so there is nothing to explain.
       reason: null,
       keyExpiresAt: null,
+      connectedByOther: false,
     });
     expect(resolver.findProvider).not.toHaveBeenCalled();
   });
@@ -596,17 +838,40 @@ describe('MemoryConnectService side effects', () => {
 
   const daysAgoIso = (days: number) => new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 
+  /** Due rows that are also the connection each app runs with, which the sweep requires before it rotates. */
+  function listDue(connections: ReturnType<typeof makeService>['connections'], rows: Array<{ appUrn: string } & Record<string, unknown>>) {
+    connections.listConnected.mockResolvedValue(rows);
+    connections.getActiveConnection.mockImplementation(async (urn: string) => rows.find((row) => row.appUrn === urn));
+  }
+
   it('rotateDueKeys rotates a key older than the threshold and restarts the app', async () => {
     const { service, resolver, exchange, connections, lifecycle } = makeService();
     resolver.findProvider.mockResolvedValue(PROVIDER);
-    connections.listConnected.mockResolvedValue([{ appUrn: 'ci-openclaw:local', hubUserId: 3, updatedAt: daysAgoIso(61) }]);
+    listDue(connections, [{ appUrn: 'ci-openclaw:local', hubUserId: 3, updatedAt: daysAgoIso(61) }]);
     exchange.rotate.mockResolvedValue({ appUrn: 'ci-openclaw:local', key: 'fresh-key', expiresAt: '2026-10-07T00:00:00.000Z' });
 
     await service.rotateDueKeys();
 
-    expect(exchange.rotate).toHaveBeenCalledWith('http://gateway:8642', 'ci-openclaw:local');
-    expect(connections.storeConnected).toHaveBeenCalledWith('ci-openclaw:local', 'http://gateway:8642', 'fresh-key', '2026-10-07T00:00:00.000Z', 3);
-    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local', skipPull: true });
+    expect(exchange.rotate).toHaveBeenCalledWith('http://10.128.11.2:8642', 'ci-openclaw:local');
+    expect(connections.storeConnected).toHaveBeenCalledWith('ci-openclaw:local', 'http://ci-memory:8642', 'fresh-key', '2026-10-07T00:00:00.000Z', 3);
+    expect(lifecycle.withAppHeldUnlessBusy).toHaveBeenCalledWith('ci-openclaw:local', expect.any(Function));
+    expect(lifecycle.held.restartAndWait).toHaveBeenCalledWith({ skipPull: true });
+  });
+
+  // Rotating retires the old key: rotating and then waiting left the app on the retired key for as
+  // long as the operation holding it lasted.
+  it('rotateDueKeys leaves an app another operation holds to the next sweep, its key untouched', async () => {
+    const { service, resolver, exchange, connections, lifecycle, logger } = makeService();
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    connections.listConnected.mockResolvedValue([{ appUrn: 'ci-openclaw:local', hubUserId: 3, updatedAt: daysAgoIso(61) }]);
+    lifecycle.withAppHeldUnlessBusy.mockResolvedValue({ busy: 'backup' });
+
+    await service.rotateDueKeys();
+
+    expect(exchange.rotate).not.toHaveBeenCalled();
+    expect(connections.storeConnected).not.toHaveBeenCalled();
+    expect(lifecycle.restartAppAndWait).not.toHaveBeenCalled();
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('left to the next sweep'));
   });
 
   it('rotateDueKeys leaves a still-fresh key untouched', async () => {
@@ -644,6 +909,7 @@ describe('MemoryConnectService side effects', () => {
 
     expect(exchange.rotate).not.toHaveBeenCalled();
     expect(connections.storeConnected).not.toHaveBeenCalled();
+    expect(lifecycle.held.restartAndWait).not.toHaveBeenCalled();
     expect(lifecycle.restartAppAndWait).not.toHaveBeenCalled();
   });
 
@@ -653,13 +919,16 @@ describe('MemoryConnectService side effects', () => {
     // the app would sit on the key CI-Server just retired.
     const { service, resolver, exchange, connections, lifecycle, logger } = makeService();
     resolver.findProvider.mockResolvedValue(PROVIDER);
-    connections.listConnected.mockResolvedValue([{ appUrn: 'ci-openclaw:local', updatedAt: daysAgoIso(61) }]);
+    listDue(connections, [{ appUrn: 'ci-openclaw:local', updatedAt: daysAgoIso(61) }]);
     exchange.rotate.mockResolvedValue({ appUrn: 'ci-openclaw:local', key: 'fresh-key', expiresAt: '2026-10-07T00:00:00.000Z' });
+    lifecycle.held.restartAndWait.mockResolvedValue(false);
     lifecycle.restartAppAndWait.mockResolvedValue(false);
 
     await service.rotateDueKeys();
 
-    expect(lifecycle.restartAppAndWait).toHaveBeenCalledTimes(2);
+    // The retry claims the app afresh: the first restart's hold ended when it settled.
+    expect(lifecycle.held.restartAndWait).toHaveBeenCalledTimes(1);
+    expect(lifecycle.restartAppAndWait).toHaveBeenCalledTimes(1);
     expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('could not restart it'));
   });
 
@@ -669,13 +938,14 @@ describe('MemoryConnectService side effects', () => {
     // that was RUNNING and that the sweep itself just knocked over onto a retired key.
     const { service, resolver, exchange, connections, lifecycle, appsRepository, logger } = makeService();
     resolver.findProvider.mockResolvedValue(PROVIDER);
-    connections.listConnected.mockResolvedValue([{ appUrn: 'ci-openclaw:local', updatedAt: daysAgoIso(61) }]);
+    listDue(connections, [{ appUrn: 'ci-openclaw:local', updatedAt: daysAgoIso(61) }]);
     exchange.rotate.mockResolvedValue({ appUrn: 'ci-openclaw:local', key: 'fresh-key', expiresAt: '2026-10-07T00:00:00.000Z' });
     // Running at rotation time; the failed restart then leaves it stopped.
     appsRepository.getAppByUrn
       .mockResolvedValueOnce({ status: 'running' }) // pre-rotation liveness check
       .mockResolvedValueOnce({ status: 'running' }) // first apply
       .mockResolvedValue({ status: 'stopped' }); // retry sees the wreckage
+    lifecycle.held.restartAndWait.mockResolvedValue(false);
     lifecycle.restartAppAndWait.mockResolvedValue(false);
 
     await service.rotateDueKeys();
@@ -687,7 +957,7 @@ describe('MemoryConnectService side effects', () => {
   it('rotateDueKeys keeps going when one app fails to rotate', async () => {
     const { service, resolver, exchange, connections, lifecycle } = makeService();
     resolver.findProvider.mockResolvedValue(PROVIDER);
-    connections.listConnected.mockResolvedValue([
+    listDue(connections, [
       { appUrn: 'ci-openclaw:local', updatedAt: daysAgoIso(61) },
       { appUrn: 'ci-hermes:local', updatedAt: daysAgoIso(70) },
     ]);
@@ -699,8 +969,8 @@ describe('MemoryConnectService side effects', () => {
 
     // The second app still rotates despite the first throwing.
     expect(exchange.rotate).toHaveBeenCalledTimes(2);
-    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-hermes:local', skipPull: true });
-    expect(lifecycle.restartAppAndWait).not.toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local', skipPull: true });
+    expect(lifecycle.withAppHeldUnlessBusy).toHaveBeenCalledWith('ci-hermes:local', expect.any(Function));
+    expect(lifecycle.held.restartAndWait).toHaveBeenCalledTimes(1);
   });
 
   it('getStatus returns the state and a launcher URL built from the Hub origin', async () => {
@@ -754,19 +1024,19 @@ describe('MemoryConnectService side effects', () => {
     const { service, resolver, connections, lifecycle } = makeService();
     resolver.findProvider.mockResolvedValue(null); // provider already gone from the install list
     connections.listConnected.mockResolvedValue([
-      { appUrn: 'ci-memory:ci-marketplace', updatedAt: '2026-07-09T00:00:00.000Z' },
-      { appUrn: 'ci-openclaw:ci-marketplace', updatedAt: '2026-07-09T00:00:00.000Z' },
-      { appUrn: 'ci-hermes:ci-marketplace', updatedAt: '2026-07-09T00:00:00.000Z' },
+      { appUrn: 'ci-memory:ci-marketplace', hubUserId: 1, updatedAt: '2026-07-09T00:00:00.000Z' },
+      { appUrn: 'ci-openclaw:ci-marketplace', hubUserId: 1, updatedAt: '2026-07-09T00:00:00.000Z' },
+      { appUrn: 'ci-hermes:ci-marketplace', hubUserId: 2, updatedAt: '2026-07-09T00:00:00.000Z' },
     ]);
 
     await service.handleUninstall('ci-memory:ci-marketplace');
 
-    // Each consumer is cleared + restarted; the provider row itself is skipped.
-    expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:ci-marketplace');
-    expect(connections.clear).toHaveBeenCalledWith('ci-hermes:ci-marketplace');
-    expect(connections.clear).not.toHaveBeenCalledWith('ci-memory:ci-marketplace');
-    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:ci-marketplace', skipPull: true });
-    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-hermes:ci-marketplace', skipPull: true });
+    // Each consumer's connected row is cleared + restarted; the provider row itself is skipped.
+    expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:ci-marketplace', 1);
+    expect(connections.clear).toHaveBeenCalledWith('ci-hermes:ci-marketplace', 2);
+    expect(connections.clear.mock.calls.map(([urn]) => urn)).not.toContain('ci-memory:ci-marketplace');
+    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:ci-marketplace', skipPull: true, waitForApp: true });
+    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-hermes:ci-marketplace', skipPull: true, waitForApp: true });
   });
 
   it('re-arms the remaining consumers even when one fails, and never rejects the sweep (#906)', async () => {
@@ -784,8 +1054,8 @@ describe('MemoryConnectService side effects', () => {
     await expect(service.handleUninstall('ci-memory:ci-marketplace')).resolves.toBeUndefined();
 
     // The healthy consumer is still cleared + restarted; the failed one never reached restart.
-    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-hermes:ci-marketplace', skipPull: true });
-    expect(lifecycle.restartAppAndWait).not.toHaveBeenCalledWith({ appUrn: 'ci-openclaw:ci-marketplace', skipPull: true });
+    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-hermes:ci-marketplace', skipPull: true, waitForApp: true });
+    expect(lifecycle.restartAppAndWait).not.toHaveBeenCalledWith({ appUrn: 'ci-openclaw:ci-marketplace', skipPull: true, waitForApp: true });
   });
 
   it('handleUninstall of a regular consumer does NOT cascade to other apps', async () => {
@@ -867,5 +1137,564 @@ describe('MemoryConnectService.listConnectedConsumers', () => {
     appsRepository.getAppByUrn.mockRejectedValue(new Error('db pool exhausted'));
 
     await expect(service.listConnectedConsumers()).rejects.toThrow('db pool exhausted');
+  });
+});
+
+/**
+ * One container, one key: OpenClaw runs with the connection of whoever connected it last. Looking at
+ * the app must not change that; only a finished connect does (Companion-Hub#2080).
+ */
+describe('MemoryConnectService with two Hub people', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const APP = 'ci-openclaw:local';
+  // Person 2 connected; person 1 is the Hub owner looking at the app.
+  const PERSON_2_ROW = {
+    id: 21,
+    appUrn: APP,
+    hubUserId: 2,
+    state: 'connected',
+    encryptedKey: 'enc-2',
+    serverUrl: 'http://ci-memory:8642',
+    keyExpiresAt: null,
+  };
+  const CONSUMED_BY_1 = { outcome: 'consumed', appUrn: APP, next: 'https://app.example.org/', userId: '1', redirect: 'https://app.example.org/' };
+
+  function withPerson2Connected() {
+    const ctx = makeService();
+    ctx.resolver.findProvider.mockResolvedValue(PROVIDER);
+    ctx.connections.getActiveConnection.mockResolvedValue(PERSON_2_ROW);
+    ctx.connections.listConnected.mockResolvedValue([PERSON_2_ROW]);
+    ctx.connections.getRow.mockImplementation(async (_urn: string, hubUserId?: string | null) =>
+      String(hubUserId) === '1' ? undefined : PERSON_2_ROW,
+    );
+    ctx.connections.getState.mockImplementation(async (_urn: string, hubUserId?: string | null) =>
+      String(hubUserId) === '1' ? 'unconfigured' : 'connected',
+    );
+
+    return ctx;
+  }
+
+  it("person 1 opening the app page leaves person 2's connection running and says whose it is", async () => {
+    const { service, exchange, connections, lifecycle } = withPerson2Connected();
+
+    const status = await service.getUiStatus(APP, undefined, '1');
+
+    expect(status.state).toBe('unconfigured');
+    expect(status.connectedByOther).toBe(true);
+    expect(exchange.revoke).not.toHaveBeenCalled();
+    // Person 2's key is not even probed: it is not the caller's to judge.
+    expect(exchange.isKeyValid).not.toHaveBeenCalled();
+    expect(connections.clear).not.toHaveBeenCalled();
+    expect(lifecycle.held.restart).not.toHaveBeenCalled();
+    expect(lifecycle.held.restartAndWait).not.toHaveBeenCalled();
+  });
+
+  it("person 2 sees their own connection as connected, not as someone else's", async () => {
+    const { service } = withPerson2Connected();
+
+    const status = await service.getUiStatus(APP, undefined, '2');
+
+    expect(status.state).toBe('connected');
+    expect(status.connectedByOther).toBe(false);
+  });
+
+  it("person 1 who chose Not now still learns the app runs on person 2's memory", async () => {
+    const { service, connections } = withPerson2Connected();
+    connections.getRow.mockImplementation(async (_urn: string, hubUserId?: string | null) =>
+      String(hubUserId) === '1' ? { id: 11, appUrn: APP, hubUserId: 1, state: 'skipped', encryptedKey: null, keyExpiresAt: null } : PERSON_2_ROW,
+    );
+
+    const status = await service.getUiStatus(APP, undefined, '1');
+
+    expect(status.state).toBe('skipped');
+    expect(status.connectedByOther).toBe(true);
+  });
+
+  it("person 1 finishing Connect revokes person 2's key BEFORE minting their own, then takes over", async () => {
+    const { service, exchange, connections, pending, lifecycle } = withPerson2Connected();
+    pending.consume.mockReturnValue(CONSUMED_BY_1);
+    exchange.exchange.mockResolvedValue({ appUrn: APP, key: 'key-1', expiresAt: '2026-12-01T00:00:00.000Z' });
+
+    await service.handleCallback('code-1', 'state-1', '1');
+
+    // CI Memory revokes by app: after the exchange this would also take person 1's new key.
+    expect(exchange.revoke).toHaveBeenCalledWith('http://10.128.11.2:8642', APP);
+    expect(exchange.revoke.mock.invocationCallOrder[0]).toBeLessThan(exchange.exchange.mock.invocationCallOrder[0]);
+    expect(connections.clear).toHaveBeenCalledWith(APP, 2);
+    expect(connections.storeConnected).toHaveBeenCalledWith(APP, 'http://ci-memory:8642', 'key-1', '2026-12-01T00:00:00.000Z', '1');
+    expect(lifecycle.held.restart).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps person 2's connection and mints nothing when their key cannot be revoked", async () => {
+    const { service, exchange, connections, pending } = withPerson2Connected();
+    pending.consume.mockReturnValue(CONSUMED_BY_1);
+    exchange.revoke.mockResolvedValue(false);
+
+    const result = await service.handleCallback('code-1', 'state-1', '1');
+
+    expect(result).toEqual({ next: 'https://app.example.org/', error: true });
+    expect(exchange.exchange).not.toHaveBeenCalled();
+    expect(connections.clear).not.toHaveBeenCalled();
+    expect(connections.storeConnected).not.toHaveBeenCalled();
+  });
+
+  it('restarts the app when the exchange fails after the old key was revoked, so it stops presenting a dead key', async () => {
+    const { service, exchange, pending, lifecycle } = withPerson2Connected();
+    pending.consume.mockReturnValue(CONSUMED_BY_1);
+    exchange.exchange.mockRejectedValue(new Error('ci-memory unreachable'));
+
+    const result = await service.handleCallback('code-1', 'state-1', '1');
+
+    // Person 2's connection is gone and cannot come back, so person 1 is told, not sent to the app.
+    expect(result).toEqual({ next: '/?memoryConnect=previous_removed', error: true });
+    expect(pending.recordOutcome).toHaveBeenCalledWith('state-1', '/?memoryConnect=previous_removed');
+    expect(lifecycle.held.restart).toHaveBeenCalledWith({ skipPull: true, reason: 'memory-connect' });
+  });
+
+  it('finishes the connect when the revoked row fails to clear', async () => {
+    const { service, exchange, connections, pending, logger } = withPerson2Connected();
+    pending.consume.mockReturnValue(CONSUMED_BY_1);
+    exchange.exchange.mockResolvedValue({ appUrn: APP, key: 'key-1', expiresAt: '2026-12-01T00:00:00.000Z' });
+    connections.clear.mockRejectedValueOnce(new Error('db blip'));
+
+    const result = await service.handleCallback('code-1', 'state-1', '1');
+
+    expect(result.error).toBeUndefined();
+    expect(connections.storeConnected).toHaveBeenCalledWith(APP, 'http://ci-memory:8642', 'key-1', '2026-12-01T00:00:00.000Z', '1');
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('could not clear'), expect.any(Error));
+  });
+
+  it('two people finishing Connect at once take turns, so the second revokes the first key before minting', async () => {
+    const ctx = makeService();
+    ctx.resolver.findProvider.mockResolvedValue(PROVIDER);
+    // A tiny memory_connection table, so each connect sees what the other stored.
+    const stored: Array<{ appUrn: string; hubUserId: number }> = [];
+    ctx.connections.listConnected.mockImplementation(async () => stored.map((row) => ({ ...row, state: 'connected' })));
+    ctx.connections.storeConnected.mockImplementation(async (appUrn: string, _url: string, _key: string, _expires: string, hubUserId: string) => {
+      stored.push({ appUrn, hubUserId: Number(hubUserId) });
+    });
+    ctx.connections.clear.mockImplementation(async (_appUrn: string, hubUserId: number) => {
+      const index = stored.findIndex((row) => row.hubUserId === Number(hubUserId));
+      if (index >= 0) {
+        stored.splice(index, 1);
+      }
+    });
+    ctx.pending.consume.mockReturnValueOnce(CONSUMED_BY_1).mockReturnValueOnce({ ...CONSUMED_BY_1, userId: '3' });
+    ctx.exchange.exchange.mockImplementation(async (_url: string, code: string) => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return { appUrn: APP, key: `key-${code}`, expiresAt: '2026-12-01T00:00:00.000Z' };
+    });
+
+    await Promise.all([ctx.service.handleCallback('code-1', 'state-1', '1'), ctx.service.handleCallback('code-3', 'state-3', '3')]);
+
+    // Without turns both find nobody connected, neither revokes and CI Memory ends up with two owners.
+    expect(ctx.exchange.revoke).toHaveBeenCalledTimes(1);
+    expect(stored).toEqual([{ appUrn: APP, hubUserId: 3 }]);
+  });
+
+  it('person 2 reconnecting replaces only their own key (no revoke)', async () => {
+    const { service, exchange, connections, pending } = withPerson2Connected();
+    pending.consume.mockReturnValue({ ...CONSUMED_BY_1, userId: '2' });
+    exchange.exchange.mockResolvedValue({ appUrn: APP, key: 'key-2b', expiresAt: '2026-12-01T00:00:00.000Z' });
+
+    await service.handleCallback('code-2', 'state-2', '2');
+
+    expect(exchange.revoke).not.toHaveBeenCalled();
+    expect(connections.clear).not.toHaveBeenCalled();
+    expect(connections.storeConnected).toHaveBeenCalledWith(APP, 'http://ci-memory:8642', 'key-2b', '2026-12-01T00:00:00.000Z', '2');
+  });
+
+  it("refuses person 1's Disconnect of person 2's connection without touching it", async () => {
+    const { service, exchange, connections, lifecycle } = withPerson2Connected();
+
+    await expect(service.disconnect(APP, '1')).rejects.toMatchObject({ message: 'MEMORY_CONNECT_DISCONNECT_REFUSED', status: 403 });
+
+    expect(exchange.revoke).not.toHaveBeenCalled();
+    expect(connections.clear).not.toHaveBeenCalled();
+    expect(lifecycle.held.restartAndWait).not.toHaveBeenCalled();
+  });
+
+  it('lets person 2 disconnect their own connection', async () => {
+    const { service, exchange, connections, lifecycle } = withPerson2Connected();
+
+    await service.disconnect(APP, '2');
+
+    expect(exchange.revoke).toHaveBeenCalledWith('http://10.128.11.2:8642', APP);
+    expect(connections.clear).toHaveBeenCalledWith(APP, '2');
+    expect(lifecycle.held.restartAndWait).toHaveBeenCalledWith({ skipPull: true });
+  });
+
+  it("clears person 1's own dead key without restarting the app that runs on person 2's", async () => {
+    const { service, exchange, connections, lifecycle } = withPerson2Connected();
+    connections.getRow.mockImplementation(async (_urn: string, hubUserId?: string | null) =>
+      String(hubUserId) === '1' ? { id: 11, appUrn: APP, hubUserId: 1, state: 'connected', encryptedKey: 'enc-1', keyExpiresAt: null } : PERSON_2_ROW,
+    );
+    exchange.isKeyValid.mockResolvedValue(false);
+
+    await service.getUiStatus(APP, undefined, '1');
+
+    expect(connections.clear).toHaveBeenCalledWith(APP, 1);
+    expect(lifecycle.held.restartAndWait).not.toHaveBeenCalled();
+  });
+
+  it("does not rotate person 2's listed key once person 1's Connect replaced it, since CI Memory rotates by app", async () => {
+    const { service, exchange, connections } = withPerson2Connected();
+    const due = { ...PERSON_2_ROW, updatedAt: new Date(Date.now() - 61 * 24 * 60 * 60 * 1000).toISOString() };
+    connections.listConnected.mockResolvedValue([due]);
+    // Person 1 finished Connect after the sweep read its list: theirs is the connection the app runs with now.
+    connections.getActiveConnection.mockResolvedValue({ ...PERSON_2_ROW, id: 11, hubUserId: 1, encryptedKey: 'enc-1' });
+
+    await service.rotateDueKeys();
+
+    expect(exchange.rotate).not.toHaveBeenCalled();
+    expect(connections.storeConnected).not.toHaveBeenCalled();
+  });
+
+  it('clears a leftover connected row of person 1 when person 2 disconnects, so the app is not given its revoked key', async () => {
+    const { service, connections } = withPerson2Connected();
+    // Left behind when person 2's Connect replaced person 1 and clearing person 1's row failed.
+    const leftover = { ...PERSON_2_ROW, id: 11, hubUserId: 1, encryptedKey: 'enc-1' };
+    connections.listConnected.mockResolvedValue([PERSON_2_ROW, leftover]);
+
+    await service.disconnect(APP, '2');
+
+    expect(connections.clear).toHaveBeenCalledWith(APP, '2');
+    expect(connections.clear).toHaveBeenCalledWith(APP, 1);
+  });
+
+  it("tells OpenClaw's own gate that another person's connection runs the app", async () => {
+    const { service } = withPerson2Connected();
+
+    expect(await service.getStatus(APP, undefined, '1')).toMatchObject({ state: 'unconfigured', connectedByOther: true });
+    expect(await service.getStatus(APP, undefined, '2')).toMatchObject({ state: 'connected', connectedByOther: false });
+  });
+
+  it('lands on the app, not on a removed-connection message, when nothing was replaced', async () => {
+    const { service, exchange, connections, pending } = withPerson2Connected();
+    connections.listConnected.mockResolvedValue([]);
+    connections.getActiveConnection.mockResolvedValue(undefined);
+    pending.consume.mockReturnValue(CONSUMED_BY_1);
+    exchange.exchange.mockRejectedValue(new Error('ci-memory unreachable'));
+
+    expect(await service.handleCallback('code-1', 'state-1', '1')).toEqual({ next: 'https://app.example.org/', error: true });
+  });
+
+  it('revokes the new key when it cannot be stored, so no valid key is left that nobody holds', async () => {
+    const { service, exchange, connections, pending, lifecycle } = withPerson2Connected();
+    pending.consume.mockReturnValue(CONSUMED_BY_1);
+    exchange.exchange.mockResolvedValue({ appUrn: APP, key: 'key-1', expiresAt: '2026-12-01T00:00:00.000Z' });
+    connections.storeConnected.mockRejectedValue(new Error('db pool exhausted'));
+
+    const result = await service.handleCallback('code-1', 'state-1', '1');
+
+    // Once to replace person 2's connection, once more after the exchange for the key that was never stored.
+    expect(exchange.revoke).toHaveBeenCalledTimes(2);
+    expect(exchange.revoke.mock.invocationCallOrder[1]).toBeGreaterThan(exchange.exchange.mock.invocationCallOrder[0]);
+    expect(result).toEqual({ next: '/?memoryConnect=previous_removed', error: true });
+    expect(lifecycle.held.restart).toHaveBeenCalled();
+  });
+
+  it('revokes an unstored key on a plain connect too, and lands back on the app', async () => {
+    const { service, exchange, connections, pending, lifecycle } = withPerson2Connected();
+    connections.listConnected.mockResolvedValue([]);
+    connections.getActiveConnection.mockResolvedValue(undefined);
+    pending.consume.mockReturnValue(CONSUMED_BY_1);
+    exchange.exchange.mockResolvedValue({ appUrn: APP, key: 'key-1', expiresAt: '2026-12-01T00:00:00.000Z' });
+    connections.storeConnected.mockRejectedValue(new Error('db pool exhausted'));
+
+    const result = await service.handleCallback('code-1', 'state-1', '1');
+
+    expect(exchange.revoke).toHaveBeenCalledTimes(1);
+    expect(exchange.revoke.mock.invocationCallOrder[0]).toBeGreaterThan(exchange.exchange.mock.invocationCallOrder[0]);
+    expect(result).toEqual({ next: 'https://app.example.org/', error: true });
+    // The exchange replaced any earlier key of this person's, so the app must stop presenting it.
+    expect(lifecycle.held.restart).toHaveBeenCalled();
+  });
+
+  it("clears this person's own earlier connection when the new key cannot be stored, so the restart does not hand its revoked key back", async () => {
+    const { service, exchange, connections, pending } = withPerson2Connected();
+    const ownEarlier = { ...PERSON_2_ROW, id: 11, hubUserId: 1, encryptedKey: 'enc-1-old' };
+    connections.listConnected.mockResolvedValue([ownEarlier]);
+    connections.getActiveConnection.mockResolvedValue(ownEarlier);
+    pending.consume.mockReturnValue(CONSUMED_BY_1);
+    exchange.exchange.mockResolvedValue({ appUrn: APP, key: 'key-1', expiresAt: '2026-12-01T00:00:00.000Z' });
+    connections.storeConnected.mockRejectedValue(new Error('db pool exhausted'));
+
+    await service.handleCallback('code-1', 'state-1', '1');
+
+    expect(connections.clear).toHaveBeenCalledWith(APP, 1);
+  });
+
+  it('leaves a key alone that a Connect replaced while it was being checked', async () => {
+    const { service, exchange, connections, lifecycle } = withPerson2Connected();
+    const stale = { ...PERSON_2_ROW, encryptedKey: 'enc-2-old' };
+    // The status read loads the old key; by the time the cleanup holds the lock, a Connect stored a new one.
+    connections.getRow.mockResolvedValueOnce(stale).mockResolvedValue(PERSON_2_ROW);
+    connections.getActiveConnection.mockResolvedValue(stale);
+    exchange.isKeyValid.mockResolvedValue(false);
+
+    const status = await service.getUiStatus(APP, undefined, '2');
+
+    expect(connections.clear).not.toHaveBeenCalled();
+    expect(lifecycle.held.restartAndWait).not.toHaveBeenCalled();
+    expect(status.state).toBe('connected');
+  });
+
+  it('clears a rejected key only while holding the app lock', async () => {
+    const { service, exchange, connections } = withPerson2Connected();
+    exchange.isKeyValid.mockResolvedValue(false);
+    // A Disconnect holds the lock until CI Memory answers its revoke.
+    let answerRevoke: (revoked: boolean) => void = () => {};
+    exchange.revoke.mockReturnValueOnce(new Promise<boolean>((resolve) => (answerRevoke = resolve)));
+    const disconnecting = service.disconnect(APP, '2');
+    await vi.waitFor(() => expect(exchange.revoke).toHaveBeenCalled());
+
+    const reading = service.getUiStatus(APP, undefined, '2');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(connections.clear).not.toHaveBeenCalled();
+
+    answerRevoke(true);
+    await Promise.all([disconnecting, reading]);
+    expect(connections.clear).toHaveBeenCalled();
+  });
+});
+
+/**
+ * A connection with no Hub person on it (`hub_user_id` 0, from before connections were per person)
+ * is nobody's: it reads as connected for everyone and anyone who can open the app page may disconnect it.
+ */
+describe('MemoryConnectService with an install-global connection', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const APP = 'ci-openclaw:local';
+  const GLOBAL_ROW = {
+    id: 5,
+    appUrn: APP,
+    hubUserId: 0,
+    state: 'connected',
+    encryptedKey: 'enc-0',
+    serverUrl: 'http://ci-memory:8642',
+    keyExpiresAt: null,
+  };
+
+  function withGlobalConnection() {
+    const ctx = makeService();
+    ctx.resolver.findProvider.mockResolvedValue(PROVIDER);
+    ctx.connections.getActiveConnection.mockResolvedValue(GLOBAL_ROW);
+    ctx.connections.listConnected.mockResolvedValue([GLOBAL_ROW]);
+    ctx.connections.getRow.mockImplementation(async (_urn: string, hubUserId?: string | number | null) =>
+      hubUserId == null || Number(hubUserId) === 0 ? GLOBAL_ROW : undefined,
+    );
+    ctx.connections.getState.mockResolvedValue('unconfigured');
+
+    return ctx;
+  }
+
+  it("reads as connected, not as someone else's, on the app page and on the gate", async () => {
+    const { service } = withGlobalConnection();
+
+    expect(await service.getUiStatus(APP, undefined, '1')).toMatchObject({ state: 'connected', connectedByOther: false });
+    expect(await service.getStatus(APP, undefined, '1')).toMatchObject({ state: 'connected', connectedByOther: false });
+  });
+
+  it('lets anyone disconnect it', async () => {
+    const { service, exchange, connections, lifecycle } = withGlobalConnection();
+
+    await service.disconnect(APP, '1');
+
+    expect(exchange.revoke).toHaveBeenCalledWith('http://10.128.11.2:8642', APP);
+    expect(connections.clear).toHaveBeenCalledWith(APP, 0);
+    expect(lifecycle.held.restartAndWait).toHaveBeenCalledWith({ skipPull: true });
+  });
+
+  it('keeps it when a gate with no Hub person on it chooses Not now', async () => {
+    const { service, connections } = withGlobalConnection();
+
+    await service.skip(APP, null);
+
+    expect(connections.markSkipped).not.toHaveBeenCalled();
+  });
+
+  it("refuses a Disconnect with no Hub person on it once a person's connection runs the app", async () => {
+    const { service, exchange, connections } = withGlobalConnection();
+    connections.getActiveConnection.mockResolvedValue({ ...GLOBAL_ROW, id: 6, hubUserId: 2 });
+
+    await expect(service.disconnect(APP, '')).rejects.toMatchObject({ message: 'MEMORY_CONNECT_DISCONNECT_REFUSED', status: 403 });
+    expect(exchange.revoke).not.toHaveBeenCalled();
+  });
+
+  it('clears its key when CI Memory rejects it, whoever is looking', async () => {
+    const { service, exchange, connections, lifecycle } = withGlobalConnection();
+    exchange.isKeyValid.mockResolvedValue(false);
+
+    const status = await service.getUiStatus(APP, undefined, '1');
+
+    expect(connections.clear).toHaveBeenCalledWith(APP, 0);
+    expect(lifecycle.held.restartAndWait).toHaveBeenCalled();
+    expect(status).toMatchObject({ state: 'unconfigured', connectedByOther: false });
+  });
+});
+
+/**
+ * A lifecycle with one hold per app, as AppLifecycleService has. A held app refuses `withAppHeld`
+ * with the holder's 409 and answers `withAppHeldUnlessBusy` with `busy`. A restart that is not
+ * held waits until nobody holds the app, as the unheld restarts do.
+ */
+function holdApps(lifecycle: ReturnType<typeof makeService>['lifecycle']) {
+  const holders = new Map<string, string>();
+  const waiters: Array<() => void> = [];
+  const free = (appUrn: string) => {
+    holders.delete(appUrn);
+    for (const wake of waiters.splice(0)) wake();
+  };
+  const untilFree = async (appUrn: string) => {
+    while (holders.has(appUrn)) await new Promise<void>((wake) => waiters.push(wake));
+  };
+  const refusal = (appUrn: string) =>
+    new TranslatableError(`APP_ERROR_${(holders.get(appUrn) ?? 'event').toUpperCase()}_IN_PROGRESS`, { id: appUrn }, HttpStatus.CONFLICT);
+  const hold = async (appUrn: string, run: (app: typeof lifecycle.held) => Promise<unknown>) => {
+    holders.set(appUrn, 'restart');
+    try {
+      return await run(lifecycle.held);
+    } finally {
+      free(appUrn);
+    }
+  };
+
+  lifecycle.withAppHeld.mockImplementation(async (appUrn, run) => {
+    if (holders.has(appUrn)) throw refusal(appUrn);
+    return hold(appUrn, run);
+  });
+  lifecycle.withAppHeldUnlessBusy.mockImplementation(async (appUrn, run) => {
+    const busy = holders.get(appUrn);
+    return busy ? { busy } : { result: await hold(appUrn, run) };
+  });
+  lifecycle.restartApp.mockImplementation(async ({ appUrn }: { appUrn: string }) => {
+    await untilFree(appUrn);
+    return { requestId: 'r-waited' };
+  });
+  lifecycle.restartAppAndWait.mockImplementation(async ({ appUrn }: { appUrn: string }) => {
+    await untilFree(appUrn);
+    return true;
+  });
+
+  return { startOperation: (appUrn: string) => holders.set(appUrn, 'start'), finishOperation: free };
+}
+
+/** How a call stands 50 ms in: what it resolved with, the error it threw, or 'still open'. */
+const after50ms = (call: Promise<unknown>) =>
+  Promise.race([call.catch((error: unknown) => error), new Promise((resolve) => setTimeout(() => resolve('still open'), 50))]);
+
+describe('MemoryConnectService with the app held', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const APP = 'ci-openclaw:local';
+  const FINISHING_PATH = '/memory-connect/finishing?app=ci-openclaw%3Alocal&next=https%3A%2F%2Fapp.example.org%2F';
+  const BUSY_REDIRECT = '/?memoryConnect=busy&app=ci-openclaw%3Alocal';
+  const CONSUMED = { outcome: 'consumed', appUrn: APP, next: 'https://app.example.org/', userId: '1', redirect: 'https://app.example.org/' };
+  const OWN_CONNECTION = { id: 7, appUrn: APP, state: 'connected', hubUserId: '1', encryptedKey: 'enc', serverUrl: 'http://ci-memory:8642' };
+  const EXCHANGED = { appUrn: APP, key: 'raw-key', expiresAt: '2026-12-01T00:00:00.000Z' };
+
+  function connectingService() {
+    const ctx = makeService();
+    ctx.pending.consume.mockReturnValue(CONSUMED);
+    ctx.resolver.findProvider.mockResolvedValue(PROVIDER);
+    ctx.connections.getActiveConnection.mockResolvedValue(OWN_CONNECTION);
+    ctx.connections.listConnected.mockResolvedValue([OWN_CONNECTION]);
+    return { ...ctx, apps: holdApps(ctx.lifecycle) };
+  }
+
+  // Held for anything else, the callback used to revoke, exchange and then wait for the app under the
+  // connection lock. A disconnect holding the app and waiting for that lock then never finished either.
+  it('sends a callback for an app another operation holds back with busy, revoking and exchanging nothing', async () => {
+    const { service, exchange, connections, pending, lifecycle, apps } = connectingService();
+    connections.listConnected.mockResolvedValue([{ ...OWN_CONNECTION, hubUserId: '2' }]);
+    apps.startOperation(APP);
+
+    const outcome = await after50ms(service.handleCallback('the-code', 'state-nonce', '1'));
+
+    expect(outcome).toEqual({ next: BUSY_REDIRECT, error: true });
+    expect(pending.recordOutcome).toHaveBeenCalledWith('state-nonce', BUSY_REDIRECT);
+    expect(exchange.revoke).not.toHaveBeenCalled();
+    expect(exchange.exchange).not.toHaveBeenCalled();
+    expect(connections.storeConnected).not.toHaveBeenCalled();
+    expect(lifecycle.held.restart).not.toHaveBeenCalled();
+    apps.finishOperation(APP);
+  });
+
+  it('refuses a disconnect for an app another operation holds with its 409, at once', async () => {
+    const { service, exchange, connections, apps } = connectingService();
+    apps.startOperation(APP);
+
+    const outcome = await after50ms(service.disconnect(APP, '1'));
+
+    expect(outcome).toMatchObject({ status: HttpStatus.CONFLICT, message: 'APP_ERROR_START_IN_PROGRESS' });
+    expect(exchange.revoke).not.toHaveBeenCalled();
+    expect(connections.clear).not.toHaveBeenCalled();
+    apps.finishOperation(APP);
+  });
+
+  it('lets a disconnect sent while a callback holds the app fail fast with 409, and the callback finish', async () => {
+    const { service, exchange, connections, lifecycle } = connectingService();
+    let finishExchange!: (value: typeof EXCHANGED) => void;
+    exchange.exchange.mockReturnValue(new Promise((resolve) => (finishExchange = resolve)));
+
+    const callback = service.handleCallback('the-code', 'state-nonce', '1');
+    await vi.waitFor(() => expect(exchange.exchange).toHaveBeenCalled());
+
+    expect(await after50ms(service.disconnect(APP, '1'))).toMatchObject({ status: HttpStatus.CONFLICT, message: 'APP_ERROR_RESTART_IN_PROGRESS' });
+    expect(exchange.revoke).not.toHaveBeenCalled();
+
+    finishExchange(EXCHANGED);
+    expect(await after50ms(callback)).toEqual({ next: FINISHING_PATH });
+    expect(connections.storeConnected).toHaveBeenCalledWith(APP, 'http://ci-memory:8642', 'raw-key', '2026-12-01T00:00:00.000Z', '1');
+    expect(lifecycle.held.restart).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends a callback that arrives while a disconnect holds the app back with busy, and lets the disconnect finish', async () => {
+    const { service, exchange, connections, lifecycle } = connectingService();
+    let confirmRevoke!: (revoked: boolean) => void;
+    exchange.revoke.mockReturnValueOnce(new Promise((resolve) => (confirmRevoke = resolve)));
+
+    const disconnect = service.disconnect(APP, '1');
+    await vi.waitFor(() => expect(exchange.revoke).toHaveBeenCalledTimes(1));
+
+    expect(await after50ms(service.handleCallback('the-code', 'state-nonce', '1'))).toEqual({ next: BUSY_REDIRECT, error: true });
+    expect(exchange.exchange).not.toHaveBeenCalled();
+    expect(exchange.revoke).toHaveBeenCalledTimes(1);
+
+    confirmRevoke(true);
+    expect(await after50ms(disconnect)).toBeUndefined();
+    expect(connections.clear).toHaveBeenCalledWith(APP, '1');
+    expect(lifecycle.held.restartAndWait).toHaveBeenCalledWith({ skipPull: true });
+  });
+
+  it('asks for the grant before it holds the app', async () => {
+    const { service, lifecycle } = connectingService();
+
+    const result = await service.handleCallback('the-code', 'state-nonce', '1', vi.fn().mockResolvedValue(false));
+
+    expect(result).toEqual({ next: '/?memoryConnect=denied', error: true });
+    expect(lifecycle.withAppHeldUnlessBusy).not.toHaveBeenCalled();
+  });
+
+  it("refuses a disconnect of someone else's connection before it holds the app", async () => {
+    const { service, connections, lifecycle } = connectingService();
+    connections.getActiveConnection.mockResolvedValue({ ...OWN_CONNECTION, hubUserId: '2' });
+
+    await expect(service.disconnect(APP, '1')).rejects.toMatchObject({ status: HttpStatus.FORBIDDEN });
+
+    expect(lifecycle.withAppHeld).not.toHaveBeenCalled();
+  });
+
+  // The owner read without the lock can go stale: a Connect by someone else may finish before the lock.
+  it('asks again under the connection lock whose connection it is', async () => {
+    const { service, exchange, connections } = connectingService();
+    connections.getActiveConnection.mockResolvedValueOnce(OWN_CONNECTION).mockResolvedValue({ ...OWN_CONNECTION, hubUserId: '2' });
+
+    await expect(service.disconnect(APP, '1')).rejects.toMatchObject({ status: HttpStatus.FORBIDDEN });
+
+    expect(exchange.revoke).not.toHaveBeenCalled();
   });
 });

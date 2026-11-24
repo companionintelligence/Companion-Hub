@@ -27,6 +27,15 @@ const DYNAMIC_PORT_MAX = 60000;
 /** How many times to retry if a port turns out to be in use */
 const MAX_PROBE_RETRIES = 10;
 
+/** The database turned an insert or update down on a unique index. Drizzle wraps the driver's error, whose code is then on `cause`. */
+export function isUniqueViolation(err: unknown): boolean {
+  if (!(err instanceof Error)) {
+    return false;
+  }
+  const code = (err as { code?: string }).code ?? (err.cause as { code?: string } | undefined)?.code;
+  return code === '23505' || err.message.includes('unique') || err.message.includes('duplicate') || err.message.includes('23505');
+}
+
 export interface PortAllocation {
   id: number;
   appUrn: string;
@@ -87,24 +96,23 @@ export class PortManagerService {
     label: string,
     preferredHostPort?: number,
     attempt = 0,
+    avoid: ReadonlySet<number> = new Set(),
   ): Promise<PortAllocation> {
     const maxRetries = 3;
     let hostPort: number;
 
-    if (attempt === 0 && preferredHostPort && (await this.isPortAvailable(preferredHostPort, protocol))) {
+    if (attempt === 0 && preferredHostPort && !avoid.has(preferredHostPort) && (await this.isPortAvailable(preferredHostPort, protocol))) {
       hostPort = preferredHostPort;
     } else {
-      hostPort = await this.findAvailablePort(protocol);
+      hostPort = await this.findAvailablePort(protocol, avoid);
     }
 
     try {
       return await this.portAllocationRepo.create({ appUrn, hostPort, containerPort, protocol, label });
     } catch (err) {
-      const isConstraintViolation =
-        err instanceof Error && (err.message.includes('unique') || err.message.includes('duplicate') || err.message.includes('23505'));
-      if (isConstraintViolation && attempt < maxRetries) {
+      if (isUniqueViolation(err) && attempt < maxRetries) {
         this.logger.warn(`Port ${hostPort}/${protocol} conflict on insert (attempt ${attempt + 1}/${maxRetries}), retrying...`);
-        return this.allocateWithRetry(appUrn, containerPort, protocol, label, undefined, attempt + 1);
+        return this.allocateWithRetry(appUrn, containerPort, protocol, label, undefined, attempt + 1, avoid);
       }
       throw err;
     }
@@ -129,12 +137,72 @@ export class PortManagerService {
   }
 
   /**
+   * Give an app's main port a new host port from the dynamic range, never one of `avoid`.
+   *
+   * For a host port Docker refused to bind. The probe in `isPortAvailable` runs inside the Hub
+   * container, so it cannot see a program listening on the host itself, and Docker's own refusal is
+   * the first sign the port was taken. Returns `null` when the app holds no main allocation.
+   */
+  public async moveMainPort(appUrn: AppUrn, avoid: ReadonlySet<number>): Promise<PortAllocation | null> {
+    const main = await this.getMainAllocation(appUrn);
+    if (!main) {
+      return null;
+    }
+
+    // The new port is taken before the old one goes, so a failed allocation leaves the app on the
+    // main port it had instead of with none. The old port is still allocated, so the search skips it.
+    const moved = await this.allocateWithRetry(appUrn, main.containerPort, main.protocol, 'main', undefined, 0, new Set([...avoid, main.hostPort]));
+    // By its id: a save can have changed its host port (`setMainPort`) since it was read above.
+    await this.portAllocationRepo.deleteById(main.id);
+    this.logger.info(`Port moved: ${main.hostPort} to ${moved.hostPort} for ${main.containerPort}/${main.protocol} [main] of ${appUrn}`);
+    return moved;
+  }
+
+  /**
+   * Record `hostPort` as the app's main port when a person set it (Import config, `update-config`, a
+   * reinstall form) rather than this service handing it out. The allocator and the busy-port move read
+   * this table. An app whose row moves without it keeps its old port reserved for nothing while the
+   * port it publishes looks free to everyone else.
+   *
+   * The allocation is kept and only its host port changes. Returns false and changes nothing when
+   * another allocation holds `hostPort`: a port is never taken from another app. Returns true for an
+   * app that holds no main allocation, since there is nothing to keep in step.
+   */
+  public async setMainPort(appUrn: AppUrn, hostPort: number): Promise<boolean> {
+    const main = await this.getMainAllocation(appUrn);
+    if (!main || main.hostPort === hostPort) {
+      return true;
+    }
+    if (await this.portAllocationRepo.getByHostPort(hostPort, main.protocol)) {
+      return false;
+    }
+
+    try {
+      await this.portAllocationRepo.updateHostPort(main.id, hostPort);
+    } catch (err) {
+      if (isUniqueViolation(err)) {
+        return false;
+      }
+      throw err;
+    }
+    this.logger.info(`Main port of ${appUrn} recorded as ${hostPort}, was ${main.hostPort}`);
+    return true;
+  }
+
+  /** The allocation that holds a host port, whichever app it belongs to. */
+  public async getPortHolder(port: number, protocol: 'tcp' | 'udp' = 'tcp'): Promise<PortAllocation | undefined> {
+    return this.portAllocationRepo.getByHostPort(port, protocol);
+  }
+
+  /**
    * Get the main (primary) host port for an app — the one labelled 'main'.
    */
   public async getMainPort(appUrn: AppUrn): Promise<number | null> {
-    const allocations = await this.portAllocationRepo.getByAppUrn(appUrn);
-    const main = allocations.find((a) => a.label === 'main');
-    return main?.hostPort ?? null;
+    return (await this.getMainAllocation(appUrn))?.hostPort ?? null;
+  }
+
+  private async getMainAllocation(appUrn: AppUrn): Promise<PortAllocation | undefined> {
+    return (await this.portAllocationRepo.getByAppUrn(appUrn)).find((allocation) => allocation.label === 'main');
   }
 
   /**
@@ -164,9 +232,9 @@ export class PortManagerService {
   /**
    * Find the next available host port in the dynamic range.
    */
-  private async findAvailablePort(protocol: 'tcp' | 'udp'): Promise<number> {
+  private async findAvailablePort(protocol: 'tcp' | 'udp', avoid: ReadonlySet<number> = new Set()): Promise<number> {
     const allocated = await this.portAllocationRepo.getAllHostPorts(protocol);
-    const allocatedSet = new Set(allocated);
+    const allocatedSet = new Set([...allocated, ...avoid]);
 
     for (let attempt = 0; attempt < MAX_PROBE_RETRIES; attempt++) {
       for (let port = DYNAMIC_PORT_MIN; port <= DYNAMIC_PORT_MAX; port++) {

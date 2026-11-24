@@ -1,9 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { INFERENCE_BACKEND_TYPES, type InferenceBackendType } from '@ci-hub/common/types';
 import type { InferenceBackend } from './backend.interface';
 // Value imports, not `import type`: Nest resolves these constructor params through
 // emitDecoratorMetadata's design:paramtypes, and a type-only import erases them to undefined.
 import { LemonadeBackend } from './lemonade.backend';
+import { LocalAiBackend } from './localai.backend';
 import { OllamaBackend } from './ollama.backend';
 import { OmlxBackend } from './omlx.backend';
 import { VllmBackend } from './vllm.backend';
@@ -49,13 +50,36 @@ export class UnknownInferenceBackendError extends Error {
 @Injectable()
 export class InferenceBackendRegistry {
   private readonly byType: Record<InferenceBackendType, InferenceBackend>;
+  // Retained so Nest discovery/wiring tests verify this optional dependency is held by the instance.
+  readonly localaiBackend?: LocalAiBackend;
 
-  constructor(ollama: OllamaBackend, vllm: VllmBackend, lemonade: LemonadeBackend, omlx: OmlxBackend) {
+  constructor(ollama: OllamaBackend, vllm: VllmBackend, lemonade: LemonadeBackend, omlx: OmlxBackend, @Optional() localai?: LocalAiBackend) {
+    this.localaiBackend = localai;
     this.byType = {
       ollama,
       vllm,
       lemonade,
       omlx,
+      localai:
+        localai ??
+        ({
+          type: 'localai',
+          getBaseUrl: () => 'http://localhost:8080',
+          healthCheck: async () => ({ running: false, healthy: false, modelsLoaded: [] }),
+          listModels: async () => [],
+          pullModel: async () => {
+            /* no-op */
+          },
+          loadModel: async () => {
+            /* no-op */
+          },
+          unloadModel: async () => {
+            /* no-op */
+          },
+          isModelLoaded: async () => false,
+          getDockerImage: () => 'localai/localai:latest',
+          getComposeConfig: () => ({}),
+        } as unknown as LocalAiBackend),
     };
   }
 

@@ -17,6 +17,8 @@
 (function bootstrap() {
   const HUB_POLL_MS = 1000;
   const PROGRESS_POLL_MS = 2000;
+  /** With no answer to the progress poll for this long, Docker has stopped answering. */
+  const PROGRESS_STALE_MS = 60 * 1000;
   /** Starting this long without the Hub answering is "hasn't finished starting". */
   const STUCK_AFTER_MS = 3 * 60 * 1000;
   /** After this long, a View logs link joins the starting screen — as in StartupScreen. */
@@ -26,6 +28,11 @@
    * desktop app may still be about to auto-start it, so wait this long before saying so.
    */
   const NOT_RUNNING_GRACE_MS = 15 * 1000;
+  /**
+   * Once Start engine gets Docker answering, the next poll moves the page on. Until then, for at
+   * most this long, the page keeps saying the engine is starting, as the in-app screen does.
+   */
+  const ENGINE_STARTED_GRACE_MS = 15 * 1000;
   /**
    * A Docker check that never returns used to leave "Checking CI Hub" up forever.
    * After this, say Docker didn't answer instead of spinning.
@@ -55,6 +62,7 @@
     keepWaiting: byId('keep-waiting'),
     tryAgain: byId('try-again'),
     installDocker: byId('install-docker'),
+    startEngine: byId('start-engine'),
     copyError: byId('copy-error'),
     openLogs: byId('open-logs'),
     logsError: byId('logs-error'),
@@ -130,7 +138,7 @@
     icon.alt = '';
     const title = document.createElement('span');
     title.className = 'titlebar-title';
-    title.textContent = 'CI Hub';
+    title.textContent = 'Companion Hub';
     drag.append(icon, title);
 
     // The drag region above never waits on IPC: if the window commands are
@@ -212,6 +220,12 @@
     installResult: null,
     /** True while Install Docker is running. The status note reports it, not the button label. */
     installRunning: false,
+    /** True while Start engine waits for Docker in WSL. */
+    engineStarting: false,
+    /** Why the last Start engine didn't get Docker in WSL answering. */
+    engineError: null,
+    /** When Start engine last got Docker in WSL answering. */
+    engineStartedAt: 0,
     navigating: false,
     /** True while get_startup_progress_command has not come back. */
     pollInFlight: false,
@@ -311,7 +325,9 @@
     }
 
     // A long first download is not "stuck": give the services their three minutes after it.
-    if (downloading(progress)) page.deadline = Math.max(page.deadline, now + STUCK_AFTER_MS);
+    // Only while Docker answers, though. An old answer can't say the download is still moving.
+    const answerIsRecent = now - page.progressAt < PROGRESS_STALE_MS;
+    if (downloading(progress) && answerIsRecent) page.deadline = Math.max(page.deadline, now + STUCK_AFTER_MS);
     return now >= page.deadline ? 'stuck' : 'starting';
   }
 
@@ -329,6 +345,11 @@
       page.failedAfterSecs = (now - page.waitStartedAt) / 1000;
     }
     if (view === 'stopped') page.startedHere = false;
+    // Docker answers again: a Start engine from before is history.
+    if (previous === 'docker') {
+      page.engineError = null;
+      page.engineStartedAt = 0;
+    }
     page.view = view;
   }
 
@@ -417,20 +438,35 @@
     return node;
   }
 
-  function dockerHead(access) {
+  /**
+   * The Hub runs on the Docker engine inside WSL, which stops whenever WSL does, and that engine
+   * doesn't answer. A missing Docker CLI or a refused permission is not something Start engine fixes.
+   */
+  function wslEngineStopped(progress) {
+    const state = progress?.docker_access?.state;
+    return progress?.docker_engine === 'wsl-engine' && (state === 'daemon_unavailable' || state === 'error');
+  }
+
+  function dockerHead(access, wslEngineDown) {
+    if (wslEngineDown) {
+      return [
+        "Docker in WSL isn't running",
+        'WSL stopped the Docker engine this Hub runs on. Companion Hub starts it again by itself unless you stopped the Hub.',
+      ];
+    }
     switch (access?.state) {
       case 'not_installed':
-        return ["Docker isn't installed", 'CI Hub runs on Docker. Install it and CI Hub will carry on from here.'];
+        return ["Docker isn't installed", 'Companion Hub runs on Docker. Install it and Companion Hub will carry on from here.'];
       case 'permission_denied':
-        return ["CI Hub can't use Docker", "Your account isn't allowed to use Docker. Add it to the docker group, then log out and back in."];
+        return ["Companion Hub can't use Docker", "Your account isn't allowed to use Docker. Add it to the docker group, then log out and back in."];
       case 'error':
-        return ["CI Hub can't reach Docker", access.detail || "Docker didn't answer. Check that it's running."];
+        return ["Companion Hub can't reach Docker", access.detail || "Docker didn't answer. Check that it's running."];
       default:
         return [
           "Docker isn't running",
           osType() === 'linux'
-            ? 'CI Hub runs on Docker. Start Docker and CI Hub will carry on from here.'
-            : 'CI Hub runs on Docker. Open Docker Desktop and CI Hub will carry on from here.',
+            ? 'Companion Hub runs on Docker. Start Docker and Companion Hub will carry on from here.'
+            : 'Companion Hub runs on Docker. Open Docker Desktop and Companion Hub will carry on from here.',
         ];
     }
   }
@@ -438,34 +474,34 @@
   function headFor(view, progress, core, elapsed) {
     switch (view) {
       case 'checking':
-        return ['Checking CI Hub', "Looking at Docker and the Hub's services…"];
+        return ['Checking Companion Hub', "Looking at Docker and the Hub's services…"];
       case 'docker':
-        return dockerHead(progress.docker_access);
+        return dockerHead(progress.docker_access, wslEngineStopped(progress));
       case 'failed': {
         const failed = failedService(core);
-        if (!failed) return ["CI Hub couldn't start", "CI Hub won't retry on its own until you try again."];
+        if (!failed) return ["Companion Hub couldn't start", "Companion Hub won't retry on its own until you try again."];
         const phrase = SERVICE_PHRASE[failed.container] ?? `the ${failed.label.toLowerCase()}`;
-        return ["CI Hub couldn't start", `Docker couldn't start ${phrase}. CI Hub won't retry on its own.`];
+        return ["Companion Hub couldn't start", `Docker couldn't start ${phrase}. Companion Hub won't retry on its own.`];
       }
       case 'stopped': {
-        if (!progress.user_stopped) return ["CI Hub isn't running", 'Start it to use CI Hub and your apps.'];
+        if (!progress.user_stopped) return ["Companion Hub isn't running", 'Start it to use Companion Hub and your apps.'];
         const at = progress.user_stopped_at_ms;
         const when = at ? ` on ${dayOf(at)} at ${timeOf(at)}` : '';
-        return ['CI Hub is stopped', `You stopped it${when}. It stays stopped until you start it again.`];
+        return ['Companion Hub is stopped', `You stopped it${when}. It stays stopped until you start it again.`];
       }
       case 'stuck': {
         const service = stuckService(core);
         const waited = Math.max(1, Math.floor((service ? stuckSecs(service) : elapsed) / 60));
         return [
-          "CI Hub hasn't finished starting",
-          `${service ? service.label : 'CI Hub'} has been starting for ${minutes(waited)}. Restarting the Hub often clears this.`,
+          "Companion Hub hasn't finished starting",
+          `${service ? service.label : 'Companion Hub'} has been starting for ${minutes(waited)}. Restarting the Hub often clears this.`,
         ];
       }
       default:
         return [
-          'Starting CI Hub',
+          'Starting Companion Hub',
           downloading(progress)
-            ? 'Downloading what CI Hub needs. The first start after an install or update can take a few minutes.'
+            ? 'Downloading what Companion Hub needs. The first start after an install or update can take a few minutes.'
             : 'Services are coming online…',
         ];
     }
@@ -535,7 +571,14 @@
     return row;
   }
 
+  /** Start engine is running, or got Docker answering and the page hasn't moved on yet. */
+  function engineStarting() {
+    return page.engineStarting || Date.now() - page.engineStartedAt < ENGINE_STARTED_GRACE_MS;
+  }
+
   function dockerStatusNote() {
+    if (engineStarting()) return 'Starting the engine… This can take a minute.';
+    if (page.engineError) return `The engine didn't start. ${page.engineError}`;
     if (page.installRunning) return 'Installing Docker… This can take a few minutes.';
     if (page.installError) return `Docker install didn't finish. ${page.installError}`;
     const result = page.installResult;
@@ -544,7 +587,7 @@
       return `Docker is installed. Restart to finish using it.${detail}`;
     }
     if (result?.state === 'completed') {
-      return result.detail || 'Docker is installed. CI Hub will carry on once Docker is running.';
+      return result.detail || 'Docker is installed. Companion Hub will carry on once Docker is running.';
     }
     return 'Service status shows here once Docker is running.';
   }
@@ -630,12 +673,16 @@
       keepWaiting: view === 'stuck',
       tryAgain: view === 'failed',
       installDocker: view === 'docker' && access === 'not_installed',
+      startEngine: view === 'docker' && wslEngineStopped(progress),
       copyError: view === 'failed' && Boolean(errorToCopy(progress)),
       openLogs: view === 'stuck' || view === 'failed' || (view === 'starting' && elapsed > LOGS_LINK_AFTER_S),
     };
     for (const [key, visible] of Object.entries(shown)) el[key].hidden = !visible;
     el.installDocker.disabled = page.installRunning;
     el.installDocker.setAttribute('aria-busy', page.installRunning ? 'true' : 'false');
+    const starting = engineStarting();
+    el.startEngine.disabled = starting;
+    el.startEngine.setAttribute('aria-busy', starting ? 'true' : 'false');
     el.actions.hidden = !Object.values(shown).some(Boolean);
     el.aside.hidden = view !== 'stopped';
     el.waiting.hidden = view !== 'docker';
@@ -722,14 +769,31 @@
     }
   }
 
+  /**
+   * True while the app is deciding whether to start the Hub at launch, or stopping, restarting or
+   * starting it. Each can remove the container that answers right now: one launch opened the Hub a
+   * second before its cleanup removed it, and the window sat on a dead page for a minute and a
+   * half. An app that can't answer is treated as settled, as before this check existed.
+   */
+  async function hubMayGoAway() {
+    // A start or restart from this page counts from the click, before the app has marked anything.
+    if (page.commandRunning) return true;
+    try {
+      const state = await invoke('get_stack_change_state_command');
+      return Boolean(state?.stack_change_pending || state?.start_in_progress);
+    } catch {
+      return false;
+    }
+  }
+
   async function watchHub() {
     const baseUrl = await resolveHubUrl();
     for (;;) {
-      if (await isHubLive(baseUrl)) {
+      if (!(await hubMayGoAway()) && (await isHubLive(baseUrl))) {
         // The in-app StartupScreen picks the story up from here.
         page.navigating = true;
-        el.title.textContent = 'CI Hub is ready';
-        el.status.textContent = 'Opening CI Hub…';
+        el.title.textContent = 'Companion Hub is ready';
+        el.status.textContent = 'Opening Companion Hub…';
         window.location.replace(`${baseUrl.replace(/\/$/, '')}/`);
         return;
       }
@@ -772,6 +836,26 @@
       page.installError = errorText(error) || 'Try again, or install Docker yourself.';
     } finally {
       page.installRunning = false;
+      render();
+      void pollProgress();
+    }
+  }
+
+  /** Start the Docker engine inside WSL now, rather than wait for the app's next try. */
+  async function startEngine() {
+    if (engineStarting()) return;
+    page.engineStarting = true;
+    page.engineError = null;
+    render();
+    try {
+      await invoke('start_wsl_engine_command');
+      // Only while the Docker screen is still up. Set after a poll moved the page on, it would make
+      // a later return to that screen say the engine is starting while nothing runs.
+      if (page.view === 'docker') page.engineStartedAt = Date.now();
+    } catch (error) {
+      page.engineError = errorText(error) || 'Try again in a minute.';
+    } finally {
+      page.engineStarting = false;
       render();
       void pollProgress();
     }
@@ -820,6 +904,7 @@
     render();
   });
   el.installDocker.addEventListener('click', () => void installDocker());
+  el.startEngine.addEventListener('click', () => void startEngine());
   el.copyError.addEventListener('click', () => void copyText(errorToCopy(page.progress), el.copyError));
   el.commandCopy.addEventListener('click', () => void copyText(el.commandText.textContent, el.commandCopy));
   el.openLogs.addEventListener('click', () => {

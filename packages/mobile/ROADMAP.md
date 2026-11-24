@@ -27,9 +27,10 @@ appliance chosen from the cloud device picker. Everything mobile is gated by
 
 ## P0 — ship v1 (now)
 
-Close out [`STORE-READINESS.md`](./STORE-READINESS.md). The code is done; the
-work is accounts, the App Review demo Hub, account deletion, and **TestFlight
-validation on a real device** (nothing has ever run on physical hardware).
+Close out [`STORE-READINESS.md`](./STORE-READINESS.md). The remaining work is
+signing and store metadata, App Review demo access, confirming the new account
+deletion link in a store build, and **TestFlight validation on a real device**
+(nothing has ever run on physical hardware).
 
 ---
 
@@ -107,7 +108,7 @@ fits the threat model given a persisted session token. Cargo dep + capability +
 - **i18n the Portal error paths** — timeouts surface as raw English / browser `TimeoutError` strings; add keys + inline errors instead of toast-only.
 - **Custom Portal URLs** silently fail — the Advanced field accepts any host, but the http capability allowlist only covers `*.ci.computer` + corporate domains + RFC1918 (and is missing `172.16/12`). Widen, or catch the denial and say so.
 - **Tablet/TV decision** (see STORE-READINESS §4c).
-- **Keep telemetry lean.** There is no product-analytics tooling (no PostHog/Plausible), but it is **not** error-only today: `sentry.ts:296-299` enables `browserTracingIntegration()` and `replayIntegration()` (Session Replay, text masked / media blocked), and `tracesSampleRate` is read from `VITE_SENTRY_TRACES_SAMPLE_RATE` rather than pinned to 0. For a privacy-first brand that's the right default — codify it so store privacy answers stay consistent.
+- **Keep telemetry lean.** There is no product-analytics tooling (no PostHog/Plausible), but it is **not** error-only today. `initHubSentry()` in `packages/frontend/src/lib/sentry.ts` enables `browserTracingIntegration()`, and Session Replay (text masked, media blocked) is added only after consent. Traces follow the in-app switch: the transport sends no span envelope while it is off. `tracesSampleRate` is read from `VITE_SENTRY_TRACES_SAMPLE_RATE` rather than pinned to 0. For a privacy-first brand that's the right default — codify it so store privacy answers stay consistent.
 
 ---
 

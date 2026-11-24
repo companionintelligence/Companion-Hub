@@ -26,6 +26,7 @@
 
 import { createHash } from 'node:crypto';
 import { test, expect } from '@playwright/test';
+import { eq } from 'drizzle-orm';
 import { db, deleteAppByName, seedOrganization } from './helpers/db';
 import { testUser } from './helpers/constants';
 import * as schema from '../packages/backend/src/core/database/drizzle/schema';
@@ -36,6 +37,8 @@ const MCP_API_KEY = process.env.MCP_API_KEY || 'test-mcp-api-key-e2e';
 /** DB-only cleanup — avoids filesystem emptyDir which can fail on root-owned files. */
 async function clearDatabaseOnly() {
   await db.delete(schema.link);
+  // Signing in through the mock Portal links the operator; the link has to go before the user can.
+  await db.delete(schema.federatedIdentity);
   await db.delete(schema.user);
   await db.delete(schema.app);
   await db.delete(schema.appStore);
@@ -57,6 +60,22 @@ async function seedMcpApiKey() {
     prefix: MCP_API_KEY.slice(0, 8), // PREFIX_LEN in ApiKeyService
     hashedKey: createHash('sha256').update(MCP_API_KEY).digest('hex'),
   });
+}
+
+/**
+ * Record the seeded key as created by the signed-in operator.
+ *
+ * Creating a custom app takes an organization owner or admin, and an MCP key acts with the role of the
+ * person who created it. Signing in through the mock Portal links the operator, and the mock's WhoIs
+ * names them owner of the paired org, so a key recorded as theirs may create one. A key nobody is
+ * recorded as creating has no role to ask, and the Hub refuses it.
+ */
+async function attributeMcpApiKeyToOperator() {
+  const [operator] = await db.select({ id: schema.user.id }).from(schema.user).where(eq(schema.user.username, testUser.email));
+  if (!operator) {
+    throw new Error('No signed-in operator to record as the creator of the MCP key');
+  }
+  await db.update(schema.apiKey).set({ createdByUserId: operator.id });
 }
 
 // OpenClaw custom app with hub_integration.mcp_client enabled
@@ -344,7 +363,10 @@ test.describe('OpenClaw app creation and MCP integration config', () => {
     await clearDatabaseOnly();
     await seedOrganization();
     await seedMcpApiKey();
+    // The operator signs in through the mock Portal as an owner, which creating a custom app takes;
+    // the MCP key then acts as them.
     sessionId = await loginToHub();
+    await attributeMcpApiKeyToOperator();
   });
 
   test('create OpenClaw as a custom app with hub_integration config', async () => {

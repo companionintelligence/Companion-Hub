@@ -9,7 +9,7 @@ export const LOCAL_CANDIDATE_KEY = 'local';
 export interface LocalGeneration {
   backend: InferenceBackendType;
   model: string;
-  /** Its `options.num_ctx`; `null` when it named none — every `/v1` request — so it runs at the engine's default. */
+  /** Its `options.num_ctx`; `null` when it named none, or on a `/v1` request other than a chat completion that names one, so it is counted at the engine's default. A `/v1` chat completion that names none may run at its model's loaded window instead (`PoolProxyService.loadedWindowPlan`), which this doesn't record. */
   numCtx: number | null;
 }
 
@@ -22,6 +22,16 @@ export interface LocalGeneration {
 export interface LocalModelWork {
   backend: InferenceBackendType;
   model: string;
+}
+
+/**
+ * Media workload (e.g. ComfyUI image/video diffusion generation) that loads the host GPU.
+ * Tracking it in the pool load service prevents text inference from being placed onto
+ * a peer whose GPU is saturated by media tasks.
+ */
+export interface LocalMediaWork {
+  kind: 'image' | 'video' | 'comfyui';
+  model?: string;
 }
 
 /** One model at one window on one engine, and how many of its generations are in flight there. */
@@ -63,6 +73,26 @@ export class HubPoolLoadService {
    * Only peers with a non-zero figure have an entry.
    */
   private readonly forwardedAtReport = new Map<string, number>();
+  private mediaWorkCount = 0;
+
+  /** Record media generation work on this node (e.g. ComfyUI or diffusion) to reflect GPU occupancy in the pool queue. */
+  acquireMedia(_work?: LocalMediaWork): void {
+    this.mediaWorkCount += 1;
+    this.acquire(LOCAL_CANDIDATE_KEY);
+  }
+
+  /** Release previously acquired media generation work. */
+  releaseMedia(_work?: LocalMediaWork): void {
+    if (this.mediaWorkCount > 0) {
+      this.mediaWorkCount -= 1;
+    }
+    this.release(LOCAL_CANDIDATE_KEY);
+  }
+
+  /** Total active media generation jobs running on this node. */
+  activeMediaWork(): number {
+    return this.mediaWorkCount;
+  }
 
   /**
    * `generation` and `work` are recorded only under {@link LOCAL_CANDIDATE_KEY}: a peer's engines are

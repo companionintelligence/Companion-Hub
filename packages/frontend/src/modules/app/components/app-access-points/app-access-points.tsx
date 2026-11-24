@@ -7,15 +7,17 @@ import { getServeStatusOptions } from '@/api-client/@tanstack/react-query.gen';
 import { tailscaleStatusOptions } from '@/lib/api-routes/named-status-routes';
 import { openExternal } from '@/lib/helpers/open-external';
 import { cn } from '@/lib/utils';
+import { PORT_EXPOSE_OPEN_TO_COPY, type PortExposeOpenTo } from '@/modules/app/helpers/port-expose-open-to';
 import type { AppDetails, AppInfo } from '@/types/app.types';
 import { hostPortStaysOnLoopback, LOOPBACK_HOST_PORT_INTERFACE } from '@ci-hub/common/schemas';
 import { buildPublicWebIdentity, normalizeStoredHostname, sanitizeAppSubdomain } from '@ci-hub/common/types';
-import { publishesPublicWebRoute, resolveRoutingSubdomain, storedExposureForm } from '@ci-hub/common/types';
+import { publishesHostPort, publishesPublicWebRoute, resolveRoutingSubdomain, storedExposureForm, storedHostPortForm } from '@ci-hub/common/types';
 import { useQuery } from '@tanstack/react-query';
-import { CheckCircle2, Copy, ExternalLink, Globe, Lock, MonitorSmartphone, QrCode as QrCodeIcon } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { CheckCircle2, Copy, ExternalLink, Globe, Lock, LockOpen, MonitorSmartphone, QrCode as QrCodeIcon } from 'lucide-react';
+import { useId, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
+import { Tooltip } from 'react-tooltip';
 import { toast } from 'sonner';
 
 type AccessPointState = 'active' | 'available' | 'unavailable';
@@ -33,6 +35,8 @@ export interface AppAccessPoint {
    * published and will not be until someone on the host runs the command Settings → Network shows.
    */
   tailscaleRefused?: boolean;
+  /** Public web only: the Portal refused this app a public address, so the address does not resolve. */
+  publicRefused?: boolean;
 }
 
 function resolveBrowserHost(internalIp?: string | null): string {
@@ -96,7 +100,7 @@ export function isMalformedAccessUrl(url: string | null): boolean {
   return url ? parseAccessUrl(url) === null : false;
 }
 
-function isLoopbackHost(host: string): boolean {
+export function isLoopbackHost(host: string): boolean {
   const lower = host.toLowerCase();
   // `*.localhost` resolves to loopback in browsers (RFC 6761), and the Tauri desktop
   // shell serves from `tauri.localhost` on Windows.
@@ -165,12 +169,17 @@ export function isTailscalePortPublished(port: number | null | undefined, served
   return port != null && servedPorts.has(port);
 }
 
-function hasDirectLocalAccess(
-  record: { exposureMode?: string | null; exposedLocal?: boolean; openPort?: boolean },
+export function hasDirectLocalAccess(
+  record: { config?: unknown; exposureMode?: string | null; exposedLocal?: boolean; openPort?: boolean },
   options: { hasHostPort: boolean; dynamicConfig: boolean },
 ): boolean {
   if (!options.hasHostPort) return false;
 
+  // Compose binds the host port from the stored install form, so a record that carries it is judged by compose's rule.
+  const form = storedHostPortForm(record);
+  if (form) return publishesHostPort(form);
+
+  // A guest's record carries no form, and its row's `exposedLocal` is true for any exposable app installed without exposure settings.
   const mode = record.exposureMode;
   // Tailscale-only installs may skip publishing a host port unless explicitly requested.
   if (mode === 'tailscale') return Boolean(record.openPort);
@@ -196,6 +205,8 @@ export function buildAppAccessPoints(input: {
   tailscaleServedPorts?: ReadonlySet<number>;
   /** Whether tailscaled refuses the Hub's Tailscale Serve changes; see `servePermission` in the Tailscale status. */
   tailscaleServeDenied?: boolean;
+  /** Whether the last sync says the Portal refused this app a public address. */
+  publicAddressRefused?: boolean;
   organizationSlug?: string;
   deviceSlug?: string;
   hubSubdomain?: string | null;
@@ -213,6 +224,7 @@ export function buildAppAccessPoints(input: {
     tailscaleHttpsEnabled = false,
     tailscaleServedPorts = new Set<number>(),
     tailscaleServeDenied = false,
+    publicAddressRefused = false,
     organizationSlug,
     deviceSlug,
     hubSubdomain,
@@ -297,8 +309,16 @@ export function buildAppAccessPoints(input: {
   // `exposedLocal` defaults to true for an exposable app installed without exposure settings,
   // and reading it showed "Enabled" for a route nothing served.
   const publicWebConfigured = publishesPublicWebRoute(storedExposureForm(record)) || Boolean(configuredPublicDomain) || Boolean(record.exposed);
-  const publicActive = Boolean(publicUrl && publicWebConfigured);
-  const publicState: AccessPointState = publicActive ? 'active' : cloudflareAvailable && publicUrl && info.exposable ? 'available' : 'unavailable';
+  const publicActive = Boolean(publicUrl && publicWebConfigured) && !publicAddressRefused;
+  // No `publicUrl` here: a subdomain the Portal refused as invalid sanitizes to nothing, so it has no address to build.
+  const publicRefused = Boolean(info.exposable && publicWebConfigured && publicAddressRefused);
+  const publicState: AccessPointState = publicRefused
+    ? 'unavailable'
+    : publicActive
+      ? 'active'
+      : cloudflareAvailable && publicUrl && info.exposable
+        ? 'available'
+        : 'unavailable';
 
   return [
     {
@@ -309,10 +329,13 @@ export function buildAppAccessPoints(input: {
       host: info.exposable ? publicHost : null,
       state: info.exposable ? publicState : 'unavailable',
       stateLabel: info.exposable
-        ? publicState === 'active'
-          ? 'APP_DETAILS_ACCESS_ENABLED'
-          : 'APP_DETAILS_ACCESS_NOT_CONFIGURED'
+        ? publicRefused
+          ? 'APP_DETAILS_ACCESS_REFUSED'
+          : publicState === 'active'
+            ? 'APP_DETAILS_ACCESS_ENABLED'
+            : 'APP_DETAILS_ACCESS_NOT_CONFIGURED'
         : 'APP_DETAILS_ACCESS_LOCAL_ONLY',
+      publicRefused,
     },
     {
       key: 'vpn',
@@ -361,12 +384,18 @@ const stateClasses: Record<AccessPointState, string> = {
 interface Props {
   app?: AppDetails | null;
   info: AppInfo;
+  /** Why the Portal refused this app a public address, when it did; shown on the Public domain card. */
+  publicAddressRefusal?: string | null;
+  /** Set for an exposed port, who can open it with no Hub sign-in in front (`portExposeOpenTo`). Said under that address. */
+  openWithoutSignIn?: PortExposeOpenTo | null;
 }
 
-export const AppAccessPoints = ({ app, info }: Props) => {
+export const AppAccessPoints = ({ app, info, publicAddressRefusal = null, openWithoutSignIn = null }: Props) => {
   const { t } = useTranslation();
   const { userSettings, cloudflareAvailable, tailscaleAvailable, tailscaleNodeFqdn, tailscaleHttpsEnabled } = useAppContext();
   const [qrEntry, setQrEntry] = useState<AppAccessPoint | null>(null);
+  const idBase = useId();
+  const tooltipId = `${idBase}-tooltip`;
 
   const { data: serveStatus } = useQuery({
     ...getServeStatusOptions(),
@@ -397,6 +426,7 @@ export const AppAccessPoints = ({ app, info }: Props) => {
     tailscaleHttpsEnabled,
     tailscaleServedPorts,
     tailscaleServeDenied,
+    publicAddressRefused: Boolean(publicAddressRefusal),
     organizationSlug: userSettings.ciHubOrganizationSlug,
     deviceSlug: userSettings.ciHubDeviceSlug,
     hubSubdomain: userSettings.ciHubHubSubdomain,
@@ -447,6 +477,19 @@ export const AppAccessPoints = ({ app, info }: Props) => {
             // could not parse, and that case needs its own explanation.
             const isMalformed = isMalformedAccessUrl(entry.url);
             const canShare = isActive && Boolean(entry.url) && !isLoopback;
+            // Why a live address gets no QR code. Not a `disabled` button with a `title`: a disabled
+            // button takes no pointer events and no focus, so nobody could ever read the reason.
+            let qrRefusal: string | null = null;
+            if (isActive && isMalformed) {
+              qrRefusal = t('APP_DETAILS_ACCESS_QR_MALFORMED');
+            } else if (isActive && isLoopback) {
+              qrRefusal = t('APP_DETAILS_ACCESS_QR_LOOPBACK');
+            }
+            const qrRefusalId = `${idBase}-${entry.key}-qr-refusal`;
+            const openNote =
+              openWithoutSignIn && isActive && PORT_EXPOSE_OPEN_TO_COPY[openWithoutSignIn].accessPoint === entry.key
+                ? PORT_EXPOSE_OPEN_TO_COPY[openWithoutSignIn].detail
+                : null;
 
             return (
               <div key={entry.key} className="min-w-0 rounded-md border border-border/60 bg-muted/20 p-3 sm:p-4">
@@ -473,7 +516,7 @@ export const AppAccessPoints = ({ app, info }: Props) => {
 
                 <div className="mt-4 space-y-2">
                   <div className="min-w-0 rounded-lg border border-border/50 bg-background/60 px-2.5 py-2 sm:px-3">
-                    <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t('APP_DETAILS_LINK')}</div>
+                    <div className="text-[11px] font-medium   text-muted-foreground">{t('APP_DETAILS_LINK')}</div>
                     {entry.tailscaleRefused ? (
                       // The reason and the command that ends it are on the Network settings card.
                       <div className="min-w-0 text-sm leading-5 text-warning" data-testid="vpn-access-refused">
@@ -482,12 +525,22 @@ export const AppAccessPoints = ({ app, info }: Props) => {
                           {t('APP_DETAILS_ACCESS_TAILSCALE_REFUSED_LINK')}
                         </Link>
                       </div>
+                    ) : entry.publicRefused ? (
+                      <div className="min-w-0 text-sm leading-5 text-warning" data-testid="public-access-refused">
+                        {publicAddressRefusal}
+                      </div>
                     ) : (
                       <div className={cn('min-w-0 break-all text-sm leading-5', !isActive && 'text-muted-foreground')}>
                         {isActive && entry.url ? entry.url : t(entry.stateLabel)}
                       </div>
                     )}
                   </div>
+                  {openNote ? (
+                    <p className="flex items-start gap-1.5 text-xs text-muted-foreground" data-testid={`${entry.key}-access-open-note`}>
+                      <LockOpen className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden />
+                      {t(openNote)}
+                    </p>
+                  ) : null}
                 </div>
 
                 <div className="mt-4 flex gap-2">
@@ -507,31 +560,46 @@ export const AppAccessPoints = ({ app, info }: Props) => {
                     onClick={() => isActive && entry.url && void copyToClipboard(entry.url)}
                     disabled={!isActive || !entry.url}
                     title={t('SETTINGS_GENERAL_COPY')}
+                    aria-label={t('SETTINGS_GENERAL_COPY')}
                   >
                     <Copy className="h-4 w-4" />
                   </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => canShare && setQrEntry(entry)}
-                    disabled={!canShare}
-                    title={
-                      isActive && isMalformed
-                        ? t('APP_DETAILS_ACCESS_QR_MALFORMED')
-                        : isActive && isLoopback
-                          ? t('APP_DETAILS_ACCESS_QR_LOOPBACK')
-                          : t('APP_DETAILS_ACCESS_SHOW_QR')
-                    }
-                    aria-label={t('APP_DETAILS_ACCESS_SHOW_QR')}
-                  >
-                    <QrCodeIcon className="h-4 w-4" />
-                  </Button>
+                  {qrRefusal ? (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-disabled="true"
+                      aria-label={t('APP_DETAILS_ACCESS_SHOW_QR')}
+                      aria-describedby={qrRefusalId}
+                      data-tooltip-id={tooltipId}
+                      data-tooltip-content={qrRefusal}
+                      className="cursor-not-allowed opacity-50 hover:bg-transparent"
+                    >
+                      <QrCodeIcon className="h-4 w-4" />
+                      <span id={qrRefusalId} className="sr-only">
+                        {qrRefusal}
+                      </span>
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => canShare && setQrEntry(entry)}
+                      disabled={!canShare}
+                      title={t('APP_DETAILS_ACCESS_SHOW_QR')}
+                      aria-label={t('APP_DETAILS_ACCESS_SHOW_QR')}
+                    >
+                      <QrCodeIcon className="h-4 w-4" />
+                    </Button>
+                  )}
                 </div>
               </div>
             );
           })}
         </div>
       </CardContent>
+
+      <Tooltip id={tooltipId} className="tooltip" positionStrategy="fixed" />
 
       <Dialog open={qrEntry !== null} onOpenChange={(open: boolean) => !open && setQrEntry(null)}>
         <DialogContent size="sm">

@@ -1,35 +1,37 @@
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   assetFormatError,
   assetNameForArch,
   assetNameForPlatform,
   compareCihubVersions,
   downloadReleaseAsset,
+  GitHubRequestError,
+  GitHubUnreachableError,
   installCihubFromStdinScript,
   parseCihubVersionOutput,
   pinCihubReleaseSource,
+  releaseFailureFix,
   resolveCihubBinarySource,
 } from '../lib/fleet-cihub-binary.js';
 import { stdinScriptCommand } from '../lib/fleet-ssh.js';
 
 /**
- * The release is in a private repository. Every case here is a way the first installer got that
- * wrong on a real fleet: a node curling the API unauthenticated, an HTML page installed as a binary,
- * an August copy on PATH shadowing a fresh one.
+ * Every case here is a way the first installer got the binary wrong on a real fleet: a node curling
+ * the API while the repository was private, an HTML page installed as a binary, an August copy on
+ * PATH shadowing a fresh one.
  */
 describe('resolveCihubBinarySource', () => {
-  it('refuses, with the fix, when there is no token and no file — before any node is dialled', () => {
+  it('fetches the public release when there is no token and no file, and sends no token', () => {
+    // It used to refuse here with "releases are private", which left a run able only to adopt
+    // whatever cihub each node already had.
     const source = resolveCihubBinarySource({ env: {} });
-    expect(source.kind).toBe('unavailable');
-    if (source.kind === 'unavailable') {
-      expect(source.why).toMatch(/private/);
-      expect(source.fix.join(' ')).toMatch(/GH_TOKEN/);
-      expect(source.fix.join(' ')).toMatch(/--cihub-binary/);
-    }
+    expect(source).toEqual({ kind: 'release', version: 'latest' });
+    expect(resolveCihubBinarySource({ env: { GH_TOKEN: '  ' }, version: '0.3.6' })).toEqual({ kind: 'release', version: '0.3.6' });
   });
 
   it('uses the operator machine token, not the node, and accepts either env name', () => {
@@ -99,15 +101,33 @@ describe('pinCihubReleaseSource', () => {
     expect(pinned).toEqual({ kind: 'release', token: 'ghp_x', version: 'v0.2.72' });
   });
 
-  it('makes a lookup the token cannot do into "nothing to install", with the fix, before any node is dialled', async () => {
-    const denied = vi.fn(async () => new Response('{"message":"Not Found"}', { status: 404 })) as unknown as typeof fetch;
-    const pinned = await pinCihubReleaseSource({ kind: 'release', token: 'ghp_x', version: 'latest' }, denied);
+  it('makes a lookup that fails into "nothing to install", with the fix, before any node is dialled', async () => {
+    const missing = vi.fn(async () => new Response('{"message":"Not Found"}', { status: 404 })) as unknown as typeof fetch;
+    const pinned = await pinCihubReleaseSource({ kind: 'release', version: '9.9.9' }, missing);
     expect(pinned.kind).toBe('unavailable');
     if (pinned.kind === 'unavailable') {
       expect(pinned.why).toMatch(/HTTP 404/);
-      expect(pinned.why).toMatch(/private repo/);
-      expect(pinned.fix.join(' ')).toMatch(/GH_TOKEN/);
+      expect(pinned.why).toMatch(/no release with that tag/);
+      expect(pinned.why).not.toMatch(/private/);
+      expect(pinned.fix.join(' ')).toMatch(/--cihub-binary/);
     }
+  });
+
+  it('pins without a token and sends no Authorization header', async () => {
+    const seen: Array<Record<string, string>> = [];
+    const fetchImpl = vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      seen.push((init?.headers ?? {}) as Record<string, string>);
+      return new Response(JSON.stringify({ tag_name: 'v0.3.6', assets: [] }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const pinned = await pinCihubReleaseSource({ kind: 'release', version: 'latest' }, fetchImpl);
+    expect(pinned).toEqual({ kind: 'release', version: 'v0.3.6', resolvedFrom: 'latest' });
+    expect(seen[0]).not.toHaveProperty('Authorization');
+  });
+
+  it('says when GitHub refused the token that was set', async () => {
+    const refused = vi.fn(async () => new Response('{"message":"Bad credentials"}', { status: 401 })) as unknown as typeof fetch;
+    const pinned = await pinCihubReleaseSource({ kind: 'release', token: 'ghp_bad', version: 'latest' }, refused);
+    expect(pinned.kind === 'unavailable' && pinned.why).toMatch(/HTTP 401.*refused the token in GH_TOKEN or GITHUB_TOKEN/);
   });
 
   it('leaves a local file and an unavailable source alone, and touches no network for them', async () => {
@@ -232,10 +252,240 @@ describe('downloadReleaseAsset', () => {
     ).rejects.toThrow(/not an ELF binary/);
   });
 
-  it('names the private-repo cause on a 404 release lookup', async () => {
+  it('says a 404 release lookup means no such tag, not a private repository', async () => {
     const fetchImpl = vi.fn(async () => new Response('{"message":"Not Found"}', { status: 404 })) as unknown as typeof fetch;
-    await expect(downloadReleaseAsset({ token: 'ghp_x', assetName: 'cihub-linux-x64', version: 'latest', fetchImpl })).rejects.toThrow(
-      /private repo/,
+    await expect(downloadReleaseAsset({ token: 'ghp_x', assetName: 'cihub-linux-x64', version: '9.9.9', fetchImpl })).rejects.toThrow(
+      /HTTP 404 .*no release with that tag$/,
+    );
+  });
+
+  it('does not name a tag when `latest` answers 404', async () => {
+    const fetchImpl = vi.fn(async () => new Response('{"message":"Not Found"}', { status: 404 })) as unknown as typeof fetch;
+    await expect(downloadReleaseAsset({ assetName: 'cihub-linux-x64', version: 'latest', fetchImpl })).rejects.toThrow(
+      /HTTP 404 .*no published release to call latest$/,
+    );
+  });
+
+  it('downloads without a token and sends no Authorization header: the repository is public', async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), 'cihub-cache-'));
+    dirs.push(cacheDir);
+    const elf = Buffer.concat([Buffer.from('\x7fELF', 'latin1'), Buffer.alloc(64, 1)]);
+    const seen: Array<Record<string, string>> = [];
+    const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      seen.push((init?.headers ?? {}) as Record<string, string>);
+      if (String(url).endsWith('/releases/tags/v0.3.6')) {
+        return new Response(
+          JSON.stringify({ tag_name: 'v0.3.6', assets: [{ name: 'cihub-linux-x64', url: 'https://api.github.com/repos/x/y/releases/assets/1' }] }),
+          { status: 200 },
+        );
+      }
+      return new Response(elf, { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const asset = await downloadReleaseAsset({ assetName: 'cihub-linux-x64', version: '0.3.6', cacheDir, fetchImpl });
+
+    expect(asset.tag).toBe('v0.3.6');
+    expect(seen).toHaveLength(2);
+    for (const headers of seen) expect(headers).not.toHaveProperty('Authorization');
+  });
+
+  it('points at a token when GitHub rate-limits a lookup made without one', async () => {
+    const fetchImpl = vi.fn(async () => new Response('{"message":"API rate limit exceeded"}', { status: 403 })) as unknown as typeof fetch;
+    await expect(downloadReleaseAsset({ assetName: 'cihub-linux-x64', version: 'latest', fetchImpl })).rejects.toThrow(
+      /60 API requests an hour without a token; set GH_TOKEN/,
+    );
+  });
+
+  it('points at a token when the asset download itself is rate-limited', async () => {
+    // The asset comes from api.github.com too, so it counts against the same 60 an hour.
+    const cacheDir = mkdtempSync(join(tmpdir(), 'cihub-cache-'));
+    dirs.push(cacheDir);
+    const fetchImpl = vi.fn(async (url: string | URL) =>
+      String(url).endsWith('/releases/latest')
+        ? new Response(
+            JSON.stringify({ tag_name: 'v0.3.6', assets: [{ name: 'cihub-linux-x64', url: 'https://api.github.com/repos/x/y/releases/assets/1' }] }),
+            {
+              status: 200,
+            },
+          )
+        : new Response('{"message":"API rate limit exceeded"}', { status: 429 }),
+    ) as unknown as typeof fetch;
+    await expect(downloadReleaseAsset({ assetName: 'cihub-linux-x64', version: 'latest', cacheDir, fetchImpl })).rejects.toThrow(
+      /asset download failed: HTTP 429.*60 API requests an hour without a token/,
+    );
+  });
+
+  it('does not blame a missing tag when the release was found but its asset answers 404', async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), 'cihub-cache-'));
+    dirs.push(cacheDir);
+    const fetchImpl = vi.fn(async (url: string | URL) =>
+      String(url).endsWith('/releases/latest')
+        ? new Response(
+            JSON.stringify({ tag_name: 'v0.3.6', assets: [{ name: 'cihub-linux-x64', url: 'https://api.github.com/repos/x/y/releases/assets/1' }] }),
+            { status: 200 },
+          )
+        : new Response('Not Found', { status: 404 }),
+    ) as unknown as typeof fetch;
+    const failure = downloadReleaseAsset({ assetName: 'cihub-linux-x64', version: 'latest', cacheDir, fetchImpl });
+    await expect(failure).rejects.toThrow(/^asset download failed: HTTP 404 for cihub-linux-x64$/);
+  });
+
+  describe.skipIf(process.platform === 'win32')('default cache folder', () => {
+    let scratch: string;
+    const uid = process.getuid?.() as number;
+    const elf = Buffer.concat([Buffer.from('\x7fELF', 'latin1'), Buffer.alloc(64, 1)]);
+
+    // os.tmpdir() reads TMPDIR on every call, so the default cache lands in this scratch folder.
+    beforeEach(() => {
+      scratch = mkdtempSync(join(tmpdir(), 'cihub-default-cache-'));
+      dirs.push(scratch);
+      const previousTmpdir = process.env.TMPDIR;
+      process.env.TMPDIR = scratch;
+      return () => {
+        if (previousTmpdir === undefined) delete process.env.TMPDIR;
+        else process.env.TMPDIR = previousTmpdir;
+      };
+    });
+
+    it('is a 0700 folder of this user under the temp dir, with no partial file left in it', async () => {
+      const asset = await downloadReleaseAsset({ token: 'ghp_x', assetName: 'cihub-linux-x64', version: 'latest', fetchImpl: fakeFetch(elf) });
+
+      const cacheDir = join(scratch, `cihub-fleet-binaries-${uid}`);
+      expect(asset.path).toBe(join(cacheDir, 'v0.2.72-cihub-linux-x64'));
+      expect(statSync(cacheDir).mode & 0o777).toBe(0o700);
+      expect(readdirSync(cacheDir)).toEqual(['v0.2.72-cihub-linux-x64']);
+    });
+
+    it('refuses a cache folder other accounts can write to and fetches nothing into it', async () => {
+      // Another account that made the folder first could have left its own binary in it.
+      const cacheDir = join(scratch, `cihub-fleet-binaries-${uid}`);
+      mkdirSync(cacheDir);
+      chmodSync(cacheDir, 0o777);
+      writeFileSync(join(cacheDir, 'v0.2.72-cihub-linux-x64'), 'planted');
+      const fetchImpl = fakeFetch(elf);
+
+      await expect(downloadReleaseAsset({ token: 'ghp_x', assetName: 'cihub-linux-x64', version: 'latest', fetchImpl })).rejects.toThrow(
+        /refusing to use .* as the cihub download cache/,
+      );
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    });
+  });
+});
+
+/**
+ * GitHub computes a sha256 for every asset at upload and publishes it in the release API (`digest`).
+ * Before this the bytes were vouched for by TLS alone: whatever the asset URL served was installed.
+ */
+describe('downloadReleaseAsset and the published digest', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+  const elf = Buffer.concat([Buffer.from('\x7fELF', 'latin1'), Buffer.alloc(64, 7)]);
+  const sha256 = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
+  const cache = () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cihub-digest-'));
+    dirs.push(dir);
+    return dir;
+  };
+  const serving = (bytes: Buffer, digest: string | null | undefined) =>
+    vi.fn(async (url: string | URL) =>
+      String(url).includes('/releases/tags/')
+        ? new Response(
+            JSON.stringify({
+              tag_name: 'v0.3.6',
+              assets: [
+                { name: 'cihub-linux-x64', url: 'https://api.github.com/repos/x/y/releases/assets/1', ...(digest === undefined ? {} : { digest }) },
+              ],
+            }),
+            { status: 200 },
+          )
+        : new Response(bytes, { status: 200 }),
+    ) as unknown as typeof fetch;
+
+  it('accepts a download whose sha256 matches the published one and says so', async () => {
+    const cacheDir = cache();
+    const asset = await downloadReleaseAsset({
+      assetName: 'cihub-linux-x64',
+      version: '0.3.6',
+      cacheDir,
+      fetchImpl: serving(elf, `sha256:${sha256(elf)}`),
+    });
+    expect(asset).toMatchObject({ sha256: sha256(elf), digest: 'matched' });
+  });
+
+  it('refuses a download that does not match and leaves nothing behind to install', async () => {
+    const cacheDir = cache();
+    const tampered = Buffer.from(elf);
+    tampered[20] = 0xff;
+    await expect(
+      downloadReleaseAsset({ assetName: 'cihub-linux-x64', version: '0.3.6', cacheDir, fetchImpl: serving(tampered, `sha256:${sha256(elf)}`) }),
+    ).rejects.toThrow(/does not match the sha256 GitHub publishes for it .*nothing was installed/);
+    expect(readdirSync(cacheDir)).toEqual([]);
+  });
+
+  it('drops a cached copy that no longer matches and fetches the asset again', async () => {
+    const cacheDir = cache();
+    writeFileSync(join(cacheDir, 'v0.3.6-cihub-linux-x64'), Buffer.concat([elf, Buffer.from('swapped')]));
+    const fetchImpl = serving(elf, `sha256:${sha256(elf)}`);
+    const asset = await downloadReleaseAsset({ assetName: 'cihub-linux-x64', version: '0.3.6', cacheDir, fetchImpl });
+    expect(asset).toMatchObject({ sha256: sha256(elf), digest: 'matched' });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('still installs an asset GitHub publishes no digest for and reports that only TLS checked it', async () => {
+    for (const digest of [undefined, null, 'md5:abc']) {
+      const asset = await downloadReleaseAsset({
+        assetName: 'cihub-linux-x64',
+        version: '0.3.6',
+        cacheDir: cache(),
+        fetchImpl: serving(elf, digest),
+      });
+      expect(asset.digest).toBe('not-published');
+    }
+  });
+});
+
+describe('releaseFailureFix', () => {
+  const rateLimited = new GitHubRequestError('GitHub release lookup failed: HTTP 403', 403);
+
+  it('answers a rate limit with the limit, not with "check the release exists"', async () => {
+    // After a 403 the run used to say "Check the release exists", for a tag that was there all along.
+    const limited = vi.fn(async () => new Response('{"message":"API rate limit exceeded"}', { status: 403 })) as unknown as typeof fetch;
+    const pinned = await pinCihubReleaseSource({ kind: 'release', version: 'latest' }, limited);
+    expect(pinned.kind === 'unavailable' && pinned.fix.join(' ')).toMatch(/60 API requests an hour without a token: wait for the limit to reset/);
+    expect(pinned.kind === 'unavailable' && pinned.fix.join(' ')).not.toMatch(/release exists/);
+    expect(releaseFailureFix(rateLimited, 'ghp_x')).toMatch(/rate-limiting the token/);
+  });
+
+  it('keeps "check the release exists" for a 404 and names the flag of the command that failed', () => {
+    const missing = new GitHubRequestError('HTTP 404', 404);
+    expect(releaseFailureFix(missing, undefined)).toMatch(/release exists \(--cihub-version\), or pass --cihub-binary/);
+    expect(releaseFailureFix(missing, undefined, { fallback: 'download it by hand', versionFlag: '--to' })).toBe(
+      'Check the release exists (--to), or download it by hand.',
+    );
+  });
+
+  it('points at the network when no answer came back', () => {
+    expect(releaseFailureFix(new TypeError('fetch failed'), undefined)).toMatch(/reach api\.github\.com/);
+  });
+
+  it('points at the network when fetch rejects with a plain Error, as Bun does in the standalone cihub', async () => {
+    // Bun's fetch rejects a refused connection or a failed DNS lookup with Error "Unable to connect",
+    // not Node's TypeError, so the run said only "Run it again".
+    const bunRefused = Object.assign(new Error('Unable to connect. Is the computer able to access the url?'), { code: 'ConnectionRefused' });
+    const offline = vi.fn(async () => {
+      throw bunRefused;
+    }) as unknown as typeof fetch;
+
+    const pinned = await pinCihubReleaseSource({ kind: 'release', version: 'latest' }, offline);
+
+    expect(pinned.kind === 'unavailable' && pinned.why).toBe(
+      'could not reach api.github.com: Unable to connect. Is the computer able to access the url?',
+    );
+    expect(pinned.kind === 'unavailable' && pinned.fix.join(' ')).toMatch(/^Check this machine can reach api\.github\.com/);
+    await expect(downloadReleaseAsset({ assetName: 'cihub-linux-x64', version: 'latest', fetchImpl: offline })).rejects.toBeInstanceOf(
+      GitHubUnreachableError,
     );
   });
 });

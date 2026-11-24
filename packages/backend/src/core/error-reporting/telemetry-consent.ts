@@ -2,8 +2,9 @@
  * Error-reporting consent — the single source of truth for whether a Sentry
  * event is allowed to leave this appliance.
  *
- * Reporting is **opt-out**: on wherever a DSN is configured, and the user turns
- * it off with the "Allow error monitoring" switch in Settings. That switch used
+ * Reporting is **opt-in**: off until the user turns on the "Allow error
+ * monitoring" switch in Settings. A fresh appliance has made no choice, so it
+ * reports nothing. That switch used
  * to be decorative — `allowErrorMonitoring` was read and discarded, and
  * `ConfigurationService.configure()` hardcoded it back to `true` on every boot —
  * so a documented privacy control had no effect. This module is what makes it
@@ -26,7 +27,8 @@
  * Reads FAIL CLOSED: a `state/settings.json` we cannot read or cannot parse
  * disables reporting. A *missing* file is different — that is a fresh appliance
  * that has not been configured yet, not a decision we failed to read — and
- * takes the opt-out default (enabled).
+ * takes the opt-in default (disabled). That holds only until this process has
+ * read the file once; after that, missing is a failed read too.
  */
 
 import fs from 'node:fs';
@@ -51,7 +53,7 @@ export interface TelemetryDecision {
 
 /**
  * `unset` = the user has expressed no preference (fresh install / key absent),
- * which under an opt-out posture means enabled. `unreadable` = we tried and
+ * which under the opt-in default means disabled. `unreadable` = we tried and
  * failed, which means disabled.
  */
 export type UserConsent = boolean | 'unset' | 'unreadable';
@@ -108,6 +110,13 @@ function isMissingFile(error: unknown): boolean {
 }
 
 /**
+ * Settings files this process has read. Once it has read one, ENOENT for it is a failed read, not a
+ * fresh appliance: the Hub never deletes settings.json, but every save renames a new one over it, and
+ * on a Windows data folder (a bind mount through WSL) a read that overlaps the rename can get ENOENT.
+ */
+const settingsFilesRead = new Set<string>();
+
+/**
  * Read `allowErrorMonitoring` straight off disk.
  *
  * Deliberately synchronous and dependency-free: the callers are `beforeSend`
@@ -121,9 +130,11 @@ export function readUserConsentFrom(settingsPath: string = settingsFilePath()): 
     raw = fs.readFileSync(settingsPath, 'utf8');
   } catch (error) {
     // No settings file yet = a fresh appliance, not a failed read. Anything
-    // else (EACCES after a UID change, EIO) is a decision we could not read.
-    return isMissingFile(error) ? 'unset' : 'unreadable';
+    // else (EACCES after a UID change, EIO), or a file this process has read
+    // before, is a decision we could not read.
+    return isMissingFile(error) && !settingsFilesRead.has(settingsPath) ? 'unset' : 'unreadable';
   }
+  settingsFilesRead.add(settingsPath);
 
   let parsed: unknown;
 
@@ -159,9 +170,10 @@ export function setUserConsent(value: UserConsent, now: number = Date.now()): vo
   cache = { value, expiresAt: now + CONSENT_CACHE_TTL_MS };
 }
 
-/** Drop the memoised value. Exposed for tests and for post-restore invalidation. */
+/** Drop the memoised value, and forget which settings files were read. Exposed for tests and for post-restore invalidation. */
 export function resetUserConsentCache(): void {
   cache = null;
+  settingsFilesRead.clear();
 }
 
 /**
@@ -207,7 +219,9 @@ export function resolveConsentDecision(options: ConsentDecisionOptions = {}): Te
     return { enabled: false, reason: 'settings-unreadable' };
   }
 
-  if (consent === false) {
+  // Opt-in: only an explicit choice to report allows it. `unset` (no choice yet)
+  // is not consent, so it is reported as `user-disabled` on the wire.
+  if (consent !== true) {
     return { enabled: false, reason: 'user-disabled' };
   }
 

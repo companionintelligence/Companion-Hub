@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import { spawnAsync, spawnLines, type SpawnResult } from '@/common/helpers/exec-helpers';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -109,6 +110,61 @@ export class ArchiveService {
 
     return paths.map((entryPath, index) => ({ path: entryPath, type: types[index] ?? '' }));
   };
+
+  /**
+   * Read an uncompressed tar through to its end without extracting or keeping any of it. Throws when
+   * tar cannot, as with a truncated file or one that is not a tar, and for a compressed file: tar
+   * undoes compression only in a file it can seek in, and a volume archive is unpacked from a pipe.
+   *
+   * The archive goes to tar on stdin, not by name. Given a file, busybox seeks over each entry's data,
+   * and a seek past the end reads as a clean end of archive, so a file cut short inside an entry passed.
+   * Nothing is collected, so unlike {@link listTarGz} there is no limit on the number of entries.
+   */
+  verifyPlainTar = async (sourceFile: string): Promise<void> => {
+    if (!(await this.hasTarMagic(sourceFile))) {
+      this.logger.error(`${sourceFile} is not an uncompressed tar archive`);
+      throw new Error(INVALID_ARCHIVE);
+    }
+
+    this.logger.debug(`Checking archive ${sourceFile} with tar -tf -`);
+    const input = await fs.promises.open(sourceFile, 'r');
+
+    try {
+      const { exitCode, stderr } = await new Promise<{ exitCode: number | null; stderr: string }>((resolve) => {
+        const child = spawn('tar', ['-tf', '-'], { stdio: [input.fd, 'ignore', 'pipe'] });
+        let stderr = '';
+
+        child.stderr?.on('data', (chunk) => {
+          stderr = `${stderr}${chunk}`.slice(-4096);
+        });
+        child.on('error', (error) => resolve({ exitCode: null, stderr: error.message }));
+        child.on('close', (code) => resolve({ exitCode: code, stderr }));
+      });
+
+      if (exitCode !== 0) {
+        this.logger.error(`Archive check of ${sourceFile} failed: ${stderr.trim() || `exit code ${exitCode}`}`);
+        throw new Error(INVALID_ARCHIVE);
+      }
+    } finally {
+      await input.close();
+    }
+  };
+
+  /** `ustar` at offset 257, where every tar header written today has it and a compressed file does not. */
+  private async hasTarMagic(sourceFile: string): Promise<boolean> {
+    try {
+      const handle = await fs.promises.open(sourceFile, 'r');
+
+      try {
+        const { bytesRead, buffer } = await handle.read(Buffer.alloc(5), 0, 5, 257);
+        return bytesRead === 5 && buffer.toString('latin1') === 'ustar';
+      } finally {
+        await handle.close();
+      }
+    } catch {
+      return false;
+    }
+  }
 
   /**
    * Gzip magic bytes, not the `file` program: the Hub image does not ship it, so asking

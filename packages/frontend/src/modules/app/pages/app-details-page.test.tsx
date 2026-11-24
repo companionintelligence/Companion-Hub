@@ -1,8 +1,9 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { useQuery, getMarketplaceAppImageUrl } = vi.hoisted(() => ({
+const { useQuery, useIsMutating, getMarketplaceAppImageUrl } = vi.hoisted(() => ({
   useQuery: vi.fn(),
+  useIsMutating: vi.fn(() => 0),
   getMarketplaceAppImageUrl: vi.fn(),
 }));
 
@@ -23,6 +24,8 @@ vi.mock('react-router', async () => {
 
 vi.mock('@tanstack/react-query', () => ({
   useQuery,
+  // Whether an install request for the app is still out (`useInstallRequestPending`).
+  useIsMutating,
   // The page now renders CustomDomainRestartBanner, which reaches for a client to
   // invalidate after a restart. This page test never restarts anything, so the
   // narrow mock only has to satisfy the hook call.
@@ -93,7 +96,7 @@ vi.mock('../helpers/use-app-url-availability', () => ({
 }));
 
 vi.mock('../containers/app-actions/app-actions', () => ({
-  AppActions: () => <div data-testid="app-actions" />,
+  AppActions: ({ app }: { app?: { status?: string } | null }) => <div data-testid="app-actions" data-status={app?.status ?? 'none'} />,
 }));
 
 vi.mock('../containers/app-details-tabs/app-details-tabs', () => ({
@@ -113,6 +116,7 @@ import AppDetailsPage from './app-details-page';
 describe('AppDetailsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useIsMutating.mockReturnValue(0);
     getMarketplaceAppImageUrl.mockReturnValue('http://localhost:5002/api/marketplace/apps/test-app%3Acommunity/image');
     useQuery.mockImplementation((options: { queryKey?: readonly unknown[] }) => {
       if (options.queryKey?.[0] === 'app-image-size') {
@@ -192,6 +196,145 @@ describe('AppDetailsPage', () => {
     fireEvent.error(image);
 
     expect(screen.getByRole('img', { name: 'Test App' })).toHaveAttribute('src', '/app-not-found.jpg');
+  });
+
+  describe('before the Hub has said whether the app is installed', () => {
+    const LISTING = { urn: 'test-app:community', name: 'Test App', categories: ['utilities'], version: '2026.11.2' };
+
+    const withRecord = (record: Record<string, unknown>) => {
+      useQuery.mockImplementation((options: { queryKey?: readonly unknown[] }) => {
+        if (options.queryKey?.[0] === 'app-listing') {
+          return { data: { info: LISTING }, isLoading: false, isError: false };
+        }
+        if (options.queryKey?.[0] === 'app-image-size') {
+          return { data: { totalBytes: 1234, formatted: '1.2 KB' }, isLoading: false };
+        }
+        if (options.queryKey?.[0] === 'app') {
+          return record;
+        }
+        return { data: undefined, isLoading: false };
+      });
+    };
+
+    it('holds the actions and the version instead of offering Install from the listing', () => {
+      withRecord({ data: undefined, isLoading: true, isError: false });
+
+      render(<AppDetailsPage />);
+
+      expect(screen.getByRole('heading', { name: 'Test App' })).toBeInTheDocument();
+      expect(screen.queryByTestId('app-actions')).not.toBeInTheDocument();
+      expect(screen.getByTestId('app-actions-skeleton')).toBeInTheDocument();
+      expect(screen.queryByTestId('app-version')).not.toBeInTheDocument();
+      expect(screen.getByTestId('app-version-skeleton')).toBeInTheDocument();
+    });
+
+    it('shows the controls and the installed version once the Hub answers, not the catalog version', () => {
+      withRecord({
+        data: { info: { ...LISTING, version: '2026.10.28' }, app: { status: 'running' }, metadata: {} },
+        isLoading: false,
+        isError: false,
+      });
+
+      render(<AppDetailsPage />);
+
+      expect(screen.getByTestId('app-actions')).toHaveAttribute('data-status', 'running');
+      expect(screen.queryByTestId('app-actions-skeleton')).not.toBeInTheDocument();
+      expect(screen.getByTestId('app-version')).toHaveTextContent('v2026.10.28');
+    });
+
+    it('offers Install and the catalog version once the Hub says the app is not installed', () => {
+      withRecord({ data: { info: LISTING, app: null, metadata: {} }, isLoading: false, isError: false });
+
+      render(<AppDetailsPage />);
+
+      expect(screen.getByTestId('app-actions')).toHaveAttribute('data-status', 'none');
+      expect(screen.getByTestId('app-version')).toHaveTextContent('v2026.11.2');
+    });
+
+    // A 502 from the proxy while the Hub restarts is no answer about the app (#2286).
+    it('keeps the record it has when a read fails, instead of offering Install on an installed app', () => {
+      withRecord({
+        data: { info: LISTING, app: { status: 'installing' }, metadata: {} },
+        isLoading: false,
+        isError: true,
+        error: { message: 'Bad Gateway' },
+      });
+
+      render(<AppDetailsPage />);
+
+      expect(screen.getByTestId('app-actions')).toHaveAttribute('data-status', 'installing');
+    });
+
+    it.each(['APP_ERROR_APP_NOT_FOUND', 'APP_ACTION_GRANT_DENIED'])('drops the record when the Hub answers %s', (message) => {
+      withRecord({ data: { info: LISTING, app: { status: 'running' }, metadata: {} }, isLoading: false, isError: true, error: { message } });
+
+      render(<AppDetailsPage />);
+
+      expect(screen.getByTestId('app-actions')).toHaveAttribute('data-status', 'none');
+    });
+
+    it('does not hold the page when the record is refused', () => {
+      withRecord({ data: undefined, isLoading: false, isError: true, error: { message: 'APP_ACTION_GRANT_DENIED' } });
+
+      render(<AppDetailsPage />);
+
+      expect(screen.getByTestId('app-actions')).toBeInTheDocument();
+      expect(screen.getByTestId('app-version')).toHaveTextContent('v2026.11.2');
+    });
+
+    it('shows an install this page has out while the record is still on its way', () => {
+      useIsMutating.mockReturnValue(1);
+      withRecord({ data: undefined, isLoading: true, isError: false });
+
+      render(<AppDetailsPage />);
+
+      expect(screen.getByTestId('app-actions')).toHaveAttribute('data-status', 'installing');
+    });
+  });
+
+  describe('the version on the stats row', () => {
+    const withVersion = (version: string | undefined) => {
+      useQuery.mockImplementation((options: { queryKey?: readonly unknown[] }) =>
+        options.queryKey?.[0] === 'app-image-size'
+          ? { data: { totalBytes: 1234, formatted: '1.2 KB' }, isLoading: false }
+          : {
+              data: {
+                info: { urn: 'test-app:community', name: 'Test App', categories: ['utilities'], version },
+                app: { status: 'running' },
+                metadata: {},
+              },
+              isLoading: false,
+            },
+      );
+    };
+
+    it('comes first on the row', () => {
+      withVersion('2026.11.2');
+
+      render(<AppDetailsPage />);
+
+      expect(screen.getByTestId('app-header-stats').firstElementChild).toBe(screen.getByTestId('app-version'));
+    });
+
+    it.each([
+      ['2026.11.2', 'v2026.11.2'],
+      ['v2026.8.9', 'v2026.8.9'],
+      ['latest', 'latest'],
+    ])('reads %s as %s', (version, shown) => {
+      withVersion(version);
+
+      render(<AppDetailsPage />);
+
+      expect(screen.getByTestId('app-version').textContent).toBe(shown);
+    });
+
+    it('leaves the row as it was when the app names no version', () => {
+      withVersion(undefined);
+
+      render(<AppDetailsPage />);
+
+      expect(screen.queryByTestId('app-version')).not.toBeInTheDocument();
+    });
   });
 
   it('keeps the summary card content and actions visible', () => {
@@ -319,6 +462,69 @@ describe('AppDetailsPage', () => {
     expect(desktopChip).toHaveClass('hidden', 'sm:inline-flex');
   });
 
+  // The Hub writes the row only after its checks, which took seconds on a slow link, and a read in
+  // that time put the page back on a plain Install while the install went ahead.
+  it('shows an app whose install request is still out as installing, with no row yet', () => {
+    useIsMutating.mockReturnValue(1);
+    useQuery.mockImplementation((options: { queryKey?: readonly unknown[] }) => {
+      if (options.queryKey?.[0] === 'app-image-size') {
+        return { data: { totalBytes: 1234, formatted: '1.2 KB' }, isLoading: false };
+      }
+
+      return {
+        data: { info: { urn: 'test-app:community', name: 'Test App', categories: ['utilities'] }, app: null, metadata: {} },
+        isLoading: false,
+      };
+    });
+
+    render(<AppDetailsPage />);
+
+    expect(useIsMutating).toHaveBeenCalledWith({ mutationKey: ['install-request', 'test-app:community'] });
+    expect(screen.getByTestId('app-actions')).toHaveAttribute('data-status', 'installing');
+    expect(screen.getByTestId('app-status')).toBeInTheDocument();
+  });
+
+  // #2101: the install another tab sent is still in the Hub's checks, so it has no row yet.
+  it('shows an install the Hub says is under way as installing, though this page sent none', () => {
+    useQuery.mockImplementation((options: { queryKey?: readonly unknown[] }) => {
+      if (options.queryKey?.[0] === 'app-image-size') {
+        return { data: { totalBytes: 1234, formatted: '1.2 KB' }, isLoading: false };
+      }
+
+      return {
+        data: {
+          info: { urn: 'test-app:community', name: 'Test App', categories: ['utilities'] },
+          app: null,
+          operation: { command: 'install' },
+          metadata: {},
+        },
+        isLoading: false,
+      };
+    });
+
+    render(<AppDetailsPage />);
+
+    expect(screen.getByTestId('app-actions')).toHaveAttribute('data-status', 'installing');
+  });
+
+  it('shows the app as the Hub reports it once no install request is out', () => {
+    useQuery.mockImplementation((options: { queryKey?: readonly unknown[] }) => {
+      if (options.queryKey?.[0] === 'app-image-size') {
+        return { data: { totalBytes: 1234, formatted: '1.2 KB' }, isLoading: false };
+      }
+
+      return {
+        data: { info: { urn: 'test-app:community', name: 'Test App', categories: ['utilities'] }, app: null, metadata: {} },
+        isLoading: false,
+      };
+    });
+
+    render(<AppDetailsPage />);
+
+    expect(screen.getByTestId('app-actions')).toHaveAttribute('data-status', 'none');
+    expect(screen.queryByTestId('app-status')).not.toBeInTheDocument();
+  });
+
   it('disables runtime-health polling while an app is uninstalling', () => {
     useQuery.mockImplementation((options: { queryKey?: readonly unknown[]; enabled?: boolean }) => {
       if (options.queryKey?.[0] === 'app-image-size') {
@@ -349,7 +555,7 @@ describe('AppDetailsPage', () => {
 
     expect(runtimeCall?.[0]).toEqual(
       expect.objectContaining({
-        queryKey: ['app-runtime-health', 'test-app:community'],
+        queryKey: ['app-runtime-health', 'test-app:community', 'uninstalling'],
         enabled: false,
       }),
     );

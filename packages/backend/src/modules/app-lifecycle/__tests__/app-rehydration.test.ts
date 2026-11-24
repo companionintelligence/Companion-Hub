@@ -5,7 +5,10 @@ import {
   buildRehydrationPlan,
   buildRestoreInstallForm,
   defaultLocalSubdomain,
+  EXPOSED_PORT_OUTSIDE_RESTORE_REASON,
+  exposedPortTarget,
   filterLocalEntriesForPortalUrns,
+  planExposedPorts,
   resolvePortalAppToUrn,
   scanLocalAppData,
   slugMatchesPortalApp,
@@ -192,5 +195,89 @@ describe('app-rehydration', () => {
     // Not under way: a failed install and missing files are what a restore is for.
     expect(byName.installfailed).toBe('install');
     expect(byName.missing).toBe('install');
+  });
+
+  /*
+   * The restore after a pairing publishes a program on this machine on the Portal's word (#2131), so
+   * each detail is held to what the Portal route that wrote it can have written.
+   */
+  describe('exposedPortTarget', () => {
+    const publicGame: PortalDeviceApplication = {
+      id: 'id-game',
+      name: 'game',
+      slug: 'game',
+      port: 80,
+      publicDomain: 'ci0.pw',
+      pinned: false,
+      kind: 'port-expose',
+      upstreamPort: 3080,
+      exposureMode: 'cloudflare',
+    };
+    const vpnNotes: PortalDeviceApplication = {
+      ...publicGame,
+      name: 'notes',
+      slug: 'notes',
+      publicDomain: null,
+      pinned: true,
+      exposureMode: 'tailscale',
+    };
+
+    it('puts a public port back public, on the domain it had', () => {
+      expect(exposedPortTarget(publicGame)).toEqual({ port: 3080, exposureMode: 'cloudflare', localSubdomain: 'game', publicDomain: 'ci0.pw' });
+    });
+
+    it('puts a This Machine Only or Private VPN port back where it was', () => {
+      expect(exposedPortTarget(vpnNotes)).toEqual({ port: 3080, exposureMode: 'tailscale', localSubdomain: 'notes' });
+      expect(exposedPortTarget({ ...vpnNotes, exposureMode: 'local' })).toMatchObject({ exposureMode: 'local' });
+    });
+
+    it('takes only a public mode from a row the tunnel sync wrote and only a private one from the registry', () => {
+      expect(exposedPortTarget({ ...publicGame, pinned: true })).toBeNull();
+      expect(exposedPortTarget({ ...vpnNotes, pinned: false })).toBeNull();
+      expect(exposedPortTarget({ ...publicGame, pinned: undefined })).toBeNull();
+    });
+
+    it('is no exposed port to a Portal that predates the details, or for anything else', () => {
+      const { kind: _kind, upstreamPort: _port, exposureMode: _mode, pinned: _pinned, ...olderPortal } = publicGame;
+      expect(exposedPortTarget(olderPortal)).toBeNull();
+      expect(exposedPortTarget({ ...publicGame, kind: 'compose' })).toBeNull();
+      expect(exposedPortTarget({ ...publicGame, exposureMode: 'somewhere' })).toBeNull();
+    });
+
+    it('refuses a port Expose a port would refuse', () => {
+      for (const upstreamPort of [80, 1023, 65536, 3080.5, null]) {
+        expect(exposedPortTarget({ ...publicGame, upstreamPort })).toBeNull();
+      }
+    });
+
+    // The name is the app's id, so one that derives to another id would come back as a different app.
+    it('refuses a name that is not its own id, or a reserved route', () => {
+      expect(exposedPortTarget({ ...publicGame, name: 'My Game' })).toBeNull();
+      expect(exposedPortTarget({ ...publicGame, name: 'expose' })).toBeNull();
+      expect(exposedPortTarget({ ...publicGame, slug: '...' })).toBeNull();
+    });
+  });
+
+  describe('planExposedPorts', () => {
+    const target = { port: 3080, exposureMode: 'cloudflare' as const, localSubdomain: 'game' };
+    const exposed = [{ portalApp: { id: 'id-game', name: 'game', slug: 'game', port: 80, publicDomain: null }, target }];
+
+    it('exposes a missing port again only in the restore after a pairing', () => {
+      expect(planExposedPorts({ exposed, dbAppsByUrn: new Map(), restore: true })).toMatchObject([
+        { action: 'expose', appUrn: 'game:_user', exposedPort: target },
+      ]);
+      expect(planExposedPorts({ exposed, dbAppsByUrn: new Map(), restore: false })).toMatchObject([
+        { action: 'skip_unresolved', reason: EXPOSED_PORT_OUTSIDE_RESTORE_REASON },
+      ]);
+    });
+
+    it('leaves a port this Hub already has alone', () => {
+      expect(planExposedPorts({ exposed, dbAppsByUrn: new Map([['game:_user', { status: 'running' }]]), restore: true })).toMatchObject([
+        { action: 'skip_running' },
+      ]);
+      expect(planExposedPorts({ exposed, dbAppsByUrn: new Map([['game:_user', { status: 'uninstalling' }]]), restore: true })).toMatchObject([
+        { action: 'skip_busy' },
+      ]);
+    });
   });
 });

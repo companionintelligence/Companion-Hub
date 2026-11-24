@@ -59,6 +59,29 @@ export function isTransientDbError(err: unknown): boolean {
   return false;
 }
 
+/** Postgres SQLSTATEs for a rejected login: 28P01 invalid_password, 28000 invalid_authorization_specification. */
+const CREDENTIAL_SQL_STATES = new Set(['28P01', '28000']);
+
+/**
+ * Whether Postgres refused the Hub's own database login (a role whose password no longer matches the
+ * data volume). Retrying cannot fix it, so it is not transient, but the store is just as unusable as
+ * in an outage and the fix is an operator's. Walks the `cause` chain like {@link isTransientDbError}.
+ */
+export function isDatabaseCredentialError(err: unknown): boolean {
+  let current: unknown = err;
+  for (let depth = 0; depth < 8 && current instanceof Error; depth++) {
+    const code = (current as Error & { code?: unknown }).code;
+    if (typeof code === 'string' && CREDENTIAL_SQL_STATES.has(code)) {
+      return true;
+    }
+    if (/password authentication failed/i.test(current.message)) {
+      return true;
+    }
+    current = current.cause;
+  }
+  return false;
+}
+
 /**
  * Thrown by {@link ApiKeyService} when the key store cannot be consulted after retries.
  * Guards translate this into a 503 — "we could not check your key" — instead of the 401

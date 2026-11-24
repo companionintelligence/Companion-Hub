@@ -1,8 +1,10 @@
+import type React from 'react';
 import { AppLogo } from '@/components/app-logo/app-logo';
 import { restartCanApply } from '@/lib/cloudflare-api';
 import { InstallRetryButton } from '@/modules/app/components/install-retry-button/install-retry-button';
-import { Loader2, PowerOff, RotateCw } from 'lucide-react';
+import { Loader2, LockOpen, PowerOff, RotateCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { PORT_EXPOSE_OPEN_TO_COPY, type PortExposeOpenTo } from '@/modules/app/helpers/port-expose-open-to';
 import type { AppStatus } from '@/types/app.types';
 
 const STOPPED_STATUSES: AppStatus[] = ['stopped', 'missing'];
@@ -18,6 +20,14 @@ interface SimpleAppTileProps {
   pendingRestart?: boolean;
   /** The stale env is keeping a bound custom domain dark, which is worth naming. */
   customDomainAwaitingRestart?: string;
+  /** One muted line under the name. The guest dashboard shows it; Home does not. */
+  description?: string;
+  /** An image to show instead of the app's catalog image, such as a link's icon. */
+  logoUrl?: string;
+  /** Drawn at the end of the row, such as the mark that a link opens another site. */
+  trailing?: React.ReactNode;
+  /** An exposed port that has no Hub sign-in in front of it, and who can open it (`portExposeOpenTo`). */
+  openWithoutSignIn?: PortExposeOpenTo | null;
 }
 
 export const SimpleAppTile = ({
@@ -28,6 +38,10 @@ export const SimpleAppTile = ({
   installConfig,
   pendingRestart,
   customDomainAwaitingRestart,
+  description,
+  logoUrl,
+  trailing,
+  openWithoutSignIn,
 }: SimpleAppTileProps) => {
   const { t } = useTranslation();
   const isInstallFailed = status === INSTALL_FAILED_STATUS;
@@ -46,6 +60,7 @@ export const SimpleAppTile = ({
    * A badge that asks for pointless work is how the last one came to be ignored.
    */
   const showPendingRestart = Boolean(pendingRestart) && restartCanApply(status);
+  const openLabel = openWithoutSignIn ? t(PORT_EXPOSE_OPEN_TO_COPY[openWithoutSignIn].tileLabel) : '';
   const pendingRestartLabel = showPendingRestart
     ? customDomainAwaitingRestart
       ? t('MY_APPS_PENDING_RESTART_CUSTOM_DOMAIN', { domain: customDomainAwaitingRestart })
@@ -55,7 +70,7 @@ export const SimpleAppTile = ({
   return (
     <div className="flex items-center gap-3 p-2 cursor-pointer hover:opacity-80 transition-opacity w-full rounded-md hover:bg-muted/40">
       <div className="relative flex-shrink-0">
-        <AppLogo urn={urn} alt={name} size={44} className={`rounded-md shadow-sm${hasOverlay ? ' opacity-40' : ''}`} />
+        <AppLogo urn={urn || undefined} url={logoUrl} alt={name} size={44} className={`rounded-md shadow-sm${hasOverlay ? ' opacity-40' : ''}`} />
         {isInstalling && (
           <div className="absolute inset-0 flex items-center justify-center">
             <Loader2 className="w-5 h-5 text-primary animate-spin" />
@@ -94,12 +109,25 @@ export const SimpleAppTile = ({
         <div className="truncate font-medium text-sm text-foreground" title={name}>
           {name}
         </div>
+        {description ? (
+          <div className="truncate text-xs text-muted-foreground" title={description}>
+            {description}
+          </div>
+        ) : null}
+        {/* A line under the name, not a badge on the logo: those ask for something, and this only reminds. */}
+        {openLabel ? (
+          <div className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground" data-testid="app-open-without-sign-in" title={openLabel}>
+            <LockOpen className="size-3 shrink-0 text-warning" aria-hidden />
+            <span className="truncate">{openLabel}</span>
+          </div>
+        ) : null}
         {isInstalling && (
           <div className="mt-1 h-1 rounded-full bg-muted overflow-hidden">
-            <div className="h-full bg-primary rounded-full animate-pulse w-2/3" />
+            <div className="h-full bg-primary rounded-full  w-2/3" />
           </div>
         )}
       </div>
+      {trailing}
     </div>
   );
 };

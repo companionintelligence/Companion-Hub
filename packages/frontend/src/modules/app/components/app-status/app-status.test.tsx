@@ -283,6 +283,25 @@ describe('AppStatus', () => {
     expect(presentation.tone).toBe('danger');
   });
 
+  // The snapshot polled during a restart, paired with the `running` that ends the restart, read as
+  // Needs attention next to "App cyberchef restarted successfully" until the next poll.
+  it('does not judge a running app by a snapshot taken while it was restarting', () => {
+    const fromRestart = healthyRuntime({ status: 'restarting', responsive: false, reason: 'App availability probe failed' });
+
+    const presentation = getAppStatusPresentation('running', fromRestart);
+
+    expect(presentation.labelKey).toBe('APP_STATUS_RUNNING');
+    expect(presentation.tone).toBe('success');
+    expect(presentation.detail).toBeNull();
+  });
+
+  it('still says Needs attention when a snapshot of the running app finds it unresponsive', () => {
+    const presentation = getAppStatusPresentation('running', healthyRuntime({ responsive: false, reason: 'App availability probe failed' }));
+
+    expect(presentation.labelKey).toBe('APP_STATUS_DEGRADED');
+    expect(presentation.detail).toBe('App availability probe failed');
+  });
+
   it('treats legacy missing status as Stopped', () => {
     const presentation = getAppStatusPresentation('missing');
 

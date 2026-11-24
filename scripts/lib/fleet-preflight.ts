@@ -337,7 +337,7 @@ export function aptLockHolder(input: { locks: string; processes: string }): Pref
   const dpkgLocks = lockRows.filter((r) => r.path.startsWith('/var/lib/dpkg/lock'));
   const aptLocks = lockRows.filter((r) => r.path.startsWith('/var/lib/apt/') || r.path.startsWith('/var/cache/apt/'));
 
-  const describe = (pid: string, command: string): string => {
+  const describeProcess = (pid: string, command: string): string => {
     const p = byPid.get(pid);
     const since = p ? ` for ${age(p.seconds)}` : '';
     return `PID ${pid} ${p ? p.args.slice(0, 80) : command}${since}`;
@@ -349,7 +349,7 @@ export function aptLockHolder(input: { locks: string; processes: string }): Pref
       check: 'apt-lock',
       ok: false,
       severity: 'block',
-      value: `dpkg lock held by ${describe(holder.pid, holder.command)}`,
+      value: `dpkg lock held by ${describeProcess(holder.pid, holder.command)}`,
       via,
       fix: 'wait for it, or read its journal if it has been running for hours. Never delete the lock file.',
     };
@@ -374,7 +374,7 @@ export function aptLockHolder(input: { locks: string; processes: string }): Pref
   }
   if (aptLocks.length || active.length) {
     const what = aptLocks.length
-      ? `apt list/archive lock held by ${describe((aptLocks[0] as { pid: string; command: string }).pid, (aptLocks[0] as { command: string }).command)}`
+      ? `apt list/archive lock held by ${describeProcess((aptLocks[0] as { pid: string; command: string }).pid, (aptLocks[0] as { command: string }).command)}`
       : `${(active[0] as Proc).args.slice(0, 80)} running for ${age((active[0] as Proc).seconds)}`;
     return {
       check: 'apt-lock',

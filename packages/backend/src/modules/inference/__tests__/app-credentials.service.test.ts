@@ -1,6 +1,6 @@
 import { Test, type TestingModule } from '@nestjs/testing';
 import { mock, type MockProxy } from 'vitest-mock-extended';
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { AppCredentialsService } from '../app-credentials.service';
 import { HardwareInspectorService } from '../hardware-inspector.service';
@@ -238,6 +238,119 @@ describe('AppCredentialsService', () => {
   afterEach(async () => {
     // Drain handout-record writes so one test's file cannot land after the next test resets the volume.
     await service.onApplicationShutdown();
+  });
+
+  /*
+   * Until someone chooses a model, an agent runs on the model the setup wizard marks Default: of the
+   * models the engine has, the highest on the wizard's recommended list, else the first in catalog
+   * order. A Hub restored after pairing skips the wizard. Before #2113 the Default was the first in
+   * catalog order, which handed OpenClaw Qwen 3.5 0.8B over the recommended Qwen 3.5 4B.
+   */
+  describe('with no model chosen', () => {
+    const minimax = makeCapableLlm('minimax-m2-community-230b', 'gabegoodhart/minimax-m2:230b', {
+      tools: true,
+      contextWindow: 196608,
+      intelligenceIndex: 18.6,
+    });
+    const qwen = makeCapableLlm('qwen3-6-35b', 'qwen3.6:35b', { tools: true, contextWindow: 262144, intelligenceIndex: 18.2 });
+    const gemmaE2b = makeCapableLlm('gemma4-e2b', 'gemma4:e2b', { tools: true, contextWindow: 131072 });
+    const gemmaE4b = makeCapableLlm('gemma4-e4b', 'gemma4:e4b', { tools: true, contextWindow: 131072 });
+
+    beforeEach(() => {
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([minimax, qwen]);
+      // Catalog order, which is the order the wizard falls back to among what the engine has.
+      modelRegistry.getModelsForHardware.mockReturnValue([gemmaE2b, gemmaE4b, qwen, minimax]);
+      modelRegistry.getCuratedModel.mockImplementation((id) => [minimax, qwen, gemmaE2b, gemmaE4b].find((model) => model.id === id));
+      service.invalidateCache();
+    });
+
+    it("hands an agent the installed model highest on the wizard's list, not the first in catalog order", async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['qwen3.6:35b', 'gemma4:e4b'] });
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.env.DEFAULT_MODEL).toBe('qwen3.6:35b');
+      expect(config.prePull.find((d) => d.kind === 'chat')).toMatchObject({ catalogId: 'qwen3-6-35b', pull: false });
+      expect(logger.info).toHaveBeenCalledWith(
+        "[AppCredentials] openclaw: no chat model chosen yet; handing out the setup wizard's default qwen3.6:35b",
+      );
+    });
+
+    it('hands out MiniMax M2 on 128 GB once the engine has it, ahead of a Gemma 4 E4B the list leaves out', async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gabegoodhart/minimax-m2:230b', 'gemma4:e4b'] });
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.env.DEFAULT_MODEL).toBe('gabegoodhart/minimax-m2:230b');
+    });
+
+    it('hands out the first installed model in catalog order when the engine has none of the recommended ones', async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma4:e4b', 'gemma4:e2b'] });
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.env.DEFAULT_MODEL).toBe('gemma4:e2b');
+    });
+
+    it('passes over a recommended model the app cannot use', async () => {
+      const qwenNoTools = makeCapableLlm('qwen3-6-35b', 'qwen3.6:35b', { tools: false, contextWindow: 262144 });
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([minimax, qwenNoTools]);
+      modelRegistry.getModelsForHardware.mockReturnValue([gemmaE2b, gemmaE4b, qwenNoTools, minimax]);
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['qwen3.6:35b', 'gemma4:e4b'] });
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.env.DEFAULT_MODEL).toBe('gemma4:e4b');
+    });
+
+    it('ranks by the list the wizard shows, read at the onboarding tier, on a card the container runtime cannot reach yet', async () => {
+      const laptop: HardwareProfile = {
+        ...baseProfile,
+        gpu: {
+          available: true,
+          vendor: 'nvidia',
+          model: 'RTX 3080 Mobile',
+          vramMb: 8192,
+          unifiedMemory: false,
+          driverVersion: '580',
+          runtimeAvailable: false,
+        },
+        effectiveInferenceMemoryMb: 7680,
+        tier: 'cpu-only',
+      };
+      const qwen08b = makeCapableLlm('qwen3-5-0-8b', 'qwen3.5:0.8b', { tools: true, contextWindow: 262144 });
+      const qwen4b = makeCapableLlm('qwen3-5-4b', 'qwen3.5:4b', { tools: true, contextWindow: 262144 });
+      const qwen8b = makeCapableLlm('qwen3-8b', 'qwen3:8b', { tools: true, contextWindow: 40960 });
+      hardwareInspector.getProfile.mockResolvedValue(laptop);
+      hardwareInspector.computeTier.mockReturnValue('medium');
+      modelRegistry.getRecommendedModelsForHardware.mockImplementation((tier) => (tier === 'medium' ? [qwen4b, qwen8b] : [qwen8b, qwen4b]));
+      modelRegistry.getModelsForHardware.mockReturnValue([qwen08b, qwen4b, qwen8b]);
+      modelRegistry.getCuratedModel.mockImplementation((id) => [qwen08b, qwen4b, qwen8b].find((model) => model.id === id));
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['qwen3.5:0.8b', 'qwen3.5:4b', 'qwen3:8b'] });
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.env.DEFAULT_MODEL).toBe('qwen3.5:4b');
+      expect(modelRegistry.getRecommendedModelsForHardware).toHaveBeenCalledWith('medium', laptop);
+    });
+
+    it('keeps the recommendation list when the engine has none of the models the wizard could mark', async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gabegoodhart/minimax-m2:230b'] });
+      modelRegistry.getModelsForHardware.mockReturnValue([gemmaE2b, gemmaE4b]);
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.env.DEFAULT_MODEL).toBe('gabegoodhart/minimax-m2:230b');
+    });
+
+    it('hands out the model someone chose', async () => {
+      configurationService.getInferencePreferences.mockReturnValue({ preferredBackend: null, preferredModel: 'qwen3-6-35b' } as never);
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['qwen3.6:35b', 'gemma4:e4b'] });
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.env.DEFAULT_MODEL).toBe('qwen3.6:35b');
+    });
   });
 
   describe('getCredentials — local (direct Ollama) path', () => {
@@ -616,8 +729,17 @@ describe('AppCredentialsService', () => {
     });
   });
 
+  // oMLX does not list the catalog's `mlx-community/<name>` (0.7.3.dev1, measured on /v1/models): a model directory is
+  // listed by its own name, the Hugging Face cache by `<org>--<name>`, the one name the cache answers to.
   describe('getCredentials — host-served oMLX', () => {
-    it('hands the API key to direct sibling-app clients', async () => {
+    const savedOmlxKey = process.env.OMLX_API_KEY;
+
+    afterEach(() => {
+      if (savedOmlxKey === undefined) delete process.env.OMLX_API_KEY;
+      else process.env.OMLX_API_KEY = savedOmlxKey;
+    });
+
+    const directOmlxApp = async () => {
       const model = makeLlm('qwen-omlx', 'mlx-community/Qwen3-8B-4bit', 8000, 16000, 'omlx');
       configurationService.getInferencePreferences.mockReturnValue({
         preferredBackend: 'omlx',
@@ -626,16 +748,31 @@ describe('AppCredentialsService', () => {
         preferredVisionModel: null,
       });
       omlxBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
-      omlxBackend.getApiKey.mockReturnValue('managed-omlx-key');
-      omlxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [model.backendModelId] });
+      // The key saved in Settings: oMLX's main key, which also opens its admin API.
+      omlxBackend.getApiKey.mockReturnValue('saved-main-key');
+      omlxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['Qwen3-8B-4bit'] });
       modelRegistry.getRecommendedModelsForHardware.mockReturnValue([model]);
       modelRegistry.getCuratedModel.mockImplementation((id) => (id === model.id ? model : undefined));
       service.invalidateCache();
+      return service.getCredentials('openclaw');
+    };
 
-      const config = await service.getCredentials('openclaw');
+    it('hands OMLX_API_KEY to direct sibling-app clients', async () => {
+      process.env.OMLX_API_KEY = 'managed-omlx-key';
+
+      const config = await directOmlxApp();
 
       expect(config.env.OPENAI_API_KEY).toBe('managed-omlx-key');
       expect(config.endpointUrl).toBe('http://host.docker.internal:8000/v1');
+    });
+
+    it("never hands an app the saved key, which is oMLX's main key", async () => {
+      delete process.env.OMLX_API_KEY;
+
+      const config = await directOmlxApp();
+
+      expect(config.env.OPENAI_API_KEY).toBe('omlx');
+      expect(JSON.stringify(config)).not.toContain('saved-main-key');
     });
 
     it('keeps OMLX_API_KEY out of an app the pool proxy fronts', async () => {
@@ -649,7 +786,7 @@ describe('AppCredentialsService', () => {
       configurationService.getHubPoolPreferences.mockReturnValue({ poolRouteAppsAlways: true } as never);
       omlxBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
       omlxBackend.getApiKey.mockReturnValue('managed-omlx-key');
-      omlxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [model.backendModelId] });
+      omlxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['Qwen3-8B-4bit'] });
       modelRegistry.getRecommendedModelsForHardware.mockReturnValue([model]);
       modelRegistry.getCuratedModel.mockImplementation((id) => (id === model.id ? model : undefined));
       service.invalidateCache();
@@ -658,6 +795,62 @@ describe('AppCredentialsService', () => {
 
       expect(config.routedThroughPool).toBe(true);
       expect(config.env.HERMES_OPENAI_API_KEY).toBe('omlx');
+    });
+
+    it.each([
+      ['a model directory', 'Qwen3-8B-4bit'],
+      ['the Hugging Face cache', 'mlx-community--Qwen3-8B-4bit'],
+    ])("hands the operator's model out by the name oMLX lists it under, from %s", async (_layout, listed) => {
+      const preferred = makeLlm('qwen-omlx', 'mlx-community/Qwen3-8B-4bit', 8000, 16000, 'omlx');
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'omlx',
+        preferredModel: 'qwen-omlx',
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+      });
+      omlxBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
+      // Listed first, so a handout that did not recognise the model would fall back to it.
+      omlxBackend.healthCheck.mockResolvedValue({
+        running: true,
+        healthy: true,
+        modelsLoaded: ['LiquidAI--LFM2.5-1.2B-Instruct-MLX-bf16', listed],
+      });
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([preferred]);
+      modelRegistry.getCuratedModel.mockImplementation((id) => (id === preferred.id ? preferred : undefined));
+      service.invalidateCache();
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.chatModelId).toBe(listed);
+      expect(config.chatModelReady).toBe(true);
+      // The window is sized from the catalog row, which the handout still recognises under the listed name.
+      expect(config.env.CI_LLM_NUM_CTX).toMatch(/^\d+$/);
+    });
+
+    it('does not credit a catalog model oMLX does not list, and falls back to the first one it does', async () => {
+      const preferred = makeLlm('qwen-omlx', 'mlx-community/Qwen3-8B-4bit', 8000, 16000, 'omlx');
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'omlx',
+        preferredModel: 'qwen-omlx',
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+      });
+      omlxBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
+      // What the fallback hands out is the first one listed. A lookalike behind it, another build or another
+      // publisher's of the same name, would come out instead if the handout took it for the preferred model.
+      omlxBackend.healthCheck.mockResolvedValue({
+        running: true,
+        healthy: true,
+        modelsLoaded: ['LiquidAI--LFM2.5-1.2B-Instruct-MLX-bf16', 'Qwen3-8B-8bit', 'lmstudio-community--Qwen3-8B-4bit'],
+      });
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([preferred]);
+      modelRegistry.getModelsForHardware.mockReturnValue([preferred]);
+      modelRegistry.getCuratedModel.mockImplementation((id) => (id === preferred.id ? preferred : undefined));
+      service.invalidateCache();
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.chatModelId).toBe('LiquidAI--LFM2.5-1.2B-Instruct-MLX-bf16');
     });
   });
 
@@ -816,31 +1009,51 @@ describe('AppCredentialsService', () => {
       CI_CLOUD_OPENAI_MODEL: 'gpt-4o',
     };
 
-    it('keeps the local backend as primary and attaches cloud provider env', async () => {
+    it('keeps the local backend as primary and attaches cloud provider env only when CI_HUB_ALLOW_CLOUD_FALLBACK=true', async () => {
       cloudFallback.getEnabledProviders.mockReturnValue([cloudProvider]);
       cloudFallback.toAppEnv.mockReturnValue(cloudEnv);
 
-      const config = await service.getCredentials('hermes-agent');
+      const defaultConfig = await service.getCredentials('hermes-agent');
+      expect(defaultConfig.provider).toBe('ollama');
+      expect(defaultConfig.env.CI_CLOUD_OPENAI_API_KEY).toBeUndefined();
 
-      expect(config.provider).toBe('ollama');
-      expect(config.env.HERMES_OPENAI_API_KEY).toBe('ollama');
-      expect(config.env.CI_INFERENCE_BACKEND).toBe('ollama');
-      expect(config.env.CI_CLOUD_OPENAI_API_KEY).toBe('sk-operator-key');
-      expect(config.env.OLLAMA_HOST).toBe(OLLAMA_BASE_URL);
+      service.invalidateCache();
+      process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+      try {
+        const config = await service.getCredentials('hermes-agent');
+
+        expect(config.provider).toBe('ollama');
+        expect(config.env.HERMES_OPENAI_API_KEY).toBe('ollama');
+        expect(config.env.CI_INFERENCE_BACKEND).toBe('ollama');
+        expect(config.env.CI_CLOUD_OPENAI_API_KEY).toBe('sk-operator-key');
+        expect(config.env.OLLAMA_HOST).toBe(OLLAMA_BASE_URL);
+      } finally {
+        delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+      }
     });
 
-    it('uses the first cloud provider as primary when the local backend is down', async () => {
+    it('uses the first cloud provider as primary when the local backend is down and CI_HUB_ALLOW_CLOUD_FALLBACK=true', async () => {
       ollamaBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
       cloudFallback.getEnabledProviders.mockReturnValue([cloudProvider]);
       cloudFallback.toAppEnv.mockReturnValue(cloudEnv);
 
-      const config = await service.getCredentials('openclaw');
+      const defaultConfig = await service.getCredentials('openclaw');
+      expect(defaultConfig.provider).toBe('ollama');
+      expect(defaultConfig.env.OPENAI_API_KEY).not.toBe('sk-operator-key');
 
-      expect(config.provider).toBe('cloud');
-      expect(config.env.OPENAI_API_BASE).toBe('https://api.openai.com/v1');
-      expect(config.env.OPENAI_API_KEY).toBe('sk-operator-key');
-      expect(config.env.CI_CLOUD_OPENAI_API_KEY).toBe('sk-operator-key');
-      expect(config.env.OLLAMA_HOST).toBe(OLLAMA_BASE_URL);
+      service.invalidateCache();
+      process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+      try {
+        const config = await service.getCredentials('openclaw');
+
+        expect(config.provider).toBe('cloud');
+        expect(config.env.OPENAI_API_BASE).toBe('https://api.openai.com/v1');
+        expect(config.env.OPENAI_API_KEY).toBe('sk-operator-key');
+        expect(config.env.CI_CLOUD_OPENAI_API_KEY).toBe('sk-operator-key');
+        expect(config.env.OLLAMA_HOST).toBe(OLLAMA_BASE_URL);
+      } finally {
+        delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+      }
     });
   });
 
@@ -915,10 +1128,15 @@ describe('AppCredentialsService', () => {
       ] as CloudProviderConfig[]);
       service.invalidateCache();
 
-      const config = await service.getCredentials('openclaw');
+      process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+      try {
+        const config = await service.getCredentials('openclaw');
 
-      expect(config.provider).toBe('cloud');
-      expect(config.env.OPENAI_API_BASE).toBe('https://api.openai.com/v1');
+        expect(config.provider).toBe('cloud');
+        expect(config.env.OPENAI_API_BASE).toBe('https://api.openai.com/v1');
+      } finally {
+        delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+      }
     });
   });
 
@@ -1219,28 +1437,103 @@ describe('AppCredentialsService', () => {
       // App containers keep running through a Hub restart and fetch bootstrap.env only when they
       // start. A record lost with the process made every such app read as stale, and the next
       // refresh restarted it for nothing.
-      cloudFallback.toAppEnv.mockReturnValue({ CI_CLOUD_OPENAI_API_KEY: 'sk-operator-secret' });
-      const served = await service.getCredentials('openclaw');
+      process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+      try {
+        cloudFallback.toAppEnv.mockReturnValue({ CI_CLOUD_OPENAI_API_KEY: 'sk-operator-secret' });
+        const served = await service.getCredentials('openclaw');
+        await service.onApplicationShutdown();
+
+        const restarted = new AppCredentialsService(
+          logger,
+          hardwareInspector,
+          modelRegistry,
+          modelPuller,
+          cloudFallback,
+          ollamaBackend,
+          configurationService,
+          testingModule.get(InferenceEndpointService),
+        );
+        const record = await restarted.lastHandout('openclaw');
+
+        expect(record).toMatchObject({ chatModelId: served.chatModelId, endpointUrl: served.endpointUrl });
+        expect(differingHandoutKeys(record as RecordedHandout, await restarted.previewCredentials('openclaw'))).toEqual([]);
+        expect(await fs.promises.readFile(HANDOUT_RECORDS_PATH, 'utf8')).not.toContain('sk-operator-secret');
+
+        cloudFallback.toAppEnv.mockReturnValue({ CI_CLOUD_OPENAI_API_KEY: 'sk-rotated' });
+        expect(differingHandoutKeys(record as RecordedHandout, await restarted.previewCredentials('openclaw'))).toEqual(['CI_CLOUD_OPENAI_API_KEY']);
+      } finally {
+        delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+      }
+    });
+
+    // A factory reset removes the apps. The records stayed and the next app to fetch wrote them back.
+    it('forgets every record (in memory and on disk) with the credentials it cached', async () => {
+      process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+      try {
+        cloudFallback.toAppEnv.mockReturnValue({ CI_CLOUD_OPENAI_API_KEY: 'sk-before-the-reset' });
+        await service.getCredentials('openclaw');
+        expect((await service.getCredentials('hermes-agent')).env).toHaveProperty('CI_CLOUD_OPENAI_API_KEY', 'sk-before-the-reset');
+        await service.onApplicationShutdown();
+        expect(fs.existsSync(HANDOUT_RECORDS_PATH)).toBe(true);
+
+        await service.forgetHandouts();
+
+        expect(await service.lastHandout('openclaw')).toBeNull();
+        expect(fs.existsSync(HANDOUT_RECORDS_PATH)).toBe(false);
+
+        // Resolved again rather than served from the cache, which held the key from before the reset.
+        cloudFallback.toAppEnv.mockReturnValue({});
+        expect((await service.getCredentials('hermes-agent')).env).not.toHaveProperty('CI_CLOUD_OPENAI_API_KEY');
+        await service.onApplicationShutdown();
+        expect(Object.keys(JSON.parse(await fs.promises.readFile(HANDOUT_RECORDS_PATH, 'utf8')))).toEqual(['hermes-agent']);
+      } finally {
+        delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+      }
+    });
+
+    // A fetch still resolving at the reset read the old Hub's keys. Cached, they went to the next app for 30 s.
+    it('resolves again a fetch that was under way when the handouts were forgotten', async () => {
+      let release: () => void = () => undefined;
+      hardwareInspector.getProfile.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = () => resolve(baseProfile);
+          }),
+      );
+      cloudFallback.toAppEnv.mockReturnValueOnce({ CI_CLOUD_OPENAI_API_KEY: 'sk-before-the-reset' }).mockReturnValue({});
+      const fetching = service.getCredentials('openclaw');
+
+      await service.forgetHandouts();
+      release();
+
+      expect((await fetching).env).not.toHaveProperty('CI_CLOUD_OPENAI_API_KEY');
+      expect((await service.getCredentials('openclaw')).env).not.toHaveProperty('CI_CLOUD_OPENAI_API_KEY');
+      expect(hardwareInspector.getProfile).toHaveBeenCalledTimes(2);
+    });
+
+    // The forget waited behind a write still reading the file, then cleared the record of an app that fetched after the reset.
+    it('keeps the record of an app that fetched after the forget while an older write was still queued', async () => {
+      let release: () => void = () => undefined;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const readFile = fs.promises.readFile;
+      const read = vi.spyOn(fs.promises, 'readFile').mockImplementationOnce(async (...args: Parameters<typeof readFile>) => {
+        await held;
+        return readFile(...args);
+      });
+
+      await service.getCredentials('openclaw');
+      await vi.waitFor(() => expect(read).toHaveBeenCalled());
+      const forgetting = service.forgetHandouts();
+      await service.getCredentials('hermes-agent');
+      release();
+      await forgetting;
       await service.onApplicationShutdown();
 
-      const restarted = new AppCredentialsService(
-        logger,
-        hardwareInspector,
-        modelRegistry,
-        modelPuller,
-        cloudFallback,
-        ollamaBackend,
-        configurationService,
-        testingModule.get(InferenceEndpointService),
-      );
-      const record = await restarted.lastHandout('openclaw');
-
-      expect(record).toMatchObject({ chatModelId: served.chatModelId, endpointUrl: served.endpointUrl });
-      expect(differingHandoutKeys(record as RecordedHandout, await restarted.previewCredentials('openclaw'))).toEqual([]);
-      expect(await fs.promises.readFile(HANDOUT_RECORDS_PATH, 'utf8')).not.toContain('sk-operator-secret');
-
-      cloudFallback.toAppEnv.mockReturnValue({ CI_CLOUD_OPENAI_API_KEY: 'sk-rotated' });
-      expect(differingHandoutKeys(record as RecordedHandout, await restarted.previewCredentials('openclaw'))).toEqual(['CI_CLOUD_OPENAI_API_KEY']);
+      expect(await service.lastHandout('openclaw')).toBeNull();
+      expect(await service.lastHandout('hermes-agent')).not.toBeNull();
+      expect(Object.keys(JSON.parse(await fs.promises.readFile(HANDOUT_RECORDS_PATH, 'utf8')))).toEqual(['hermes-agent']);
     });
   });
 
@@ -1284,25 +1577,39 @@ describe('AppCredentialsService', () => {
       cloudFallback.toAppEnv.mockReturnValue({ CI_CLOUD_OPENAI_API_KEY: 'sk-operator-key' });
       service.invalidateCache();
 
-      const config = await service.getCredentials('openclaw');
+      process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+      try {
+        const config = await service.getCredentials('openclaw');
 
-      expect(config.provider).toBe('ollama');
-      expect(config.env.OPENAI_API_BASE).toBe(OLLAMA_OPENAI_URL);
-      // The cloud provider stays attached as a secondary — it just stops being primary.
-      expect(config.env.CI_CLOUD_OPENAI_API_KEY).toBe('sk-operator-key');
+        expect(config.provider).toBe('ollama');
+        expect(config.env.OPENAI_API_BASE).toBe(OLLAMA_OPENAI_URL);
+        // The cloud provider stays attached as a secondary when explicitly opted in.
+        expect(config.env.CI_CLOUD_OPENAI_API_KEY).toBe('sk-operator-key');
+      } finally {
+        delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+      }
     });
 
-    it('still falls through to cloud when nothing local is running at all', async () => {
+    it('falls through to cloud only when nothing local is running at all and CI_HUB_ALLOW_CLOUD_FALLBACK=true', async () => {
       ollamaBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
       cloudFallback.getEnabledProviders.mockReturnValue([
         { provider: 'openai', apiKey: 'sk-operator-key', enabled: true, baseUrl: 'https://api.openai.com/v1', defaultModel: 'gpt-4o' },
       ] as CloudProviderConfig[]);
       service.invalidateCache();
 
-      const config = await service.getCredentials('openclaw');
+      const defaultConfig = await service.getCredentials('openclaw');
+      expect(defaultConfig.provider).not.toBe('cloud');
 
-      expect(config.provider).toBe('cloud');
-      expect(config.env.OPENAI_API_BASE).toBe('https://api.openai.com/v1');
+      service.invalidateCache();
+      process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+      try {
+        const config = await service.getCredentials('openclaw');
+
+        expect(config.provider).toBe('cloud');
+        expect(config.env.OPENAI_API_BASE).toBe('https://api.openai.com/v1');
+      } finally {
+        delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+      }
     });
   });
 

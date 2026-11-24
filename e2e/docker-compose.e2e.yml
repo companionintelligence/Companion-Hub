@@ -20,7 +20,7 @@ services:
     image: rabbitmq:4-alpine
     environment:
       RABBITMQ_DEFAULT_USER: companion
-      RABBITMQ_DEFAULT_PASS: admin
+      RABBITMQ_DEFAULT_PASS: e2e-rabbitmq
     ports:
       - "5672:5672"
     healthcheck:
@@ -51,7 +51,7 @@ services:
       RABBITMQ_HOST: queue
       RABBITMQ_PORT: 5672
       RABBITMQ_USERNAME: companion
-      RABBITMQ_PASSWORD: admin
+      RABBITMQ_PASSWORD: e2e-rabbitmq
       CI_HUB_DATA_DIR: /data
       ROOT_FOLDER_HOST: /tmp/ci-hub-e2e
       JWT_SECRET: test-secret

@@ -1,4 +1,7 @@
+import { asLegacyTranslate } from '@/lib/i18n/legacy-translate';
 import {
+  type CloudFallbackPolicy,
+  fetchCloudFallbackPolicy,
   fetchConfiguredCloudProviders,
   fetchInferenceOnboardingProfile,
   fetchInferencePreferences,
@@ -14,9 +17,12 @@ import {
   rescanInferenceHardware,
   saveCloudProviderConfig,
   saveInferencePreferences,
+  saveOmlxApiKey,
   unloadInferenceModel,
   unpinInferenceModel,
 } from '@/lib/inference/inference-api';
+import { backendDisplayName } from '@/lib/inference/backend-names';
+import { MASKED_KEY, isMaskedKey } from '@/lib/inference/masked-key';
 import { POLLING } from '@/lib/polling-budget';
 import { ensurePullsStarted, waitForModelPulls } from '@/lib/inference/tracked-models';
 import { Button } from '@/components/ui/Button';
@@ -34,6 +40,7 @@ import { CloudProviderCard } from '@/modules/onboarding/components/ai-setup/clou
 import { ResourceSummaryBar } from '@/modules/onboarding/components/ai-setup/resource-summary-bar';
 import { inferenceMemoryMb } from '@/modules/onboarding/helpers/onboarding-model-selection';
 import { ModelCard } from '@/modules/onboarding/components/ai-setup/primitives';
+import { ModelContextNote } from '@/modules/onboarding/components/ai-setup/model-context-note';
 import { ModelIcon } from '@/modules/onboarding/components/ai-setup/icons';
 import { modelTags, modelMeta, modelScores } from '@/modules/onboarding/components/ai-setup/model-selection-card';
 import { OtherModelsSection } from '@/modules/onboarding/components/ai-setup/model-selection-card';
@@ -41,11 +48,12 @@ import { VllmSetupCard } from '@/modules/onboarding/components/ai-setup/vllm-set
 import { OmlxSetupCard } from '@/modules/onboarding/components/ai-setup/omlx-setup-card';
 import { ManualEndpointsCard } from '@/modules/onboarding/components/ai-setup/manual-endpoints-card';
 import { LemonadeSetupCard } from '@/modules/onboarding/components/ai-setup/lemonade-setup-card';
+import { LocalAiExposureNotice } from '@/modules/onboarding/components/ai-setup/local-ai-exposure-notice';
 import { OllamaSetupCard } from '@/modules/onboarding/components/ai-setup/ollama-setup-card';
 import type { LemonadeStatus, OmlxStatus, OllamaStatus, VllmStatus } from '@/modules/onboarding/helpers/ai-setup-types';
 import {
   EMBEDDING_INFERENCE_BACKEND,
-  hubLoadableSelection,
+  hubDownloadSelection,
   isHubLoadableBackend,
   hiddenInferenceBackends,
   recommendedInferenceBackend,
@@ -83,6 +91,66 @@ const compatibleSelection = (availableModelById: ModelIndex, backend: InferenceB
 const unpinnablePins = (availableModelById: ModelIndex, pinnedIds: Iterable<string>): string[] =>
   [...pinnedIds].filter((modelId) => isHubLoadableBackend(availableModelById.get(modelId)?.backend));
 
+// The Hub lost its connection to the engine. That doesn't say the engine is down: a running Ollama bound to
+// loopback refuses the Docker bridge and a firewall drops it. Keep this in step with the patterns in
+// ollama-host-bridge.ts on the Hub; `aborted` is Node's word for a stream cut off mid-download.
+const ENGINE_UNREACHABLE =
+  /ECONNREFUSED|ECONNRESET|ECONNABORTED|EHOSTUNREACH|ENETUNREACH|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT|ConnectTimeoutError|network unreachable|socket hang up|fetch failed|\baborted\b|timeout of \d+ms exceeded/;
+
+/** The engine whose embedders Save ranks for `backend`: itself on Ollama, else the shared embedding engine. */
+const embeddingBackendFor = (backend: InferenceBackendType): InferenceBackendType => (backend === 'ollama' ? backend : EMBEDDING_INFERENCE_BACKEND);
+
+/**
+ * The catalog model an id names: its catalog id, its engine id, Lemonade's `user.` spelling of that, or
+ * Ollama's `name:latest` for a model pulled without a tag, which the catalog spells `name`. Taken for an
+ * unknown chat model, `nomic-embed-text:latest` became the chat model the next Save wrote, and a page
+ * that read it back as a stored choice kept writing it.
+ */
+const catalogModelFor = (models: Iterable<CuratedModel>, id: string): CuratedModel | undefined => {
+  const untagged = id.endsWith(':latest') ? id.slice(0, -':latest'.length) : null;
+  let folded: CuratedModel | undefined;
+  for (const model of models) {
+    if (model.id === id || model.backendModelId === id || `user.${model.backendModelId}` === id) return model;
+    if (!folded && untagged && model.backendModelId === untagged) folded = model;
+  }
+  return folded;
+};
+
+/**
+ * The catalog id of a stored model when it runs on `backend` and can fill the role (`match`), else
+ * null. Save keeps it in that role while it stays checked; ranking the checked models instead
+ * replaced a default of Llama 3.2 3B with Gemma 4 E2B, as chat and vision model, on a save that
+ * changed nothing.
+ */
+const storedRoleModelId = (
+  profile: HardwareProfileResponse,
+  backend: InferenceBackendType,
+  storedId: string | null | undefined,
+  match: (model: CuratedModel) => boolean,
+): string | null => {
+  if (!storedId) return null;
+  const model = catalogModelFor(profile.availableModels, storedId);
+  return model && model.backend === backend && match(model) ? model.id : null;
+};
+
+/** The saved preferences Save keeps per role, from the last preferences read. */
+interface StoredRoleModels {
+  /** The engine the preferences were read for. */
+  backend: InferenceBackendType | null;
+  chat: string | null;
+  vision: string | null;
+  embedding: string | null;
+}
+
+/**
+ * The saved chat model Save keeps on `backend`. One the engine downloaded under its own name is not
+ * in the catalog, so it stays the choice only on the engine it was saved for.
+ */
+const storedChatModelId = (profile: HardwareProfileResponse, backend: InferenceBackendType, stored: StoredRoleModels): string | null => {
+  if (stored.chat && stored.backend === backend && !catalogModelFor(profile.availableModels, stored.chat)) return stored.chat;
+  return storedRoleModelId(profile, backend, stored.chat, isAgentModel);
+};
+
 // A null match does not clear the stored preference because serialization drops the
 // undefined field. Preference-clearing UI must wait until the API carries explicit null.
 const resolvePreferredModelId = (
@@ -110,6 +178,7 @@ export const AiSettingsContainer = () => {
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
   const [selectedBackend, setSelectedBackend] = useState<InferenceBackendType>('ollama');
   const [cloudProviders, setCloudProviders] = useState<CloudProviderInput[]>([]);
+  const [cloudPolicy, setCloudPolicy] = useState<CloudFallbackPolicy | null>(null);
   const [pinnedModelIds, setPinnedModelIds] = useState<Set<string>>(new Set());
   const [trackedModels, setTrackedModels] = useState<Record<string, TrackedModel>>({});
   const [runtimeModels, setRuntimeModels] = useState<RuntimeModelInfo[]>([]);
@@ -118,6 +187,7 @@ export const AiSettingsContainer = () => {
   const [vllmApiKey, setVllmApiKey] = useState('');
   const [vllmUrl, setVllmUrl] = useState('');
   const [omlxUrl, setOmlxUrl] = useState('');
+  const [omlxApiKey, setOmlxApiKey] = useState('');
   const [decodeEndpoint, setDecodeEndpoint] = useState('');
   const [encodeEndpoint, setEncodeEndpoint] = useState('');
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
@@ -136,13 +206,76 @@ export const AiSettingsContainer = () => {
   vllmUrlRef.current = vllmUrl;
   const vllmApiKeyRef = useRef('');
   vllmApiKeyRef.current = vllmApiKey;
+  // A stored key shows as the mask, and any edit replaces it whole. A key typed after the dots would
+  // still start with them, and the save would keep the stored key.
+  const handleVllmApiKeyChange = useCallback((value: string) => {
+    setVllmApiKey((current) => (isMaskedKey(current) && value !== current ? value.replace(/•/g, '') : value));
+  }, []);
+  // The vLLM URL and whether a key is stored, as the Hub last reported them. The Hub sends a stored
+  // key only to the server it was saved for, and a save that moves vLLM elsewhere drops it. So the
+  // mask leaves the field while the URL differs, and comes back if the URL returns unchanged.
+  const [savedVllm, setSavedVllm] = useState({ url: '', keyStored: false });
+  const handleVllmUrlChange = useCallback(
+    (value: string) => {
+      setVllmUrl(value);
+      if (!savedVllm.keyStored) return;
+      const moved = value.trim() !== savedVllm.url;
+      setVllmApiKey((current) => {
+        if (moved && isMaskedKey(current)) return '';
+        if (!moved && !current) return MASKED_KEY;
+        return current;
+      });
+    },
+    [savedVllm],
+  );
+  const vllmApiKeyNotice =
+    savedVllm.keyStored && vllmUrl.trim() !== savedVllm.url && !vllmApiKey.trim() ? t('AI_SETTINGS_VLLM_KEY_NEW_URL') : undefined;
   const omlxUrlRef = useRef('');
   omlxUrlRef.current = omlxUrl;
+  const omlxApiKeyRef = useRef('');
+  omlxApiKeyRef.current = omlxApiKey;
+  // The oMLX key follows the vLLM key's rules: the mask stands for the stored key, any edit replaces
+  // it whole, and the stored key belongs to the URL it was saved with.
+  const handleOmlxApiKeyChange = useCallback((value: string) => {
+    setOmlxApiKey((current) => (isMaskedKey(current) && value !== current ? value.replace(/•/g, '') : value));
+  }, []);
+  const [savedOmlx, setSavedOmlx] = useState({ url: '', keyStored: false });
+  const handleOmlxUrlChange = useCallback(
+    (value: string) => {
+      setOmlxUrl(value);
+      if (!savedOmlx.keyStored) return;
+      const moved = value.trim() !== savedOmlx.url;
+      setOmlxApiKey((current) => {
+        if (moved && isMaskedKey(current)) return '';
+        if (!moved && !current) return MASKED_KEY;
+        return current;
+      });
+    },
+    [savedOmlx],
+  );
+  // The key the desktop app just gave oMLX, stored at once: the field then shows the mask, as for a key
+  // the Hub already had. The Hub stores it for the saved URL, so while the URL field names another one
+  // the field keeps the key itself: a mask would read as the saved URL's key, which Save deletes.
+  const handleOmlxAdminKeySet = useCallback(
+    async (apiKey: string) => {
+      await saveOmlxApiKey(apiKey, selectedBackend);
+      setSavedOmlx((saved) => ({ ...saved, keyStored: true }));
+      setOmlxApiKey(omlxUrlRef.current.trim() === savedOmlx.url ? MASKED_KEY : apiKey);
+    },
+    [selectedBackend, savedOmlx.url],
+  );
+  const omlxApiKeyNotice =
+    savedOmlx.keyStored && omlxUrl.trim() !== savedOmlx.url && !omlxApiKey.trim() ? t('AI_SETTINGS_OMLX_KEY_NEW_URL') : undefined;
   const decodeEndpointRef = useRef('');
   decodeEndpointRef.current = decodeEndpoint;
   const encodeEndpointRef = useRef('');
   encodeEndpointRef.current = encodeEndpoint;
   const trackedModelsRef = useRef<TrackedModel[]>([]);
+  // The chat, vision and embedding models the Hub has saved, as the last preferences read reported them.
+  const storedRoleModelsRef = useRef<StoredRoleModels>({ backend: null, chat: null, vision: null, embedding: null });
+  // The saved vision and embedding models Save writes back, each until a checkbox of its role
+  // changes. The chat model's equivalent is `chosenChatModelId`, which the page also shows.
+  const keptRoleModelsRef = useRef<Pick<StoredRoleModels, 'vision' | 'embedding'>>({ vision: null, embedding: null });
   // Share one catalog index between Save and confirmation so they cannot disagree or
   // rebuild it independently.
   const availableModelById = useMemo<ModelIndex>(() => (profile ? indexAvailableModels(profile) : new Map()), [profile]);
@@ -199,6 +332,15 @@ export const AiSettingsContainer = () => {
     }
   }, []);
 
+  /** Keeps the saved vision and embedding models for Save when they run on the engine shown. */
+  const keepStoredRoleModels = useCallback((data: HardwareProfileResponse, backend: InferenceBackendType) => {
+    const stored = storedRoleModelsRef.current;
+    keptRoleModelsRef.current = {
+      vision: storedRoleModelId(data, backend, stored.vision, isVisionModel),
+      embedding: storedRoleModelId(data, embeddingBackendFor(backend), stored.embedding, isEmbeddingModel),
+    };
+  }, []);
+
   const fetchProfile = async (isRescan = false, backendOverride?: InferenceBackendType) => {
     if (!isRescan) setLoading(true);
     setError(null);
@@ -206,14 +348,25 @@ export const AiSettingsContainer = () => {
       // Load preferences first because the profile's hardware fallback can compute installed
       // models for a backend other than the one shown in settings.
       const prefData = await fetchInferencePreferences();
+      if (prefData) {
+        setSavedVllm({ url: prefData.preferredVllmUrl?.trim() ?? '', keyStored: Boolean(prefData.preferredVllmApiKey) });
+      }
       if (prefData?.preferredVllmApiKey) {
         setVllmApiKey(prefData.preferredVllmApiKey);
+      } else if (prefData) {
+        // A mask left from an earlier load stands for a key the Hub no longer holds (a save on another
+        // engine clears it). Left in the field it reads as stored, and the next save keeps nothing.
+        setVllmApiKey((current) => (isMaskedKey(current) ? '' : current));
       }
       if (prefData?.preferredVllmUrl) {
         setVllmUrl(prefData.preferredVllmUrl);
       }
       if (prefData?.preferredOmlxUrl) {
         setOmlxUrl(prefData.preferredOmlxUrl);
+      }
+      if (prefData) {
+        setSavedOmlx({ url: prefData.preferredOmlxUrl?.trim() ?? '', keyStored: Boolean(prefData.preferredOmlxApiKey) });
+        setOmlxApiKey((current) => (prefData.preferredOmlxApiKey ? prefData.preferredOmlxApiKey : isMaskedKey(current) ? '' : current));
       }
       if (prefData?.preferredDecodeEndpoint) {
         setDecodeEndpoint(prefData.preferredDecodeEndpoint);
@@ -238,17 +391,16 @@ export const AiSettingsContainer = () => {
 
       const tracked = await fetchTrackedModels();
       seedSelectedModelIds(data, preferredBackend, tracked);
-      const knownIds = new Set<string>();
-      for (const model of data.availableModels) {
-        knownIds.add(model.id);
-        if (model.backendModelId) {
-          knownIds.add(model.backendModelId);
-          knownIds.add(`user.${model.backendModelId}`);
-        }
-      }
       const storedPreferred = prefData?.preferredModel;
-      const downloadedChoice = storedPreferred && !knownIds.has(storedPreferred) ? storedPreferred : null;
-      setChosenChatModelId(downloadedChoice);
+      storedRoleModelsRef.current = {
+        backend: preferredBackend,
+        chat: storedPreferred ?? null,
+        vision: prefData?.preferredVisionModel ?? null,
+        embedding: prefData?.preferredEmbeddingModel ?? null,
+      };
+      const downloadedChoice = storedPreferred && !catalogModelFor(data.availableModels, storedPreferred) ? storedPreferred : null;
+      setChosenChatModelId(storedChatModelId(data, preferredBackend, storedRoleModelsRef.current));
+      keepStoredRoleModels(data, preferredBackend);
       if (downloadedChoice) {
         setSelectedModelIds((prev) =>
           prev.filter((id) => {
@@ -267,10 +419,11 @@ export const AiSettingsContainer = () => {
         void checkLemonadeStatus();
       }
 
-      const configured = await fetchConfiguredCloudProviders();
+      const [configured, policy] = await Promise.all([fetchConfiguredCloudProviders(), fetchCloudFallbackPolicy()]);
       if (configured.length > 0) {
         setCloudProviders(configured);
       }
+      setCloudPolicy(policy);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -303,6 +456,7 @@ export const AiSettingsContainer = () => {
         selectedBackend === 'vllm' ? vllmUrlRef.current : undefined,
         selectedBackend === 'vllm' ? vllmApiKeyRef.current : undefined,
         selectedBackend === 'omlx' ? omlxUrlRef.current : undefined,
+        selectedBackend === 'omlx' ? omlxApiKeyRef.current : undefined,
       );
       setProfile(data);
       seedSelectedModelIds(data, selectedBackend, trackedModelsRef.current);
@@ -337,7 +491,7 @@ export const AiSettingsContainer = () => {
   const checkOmlxStatus = useCallback(async () => {
     setCheckingOmlx(true);
     try {
-      const data = (await fetchOmlxInstallStatus(omlxUrlRef.current)) as OmlxStatus;
+      const data = (await fetchOmlxInstallStatus(omlxUrlRef.current, omlxApiKeyRef.current)) as OmlxStatus;
       setOmlxStatus(data);
       return data;
     } catch {
@@ -351,7 +505,7 @@ export const AiSettingsContainer = () => {
   const handleRecheckOmlx = useCallback(async () => {
     const status = await checkOmlxStatus();
     if (status?.ready) {
-      const data = await fetchInferenceOnboardingProfile('omlx', undefined, undefined, omlxUrlRef.current);
+      const data = await fetchInferenceOnboardingProfile('omlx', undefined, undefined, omlxUrlRef.current, omlxApiKeyRef.current);
       setProfile(data);
       seedSelectedModelIds(data, 'omlx', trackedModelsRef.current);
     }
@@ -405,16 +559,13 @@ export const AiSettingsContainer = () => {
   const handleToggleModel = (modelId: string) => {
     const model = availableModelById.get(modelId);
     if (model?.modality === 'llm') setChosenChatModelId(null);
+    if (model && isVisionModel(model)) keptRoleModelsRef.current.vision = null;
+    if (model && isEmbeddingModel(model)) keptRoleModelsRef.current.embedding = null;
     setSelectedModelIds((prev) => (prev.includes(modelId) ? prev.filter((id) => id !== modelId) : [...prev, modelId]));
   };
 
   /** Catalog id for an engine id, including Lemonade's `user.` spelling. */
-  const catalogIdForEngineModel = (engineId: string): string | null => {
-    for (const model of availableModelById.values()) {
-      if (model.id === engineId || model.backendModelId === engineId || `user.${model.backendModelId}` === engineId) return model.id;
-    }
-    return null;
-  };
+  const catalogIdForEngineModel = (engineId: string): string | null => catalogModelFor(availableModelById.values(), engineId)?.id ?? null;
 
   // Unload is the one memory action the page offers directly, because nothing else reaches it:
   // deselect + Save only unpins (bookkeeping), and select + Save pins through a load that skips a
@@ -424,9 +575,9 @@ export const AiSettingsContainer = () => {
   const [unloadingModelId, setUnloadingModelId] = useState<string | null>(null);
   const [loadingModelId, setLoadingModelId] = useState<string | null>(null);
   /**
-   * The chat model chosen from Downloaded Models. A catalog id, or an engine id the catalog does
-   * not have. Save writes this instead of the first checked recommended model, so a file Lemonade
-   * downloaded under its own name stays the model the apps restart with.
+   * The chat model Save writes instead of the first checked recommended model: the saved one, or one
+   * chosen from Downloaded Models. A catalog id, or an engine id the catalog does not have, so a file
+   * Lemonade downloaded under its own name stays the model the apps restart with.
    */
   const [chosenChatModelId, setChosenChatModelId] = useState<string | null>(null);
   // One button for both places a resident model appears. It lives inside a `<label>` on the
@@ -481,11 +632,22 @@ export const AiSettingsContainer = () => {
       selectedBackend === 'vllm' ? vllmUrlRef.current : undefined,
       selectedBackend === 'vllm' ? vllmApiKeyRef.current : undefined,
       selectedBackend === 'omlx' ? omlxUrlRef.current : undefined,
-    ).then((data) => {
-      setProfile(data);
-      // Re-seed the checkboxes for the new backend from server truth (see seedSelectedModelIds).
-      seedSelectedModelIds(data, selectedBackend, trackedModelsRef.current);
-    });
+      selectedBackend === 'omlx' ? omlxApiKeyRef.current : undefined,
+    )
+      .then((data) => {
+        // A reply for an engine the page has since left would seed its models and choices over the
+        // engine now shown.
+        if (lastHandledBackendRef.current !== selectedBackend) return;
+        setProfile(data);
+        // Re-seed the checkboxes for the new backend from server truth (see seedSelectedModelIds).
+        seedSelectedModelIds(data, selectedBackend, trackedModelsRef.current);
+        // A model chosen on one engine is no choice on another.
+        setChosenChatModelId(storedChatModelId(data, selectedBackend, storedRoleModelsRef.current));
+        keepStoredRoleModels(data, selectedBackend);
+      })
+      .catch((e: Error) => {
+        toast.error(t('AI_SETTINGS_LOAD_FAILED', { error: e.message }));
+      });
     fetchRuntimeModels(selectedBackend);
     if (selectedBackend === 'vllm') {
       void checkVllmStatus();
@@ -494,7 +656,7 @@ export const AiSettingsContainer = () => {
     } else if (selectedBackend === 'lemonade') {
       void checkLemonadeStatus();
     }
-  }, [selectedBackend, fetchRuntimeModels, checkVllmStatus, checkOmlxStatus, checkLemonadeStatus, seedSelectedModelIds]);
+  }, [selectedBackend, fetchRuntimeModels, checkVllmStatus, checkOmlxStatus, checkLemonadeStatus, seedSelectedModelIds, keepStoredRoleModels, t]);
 
   const hasActiveTransfers = Object.values(trackedModels).some((model) => ['pulling', 'loading', 'unloading'].includes(model.state));
 
@@ -517,7 +679,10 @@ export const AiSettingsContainer = () => {
       await loadInferenceModel(engineId, selectedBackend);
       const catalogId = catalogIdForEngineModel(engineId);
       const curated = catalogId ? availableModelById.get(catalogId) : undefined;
-      if (!curated || curated.modality === 'llm') {
+      // An embedder (or any catalog model that does not chat) is only loaded, under whichever name the
+      // engine lists it (see catalogModelFor).
+      const chatModel = !curated || curated.modality === 'llm';
+      if (chatModel) {
         const chatId = catalogId ?? engineId;
         setChosenChatModelId(chatId);
         setSelectedModelIds((prev) => {
@@ -530,7 +695,11 @@ export const AiSettingsContainer = () => {
       }
       await fetchRuntimeModels(selectedBackend);
       await fetchTrackedModels();
-      toast.success(t('AI_SETTINGS_LOADED', { model: curated?.displayName ?? engineId }));
+      toast.success(
+        chatModel
+          ? t('AI_SETTINGS_LOADED', { model: curated?.displayName ?? engineId })
+          : t('AI_SETTINGS_LOADED_NOT_CHAT', { model: curated.displayName }),
+      );
     } catch (e) {
       toast.error(t('AI_SETTINGS_MODEL_LOAD_FAILED', { error: (e as Error).message }));
     } finally {
@@ -549,22 +718,30 @@ export const AiSettingsContainer = () => {
       const compatibleSelectedModelIds = compatibleSelection(availableModelById, selectedBackend, selectedModelIds);
 
       const checkboxPreferred = resolvePreferredModelId(profile, selectedBackend, isAgentModel, compatibleSelectedModelIds);
-      const preferredModel = chosenChatModelId ?? checkboxPreferred;
-      const embeddingBackend = selectedBackend === 'omlx' || selectedBackend === 'ollama' ? selectedBackend : EMBEDDING_INFERENCE_BACKEND;
-      const preferredEmbeddingModel = resolvePreferredModelId(profile, embeddingBackend, isEmbeddingModel, compatibleSelectedModelIds);
-      const preferredVisionModel = resolvePreferredModelId(profile, selectedBackend, isVisionModel, compatibleSelectedModelIds);
+      // A kept model that is no longer checked (Load in Downloaded Models unchecks the other LLMs, a
+      // Re-check drops one the engine stopped serving) is ranked again like the rest.
+      const kept = (modelId: string | null) => (modelId && compatibleSelectedModelIds.includes(modelId) ? modelId : null);
+      // An engine id the catalog does not have has no checkbox, so only a catalog chat model must be checked.
+      const preferredModel =
+        (chosenChatModelId && availableModelById.has(chosenChatModelId) ? kept(chosenChatModelId) : chosenChatModelId) ?? checkboxPreferred;
+      const preferredEmbeddingModel =
+        kept(keptRoleModelsRef.current.embedding) ??
+        resolvePreferredModelId(profile, embeddingBackendFor(selectedBackend), isEmbeddingModel, compatibleSelectedModelIds);
+      const preferredVisionModel =
+        kept(keptRoleModelsRef.current.vision) ?? resolvePreferredModelId(profile, selectedBackend, isVisionModel, compatibleSelectedModelIds);
 
       // Cloud keys first so the debounced AI-app restart (from preferences) sees them.
       // Masked keys (`••••`) omit apiKey so the Hub keeps the stored secret. A stored key whose field
-      // was cleared is deleted: sent as a blank key, the Hub would keep it.
+      // was cleared is deleted: sent as a blank key, the Hub would keep it. So is a provider removed
+      // while it had a URL and no key, which a save cannot reset to the provider's own server.
       for (const cp of cloudProviders) {
-        if (cp.stored && !cp.apiKey.trim()) {
+        if ((cp.stored && !cp.apiKey.trim()) || cp.removed) {
           await removeCloudProviderConfig(cp.provider);
           // The refetch after the save keeps the old list when no provider is left, so drop it here.
           setCloudProviders((prev) => prev.filter((other) => other.provider !== cp.provider));
-        } else if (cp.apiKey.trim() && !cp.apiKey.startsWith('••')) {
+        } else if (cp.apiKey.trim() && !isMaskedKey(cp.apiKey)) {
           await saveCloudProviderConfig({ provider: cp.provider, apiKey: cp.apiKey, enabled: cp.enabled });
-        } else if (cp.apiKey.startsWith('••')) {
+        } else if (isMaskedKey(cp.apiKey)) {
           await saveCloudProviderConfig({ provider: cp.provider, enabled: cp.enabled });
         }
       }
@@ -574,35 +751,49 @@ export const AiSettingsContainer = () => {
         model: preferredModel,
         embeddingModel: preferredEmbeddingModel,
         visionModel: preferredVisionModel,
-        vllmApiKey: selectedBackend === 'vllm' ? vllmApiKey.trim() || null : null,
+        // A field still showing the mask is left out, and the Hub keeps the key it has stored.
+        vllmApiKey: selectedBackend === 'vllm' ? (isMaskedKey(vllmApiKey) ? undefined : vllmApiKey.trim() || null) : null,
         vllmUrl: selectedBackend === 'vllm' ? vllmUrl.trim() || null : null,
         omlxUrl: selectedBackend === 'omlx' ? omlxUrl.trim() || null : null,
+        // Left out when another engine is saved, so the stored key stays for the default oMLX URL. A
+        // custom oMLX URL is cleared above, and the Hub drops the key with it: a key belongs to its server.
+        omlxApiKey: selectedBackend === 'omlx' ? (isMaskedKey(omlxApiKey) ? undefined : omlxApiKey.trim() || null) : undefined,
         decodeEndpoint: decodeEndpoint.trim() || null,
         encodeEndpoint: encodeEndpoint.trim() || null,
       });
 
-      // Include every Hub-loadable backend so a saved preference cannot point to a selected
-      // model that was never loaded.
-      const pullableSelectedModelIds = hubLoadableSelection(
-        compatibleSelectedModelIds,
-        (modelId) => availableModelById.get(modelId)?.backend,
-        preferredModel,
-      );
+      // Include every backend the Hub downloads for, so a saved preference cannot point to a selected
+      // model that was never downloaded. Only Ollama and Lemonade models are pinned after: oMLX loads
+      // a model on its first request.
+      const backendOf = (modelId: string) => availableModelById.get(modelId)?.backend;
+      const pullableSelectedModelIds = hubDownloadSelection(compatibleSelectedModelIds, backendOf);
+      const installedIds = new Set(profile.installedCatalogIds ?? []);
       const compatiblePinnedModelIds = unpinnablePins(availableModelById, pinnedModelIds);
       const modelOperationErrors: string[] = [];
-      const requestedPulls = pullableSelectedModelIds.filter((modelId) => !compatiblePinnedModelIds.includes(modelId));
+      const pullFailureMessage = (modelId: string, reason: string) =>
+        ENGINE_UNREACHABLE.test(reason)
+          ? t('AI_SETTINGS_ENGINE_UNREACHABLE', {
+              engine: backendDisplayName(availableModelById.get(modelId)?.backend ?? selectedBackend),
+              model: modelId,
+              reason,
+            })
+          : `Failed to pull ${modelId}: ${reason}`;
+      // An oMLX model oMLX already lists needs nothing: there is no pin to follow the download.
+      const requestedPulls = pullableSelectedModelIds.filter(
+        (modelId) => !compatiblePinnedModelIds.includes(modelId) && (isHubLoadableBackend(backendOf(modelId)) || !installedIds.has(modelId)),
+      );
 
       if (requestedPulls.length > 0) {
         // Report a refusal now; waiting on it would only run out the ten-minute timeout.
         const refusedById = await ensurePullsStarted(requestedPulls, false);
         for (const [modelId, reason] of Object.entries(refusedById)) {
-          modelOperationErrors.push(`Failed to pull ${modelId}: ${reason}`);
+          modelOperationErrors.push(pullFailureMessage(modelId, reason));
         }
         const modelsToPull = requestedPulls.filter((modelId) => !refusedById[modelId]);
 
         const pullResult = await waitForModelPulls(modelsToPull, profile.installedCatalogIds ?? [], { timeoutMs: 600_000 });
         for (const [modelId, message] of Object.entries(pullResult.errorsById)) {
-          modelOperationErrors.push(`Failed to pull ${modelId}: ${message}`);
+          modelOperationErrors.push(pullFailureMessage(modelId, message));
         }
 
         for (const modelId of modelsToPull) {
@@ -611,6 +802,7 @@ export const AiSettingsContainer = () => {
             modelOperationErrors.push(`Failed to pull ${modelId}: timed out`);
             continue;
           }
+          if (!isHubLoadableBackend(backendOf(modelId))) continue;
 
           try {
             await pinInferenceModel(modelId);
@@ -654,7 +846,7 @@ export const AiSettingsContainer = () => {
   if (loading) {
     return (
       <div className="min-w-0 space-y-5">
-        <div className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+        <div className="rounded-lg border border-border bg-card p-5 shadow-sm sm:p-6">
           <div className="flex flex-col items-center gap-4 py-4 text-center">
             <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-primary" />
             <p className="text-sm text-muted-foreground">{t('COMMON_DETECTING_HARDWARE')}</p>
@@ -676,7 +868,7 @@ export const AiSettingsContainer = () => {
   if (error || !profile) {
     return (
       <div className="min-w-0 space-y-5">
-        <div className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6 text-center py-8">
+        <div className="rounded-lg border border-border bg-card p-5 shadow-sm sm:p-6 text-center py-8">
           <p className="text-destructive mb-4">{t('AI_SETTINGS_LOAD_FAILED', { error: String(error) })}</p>
           <Button variant="outline" onClick={() => fetchProfile()}>
             <RefreshCw className="mr-2" size={16} />
@@ -723,8 +915,8 @@ export const AiSettingsContainer = () => {
       {!isInsufficient && (
         <>
           {/* Recommended Models — FTUE ModelCard grid */}
-          <section className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
-            <h2 className="text-base font-bold uppercase tracking-wide">{t('COMMON_RECOMMENDED_MODELS')}</h2>
+          <section className="rounded-lg border border-border bg-card p-5 shadow-sm sm:p-6">
+            <h2 className="text-base font-medium  ">{t('COMMON_RECOMMENDED_MODELS')}</h2>
             <p className="text-xs sm:text-sm text-muted-foreground mt-0.5 mb-5">{t('AI_SETTINGS_RECOMMENDED_MODELS_SUBTITLE')}</p>
 
             {backendCompatibleRecommendedModels.length === 0 ? (
@@ -761,10 +953,11 @@ export const AiSettingsContainer = () => {
                       checkboxTestId={`recommended-model-checkbox-${model.id}`}
                       title={model.displayName}
                       icon={<ModelIcon model={model} />}
-                      tags={modelTags(model, t)}
+                      tags={modelTags(model, asLegacyTranslate(t))}
                       selected={isSelected}
                       onToggle={() => handleToggleModel(model.id)}
                       meta={modelMeta(model)}
+                      contextNote={<ModelContextNote plan={profile.contextPlans?.[model.id]} />}
                       scores={modelScores(model)}
                       footer={
                         statusBadge || resident ? (
@@ -799,8 +992,8 @@ export const AiSettingsContainer = () => {
           </section>
 
           {/* Downloaded Models */}
-          <section className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
-            <h2 className="text-base font-bold uppercase tracking-wide mb-0.5">{t('AI_SETTINGS_DOWNLOADED_MODELS')}</h2>
+          <section className="rounded-lg border border-border bg-card p-5 shadow-sm sm:p-6">
+            <h2 className="text-base font-medium   mb-0.5">{t('AI_SETTINGS_DOWNLOADED_MODELS')}</h2>
             <p className="text-xs text-muted-foreground mb-4">{t('AI_SETTINGS_DOWNLOADED_MODELS_SUBTITLE')}</p>
 
             {runtimeModelsLoading && <p className="text-sm text-muted-foreground">{t('SETTINGS_NETWORK_LOADING')}</p>}
@@ -835,7 +1028,7 @@ export const AiSettingsContainer = () => {
                       </span>
                       <div className="min-w-0 flex-1">
                         <div className="text-sm font-medium truncate">{model.name}</div>
-                        <div className="text-[11px] text-muted-foreground uppercase tracking-wide truncate">{model.id}</div>
+                        <div className="text-[11px] text-muted-foreground   truncate">{model.id}</div>
                       </div>
                       {resident ? (
                         unloadButton(actionId)
@@ -869,9 +1062,9 @@ export const AiSettingsContainer = () => {
           />
 
           {selectedBackend === 'vllm' && (
-            <section className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6 space-y-4">
+            <section className="rounded-lg border border-border bg-card p-5 shadow-sm sm:p-6 space-y-4">
               <div>
-                <h2 className="text-base font-bold uppercase tracking-wide">{t('ONBOARDING_VLLM_SECTION_TITLE')}</h2>
+                <h2 className="text-base font-medium  ">{t('ONBOARDING_VLLM_SECTION_TITLE')}</h2>
                 <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">{t('ONBOARDING_VLLM_SECTION_DESC')}</p>
               </div>
               <VllmSetupCard
@@ -879,12 +1072,13 @@ export const AiSettingsContainer = () => {
                 checking={checkingVllm}
                 onRecheck={handleRecheckVllm}
                 apiKey={vllmApiKey}
-                onApiKeyChange={setVllmApiKey}
+                onApiKeyChange={handleVllmApiKeyChange}
+                apiKeyNotice={vllmApiKeyNotice}
                 endpointUrl={vllmUrl}
-                onEndpointUrlChange={setVllmUrl}
+                onEndpointUrlChange={handleVllmUrlChange}
               />
               <div>
-                <h3 className="text-sm font-semibold">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}</h3>
+                <h3 className="text-sm font-medium">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}</h3>
                 <p className="text-xs text-muted-foreground mt-0.5 mb-3">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_DESC')}</p>
                 <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleRecheckOllama} />
               </div>
@@ -892,9 +1086,9 @@ export const AiSettingsContainer = () => {
           )}
 
           {selectedBackend === 'omlx' && (
-            <section className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6 space-y-4">
+            <section className="rounded-lg border border-border bg-card p-5 shadow-sm sm:p-6 space-y-4">
               <div>
-                <h2 className="text-base font-bold uppercase tracking-wide">{t('ONBOARDING_OMLX_SECTION_TITLE')}</h2>
+                <h2 className="text-base font-medium  ">{t('ONBOARDING_OMLX_SECTION_TITLE')}</h2>
                 <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">{t('ONBOARDING_OMLX_SECTION_DESC')}</p>
               </div>
               <OmlxSetupCard
@@ -902,25 +1096,32 @@ export const AiSettingsContainer = () => {
                 checking={checkingOmlx}
                 onRecheck={handleRecheckOmlx}
                 endpointUrl={omlxUrl}
-                onEndpointUrlChange={setOmlxUrl}
+                onEndpointUrlChange={handleOmlxUrlChange}
+                apiKey={omlxApiKey}
+                onApiKeyChange={handleOmlxApiKeyChange}
+                apiKeyNotice={omlxApiKeyNotice}
+                hubHasApiKey={savedOmlx.keyStored || Boolean(omlxApiKey.trim())}
+                onAdminKeySet={handleOmlxAdminKeySet}
               />
             </section>
           )}
 
           {selectedBackend === 'lemonade' && (
-            <section className="space-y-4 rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+            <section className="space-y-4 rounded-lg border border-border bg-card p-5 shadow-sm sm:p-6">
               <div>
-                <h2 className="text-base font-bold uppercase tracking-wide">{t('ONBOARDING_LEMONADE_SECTION_TITLE')}</h2>
+                <h2 className="text-base font-medium  ">{t('ONBOARDING_LEMONADE_SECTION_TITLE')}</h2>
                 <p className="mt-0.5 text-xs text-muted-foreground sm:text-sm">{t('ONBOARDING_LEMONADE_SECTION_DESC')}</p>
               </div>
               <LemonadeSetupCard status={lemonadeStatus} checking={checkingLemonade} onRecheck={handleRecheckLemonade} />
               <div>
-                <h3 className="text-sm font-semibold">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}</h3>
+                <h3 className="text-sm font-medium">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}</h3>
                 <p className="text-xs text-muted-foreground mt-0.5 mb-3">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_DESC')}</p>
                 <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleRecheckOllama} />
               </div>
             </section>
           )}
+
+          <LocalAiExposureNotice />
 
           <ManualEndpointsCard
             decodeEndpoint={decodeEndpoint}
@@ -932,12 +1133,31 @@ export const AiSettingsContainer = () => {
           <ResourceSummaryBar
             selectedModels={selectedModels}
             installedCatalogIds={installedCatalogIds}
-            backend={selectedBackend}
             availableStorageMb={availableStorageMb}
             totalMemoryMb={inferenceMemory.totalMb}
             availableMemoryMb={inferenceMemory.freeMb}
           />
         </>
+      )}
+
+      {cloudPolicy && (
+        <div
+          className={`rounded-lg border p-4 text-xs ${
+            cloudPolicy.allowCloudFallback ? 'border-warning/40 bg-warning/10 text-foreground' : 'border-border bg-muted/30 text-muted-foreground'
+          }`}
+          data-testid="cloud-fallback-policy-banner"
+        >
+          <div className="font-medium text-foreground">
+            {cloudPolicy.allowCloudFallback
+              ? 'Cloud Inference Fallback Enabled (CI_HUB_ALLOW_CLOUD_FALLBACK=true)'
+              : 'Cloud Inference Boundary: Fail-Closed Local Routing (CI_HUB_ALLOW_CLOUD_FALLBACK=false)'}
+          </div>
+          <p className="mt-1">
+            {cloudPolicy.allowCloudFallback
+              ? 'Automatic failover to enabled cloud providers is permitted when local engines are unreachable.'
+              : 'Hub never forwards local inference prompts to external cloud APIs automatically when local engines are unavailable. Keys below are only injected into apps you explicitly authorize.'}
+          </p>
+        </div>
       )}
 
       <CloudProviderCard providers={cloudProviders} insufficientHardware={isInsufficient} onUpdate={setCloudProviders} />

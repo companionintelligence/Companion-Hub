@@ -2,15 +2,15 @@ import { Injectable, type OnModuleInit } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 import { HardwareInspectorService } from '@/modules/inference/hardware-inspector.service';
-import { ModelRegistryService } from '@/modules/inference/model-registry.service';
 import { MemoryManagerService } from '@/modules/inference/memory-manager.service';
 import { ModelPullerService } from '@/modules/inference/model-puller.service';
 import { InferenceRouterService } from '@/modules/inference/inference-router.service';
 import { CloudFallbackService } from '@/modules/inference/cloud-fallback.service';
+import { cloudProviderStatus } from '@/modules/inference/cloud-provider-status';
 import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-registry';
 import { mcpCallerIsOperator } from '../mcp-tool-call';
 import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
-import type { InferenceBackendType, CloudProviderType } from '@ci-hub/common/types';
+import type { InferenceBackendType, CloudProviderType, InferenceModelInfo, InferenceStatus } from '@ci-hub/common/types';
 
 @Injectable()
 export class InferenceTools implements OnModuleInit {
@@ -18,7 +18,6 @@ export class InferenceTools implements OnModuleInit {
     private readonly logger: LoggerService,
     private readonly registry: McpToolRegistry,
     private readonly hardwareInspector: HardwareInspectorService,
-    private readonly modelRegistry: ModelRegistryService,
     private readonly memoryManager: MemoryManagerService,
     private readonly modelPuller: ModelPullerService,
     private readonly inferenceRouter: InferenceRouterService,
@@ -115,11 +114,20 @@ export class InferenceTools implements OnModuleInit {
       name: 'hub_list_models',
       access: 'read',
       description:
-        'List all models: curated catalog entries, pulled/loaded models, and cloud models. Shows state (available, pulling, pulled, loaded, pinned, error).',
-      inputSchema: { type: 'object', properties: {}, required: [] },
-      handler: async () => {
+        'List models: curated catalog entries, pulled/loaded models, and cloud models. Shows state (available, pulling, pulled, loaded, pinned, error). ' +
+        "'available' means a catalog model that is not on this node yet. With no filter this is the whole catalog, often 200+ entries; " +
+        "narrow it with backend (for example 'ollama') or state (for example 'available').",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          backend: { type: 'string', description: "Only models of this backend: 'ollama', 'vllm', 'lemonade', 'omlx', 'localai' or 'cloud'." },
+          state: { type: 'string', description: "Only models in this state: 'available', 'pulling', 'pulled', 'loaded', 'pinned' or 'error'." },
+        },
+        required: [],
+      },
+      handler: async (params) => {
         const models = await this.inferenceRouter.listModels();
-        return models;
+        return filterModels(models, params as { backend?: unknown; state?: unknown });
       },
     });
 
@@ -128,6 +136,7 @@ export class InferenceTools implements OnModuleInit {
       category: 'Inference & Models',
       name: 'hub_pull_model',
       access: 'write',
+      hubWide: true, // POST /api/inference/models/pull
       description: 'Pull/download a model from the curated catalog to the local backend. Long-running operation.',
       inputSchema: {
         type: 'object',
@@ -148,6 +157,7 @@ export class InferenceTools implements OnModuleInit {
       category: 'Inference & Models',
       name: 'hub_load_model',
       access: 'write',
+      hubWide: true, // POST /api/inference/models/load
       description:
         'Load a pulled model into memory for inference. To make room it unloads only idle models the Hub itself loaded, ' +
         'never one serving a request; when that is not enough the load is refused with the reason and nothing is unloaded.',
@@ -173,6 +183,7 @@ export class InferenceTools implements OnModuleInit {
       category: 'Inference & Models',
       name: 'hub_unload_model',
       access: 'write',
+      hubWide: true, // POST /api/inference/models/unload
       description: 'Unload a model from memory.',
       inputSchema: {
         type: 'object',
@@ -193,6 +204,7 @@ export class InferenceTools implements OnModuleInit {
       category: 'Inference & Models',
       name: 'hub_pin_model',
       access: 'write',
+      hubWide: true, // POST /api/inference/models/pin
       description:
         'Pin a model in memory (prevent eviction), loading it first if it is not loaded, the same way hub_load_model does. ' +
         'The pin survives Hub restarts until hub_unpin_model.',
@@ -222,6 +234,7 @@ export class InferenceTools implements OnModuleInit {
       category: 'Inference & Models',
       name: 'hub_unpin_model',
       access: 'write',
+      hubWide: true, // POST /api/inference/models/unpin
       description: 'Unpin a model (allow eviction when memory is needed).',
       inputSchema: {
         type: 'object',
@@ -232,7 +245,7 @@ export class InferenceTools implements OnModuleInit {
       },
       handler: async (params) => {
         const modelId = params.modelId as string;
-        this.modelRegistry.unpinModel(modelId);
+        await this.inferenceRouter.unpinTrackedModel(modelId);
         return { success: true, message: `Model ${modelId} unpinned` };
       },
     });
@@ -243,10 +256,22 @@ export class InferenceTools implements OnModuleInit {
       name: 'hub_get_inference_status',
       access: 'read',
       description:
-        'Get full inference router status: hardware tier, backend health, loaded models, memory budget, and cloud providers. Used by OpenClaw and agents to discover inference capabilities.',
-      inputSchema: { type: 'object', properties: {}, required: [] },
-      handler: async () => {
-        return this.inferenceRouter.getStatus();
+        'Get inference router status: hardware tier, backend health, memory budget, cloud providers and the models this node can serve now ' +
+        '(pulled, loaded, pinned, cloud). Catalog models that are not downloaded are only counted, per backend; ' +
+        'list them with hub_list_models, or pass includeCatalog: true to get them here as well.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          includeCatalog: {
+            type: 'boolean',
+            description: 'Also return every downloadable catalog model in `models`, as the status used to. That is often 200+ entries.',
+          },
+        },
+        required: [],
+      },
+      handler: async (params) => {
+        const status = await this.inferenceRouter.getStatus();
+        return params.includeCatalog === true ? status : summarizeInferenceStatus(status);
       },
     });
 
@@ -268,12 +293,16 @@ export class InferenceTools implements OnModuleInit {
       category: 'Inference & Models',
       name: 'hub_set_cloud_provider',
       access: 'write',
+      hubWide: true, // POST /api/inference/cloud-providers
       description: 'Configure a cloud fallback provider (OpenAI, Anthropic, Google, GitHub Copilot).',
       inputSchema: {
         type: 'object',
         properties: {
           provider: { type: 'string', enum: ['openai', 'anthropic', 'google', 'github-copilot'], description: 'Cloud provider type' },
-          apiKey: { type: 'string', description: 'API key for the provider' },
+          apiKey: {
+            type: 'string',
+            description: 'API key for the provider. An empty string keeps the stored key, unless baseUrl names another server.',
+          },
           enabled: { type: 'boolean', description: 'Whether this provider is enabled' },
           baseUrl: { type: 'string', description: 'Custom base URL (optional)' },
           defaultModel: { type: 'string', description: 'Default model for this provider' },
@@ -281,7 +310,7 @@ export class InferenceTools implements OnModuleInit {
         required: ['provider', 'apiKey', 'enabled'],
       },
       handler: async (params) => {
-        this.cloudFallback.setProvider({
+        await this.cloudFallback.setProvider({
           provider: params.provider as CloudProviderType,
           apiKey: params.apiKey as string,
           enabled: params.enabled as boolean,
@@ -297,15 +326,10 @@ export class InferenceTools implements OnModuleInit {
       category: 'Inference & Models',
       name: 'hub_get_cloud_providers',
       access: 'read',
-      description: 'List configured cloud fallback providers.',
+      description: 'List configured cloud fallback providers. `baseUrl` is reported only for a provider set to another server than its default.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: async () => {
-        return this.cloudFallback.listProviders().map((p) => ({
-          provider: p.provider,
-          enabled: p.enabled,
-          configured: !!p.apiKey,
-          defaultModel: p.defaultModel,
-        }));
+        return this.cloudFallback.listProviders().map((p) => cloudProviderStatus(p, this.cloudFallback.getDefaultBaseUrl(p.provider)));
       },
     });
 
@@ -320,8 +344,8 @@ export class InferenceTools implements OnModuleInit {
 
   /**
    * Who a load from this tool call is, which decides what it may unload to make room (see
-   * `LoadOrigin`). An agent's key — Hermes' and OpenClaw's managed keys are 'write' — gets the app
-   * request path's rule: only idle models the Hub itself loaded. Otherwise a prompt-injected agent
+   * `LoadOrigin`). An agent's key, even one an owner or admin created, gets the app request path's
+   * rule: only idle models the Hub itself loaded. Otherwise a prompt-injected agent
    * could evict the model every other app on the node is serving, and apps would keep evicting each
    * other. Only an operator's run from the Hub UI's tool runner may unload models apps loaded, as the
    * REST pin and load do. Either way the Hub picks the window, as for any load that is not a request.
@@ -364,4 +388,47 @@ export class InferenceTools implements OnModuleInit {
         'Use the Hub AI settings to change backend or model configuration.',
     };
   }
+}
+
+/**
+ * A catalog entry nobody has downloaded. `listModels` lists the whole curated catalog, for every
+ * backend whether or not it runs here: 231 of a test node's 242 entries, about 49 KB of the status.
+ */
+const isCatalogOnly = (model: InferenceModelInfo): boolean => model.state === 'available' && model.backend !== 'cloud';
+
+/** A model entry without the OpenAI `/v1/models` envelope fields, which tell an agent nothing here. */
+function compactModel(model: InferenceModelInfo) {
+  const { object: _object, created: _created, owned_by: _ownedBy, local: _local, ...rest } = model;
+  return rest;
+}
+
+/** `hub_get_inference_status` by default: what this node can serve now, and the catalog only as counts. */
+export function summarizeInferenceStatus(status: InferenceStatus) {
+  const { models, ...rest } = status;
+  const catalogByBackend: Record<string, number> = {};
+  let catalogCount = 0;
+  for (const model of models) {
+    if (isCatalogOnly(model)) {
+      catalogByBackend[model.backend] = (catalogByBackend[model.backend] ?? 0) + 1;
+      catalogCount += 1;
+    }
+  }
+
+  return {
+    ...rest,
+    models: models.filter((model) => !isCatalogOnly(model)).map(compactModel),
+    catalog: {
+      notDownloaded: catalogCount,
+      byBackend: catalogByBackend,
+      hint: 'List them with hub_list_models (filter by backend or state), or call this tool with includeCatalog: true.',
+    },
+  };
+}
+
+/** `hub_list_models` filters. A filter that is not a non-empty string is ignored rather than refused. */
+export function filterModels(models: InferenceModelInfo[], filters: { backend?: unknown; state?: unknown }): InferenceModelInfo[] {
+  const backend = typeof filters.backend === 'string' && filters.backend !== '' ? filters.backend : undefined;
+  const state = typeof filters.state === 'string' && filters.state !== '' ? filters.state : undefined;
+
+  return models.filter((model) => (!backend || model.backend === backend) && (!state || model.state === state));
 }

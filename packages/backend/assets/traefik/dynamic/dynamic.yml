@@ -51,6 +51,8 @@ http:
         # missing timestamp/signature (CI-Engineering#74). Listing a name also strips a
         # visitor's own copy of it before the copy, which is what keeps the stable-id
         # trio (issuer, id, id signature) from ever arriving unsigned.
+        # The last three names (AID, AID, KEL digest) are reserved: the Hub never sets them and no
+        # signature covers them. They are listed only so a visitor's own copy is deleted too.
         authResponseHeaders:
           - "X-CI-Hub-User"
           - "X-CI-Hub-User-Timestamp"
@@ -59,6 +61,9 @@ http:
           - "X-CI-Hub-User-Id"
           - "X-CI-Hub-User-Id-Signature"
           - "X-CI-Hub-User-Assertion"
+          - "X-CI-Hub-User-AID"
+          - "X-CI-Hub-AID"
+          - "X-CI-Hub-KEL-Digest"
 
     # First on every tunnel route (TraefikLabelsBuilder.addCloudflareLabels).
     # Traefik keeps a trusted peer's forwarded headers and fills in only those
@@ -83,29 +88,55 @@ http:
     # Last on every app router (withAppStartingPage in traefik-labels.builder.ts, and the
     # port-expose routes) and on nothing else: not the Hub's own routers, not forward auth. When the
     # app's route answers 502 (its container is up but nothing listens yet) or 504 (the app, or a
-    # proxy inside it, timed out), Traefik asks the Hub for "<app> is starting…" or why it is not,
-    # and sends that page under the app's own status code, so API clients and health checks still
-    # see the failure. Traefik makes that request with the visitor's own headers (cookies and Authorization
+    # proxy inside it, timed out), Traefik asks the Hub for "<app> is starting…" or why it is not.
+    # Traefik makes that request with the visitor's own headers (cookies and Authorization
     # too; it has no option to drop them before v3.6.15) and `Host`, which is how the Hub knows
     # which app it is. An app's OWN 502 or 504 body is replaced as well; there is no telling the two
     # apart from here.
     #
-    # Not 503. Apps send it on purpose, with a body their own clients read: Companion Memory's
-    # PowerSync token endpoint answers 503 by design, and model servers answer 503 while a model
-    # loads. Traefik itself seldom answers 503 on these routes, since the Hub drops a stopped app's
-    # router and these services have no health checks.
+    # The visitor gets the page as a 503, so API clients and health checks still see a failure. Not
+    # as the app's 502 or 504: Cloudflare puts its own "Bad gateway" page in place of an origin 502
+    # or 504, so a Public Web visitor never saw this page, and it passes a 503 through. The Hub is
+    # still told the status the app answered. `statusRewrites` and `{originalStatus}` need Traefik
+    # 3.4 or later, and the compose files have pinned 3.6.7 or later since this repository's first
+    # commit.
+    #
+    # An app's own 503 is never caught. Apps send it on purpose, with a body their own clients
+    # read: Companion Memory's PowerSync token endpoint answers 503 by design, and model servers
+    # answer 503 while a model loads. Traefik itself seldom answers 503 on these routes, since the
+    # Hub drops a stopped app's router and these services have no health checks.
     ci-hub-app-starting:
       errors:
         status:
           - "502"
           - "504"
+        statusRewrites:
+          "502": 503
+          "504": 503
         service: ci-hub-app-starting
-        query: "/api/apps/starting?status={status}"
+        query: "/api/apps/starting?status={originalStatus}"
+
+    # A signed-out browser updating an app's service worker (#2324). The app's `-sw-reset` routers
+    # (traefik-labels.builder.ts) match only fetches of `/sw.js` that carry the `Service-Worker: script`
+    # header browsers send for worker scripts. They put this in front of the forward auth, which
+    # answers such a fetch with a 401 when nobody is signed in. The browser then gets the Hub's
+    # self-removing worker with a 200 in place of a refusal it can't use, so the next page load
+    # reaches the sign-in. A signed-in request passes the forward auth and gets the app's own `/sw.js`.
+    # This middleware also wraps the app's answer, so an app that answers its own `/sw.js` with a 401
+    # hands that browser the same worker. Only the 401 is caught: an app's redirect or 403 passes.
+    ci-hub-sw-reset:
+      errors:
+        status:
+          - "401"
+        statusRewrites:
+          "401": 200
+        service: ci-hub-app-starting
+        query: "/api/auth/service-worker-reset.js"
 
   services:
-    # The Hub, for the page above, at the same tagged address as forward auth (see the top of this
-    # file). Keeps the visitor's `Host` (Traefik's default, written out because the page depends on
-    # it) rather than the Hub's.
+    # The Hub, for the starting page and the service worker reset above, at the same tagged address
+    # as forward auth (see the top of this file). Keeps the visitor's `Host` (Traefik's default,
+    # written out because the starting page depends on it) rather than the Hub's.
     ci-hub-app-starting:
       loadBalancer:
         passHostHeader: true

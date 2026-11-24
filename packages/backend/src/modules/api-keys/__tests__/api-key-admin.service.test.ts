@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { LoggerService } from '@/core/logger/logger.service';
+import type { HubManageVerdict } from '@/core/portal/hub-manage-verdict';
 import { ApiKeyAdminService } from '../api-key-admin.service';
 import type { ApiKeyInfo } from '../api-key.service';
 import { ApiKeyService } from '../api-key.service';
@@ -84,9 +85,57 @@ describe('ApiKeyAdminService', () => {
   });
 
   it('listKeys returns every stored key (all scopes, operator + managed)', async () => {
-    const rows = [keyInfo({ id: 1 }), keyInfo({ id: 2, scopes: ['app'], managed: true, ownerAppUrn: 'importer:ci-marketplace' })];
+    const rows = [
+      keyInfo({ id: 1, scopes: ['inference'] }),
+      keyInfo({ id: 2, scopes: ['app'], managed: true, ownerAppUrn: 'importer:ci-marketplace' }),
+    ];
     apiKeys.list.mockResolvedValue(rows);
-    expect(await service.listKeys()).toEqual(rows);
+    expect(await service.listKeys(null)).toEqual(rows.map((row) => ({ ...row, hubWideBlocked: null })));
+  });
+
+  /*
+   * The Hub-wide MCP tools take a key whose creator may manage the Hub. The list says which keys can't,
+   * from the Hub's own records, so an owner can see which to revoke or reissue.
+   */
+  describe('listKeys: which keys the Hub-wide tools refuse', () => {
+    const verdicts: Record<number, HubManageVerdict> = { 2: 'allowed', 3: 'refused', 4: 'unknown' };
+    const whois = { storedHubManageVerdictFor: vi.fn(async (userId: number) => verdicts[userId] ?? 'unknown') };
+
+    it.each([
+      ['a managed app key', keyInfo({ id: 1, scopes: ['mcp', 'app'], managed: true, ownerAppUrn: 'ci-hermes:ci-marketplace' }), 'app-key'],
+      ['a key with no recorded creator', keyInfo({ id: 1, createdByUserId: null }), 'no-creator'],
+      ['a key whose creator the Hub has stored as a member', keyInfo({ id: 1, createdByUserId: 3, createdByUsername: 'sam' }), 'creator-role'],
+      ['a key whose creator is an owner or admin', keyInfo({ id: 1, createdByUserId: 2 }), null],
+      ["a key whose creator's role the Hub hasn't stored", keyInfo({ id: 1, createdByUserId: 4 }), null],
+      ['a key with no MCP scope', keyInfo({ id: 1, scopes: ['inference'], createdByUserId: null }), null],
+      [
+        'a managed key that only calls back into the Hub as its app',
+        keyInfo({ id: 1, scopes: ['app'], managed: true, ownerAppUrn: 'importer:ci-marketplace' }),
+        null,
+      ],
+    ] as const)('marks %s as %s', async (_label, key, expected) => {
+      apiKeys.list.mockResolvedValue([key]);
+
+      expect(await service.listKeys(whois)).toEqual([{ ...key, hubWideBlocked: expected }]);
+    });
+
+    it("reads each creator's role once, however many keys they made", async () => {
+      apiKeys.list.mockResolvedValue([
+        keyInfo({ id: 1, createdByUserId: 3 }),
+        keyInfo({ id: 2, createdByUserId: 3 }),
+        keyInfo({ id: 3, createdByUserId: 2 }),
+      ]);
+
+      await service.listKeys(whois);
+
+      expect(whois.storedHubManageVerdictFor).toHaveBeenCalledTimes(2);
+    });
+
+    it("marks no creator's role when WhoIs can't be resolved, and still marks the keys with nobody behind them", async () => {
+      apiKeys.list.mockResolvedValue([keyInfo({ id: 1, createdByUserId: 3 }), keyInfo({ id: 2, createdByUserId: null })]);
+
+      expect((await service.listKeys(null)).map((key) => key.hubWideBlocked)).toEqual([null, 'no-creator']);
+    });
   });
 
   it('revokeKey delegates and reports the outcome', async () => {

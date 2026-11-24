@@ -3,6 +3,7 @@ import type { Request } from 'express';
 import type { HubPrincipalFields } from '@/core/portal/hub-session-operator';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { AuthGuard } from '@/modules/auth/auth.guard';
+import { HubManagerGuard } from '@/modules/auth/hub-manager.guard';
 import { McpAdminService } from './mcp-admin.service';
 import { McpToolCallBody } from './mcp-admin.dto';
 
@@ -37,15 +38,22 @@ export class McpAdminController {
    *
    * The lifecycle tools act as the signed-in person: `lifecycleActor` names them for each verb, or
    * refuses a request that names no principal, so the grants the app routes check apply here too.
+   * A Hub-wide tool asks what `HubManagerGuard` asked again, which an owner's or admin's kept yes
+   * answers without another Portal call.
    */
   @Post('tools/:name/call')
+  @UseGuards(HubManagerGuard)
   callTool(@Param('name') name: string, @Body() body: McpToolCallBody, @Req() req: Request) {
     // Only the principal, not the request: the tool's async context can outlive the reply (a sweep
     // keeps running after it), and a closure over `req` would hold the whole request until it ends.
     const principal: HubPrincipalFields = { hubPrincipal: req.hubPrincipal, user: req.user };
 
-    return this.adminService.callTool(name, body.arguments, body.confirmDestructive ?? false, (action) =>
-      this.whois.lifecycleActor(principal, action),
+    return this.adminService.callTool(
+      name,
+      body.arguments,
+      body.confirmDestructive ?? false,
+      (action) => this.whois.lifecycleActor(principal, action),
+      () => this.whois.assertSessionMayManageHub(principal),
     );
   }
 }

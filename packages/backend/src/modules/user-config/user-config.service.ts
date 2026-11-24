@@ -5,6 +5,8 @@ import { TranslatableError } from '@/common/error/translatable-error';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AppsReadService } from '../apps/apps-read.service';
+import { appIdOf } from '../apps/app-id.helpers';
+import { collectComposeOverrideViolations, describeComposeOverrideViolations } from '../apps/compose-override-sandbox';
 import { UpdateUserConfigDto } from './dto/user-config.dto';
 
 @Injectable()
@@ -29,6 +31,15 @@ export class UserConfigService {
   }
 
   async updateUserConfig(appUrn: AppUrn, updateUserConfigDto: UpdateUserConfigDto) {
+    const installedApps = await this.appsRepository.getApps();
+    const violations = collectComposeOverrideViolations(updateUserConfigDto.dockerCompose, updateUserConfigDto.appEnv, {
+      appUrn,
+      knownAppIds: installedApps.map((app) => appIdOf(app.appName, app.appStoreSlug)),
+    });
+    if (violations.length > 0) {
+      throw new TranslatableError('COMPOSE_OVERRIDE_NOT_ALLOWED', { details: describeComposeOverrideViolations(violations) }, HttpStatus.BAD_REQUEST);
+    }
+
     const userComposeFile = await this.appFilesManager.getUserComposeFile(appUrn);
     await this.filesystem.writeTextFile(userComposeFile.path, updateUserConfigDto.dockerCompose);
 

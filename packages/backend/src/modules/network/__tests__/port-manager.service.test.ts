@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { PortManagerService } from '../port-manager.service';
+import { PortManagerService, isUniqueViolation } from '../port-manager.service';
 import type { PortAllocationRepository } from '../port-allocation.repository';
 import type { LoggerService } from '@/core/logger/logger.service';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -41,7 +41,18 @@ const createMockRepo = () => {
       }
       return before - allocations.length;
     }),
-    deleteByHostPort: vi.fn(),
+    updateHostPort: vi.fn(async (id: number, hostPort: number) => {
+      const allocation = allocations.find((a) => a.id === id);
+      if (allocation) {
+        allocation.hostPort = hostPort;
+      }
+    }),
+    deleteById: vi.fn(async (id: number) => {
+      const index = allocations.findIndex((a) => a.id === id);
+      if (index !== -1) {
+        allocations.splice(index, 1);
+      }
+    }),
     _allocations: allocations,
   } as unknown as PortAllocationRepository & { _allocations: typeof allocations };
 };
@@ -149,5 +160,134 @@ describe('PortManagerService', () => {
 
     expect(allocations).toHaveLength(1);
     expect(callCount).toBe(2); // First failed, second succeeded
+  });
+
+  describe('setMainPort', () => {
+    const app = 'port-test:_user' as AppUrn;
+    const other = 'holder:_user' as AppUrn;
+
+    it('records a port set by hand on the allocation the app has, so the old one is free again', async () => {
+      await service.migrateExistingApp(app, 10000, 80);
+
+      await expect(service.setMainPort(app, 18558)).resolves.toBe(true);
+
+      expect(await service.getMainPort(app)).toBe(18558);
+      expect(repo._allocations).toEqual([expect.objectContaining({ appUrn: app, hostPort: 18558, containerPort: 80, label: 'main' })]);
+    });
+
+    it('never takes a port another app holds: it answers false and leaves both apps alone', async () => {
+      await service.migrateExistingApp(app, 10000, 80);
+      await service.migrateExistingApp(other, 10001, 80);
+
+      await expect(service.setMainPort(app, 10001)).resolves.toBe(false);
+
+      expect(await service.getMainPort(app)).toBe(10000);
+      expect(await service.getMainPort(other)).toBe(10001);
+      expect(repo.updateHostPort).not.toHaveBeenCalled();
+    });
+
+    it('answers false when another app takes the port between the check and the write', async () => {
+      await service.migrateExistingApp(app, 10000, 80);
+      repo.updateHostPort.mockRejectedValueOnce(Object.assign(new Error('Failed query'), { cause: { code: '23505' } }));
+
+      await expect(service.setMainPort(app, 18558)).resolves.toBe(false);
+    });
+
+    it('lets any other database failure through', async () => {
+      await service.migrateExistingApp(app, 10000, 80);
+      repo.updateHostPort.mockRejectedValueOnce(new Error('connection lost'));
+
+      await expect(service.setMainPort(app, 18558)).rejects.toThrow('connection lost');
+    });
+
+    it('has nothing to do for an app on that port already, or with no main allocation', async () => {
+      await service.migrateExistingApp(app, 10000, 80);
+
+      await expect(service.setMainPort(app, 10000)).resolves.toBe(true);
+      await expect(service.setMainPort('no-port:_user' as AppUrn, 18558)).resolves.toBe(true);
+
+      expect(repo.updateHostPort).not.toHaveBeenCalled();
+      expect(repo.create).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // Drizzle puts the query in the message and the driver's error, with its code, on `cause`.
+  describe('isUniqueViolation', () => {
+    it('recognises a driver error Drizzle wrapped', () => {
+      expect(isUniqueViolation(Object.assign(new Error('Failed query: insert into "app"'), { cause: { code: '23505' } }))).toBe(true);
+    });
+
+    it('recognises a bare driver error', () => {
+      expect(isUniqueViolation(Object.assign(new Error('boom'), { code: '23505' }))).toBe(true);
+      expect(isUniqueViolation(new Error('duplicate key value violates unique constraint'))).toBe(true);
+    });
+
+    it('turns down any other failure', () => {
+      expect(isUniqueViolation(Object.assign(new Error('Failed query: insert into "app"'), { cause: { code: '08006' } }))).toBe(false);
+      expect(isUniqueViolation('23505')).toBe(false);
+    });
+  });
+
+  describe('getPortHolder', () => {
+    it('names the allocation that holds a port but nothing for a free one', async () => {
+      await service.migrateExistingApp('holder:_user' as AppUrn, 10001, 80);
+
+      expect(await service.getPortHolder(10001)).toEqual(expect.objectContaining({ appUrn: 'holder:_user' }));
+      expect(await service.getPortHolder(10002)).toBeUndefined();
+    });
+  });
+
+  describe('moveMainPort', () => {
+    it('leaves one main allocation when a save changes its host port during the move', async () => {
+      const appUrn = 'openclaw:store' as AppUrn;
+      await service.migrateExistingApp(appUrn, 18789, 18789);
+      const findPort = repo.getAllHostPorts.getMockImplementation();
+      repo.getAllHostPorts.mockImplementationOnce(async (protocol: 'tcp' | 'udp') => {
+        await service.setMainPort(appUrn, 20000);
+        return findPort ? findPort(protocol) : [];
+      });
+
+      const moved = await service.moveMainPort(appUrn, new Set([18789]));
+
+      expect(repo._allocations).toEqual([expect.objectContaining({ hostPort: moved?.hostPort, label: 'main' })]);
+    });
+
+    it('gives the main port a new host port, skipping the refused one and every port in avoid', async () => {
+      const appUrn = 'openclaw:store' as AppUrn;
+      await service.allocatePorts(appUrn, [
+        { containerPort: 18789, label: 'main', preferredHostPort: 18789 },
+        { containerPort: 9090, label: 'admin', preferredHostPort: 15001 },
+      ]);
+
+      const moved = await service.moveMainPort(appUrn, new Set([10000, 10001]));
+
+      expect(moved).toMatchObject({ appUrn, containerPort: 18789, protocol: 'tcp', label: 'main' });
+      expect([18789, 10000, 10001]).not.toContain(moved?.hostPort);
+      expect(await service.getMainPort(appUrn)).toBe(moved?.hostPort);
+      // The other allocation stays where it was.
+      expect((await service.getAppPorts(appUrn)).map((a) => [a.label, a.hostPort]).sort()).toEqual(
+        [
+          ['admin', 15001],
+          ['main', moved?.hostPort],
+        ].sort(),
+      );
+    });
+
+    it('keeps the main port it had when no new port can be allocated', async () => {
+      const appUrn = 'openclaw:store' as AppUrn;
+      const [main] = await service.allocatePorts(appUrn, [{ containerPort: 18789, label: 'main', preferredHostPort: 18789 }]);
+      vi.mocked(repo.create).mockRejectedValueOnce(new Error('database unavailable'));
+
+      await expect(service.moveMainPort(appUrn, new Set())).rejects.toThrow('database unavailable');
+
+      expect(await service.getMainPort(appUrn)).toBe(main?.hostPort);
+    });
+
+    it('returns null and allocates nothing for an app with no main allocation', async () => {
+      const moved = await service.moveMainPort('nothing:store' as AppUrn, new Set());
+
+      expect(moved).toBeNull();
+      expect(repo.create).not.toHaveBeenCalled();
+    });
   });
 });

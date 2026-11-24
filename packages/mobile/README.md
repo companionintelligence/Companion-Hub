@@ -160,6 +160,27 @@ IPHONEOS_DEPLOYMENT_TARGET=16.0 \
 > callback from a previous attempt can also re-open the app on `cihub://` —
 > delete the app from the Simulator and relaunch `ios:dev` after rebuilding.
 
+## Home-screen widget
+
+The iOS WidgetKit extension and Android AppWidget provide four fixed quick
+actions: **Open**, **Connect**, **Switch**, and **Settings**. The small iOS
+layout shows Open and Connect, while the medium iOS layout shows all four.
+Android displays all four actions in two rows. Each action opens a fixed
+`cihub://intent/<route>` destination handled by the existing mobile app router.
+
+These widgets do not read Hub status, container state, or credentials. Live
+system information stays in the authenticated dashboard. The native source and
+generated project wiring are committed under `src-tauri/gen/apple/WidgetExtension/`
+and `src-tauri/gen/android/app/`; do not run either `*:init` command to build
+them, because those commands regenerate the committed native projects.
+
+Build checks:
+
+```bash
+pnpm --filter mobile exec tauri android build --debug --apk --ci
+pnpm --filter mobile exec tauri ios build --debug --no-sign --ci --target aarch64
+```
+
 ## Building in CI (GitHub Actions)
 
 The mobile app builds in CI the same way the desktop app does — via
@@ -173,7 +194,7 @@ exist:
 | **android** | `ubuntu-22.04` | `tauri android build --apk --debug` → installable universal **debug APK** | `companion-hub-android-debug-apk` |
 | **ios** | `macos-latest` | `tauri ios build --target aarch64-sim` → unsigned **iOS Simulator `.app`** | `companion-hub-ios-sim-app` |
 | **android-release** | `ubuntu-22.04` | signed **AAB** for Play — needs the 4 `ANDROID_KEY_*` secrets | `companion-hub-android-release-aab` |
-| **ios-release** | `macos-latest` | signed **IPA** for App Store Connect — needs the 4 `APPLE_*` secrets | `companion-hub-ios-release-ipa` |
+| **ios-release** | `macos-latest` | signed **IPA** for App Store Connect — needs the production signing cert/password/team and App Store profile | `companion-hub-ios-release-ipa` |
 
 **Triggers**
 - **Manually:** GitHub → **Actions → Mobile Build → Run workflow** (`workflow_dispatch`).
@@ -217,19 +238,22 @@ leak):
   (which `app/build.gradle.kts` picks up to wire `signingConfigs.release`), and
   runs `tauri android build --aab`. Without the secrets the job skips cleanly.
   Trigger it from **Actions → Mobile Build → Run workflow**.
-- **iOS IPA** — the `ios-release` job already does all of this; you only supply
-  secrets. It imports the cert into a throwaway keychain (`security import`, not
-  `apple-actions/import-codesign-certs`), installs the provisioning profile,
-  stamps a monotonic `CFBundleVersion`, and builds with
-  `--export-method app-store-connect`. Set `APPLE_CERTIFICATE_BASE64`,
-  `APPLE_CERTIFICATE_PASSWORD`, `APPLE_PROVISIONING_PROFILE_BASE64` and
-  `APPLE_DEVELOPMENT_TEAM`; add the three `APPSTORE_API_*` secrets to also push
-  to TestFlight. Without them the job skips cleanly. See
+- **iOS IPA** — `ios-release` reads signing secrets from the GitHub `production`
+  Environment. The distribution cert, password, and team ID are already there;
+  add `APPLE_PROVISIONING_PROFILE_BASE64` for `computer.ci.app.hub`. It imports
+  the cert into a throwaway keychain, installs the profile, stamps a unique
+  `CFBundleVersion` in Tauri config, `project.yml`, and `Info.plist`, then builds
+  with `--export-method app-store-connect`. Add
+  `APPSTORE_API_KEY_ID`, `APPSTORE_API_ISSUER_ID`, and
+  `APPSTORE_API_PRIVATE_KEY_BASE64` for automatic TestFlight upload. Without
+  the profile, the signed-build lane reports the missing secret and skips; with
+  signing but no API key, it produces an IPA artifact for Transporter. See
   [`STORE-READINESS.md`](./STORE-READINESS.md).
 
-  > ⚠️ **Unproven.** The lane has never completed a signed build — every
-  > `workflow_dispatch` run so far skipped it for missing secrets, so its first
-  > real run should be treated as a debugging session, not a release.
+  > The App Store Connect record already has build `0.1.1 (20261027)` in
+  > internal TestFlight and version 1.0 is awaiting App Review. CI signed-build
+  > and automatic-upload paths still need a run after the missing profile/API
+  > key secrets are configured.
 
 ## Building iOS on Xcode 27
 
@@ -359,14 +383,12 @@ http://www.java.com"* if `JAVA_HOME` is not exported in that shell.
 
 `gen/apple/` is checked in, and **`Info.plist` is not regenerated from
 `project.yml` during `tauri ios build`** — the committed plist is what ships.
-Editing only `project.yml` changes nothing about the build. Change both, or edit
-the plist directly:
+Editing only `project.yml` changes nothing about the build. Don't hand-edit one
+file alone. Run the stamp script, which writes `project.yml`, the committed plist
+and Tauri's `bundle.iOS.bundleVersion` together:
 
 ```bash
-plutil -replace CFBundleVersion -string 42 \
-  src-tauri/gen/apple/ci-os-hub-mobile_iOS/Info.plist
+IOS_BUILD_NUMBER=42 node scripts/set-ios-version.mjs
 ```
 
-This matters for release automation: any step that stamps a version into
-`project.yml` alone is a no-op. See
-[`STORE-READINESS.md`](./STORE-READINESS.md).
+See [`STORE-READINESS.md`](./STORE-READINESS.md).

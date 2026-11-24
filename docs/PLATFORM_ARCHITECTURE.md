@@ -259,16 +259,46 @@ Every app router ends with `ci-hub-app-starting@file`, an `errors` middleware fo
 It leaves 503 alone: apps send that on purpose, with a body their own clients read. While an
 app's container is up but the app does not answer yet, Traefik fetches
 `GET /api/apps/starting` from the Hub with the visitor's `Host` and shows "*App* is starting…"
-(or that it is stopped or not responding) under the app's own status code. It runs after forward
-auth, so a visitor who is not signed in still gets the login page, and it is on no route of the
-Hub's own. Apps opened on their own port or over the Private VPN do not pass through Traefik and
-do not get the page.
+(or that it is stopped or not responding) as a 503 (`statusRewrites`). Cloudflare puts its own
+"Bad gateway" page in place of an origin 502 or 504 but passes a 503 through, which is what lets a
+Public Web visitor see the page. It runs after forward auth, so a visitor who is not signed in
+still gets the login page, and it is on no route of the Hub's own. Apps opened on their own port
+or over the Private VPN do not pass through Traefik and do not get the page.
+
+The page also covers the seconds of a restart or an update when an app has no containers at all.
+Traefik drops an app's Docker routers with its containers, so the `apps.yml` the Hub writes for the
+file provider keeps a second copy of each app router, `<router>-down`: the same rule and middleware
+chain, forward auth included, pointed at a service of the app's own on Traefik's loopback, where
+every request fails with a 502 that the middleware turns into the page. Its priority is 1, 2 and so
+on, in the order Traefik ranks the app's own routers, so it answers only while those are gone, which
+also covers a container whose Docker health check has not passed yet.
+
+The Hub rebuilds `apps.yml` from the containers running at that moment: on the Start, Stop, Restart
+and Install of an app that goes out through Traefik, on every Uninstall, and when it starts itself.
+A rebuild keeps the down routes of an app
+with no container from the `apps.yml` it replaces, as long as the database says the app is running,
+coming back (starting, restarting, updating, resetting, backing up, restoring) or stopped while it
+still goes out through Traefik (`ADDRESS_KEPT_STATUSES`). So a stopped app's address answers
+"*App* is stopped. Start it in Companion Hub, then reload this page." Uninstall marks the app
+uninstalling before it takes it down and rebuilds `apps.yml` after, so a removed app's address
+answers Traefik's `404 page not found`. A restart rebuilds it right after `compose down` as well, so
+no route keeps an address the old containers had. Only a route an earlier `apps.yml` had is kept: an
+app stopped by a Hub from before this behavior has none until it next runs.
+
+The Cloudflare sync keeps a Public Web app in its payload in the same states, a first install
+aside, so Companion Portal keeps its DNS record while it is stopped or being updated, backed up or
+restored. That record still counts against the organization's public-subdomain allowance. To free
+the slot, switch the app to This Machine Only or uninstall it.
 
 The Hub's own rule is the exception: Portal always rebuilds it as
 `host.docker.internal:{hubListenPort}`, whatever the Hub's entry says. `cloudflared` reaches that
 through the host's published port (its `extra_hosts` entry is load-bearing), so the Hub sees those
 requests from a Docker bridge gateway, not from Traefik, and does not resolve their forwarded
-client address. An earlier shape targeted `host.docker.internal:{port}` for every app too.
+client address. Express's `req.ip` stays the gateway on that route. The sign-in rate limit alone
+reads the visitor from `CF-Connecting-IP` there, because `localhost:5002` and an app container
+dialing the host arrive from the same gateway; a forged header can only spend a capped shared
+budget (`AuthRateLimiter.admitRequest`). An earlier shape targeted `host.docker.internal:{port}`
+for every app too.
 
 ### Three exposure modes
 

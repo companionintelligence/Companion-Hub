@@ -19,7 +19,7 @@ export function MobileLoadError({ message, onRetry }: MobileLoadErrorProps) {
           <button
             type="button"
             data-testid="mobile-load-retry"
-            className="min-h-[44px] rounded-md bg-primary px-6 text-base font-semibold text-primary-foreground"
+            className="min-h-[44px] rounded-md bg-primary px-6 text-base font-medium text-primary-foreground"
             onClick={onRetry}
           >
             {t('COMMON_RETRY')}

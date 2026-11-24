@@ -20,12 +20,22 @@ import { syncRabbitmqPasswordFromEnv } from '../sync-rabbitmq-password.js';
 import { usageAndExit } from './cli-args.js';
 import { buildEnvOverrides, ensureLocalDevRuntimeEnv, getComposeFiles, getEnvFileOrExit, renderConfigLines } from './cli-compose-env.js';
 import { ensureLocalDevPortsAvailable, run, runBestEffort, runScript } from './cli-proc.js';
-import { parseEnvFile } from '../env-file.js';
+import { parseEnvFile, restrictEnvFileMode } from '../env-file.js';
 import { isApplianceMode, requireRepoRoot } from './cli-repo-context.js';
 import { BASE_COMMAND, type HubEnv, type StartMode } from './cli-types.js';
 import { printMessageBox } from './cli-ui.js';
 import { requireDockerForHubStack } from './docker-versions.js';
-import { buildComposeBaseArgs, ensureApplianceInstall, envOverridesForContext, type HubContext, resolveHubContext } from './hub-context.js';
+import {
+  buildComposeBaseArgs,
+  ensureApplianceInstall,
+  envOverridesForContext,
+  type HubContext,
+  requireRepoOrApplianceContext,
+  resolveHubContext,
+} from './hub-context.js';
+import { describeLoginStartOutcome, ensureLoginStartUnit } from './login-start-unit.js';
+import { applianceEnvFilePaths } from './paths.js';
+import { ensureStrongRabbitmqPassword } from './seed-appliance.js';
 
 const POSTGRES_INFRA_SERVICES = ['ci-hub-queue', 'ci-hub-db'] as const;
 
@@ -39,6 +49,28 @@ async function ensurePostgresInfraAndSyncPassword(
   run('docker', [...buildComposeBaseArgs(envFileName, composeFiles), 'up', '-d', ...POSTGRES_INFRA_SERVICES], envOverrides, cwd);
   await runScript('scripts/sync-postgres-password.ts', () => syncPostgresPasswordFromEnv(envFileName), envOverrides);
   await runScript('scripts/sync-rabbitmq-password.ts', () => syncRabbitmqPasswordFromEnv(envFileName), envOverrides);
+}
+
+/** Say so when `cihub up` gave the env file a broker password of its own (Companion-Hub#884). */
+function noteRabbitmqPasswordReplaced(replaced: boolean): void {
+  if (!replaced) return;
+  printMessageBox(
+    'Broker password replaced',
+    [
+      "RABBITMQ_PASSWORD was missing or the shared default 'admin'; the env file now has a random one.",
+      'The broker is changed to match before the Hub starts.',
+    ],
+    'yellow',
+  );
+}
+
+/**
+ * Make sure the Hub comes back after a reboot on a home folder unlocked at login (see
+ * `login-start-unit.ts`). Says something only when it installed the service or could not.
+ */
+function ensureHubStartsAfterLogin(): void {
+  const message = describeLoginStartOutcome(ensureLoginStartUnit());
+  if (message) printMessageBox('Start after login', [message], message.startsWith('Could not') ? 'yellow' : 'cyan');
 }
 
 export function shouldRetryApkMirrorWithHostNetwork(
@@ -131,6 +163,8 @@ export async function startHub(mode: StartMode, env: HubEnv) {
   }
 
   if (env !== 'local') await runScript('scripts/init-traefik.ts', () => initTraefik(), envOverrides);
+  // Every stack but local runs docker-compose.prod.yml, which requires the broker password from this file.
+  if (env !== 'local') noteRabbitmqPasswordReplaced(ensureStrongRabbitmqPassword([envFileName]));
 
   try {
     const portHeal = healHubPortsBeforeStartup(envFileName, (message) => {
@@ -153,6 +187,7 @@ export async function startHub(mode: StartMode, env: HubEnv) {
     [`Environment: ${env}`, `Mode: ${detached ? 'detached' : 'attached'}`, `Compose files: ${files.join(', ')}`],
     'green',
   );
+  ensureHubStartsAfterLogin();
   await ensurePostgresInfraAndSyncPassword(envFileName, files, envOverrides);
   await runDockerComposeUp(envFileName, files, detached, envOverrides);
 }
@@ -171,7 +206,11 @@ async function startApplianceHub(ctx: HubContext, detachedMode: 'attached' | 'de
   // On the engine the Hub is pinned to, which envOverrides names, before anything is set up.
   requireDockerForHubStack(envOverrides);
 
-  await runScript('scripts/init-hub-data-dirs.ts', () => initHubDataDirs(), initEnv, dataDir);
+  // Both env files hold JWT_SECRET and the database and broker passwords. Desktop apps up to 0.3.6
+  // created them at the umask's 0664. A later write keeps the mode a file already has.
+  for (const envFile of applianceEnvFilePaths(dataDir)) restrictEnvFileMode(envFile);
+  noteRabbitmqPasswordReplaced(ensureStrongRabbitmqPassword(applianceEnvFilePaths(dataDir)));
+  await runScript('scripts/init-hub-data-dirs.ts', () => initHubDataDirs({ appliance: true }), initEnv, dataDir);
   // `state/traefik/config/traefik.yml` and `acme_storage.json` are FILE bind mounts, so on a data dir
   // that has never had them compose stops at "bind source path does not exist" before `ci-hub`
   // starts. The checkout path has always run this (see startHub); the appliance path never did,
@@ -200,6 +239,7 @@ async function startApplianceHub(ctx: HubContext, detachedMode: 'attached' | 'de
     ['Environment: prod (canonical install)', `Data dir: ${dataDir}`, `Mode: ${detached ? 'detached' : 'attached'}`],
     'green',
   );
+  ensureHubStartsAfterLogin();
   await ensurePostgresInfraAndSyncPassword(ctx.envFile, ctx.composeFiles, envOverrides, dataDir);
   refreshFloatingHubImage(ctx, envOverrides, dataDir);
   await runDockerComposeUp(ctx.envFile, ctx.composeFiles, detached, envOverrides, dataDir);
@@ -269,5 +309,6 @@ export async function setupHub(env: HubEnv) {
 }
 
 export function printConfig(env: HubEnv) {
-  printMessageBox('CI-Hub configuration', renderConfigLines(env), 'cyan');
+  requireRepoOrApplianceContext(`${BASE_COMMAND} config`);
+  printMessageBox('CI-Hub configuration', renderConfigLines(resolveHubContext(env)), 'cyan');
 }

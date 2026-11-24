@@ -1,0 +1,18 @@
+{
+  "model_format": "gguf",
+  "model_family": "gemma3",
+  "model_families": ["gemma3"],
+  "model_type": "268.10M",
+  "file_type": "Q8_0",
+  "architecture": "amd64",
+  "os": "linux",
+  "rootfs": {
+    "type": "layers",
+    "diff_ids": [
+      "sha256:735af2139dc652bf01112746474883d79a52fa1c19038265d363e3d42556f7a2",
+      "sha256:4b19ac7dd2fb1ab2f2818b73454c5a9128ca39875a8fcf686a6b1c36100a0d68",
+      "sha256:3e2c24001f9ef57bf7ec959a3658fbb49cdad113cdf394c264da9d16f9bdd132",
+      "sha256:339e884a40f6708bc761d367f0c08e448d5bb6f16b3961c340e44e0e4835a004"
+    ]
+  }
+}

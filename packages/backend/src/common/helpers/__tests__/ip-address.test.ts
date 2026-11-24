@@ -1,5 +1,43 @@
 import { describe, expect, it } from 'vitest';
-import { isPoolProbeTarget, isPrivateOrLocalIp } from '../ip-address';
+import { isPoolProbeTarget, isPrivateOrLocalIp, isTailnetIp } from '../ip-address';
+
+describe('isTailnetIp', () => {
+  it('knows the whole 100.64.0.0/10 range and nothing past its edges', () => {
+    for (const ip of ['100.64.0.0', '100.64.0.1', '100.100.100.100', '100.127.255.255']) expect(isTailnetIp(ip)).toBe(true);
+    for (const ip of ['100.63.255.255', '100.128.0.0', '100.0.0.1', '10.64.0.1', '101.64.0.1']) expect(isTailnetIp(ip)).toBe(false);
+  });
+
+  it("knows Tailscale's IPv6 prefix, and only that one", () => {
+    expect(isTailnetIp('fd7a:115c:a1e0::1')).toBe(true);
+    expect(isTailnetIp('fd7a:115c:a1e0:ab12:4843:cd96:6258:1f2b')).toBe(true);
+    expect(isTailnetIp('FD7A:115C:A1E0::1')).toBe(true);
+    expect(isTailnetIp('fd00::1')).toBe(false);
+    expect(isTailnetIp('fd7a:115c:a1e1::1')).toBe(false);
+    expect(isTailnetIp('fe80::1')).toBe(false);
+  });
+
+  it('reads an IPv4-mapped IPv6 address as the IPv4 address it wraps', () => {
+    expect(isTailnetIp('::ffff:100.101.102.103')).toBe(true);
+    expect(isTailnetIp('::ffff:172.18.0.5')).toBe(false);
+  });
+
+  it('is false for the addresses that are inside the appliance but not on the tailnet', () => {
+    for (const ip of ['127.0.0.1', '::1', '172.18.0.5', '10.128.12.5', '192.168.1.25']) expect(isTailnetIp(ip)).toBe(false);
+  });
+
+  it('is false for anything that is not an address, whatever it starts with', () => {
+    for (const ip of ['', '   ', 'unknown', 'fd7a:115c:a1e0:garbage', '100.64', '100.64.0.1.5', 'not-an-ip']) expect(isTailnetIp(ip)).toBe(false);
+    expect(isTailnetIp(undefined)).toBe(false);
+    expect(isTailnetIp(null)).toBe(false);
+  });
+
+  it('is a subset of what the appliance already counts as private', () => {
+    for (const ip of ['100.64.0.1', '100.127.255.255', 'fd7a:115c:a1e0::1']) {
+      expect(isTailnetIp(ip)).toBe(true);
+      expect(isPrivateOrLocalIp(ip)).toBe(true);
+    }
+  });
+});
 
 describe('isPrivateOrLocalIp', () => {
   it('treats the Tailscale CGNAT range as internal', () => {

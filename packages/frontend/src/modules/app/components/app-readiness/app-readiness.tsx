@@ -72,7 +72,7 @@ export function AppReadinessChecksCard({ readiness }: { readiness?: AppReadiness
   return (
     <Card className="border-warning/30 bg-card/80 shadow-sm" data-testid="app-readiness-checks">
       <CardHeader className="pb-3">
-        <CardTitle className="flex items-center gap-2 text-base font-semibold">
+        <CardTitle className="flex items-center gap-2 text-base font-medium">
           <HeartPulse className="h-4 w-4 text-warning" />
           {t('APP_READINESS_CHECKS_TITLE')}
         </CardTitle>

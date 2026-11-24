@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { PublicDnsFailureReason } from '@/modules/cloudflare/cloudflare-client.service';
 import { MemoryConnectService } from '../memory-connect.service';
 
 /**
@@ -21,6 +22,8 @@ function makeService(
   options: {
     tunnelHealth?: string;
     providerLocalOnly?: boolean;
+    providerOnHostPort?: boolean;
+    providerAddressRefusal?: PublicDnsFailureReason;
     providerStatus?: string;
     internalIp?: string;
     hubSubdomain?: string;
@@ -33,6 +36,8 @@ function makeService(
     getProviderRuntimeInfo: vi.fn().mockResolvedValue({
       status: options.providerStatus ?? 'ready',
       localOnly: options.providerLocalOnly ?? false,
+      onHostPort: options.providerOnHostPort ?? false,
+      publicAddressRefusal: options.providerAddressRefusal,
     }),
     getProviderRuntimeStatus: vi.fn().mockResolvedValue(options.providerStatus ?? 'ready'),
     getAppPublicUrl: vi.fn().mockResolvedValue('https://app.example.org'),
@@ -43,6 +48,7 @@ function makeService(
   const connections = {
     getState: vi.fn().mockResolvedValue('unconfigured'),
     getRow: vi.fn().mockResolvedValue({ state: 'unconfigured', keyExpiresAt: null }),
+    getActiveConnection: vi.fn().mockResolvedValue(undefined),
     credsFromRow: vi.fn().mockReturnValue(null),
   };
   const deviceRegistration = {
@@ -277,6 +283,29 @@ describe('caller locality — the tunnel rewrites Host to the local domain', () 
     expect(status.reason).toBeNull();
   });
 
+  // The flow's consent page is on Memory's public address. A refused one has no DNS record, so every caller
+  // would end on a browser error (#2309).
+  it('blocks Connect with a reason when the Portal refused ci-memory its public address', async () => {
+    const { service } = makeService({ providerAddressRefusal: 'subdomain_quota_exceeded' });
+
+    const status = await service.getStatus(APP, { host: 'hub-core2-acme.companionintelligence.com' });
+
+    expect(status.connectable).toBe(false);
+    expect(status.reason).toBe('memory_address_refused');
+    expect(status.connectUrl).toBeNull();
+    expect(status.connectUrlLocal).toBeNull();
+  });
+
+  // Cloudflare refusing the Portal's token on a zone leaves a published record live, so Connect is left to the probe at /start.
+  it('keeps Connect on a zone refusal, which may leave the address serving', async () => {
+    const { service } = makeService({ providerAddressRefusal: 'zone_unreachable' });
+
+    const status = await service.getStatus(APP, { host: 'hub-core2-acme.companionintelligence.com' });
+
+    expect(status.connectable).toBe(true);
+    expect(status.reason).toBeNull();
+  });
+
   it('still blocks a CONFIRMED remote caller from a LAN-only ci-memory', async () => {
     const { service } = makeService({ providerLocalOnly: true });
 
@@ -376,6 +405,73 @@ describe('launcher selection — provider reachability (Problem 2)', () => {
     const status = await service.getStatus(APP, { host: LAN_HOST });
 
     expect(status.connectable).toBe(true);
+  });
+});
+
+/**
+ * A listen-all Hub addresses a local-only ci-memory as 127.0.0.1. `start` stands in the host the caller
+ * reached the Hub on, so only a caller with no usable host (the wrappers' state poll) has nowhere to go.
+ */
+describe('launcher selection — ci-memory addressed as loopback (listen-all Hub)', () => {
+  const listenAll = { providerLocalOnly: true, providerOnHostPort: true, internalIp: '0.0.0.0' };
+
+  it.each([
+    ['a LAN address', `${LAN_HOST}:5002`],
+    ['a single-label LAN name', 'hubbox:5002'],
+    ['a local-domain name', 'hub.ci.lan'],
+    ['loopback', '127.0.0.1:5002'],
+  ])('keeps Connect for a caller on %s', async (_label, host) => {
+    const { service } = makeService(listenAll);
+
+    const status = await service.getStatus(APP, { host });
+
+    expect(status.connectable).toBe(true);
+    expect(status.reason).toBeNull();
+  });
+
+  it('blocks a caller with no usable host instead of offering a flow that ends on its own machine', async () => {
+    const { service } = makeService(listenAll);
+
+    const status = await service.getStatus(APP);
+
+    expect(status.connectable).toBe(false);
+    expect(status.reason).toBe('memory_loopback_only');
+    expect(status.connectUrl).toBeNull();
+  });
+
+  it('still says provider_local_only to a confirmed remote caller', async () => {
+    const { service } = makeService(listenAll);
+
+    const status = await service.getStatus(APP, { host: PUBLIC_HOST });
+
+    expect(status.reason).toBe('provider_local_only');
+  });
+
+  it('does not apply when the Hub has a real LAN address', async () => {
+    const { service } = makeService({ ...listenAll, internalIp: LAN_HOST });
+
+    const status = await service.getStatus(APP);
+
+    expect(status.connectable).toBe(true);
+  });
+
+  it('does not apply to a Private VPN ci-memory, whose address is its tailnet name', async () => {
+    const { service } = makeService({ ...listenAll, providerOnHostPort: false });
+
+    const status = await service.getStatus(APP);
+
+    expect(status.connectable).toBe(true);
+  });
+});
+
+describe('caller locality — single-label names', () => {
+  it('treats a single-label host as on the network, which a public tunnel never forwards', async () => {
+    const { service } = makeService({ providerLocalOnly: true });
+
+    const status = await service.getStatus(APP, { host: 'hubbox:5002' });
+
+    expect(status.connectable).toBe(true);
+    expect(status.reason).toBeNull();
   });
 });
 

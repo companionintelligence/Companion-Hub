@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js';
+import { LATEST_PROTOCOL_VERSION, type Implementation } from '@modelcontextprotocol/sdk/types.js';
 import { HUB_MCP_PROTOCOL_VERSIONS } from './mcp-protocol';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { LifecycleActorFor } from '@/core/portal/lifecycle-actor';
@@ -19,6 +19,21 @@ export interface McpAdminToolInfo {
   destructive: boolean;
   access: 'read' | 'write';
   category: string;
+}
+
+/**
+ * What `GET /api/mcp-admin/status` answers. `McpDisabledController` answers the same shape with MCP
+ * off, because a mobile app built before that stand-in reads every one of these keys from any 200.
+ */
+export interface McpAdminStatus {
+  enabled: boolean;
+  server: Implementation;
+  protocolVersion: string;
+  protocolVersions: string[];
+  toolCount: number;
+  activeSessions: number;
+  activeKeyCount: number;
+  endpoint: string;
 }
 
 /**
@@ -42,7 +57,7 @@ export class McpAdminService {
   ) {}
 
   /** Overall MCP server status for the admin screen. */
-  async getStatus() {
+  async getStatus(): Promise<McpAdminStatus> {
     return {
       // MCP_ENABLED gates the module at import time, so it's read-only here (toggle via `cihub mcp`).
       enabled: process.env.MCP_ENABLED !== 'false',
@@ -86,19 +101,21 @@ export class McpAdminService {
    *
    * `actorFor` names the signed-in person to the lifecycle tools, so the org grants that decide the
    * app routes decide here too. This caller is not a key, and is never taken for one (CI-Hub#1397).
+   * `assertMayManageHub` asks whether that person may run a Hub-wide tool; without it, none runs.
    */
   async callTool(
     name: string,
     args: Record<string, unknown> | undefined,
     confirmDestructive: boolean,
     actorFor: LifecycleActorFor,
+    assertMayManageHub?: () => Promise<void>,
   ): Promise<{ ok: true; result: unknown } | { ok: false; error: string }> {
     const start = Date.now();
     try {
       // 'full' because this caller is not a key: the operator is session-authed, and the thing standing
       // between them and a destructive tool is the confirmation they just gave, not a stored capability.
       const result = await mcpAdminCallContext.run(actorFor, () =>
-        this.registry.callTool(name, args ?? {}, { capability: 'full', allowDestructive: confirmDestructive }),
+        this.registry.callTool(name, args ?? {}, { capability: 'full', allowDestructive: confirmDestructive, assertMayManageHub }),
       );
       this.logger.info('MCP admin tool call', name, `${Date.now() - start}ms`, 'ok');
       return { ok: true, result };

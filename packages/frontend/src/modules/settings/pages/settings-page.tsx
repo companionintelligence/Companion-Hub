@@ -1,5 +1,6 @@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useAppContext } from '@/context/app-context';
+import { useHubAccess } from '@/lib/hooks/use-hub-access';
 import { cn } from '@/lib/utils';
 import { Suspense, lazy, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -19,11 +20,21 @@ const GeneralActionsContainer = lazy(() => import('../containers/general-actions
 const AiSettingsContainer = lazy(() => import('../containers/ai-settings').then((module) => ({ default: module.AiSettingsContainer })));
 const McpSettingsContainer = lazy(() => import('../containers/mcp-settings').then((module) => ({ default: module.McpSettingsContainer })));
 
+/**
+ * The tabs a member sees. A member is view-only across the Hub: App stores, Network, AI and MCP are
+ * all controls that change the whole Hub, and Logs is the Hub's own log, so those tabs are an owner's
+ * or admin's. Settings keeps the member's own language and Advanced mode, Security their own account,
+ * and System the read-only inspector.
+ */
+const MEMBER_TABS: ReadonlySet<string> = new Set(['settings', 'security', 'system']);
+
 export default () => {
   const { t } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
   const tab = searchParams.get('tab');
   const { userSettings, user } = useAppContext();
+  const { manageHub, isPending: hubAccessPending } = useHubAccess();
+  const showsTab = (value: string) => manageHub || MEMBER_TABS.has(value);
 
   const publicHubHostname = useMemo(() => {
     const domain = userSettings?.domain?.trim();
@@ -33,20 +44,31 @@ export default () => {
     return `hub-${dev}-${org}.${domain}`;
   }, [userSettings?.domain, userSettings?.ciHubOrganizationSlug, userSettings?.ciHubDeviceSlug]);
 
-  const currentTab = tab || 'settings';
+  // A tab this person can't see (an old link, a bookmark) opens Settings instead.
+  const currentTab = tab && showsTab(tab) ? tab : 'settings';
   const isLogsTab = currentTab === 'logs';
   const tabListRef = useRef<HTMLDivElement>(null);
 
+  // Runs again when the access answer arrives: the strip doesn't exist while it loads, and a link to a tab
+  // a member also sees (`?tab=system`) leaves `currentTab` unchanged once it renders.
   useEffect(() => {
+    if (hubAccessPending) {
+      return;
+    }
     const active = tabListRef.current?.querySelector<HTMLElement>('[role="tab"][data-state="active"]');
     if (currentTab && typeof active?.scrollIntoView === 'function') {
       active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     }
-  }, [currentTab]);
+  }, [currentTab, hubAccessPending]);
 
   const handleTabChange = (newTab: string) => {
     setSearchParams({ tab: newTab });
   };
+
+  // Wait for the answer rather than flash an owner's tabs at a member, or a member's at an owner.
+  if (hubAccessPending) {
+    return <div>{t('SETTINGS_NETWORK_LOADING')}</div>;
+  }
 
   return (
     <div className="flex h-full min-w-0 flex-col">
@@ -63,12 +85,12 @@ export default () => {
             <TabsList className="w-full min-w-0 max-w-full justify-center overflow-x-hidden border border-border/50 bg-card/50 max-md:justify-start max-md:overflow-x-auto max-md:[scrollbar-width:none] max-md:[&::-webkit-scrollbar]:hidden">
               <TabsTrigger value="settings">{t('COMMON_SETTINGS')}</TabsTrigger>
               <TabsTrigger value="security">{t('COMMON_SECURITY')}</TabsTrigger>
-              <TabsTrigger value="appstores">{t('COMMON_APP_STORES')}</TabsTrigger>
-              <TabsTrigger value="network">{t('COMMON_NETWORK')}</TabsTrigger>
-              <TabsTrigger value="ai">{t('COMMON_AI')}</TabsTrigger>
-              <TabsTrigger value="mcp">{t('COMMON_MCP')}</TabsTrigger>
+              {manageHub && <TabsTrigger value="appstores">{t('COMMON_APP_STORES')}</TabsTrigger>}
+              {manageHub && <TabsTrigger value="network">{t('COMMON_NETWORK')}</TabsTrigger>}
+              {manageHub && <TabsTrigger value="ai">{t('COMMON_AI')}</TabsTrigger>}
+              {manageHub && <TabsTrigger value="mcp">{t('COMMON_MCP')}</TabsTrigger>}
               <TabsTrigger value="system">{t('COMMON_SYSTEM')}</TabsTrigger>
-              <TabsTrigger value="logs">{t('COMMON_LOGS')}</TabsTrigger>
+              {manageHub && <TabsTrigger value="logs">{t('COMMON_LOGS')}</TabsTrigger>}
             </TabsList>
           </div>
           <div
@@ -83,14 +105,14 @@ export default () => {
               <TabsContent value="settings">
                 {currentTab === 'settings' && (
                   <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
-                    <UserSettingsContainer initialValues={userSettings} publicHubHostname={publicHubHostname} />
+                    <UserSettingsContainer initialValues={userSettings} publicHubHostname={publicHubHostname} manageHub={manageHub} />
                   </Suspense>
                 )}
               </TabsContent>
               <TabsContent value="security">
                 {currentTab === 'security' && (
                   <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
-                    <SecurityContainer totpEnabled={Boolean(user.totpEnabled)} username={user.username} />
+                    <SecurityContainer totpEnabled={Boolean(user.totpEnabled)} username={user.username} manageHub={manageHub} />
                   </Suspense>
                 )}
               </TabsContent>
@@ -125,7 +147,7 @@ export default () => {
               <TabsContent value="system">
                 {currentTab === 'system' && (
                   <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
-                    <GeneralActionsContainer />
+                    <GeneralActionsContainer manageHub={manageHub} />
                     <div className="mt-6">
                       <SystemInspectorContainer />
                     </div>

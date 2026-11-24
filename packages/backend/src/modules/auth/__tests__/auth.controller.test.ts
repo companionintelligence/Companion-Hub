@@ -1,11 +1,13 @@
+import crypto, { createHmac } from 'node:crypto';
 import { CacheService } from '@/core/cache/cache.service';
 import { SessionUserCache } from '@/core/cache/session-user.cache';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { FederatedIdentityRepository } from '@/modules/user/federated-identity.repository';
 import { UserRepository } from '@/modules/user/user.repository';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
-import { HttpStatus, UnauthorizedException, type INestApplication } from '@nestjs/common';
+import { ForbiddenException, HttpStatus, UnauthorizedException, type INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import type { Request, Response } from 'express';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -15,10 +17,18 @@ import { AuthController } from '../auth.controller';
 import { AuthRateLimiter } from '../auth-rate-limiter';
 import { ForwardAuthIdentityResolver } from '../forward-auth-identity.resolver';
 import { ForwardAuthSecretResolver } from '../forward-auth-secret.resolver';
+import { MemoryApiKeyCheck } from '../memory-api-key.check';
 import { BearerOrgMembershipCache } from '../bearer-org-membership.cache';
 import { AuthService } from '../auth.service';
-import { HUB_FAVICON_LINK_TAG, HUB_FAVICON_PATH, HUB_FAVICON_PNG } from '../hub-favicon';
-import { exchangePortalAuthorizationCode, fetchPortalSessionEmail } from '../portal-sso';
+import { HUB_FAVICON_PATH, HUB_FAVICON_PNG } from '../hub-favicon';
+import {
+  desktopSignInWaitProof,
+  exchangePortalAuthorizationCode,
+  fetchPortalSessionEmail,
+  fetchPortalUserinfo,
+  portalBindingCookie,
+  portalBindingCookieName,
+} from '../portal-sso';
 import { verifyPortalIdToken } from '../portal-token';
 import { SessionManager } from '../session.manager';
 import { signForwardAuthAssertion, signForwardAuthUser, signForwardAuthUserId } from '../utils/forward-auth-signing';
@@ -29,9 +39,30 @@ vi.mock('../portal-sso', async (importOriginal) => {
     ...actual,
     exchangePortalAuthorizationCode: vi.fn(),
     fetchPortalSessionEmail: vi.fn(),
+    fetchPortalUserinfo: vi.fn(),
     probePortalReachable: vi.fn().mockResolvedValue(true),
   };
 });
+
+/**
+ * The config mocks in this file answer only the keys each test needs, so `jwtSecret` is usually
+ * unset; the controller signs session tokens with this fixed secret instead (`TEST_JWT_SECRET`).
+ */
+const { TEST_JWT_SECRET } = vi.hoisted(() => ({ TEST_JWT_SECRET: 'auth-controller-test-secret' }));
+vi.mock('../session-token', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../session-token')>();
+  return {
+    ...actual,
+    // `String`: a `createSession` mock left unset resolves undefined, which the real signer rejects.
+    mintSessionToken: (sessionId: unknown, secret: unknown) =>
+      actual.mintSessionToken(String(sessionId), typeof secret === 'string' && secret ? secret : TEST_JWT_SECRET),
+  };
+});
+/** A redirect that lands a sign-in on `url` with the session token in its fragment, the way the Hub page takes it. */
+const signedInAt = (url: string) => expect.stringMatching(new RegExp(`^${url.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}#ci_hub_session=[^#]+$`));
+/** The token the controller hands out for `sessionId` in this file. */
+const tokenFor = (sessionId: string) =>
+  `${sessionId}.${createHmac('sha256', createHmac('sha256', TEST_JWT_SECRET).update('ci-hub/session-token/v1').digest()).update(sessionId).digest('base64url')}`;
 
 vi.mock('../portal-token', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../portal-token')>();
@@ -55,6 +86,7 @@ describe('AuthController', () => {
   let sessionManager: MockProxy<SessionManager>;
   let deviceRegistration: MockProxy<DeviceRegistrationRepository>;
   let forwardAuthIdentities: MockProxy<ForwardAuthIdentityResolver>;
+  let memoryApiKeys: MockProxy<MemoryApiKeyCheck>;
 
   beforeEach(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -71,6 +103,8 @@ describe('AuthController', () => {
         { provide: DeviceRegistrationRepository, useValue: mock<DeviceRegistrationRepository>() },
         // Unset by default: forward auth then signs the username alone, as before stable ids.
         { provide: ForwardAuthIdentityResolver, useValue: mock<ForwardAuthIdentityResolver>() },
+        // Memory's answer about an API key; tests that care set what Memory would answer.
+        { provide: MemoryApiKeyCheck, useValue: mock<MemoryApiKeyCheck>() },
         // Real instance, not a mock: its TTL/coalescing behaviour is what the caching tests assert.
         BearerOrgMembershipCache,
         SessionUserCache,
@@ -89,6 +123,8 @@ describe('AuthController', () => {
     sessionManager = moduleRef.get(SessionManager);
     deviceRegistration = moduleRef.get(DeviceRegistrationRepository);
     forwardAuthIdentities = moduleRef.get(ForwardAuthIdentityResolver);
+    memoryApiKeys = moduleRef.get(MemoryApiKeyCheck);
+    memoryApiKeys.check.mockResolvedValue('valid');
     cache.getByPrefix.mockReturnValue([]);
   });
 
@@ -97,14 +133,34 @@ describe('AuthController', () => {
   });
 
   describe('session cookie flags', () => {
-    // `login` stands in for every Hub-session cookie call site: all of them derive host and proto from
-    // the REQUEST HEADERS. (The edge-SSO consume plants an app-session cookie, pinned in its own tests.)
+    // No sign-in plants `ci-hub-sid` any more: it reached every port on the Hub's host, so every app
+    // the operator opened there could replay it (2026-11-17 audit). Each one CLEARS the cookie an older
+    // Hub planted, and a clear only works when it names the Domain and Secure the cookie was set with,
+    // so the flag derivation these tests pin still decides something. `login` stands in for every
+    // sign-in: all of them derive host and proto from the REQUEST HEADERS.
     const loginReq = (headers: Record<string, string>) => ({ headers }) as unknown as Request;
-    const cookieRes = () => ({ cookie: vi.fn() }) as unknown as Response;
+    const cookieRes = () => ({ cookie: vi.fn(), clearCookie: vi.fn() }) as unknown as Response;
 
     beforeEach(() => {
       config.get.mockReturnValue({ experimental: { insecureCookie: false } } as never);
       authService.login.mockResolvedValue({ sessionId: 'sid-1' } as never);
+    });
+
+    it('plants no session cookie and returns the signed token instead', async () => {
+      authService.getCookieDomain.mockReturnValue('.example.com' as never);
+      const res = cookieRes();
+
+      const body = await authController.login(
+        { username: 'op', password: 'pw' } as never,
+        res,
+        loginReq({ 'x-forwarded-proto': 'https', 'x-forwarded-host': 'hub.example.com' }),
+      );
+
+      expect(body).toEqual({ success: true, sessionId: tokenFor('sid-1') });
+      expect(res.cookie).not.toHaveBeenCalled();
+      // Both shapes an older Hub could have planted: Domain-scoped, and host-only.
+      expect(res.clearCookie).toHaveBeenCalledWith('ci-hub-sid', expect.objectContaining({ domain: '.example.com', secure: true }));
+      expect(res.clearCookie).toHaveBeenCalledWith('ci-hub-sid', { httpOnly: true, sameSite: 'lax', secure: true });
     });
 
     it('flags the cookie Secure over https even when the host yields no cookie Domain', async () => {
@@ -123,7 +179,7 @@ describe('AuthController', () => {
         loginReq({ 'x-forwarded-proto': 'https', 'x-forwarded-host': '10.0.0.5:8443' }),
       );
 
-      expect(res.cookie).toHaveBeenCalledWith('ci-hub-sid', 'sid-1', expect.objectContaining({ secure: true, domain: undefined }));
+      expect(res.clearCookie).toHaveBeenCalledWith('ci-hub-sid', expect.objectContaining({ secure: true, domain: undefined }));
     });
 
     it('reads only the first hop of a comma-joined forwarded proto', async () => {
@@ -138,7 +194,7 @@ describe('AuthController', () => {
         loginReq({ 'x-forwarded-proto': 'https, http', 'x-forwarded-host': 'hub.example.com' }),
       );
 
-      expect(res.cookie).toHaveBeenCalledWith('ci-hub-sid', 'sid-1', expect.objectContaining({ secure: true }));
+      expect(res.clearCookie).toHaveBeenCalledWith('ci-hub-sid', expect.objectContaining({ secure: true }));
     });
 
     it('strips the port before deriving the cookie domain', async () => {
@@ -163,7 +219,7 @@ describe('AuthController', () => {
       );
 
       expect(authService.getCookieDomain).toHaveBeenCalledWith('ci.lan');
-      expect(res.cookie).toHaveBeenCalledWith('ci-hub-sid', 'sid-1', expect.objectContaining({ domain: '.ci.lan' }));
+      expect(res.clearCookie).toHaveBeenCalledWith('ci-hub-sid', expect.objectContaining({ domain: '.ci.lan' }));
     });
 
     it('takes the first hop of a comma-joined forwarded host before deriving the cookie domain', async () => {
@@ -177,7 +233,7 @@ describe('AuthController', () => {
       );
 
       expect(authService.getCookieDomain).toHaveBeenCalledWith('hub.example.com');
-      expect(res.cookie).toHaveBeenCalledWith('ci-hub-sid', 'sid-1', expect.objectContaining({ domain: '.hub.example.com' }));
+      expect(res.clearCookie).toHaveBeenCalledWith('ci-hub-sid', expect.objectContaining({ domain: '.hub.example.com' }));
     });
 
     it('leaves the cookie unflagged over plain http', async () => {
@@ -191,7 +247,7 @@ describe('AuthController', () => {
         loginReq({ 'x-forwarded-proto': 'http', 'x-forwarded-host': 'hub.ci.lan' }),
       );
 
-      expect(res.cookie).toHaveBeenCalledWith('ci-hub-sid', 'sid-1', expect.objectContaining({ secure: false }));
+      expect(res.clearCookie).toHaveBeenCalledWith('ci-hub-sid', expect.objectContaining({ secure: false }));
     });
   });
 
@@ -229,6 +285,7 @@ describe('AuthController', () => {
         send: vi.fn(),
         setHeader,
         redirect: vi.fn(),
+        clearCookie: vi.fn(),
       } as unknown as Response;
 
       await authController.traefik(req, res);
@@ -264,7 +321,7 @@ describe('AuthController', () => {
         headers: { authorization: 'Bearer portal.id.token', 'x-forwarded-host': 'ci-memory.ci.lan' },
       } as unknown as Request;
       const setHeader = vi.fn();
-      const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader, redirect: vi.fn() } as unknown as Response;
+      const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader, redirect: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
 
       await authController.traefik(req, res);
 
@@ -309,7 +366,7 @@ describe('AuthController', () => {
         headers: { authorization: 'Bearer portal.id.token', 'x-forwarded-host': 'ci-memory.ci.lan' },
       } as unknown as Request;
       const setHeader = vi.fn();
-      const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader, redirect: vi.fn() } as unknown as Response;
+      const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader, redirect: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
 
       await authController.traefik(req, res);
 
@@ -340,7 +397,7 @@ describe('AuthController', () => {
         },
       } as unknown as Request;
       const setHeader = vi.fn();
-      const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader, redirect: vi.fn() } as unknown as Response;
+      const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader, redirect: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
 
       await authController.traefik(req, res);
 
@@ -360,7 +417,13 @@ describe('AuthController', () => {
         user: undefined,
         headers: { authorization: 'Bearer weird.token', 'x-forwarded-host': 'app.companionintelligence.com' },
       } as unknown as Request;
-      const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader: vi.fn(), redirect: vi.fn() } as unknown as Response;
+      const res = {
+        status: vi.fn().mockReturnThis(),
+        send: vi.fn(),
+        setHeader: vi.fn(),
+        redirect: vi.fn(),
+        clearCookie: vi.fn(),
+      } as unknown as Response;
 
       await authController.traefik(req, res);
 
@@ -375,7 +438,7 @@ describe('AuthController', () => {
 
       const req = { user: undefined, headers: { authorization: 'Bearer portal.id.token' } } as unknown as Request;
       const setHeader = vi.fn();
-      const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader, redirect: vi.fn() } as unknown as Response;
+      const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader, redirect: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
 
       await authController.traefik(req, res);
 
@@ -389,7 +452,7 @@ describe('AuthController', () => {
       // with no forwarded host reached `resolveForHost('')` and got the Hub-global secret too.
       const req = { user: { id: 1, username: 'operator@example.com' }, headers: {} } as unknown as Request;
       const setHeader = vi.fn();
-      const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader, redirect: vi.fn() } as unknown as Response;
+      const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader, redirect: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
 
       await authController.traefik(req, res);
 
@@ -404,7 +467,8 @@ describe('AuthController', () => {
           user: undefined,
           headers: { authorization: 'Bearer portal.id.token', 'x-forwarded-host': 'app.companionintelligence.com' },
         }) as unknown as Request;
-      const makeRes = () => ({ status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader: vi.fn(), redirect: vi.fn() }) as unknown as Response;
+      const makeRes = () =>
+        ({ status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader: vi.fn(), redirect: vi.fn(), clearCookie: vi.fn() }) as unknown as Response;
 
       beforeEach(() => {
         config.get.mockImplementation((key: string) => (key === 'ciCloudUrl' ? 'https://hub.ci.computer' : (undefined as never)));
@@ -484,11 +548,49 @@ describe('AuthController', () => {
       });
     });
 
+    // Traefik's ci-hub-sw-reset middleware fetches this when the sign-in refused a worker script (#2324).
+    it('serves the self-removing service worker as uncached JavaScript', () => {
+      const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader: vi.fn() } as unknown as Response;
+
+      authController.serviceWorkerReset(res);
+
+      expect(res.setHeader).toHaveBeenCalledWith('Content-Type', 'application/javascript; charset=utf-8');
+      expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'no-store');
+      expect(res.status).toHaveBeenCalledWith(200);
+      const script = vi.mocked(res.send).mock.calls[0]?.[0] as string;
+      expect(script).toContain('self.skipWaiting()');
+      expect(script).toContain('self.registration.unregister()');
+      expect(script).not.toMatch(/fetch\(|importScripts|caches\./);
+    });
+
     const memoryPassthroughCases: Array<{ uri?: string; extra?: Record<string, string> }> = [
       { uri: '/api/authenticate/oidc/native/exchange' },
       { uri: '/api/authenticate?client=native' },
       { uri: '/api/keys' },
       { uri: '/graphql', extra: { 'x-api-key': 'mem_live_abc' } },
+      // Memory's sync engine, which verifies its own JWT (not a Portal token).
+      { uri: '/powersync/sync/stream', extra: { authorization: 'Bearer powersync.jwt.not-portal' } },
+      { uri: '/powersync/write-checkpoint2.json' },
+      // Another person's Memory asking, collecting, checking an identity, accepting an invite:
+      // signed with that person's key, which Memory itself verifies.
+      { uri: '/api/agent/v1/ask', extra: { authorization: 'Bearer keri', 'x-forwarded-method': 'POST' } },
+      { uri: '/api/agent/v1/ask/0193f0c1-aaaa-7bbb-8ccc-123456789abc', extra: { authorization: 'Bearer keri' } },
+      { uri: '/api/agent/v1/identity/did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK?challenge=abc' },
+      { uri: '/api/agent/v1/invites/accept', extra: { authorization: 'Bearer keri', 'x-forwarded-method': 'POST' } },
+      // Memory's object store: an <img> of a signed link carries no key; the store checks the signature.
+      {
+        uri: '/static/companion/824bc2c5-f25c-4b6d-b836-7cd0accdae4c?X-Amz-Expires=300&X-Amz-Signature=abc',
+      },
+      // A CORS preflight from Phone Memory's webview: no credentials, by design.
+      {
+        uri: '/api/powersync/token?cutoff=2026-10-16T17%3A21%3A46.395Z',
+        extra: {
+          'x-forwarded-method': 'OPTIONS',
+          origin: 'https://localhost',
+          'access-control-request-method': 'GET',
+          'access-control-request-headers': 'x-api-key',
+        },
+      },
     ];
 
     it('lets Memory login and API-key traffic through without a Hub session', async () => {
@@ -509,6 +611,7 @@ describe('AuthController', () => {
           status: vi.fn().mockReturnThis(),
           send: vi.fn(),
           redirect: vi.fn(),
+          clearCookie: vi.fn(),
           setHeader: vi.fn(),
         } as unknown as Response;
 
@@ -547,6 +650,7 @@ describe('AuthController', () => {
             status: vi.fn().mockReturnThis(),
             send: vi.fn(),
             redirect: vi.fn(),
+            clearCookie: vi.fn(),
             setHeader: vi.fn(),
           } as unknown as Response;
 
@@ -555,6 +659,272 @@ describe('AuthController', () => {
           expect(res.status, `${host} ${uri}`).not.toHaveBeenCalledWith(200);
         }
       }
+    });
+
+    it('SECURITY: on Memory, only a real preflight passes; other credential-less requests still need a session', async () => {
+      forwardAuthSecrets.resolveAppUrnForHost.mockResolvedValue('ci-memory:ci-marketplace' as never);
+      const notPreflights: Array<[string, Record<string, string>]> = [
+        ['OPTIONS with no Access-Control-Request-Method', { 'x-forwarded-method': 'OPTIONS', origin: 'https://localhost' }],
+        ['OPTIONS with no Origin', { 'x-forwarded-method': 'OPTIONS', 'access-control-request-method': 'GET' }],
+        ['a GET dressed in preflight headers', { 'x-forwarded-method': 'GET', origin: 'https://localhost', 'access-control-request-method': 'GET' }],
+        ['a path that only starts like /powersync', {}],
+        ['a path that only starts like /static', {}],
+      ];
+
+      for (const [label, extra] of notPreflights) {
+        const uri = label.includes('/powersync')
+          ? '/powersyncx/sync/stream'
+          : label.includes('/static')
+            ? '/staticx/companion/824bc2c5-f25c-4b6d-b836-7cd0accdae4c'
+            : '/graphql';
+        const req = {
+          user: undefined,
+          headers: {
+            'x-forwarded-host': 'ci-memory-core3-team.companionintelligence.com',
+            'x-forwarded-uri': uri,
+            'x-forwarded-proto': 'https',
+            ...extra,
+          },
+        } as unknown as Request;
+        const res = {
+          status: vi.fn().mockReturnThis(),
+          send: vi.fn(),
+          redirect: vi.fn(),
+          clearCookie: vi.fn(),
+          setHeader: vi.fn(),
+        } as unknown as Response;
+
+        await authController.traefik(req, res);
+
+        expect(res.status, label).not.toHaveBeenCalledWith(200);
+      }
+    });
+
+    describe('which forwarded paths on Memory skip the Hub login', () => {
+      const memoryHost = 'ci-memory-core3-team.companionintelligence.com';
+
+      async function forwardAuth(uri: string, headers: Record<string, string> = {}) {
+        const req = {
+          user: undefined,
+          headers: { 'x-forwarded-host': memoryHost, 'x-forwarded-uri': uri, 'x-forwarded-proto': 'https', ...headers },
+        } as unknown as Request;
+        const res = {
+          status: vi.fn().mockReturnThis(),
+          send: vi.fn(),
+          redirect: vi.fn(),
+          clearCookie: vi.fn(),
+          setHeader: vi.fn(),
+        } as unknown as Response;
+
+        await authController.traefik(req, res);
+
+        return res;
+      }
+
+      beforeEach(() => {
+        forwardAuthSecrets.resolveAppUrnForHost.mockResolvedValue('ci-memory:ci-marketplace' as never);
+      });
+
+      it.each([
+        // Resolve to a path outside the prefix, through an encoded slash.
+        '/powersync/..%2f',
+        '/powersync/..%2fapi/graphql',
+        '/powersync/..%2Fapi/graphql',
+        '/static/..%2f',
+        '/static/..%2fapi/graphql',
+        '/api/health/..%2f..%2f',
+        '/api/health/..%2f..%2fapi/graphql',
+        '/api/keys/..%2f..%2f',
+        '/api/keys/..%2f..%2fapi/graphql',
+        '/api/authenticate/..%2f..%2f',
+        '/api/authenticate/..%2f..%2fapi/graphql',
+        '/api/authenticate/hub-bridge/..%2f..%2f..%2fapi/graphql',
+        // Encoded dots, then a query that must not hide the path.
+        '/powersync/%2e%2e/api/graphql',
+        '/powersync/%2E%2E%2Fapi%2Fgraphql',
+        '/powersync/.%2e/api/graphql',
+        '/powersync/%2e./api/graphql',
+        '/powersync/%2e/sync/stream',
+        '/powersync/..%2fapi/graphql?x=1',
+        // Literal dot segments, which Traefik normally resolves before this check.
+        '/powersync/../api/graphql',
+        '/static/../',
+        '/powersync/./sync/stream',
+        '/powersync/..',
+        // Encoded more than once.
+        '/powersync/%252e%252e%252fapi/graphql',
+        '/powersync/..%252fapi/graphql',
+        '/api/agent/v1/../graphql',
+        '/api/agent/v1/..%2f..%2fgraphql',
+        '/api/agent/v1/%2e%2e/%2e%2e/graphql',
+        '/static/%25252e%25252e%25252f',
+        '/powersync/%%32%65%%32%65/api/graphql',
+        '/powersync/%25%32%65%25%32%65%25%32%66api/graphql',
+        // Backslashes count as slashes.
+        '/powersync/..%5capi/graphql',
+        '/powersync/..%5Capi/graphql',
+        '/powersync/..\\api/graphql',
+        '/static/%2e%2e%5c',
+        '/static/..%255c',
+        // Not safely readable, or still encoded after the last round.
+        '/powersync/%c0%ae%c0%ae%c0%af',
+        '/powersync/%ff/sync/stream',
+        '/powersync/x%00/sync/stream',
+        '/powersync/x%0a/sync/stream',
+        '/powersync/%zz',
+        '/powersync/%',
+        '/powersync/%2525252525252e',
+        // Exempt only once decoded. The gateway may not decode these as far as this check could.
+        '/%70owersync/sync/stream',
+        '/%2570owersync/sync/stream',
+        '/%2573tatic/ci-files/824bc2c5-f25c-4b6d-b836-7cd0accdae4c',
+        '/powersync%2fsync/stream',
+        '/powersync%5csync/stream',
+        '/powersync\\sync/stream',
+        '/static%252fci-files/x',
+        '/x/..%2fpowersync/sync/stream',
+        '/x/../powersync/sync/stream',
+        // Start like a prefix without being under it.
+        '/powersyncx/sync/stream',
+        '/static..%2fapi/graphql',
+        '/api/agent/v1x/ask',
+        '/api/agent/v10/ask',
+        // The app itself.
+        '/',
+        '/api/graphql',
+        '/index.html',
+      ])('sends %s to the login', async (uri) => {
+        const res = await forwardAuth(uri);
+
+        expect(res.status).toHaveBeenCalledWith(302);
+        expect(res.status).not.toHaveBeenCalledWith(200);
+        expect(res.redirect).toHaveBeenCalledTimes(1);
+      });
+
+      it.each([
+        '/api/health',
+        '/api/health/',
+        '/api/keys',
+        '/api/keys/verify',
+        '/api/authenticate',
+        '/api/authenticate/csrf',
+        '/api/authenticate/hub-bridge',
+        '/api/authenticate/oidc/native/exchange',
+        '/api/authenticate/oidc?client=native&code_challenge=abc%2Fdef&redirect=%2Fshared%2Fabc',
+        '/powersync',
+        '/powersync/',
+        '/powersync//',
+        '/powersync/%2f',
+        '/powersync/sync/stream',
+        '/powersync/sync/stream?connection_id=a%2Fb',
+        '/powersync/write-checkpoint2.json?client_id=b1f4c2d0-9a3e-4d11-8c55-1e2f3a4b5c6d',
+        '/powersync/probes/liveness',
+        // What Memory's API signs: the object key is a path, the file's name is in the query.
+        '/static/ci-files/824bc2c5-f25c-4b6d-b836-7cd0accdae4c?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=minio%2F20261102%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20261102T101500Z&X-Amz-Expires=300&X-Amz-Signature=abc&X-Amz-SignedHeaders=host&response-content-disposition=attachment%3B%20filename%3D%22a%2F..%2Fb.pdf%22&response-content-type=application%2Fpdf',
+        // Object keys Memory does not mint today (its keys are UUIDs), encoded as its signer would.
+        '/static/ci-files/folder/photo.jpg?X-Amz-Signature=abc',
+        '/static/ci-files/my%20photo%20%281%29.jpg?X-Amz-Signature=abc',
+        '/static/ci-files/caf%C3%A9.jpg?X-Amz-Signature=abc',
+        '/static/ci-files/100%25.jpg?X-Amz-Signature=abc',
+        '/static/ci-files/50%25%20off.jpg?X-Amz-Signature=abc',
+        '/static/ci-files/a%252Fb.jpg?X-Amz-Signature=abc',
+        '/static/ci-files/a%2Fb.jpg?X-Amz-Signature=abc',
+        '/static/ci-files/a..b/c...d.jpg?X-Amz-Signature=abc',
+        '/static/ci-files/.hidden/..photo.jpg?X-Amz-Signature=abc',
+      ])('lets %s through', async (uri) => {
+        const res = await forwardAuth(uri);
+
+        expect(res.status).toHaveBeenCalledWith(200);
+        expect(res.redirect).not.toHaveBeenCalled();
+      });
+
+      it('leaves a preflight alone whatever its path, since it returns no data', async () => {
+        const res = await forwardAuth('/powersync/..%2fapi/graphql', {
+          'x-forwarded-method': 'OPTIONS',
+          origin: 'https://localhost',
+          'access-control-request-method': 'POST',
+        });
+
+        expect(res.status).toHaveBeenCalledWith(200);
+      });
+
+      it('asks Memory about an API key on a path that is not exempt once decoded', async () => {
+        memoryApiKeys.check.mockResolvedValue('invalid');
+
+        const res = await forwardAuth('/powersync/..%2fapi/graphql', { 'x-api-key': 'mem_live_abc' });
+
+        expect(memoryApiKeys.check).toHaveBeenCalledWith('mem_live_abc');
+        expect(res.status).toHaveBeenCalledWith(401);
+      });
+    });
+
+    describe('a Memory API key is checked with Memory before it passes', () => {
+      const memoryHost = 'ci-memory-core3-team.companionintelligence.com';
+
+      function keyRequest(uri = '/graphql', key = 'mem_live_abc') {
+        return {
+          user: undefined,
+          headers: { 'x-forwarded-host': memoryHost, 'x-forwarded-uri': uri, 'x-forwarded-proto': 'https', 'x-api-key': key },
+        } as unknown as Request;
+      }
+
+      function response() {
+        return {
+          status: vi.fn().mockReturnThis(),
+          send: vi.fn(),
+          redirect: vi.fn(),
+          clearCookie: vi.fn(),
+          setHeader: vi.fn(),
+        } as unknown as Response;
+      }
+
+      beforeEach(() => {
+        forwardAuthSecrets.resolveAppUrnForHost.mockResolvedValue('ci-memory:ci-marketplace' as never);
+      });
+
+      it('lets a key Memory accepts through, having asked about that key', async () => {
+        const res = response();
+        await authController.traefik(keyRequest(), res);
+
+        expect(memoryApiKeys.check).toHaveBeenCalledWith('mem_live_abc');
+        expect(res.status).toHaveBeenCalledWith(200);
+      });
+
+      it('SECURITY: refuses a key Memory does not accept with a 401, not a login redirect', async () => {
+        memoryApiKeys.check.mockResolvedValue('invalid');
+        const res = response();
+        await authController.traefik(keyRequest(), res);
+
+        expect(res.status).toHaveBeenCalledWith(401);
+        expect(res.status).not.toHaveBeenCalledWith(200);
+        expect(res.redirect).not.toHaveBeenCalled();
+      });
+
+      it('lets the request through when Memory could not be asked; Memory still checks the key itself', async () => {
+        memoryApiKeys.check.mockResolvedValue('unknown');
+        const res = response();
+        await authController.traefik(keyRequest(), res);
+
+        expect(res.status).toHaveBeenCalledWith(200);
+      });
+
+      it('does not ask about a key on a path that checks its own credentials', async () => {
+        memoryApiKeys.check.mockResolvedValue('invalid');
+        const res = response();
+        await authController.traefik(keyRequest('/api/authenticate/oidc/native/exchange'), res);
+
+        expect(memoryApiKeys.check).not.toHaveBeenCalled();
+        expect(res.status).toHaveBeenCalledWith(200);
+      });
+
+      it('SECURITY: never asks Memory about a key sent to another app', async () => {
+        forwardAuthSecrets.resolveAppUrnForHost.mockResolvedValue('opencode:ci-marketplace' as never);
+        const res = response();
+        await authController.traefik(keyRequest(), res);
+
+        expect(memoryApiKeys.check).not.toHaveBeenCalled();
+        expect(res.status).not.toHaveBeenCalledWith(200);
+      });
     });
 
     it('does not treat a Memory JWT on /api/keys as an invalid Portal Bearer', async () => {
@@ -572,6 +942,7 @@ describe('AuthController', () => {
         status: vi.fn().mockReturnThis(),
         send: vi.fn(),
         redirect: vi.fn(),
+        clearCookie: vi.fn(),
       } as unknown as Response;
 
       await authController.traefik(req, res);
@@ -601,6 +972,7 @@ describe('AuthController', () => {
         status: vi.fn().mockReturnThis(),
         send: vi.fn(),
         redirect: vi.fn(),
+        clearCookie: vi.fn(),
       } as unknown as Response;
 
       await authController.traefik(req, res);
@@ -753,6 +1125,118 @@ describe('AuthController', () => {
       expect(res.status).toHaveBeenCalledWith(200);
     });
 
+    /*
+     * `X-CI-Hub-User-AID`, `X-CI-Hub-AID` and `X-CI-Hub-KEL-Digest` are reserved names: the Hub never sets
+     * them. The controller's resolver is a mock everywhere else in this file, and a mock only echoes what a
+     * test hands it, so these cases answer from the REAL resolver on a fake directory. A resolver that
+     * starts to derive an AID again then reaches the reply, and the case fails.
+     */
+    describe('reserved AID headers', () => {
+      const AID_HEADERS = ['x-ci-hub-user-aid', 'x-ci-hub-aid', 'x-ci-hub-kel-digest'];
+      const DIRECTORY_ID = STABLE_ISSUER.slice('urn:ci-hub:'.length);
+      const APP_URN = 'ci-memory:ci-marketplace' as never;
+
+      // The three shapes of key an app can have: each builds its headers on its own code path.
+      const KEYS = {
+        'a per-app secret': { secret: 'per-app-secret', appUrn: APP_URN, source: 'app-env' as const },
+        'a key for the bound assertion only': {
+          secret: null,
+          assertion: { secret: 'memory-own-secret', audience: 'ci-memory:ci-marketplace' },
+          appUrn: APP_URN,
+          source: 'app-env' as const,
+        },
+        'a hub-wide secret and a key for the bound assertion': {
+          secret: 'hub-wide-secret',
+          assertion: { secret: 'memory-own-secret', audience: 'ci-memory:ci-marketplace' },
+          appUrn: APP_URN,
+          source: 'app-env' as const,
+        },
+      };
+
+      beforeEach(() => {
+        const users = mock<UserRepository>();
+        users.getPublicId.mockResolvedValue(PUBLIC_ID);
+        users.getUserDtoById.mockResolvedValue({ id: 7, username: 'owner@example.com', accessStatus: 'active' } as never);
+        const federated = mock<FederatedIdentityRepository>();
+        federated.findByIssuerSubject.mockResolvedValue({ userId: 7 } as never);
+        const directory = {
+          insert: () => ({ values: () => ({ onConflictDoNothing: async () => undefined }) }),
+          select: () => ({ from: () => ({ where: async () => [{ directoryId: DIRECTORY_ID }] }) }),
+        };
+        const resolver = new ForwardAuthIdentityResolver(directory as never, users, federated, new SessionUserCache(), mock<LoggerService>());
+        forwardAuthIdentities.stableIdFor.mockImplementation((userId) => resolver.stableIdFor(userId));
+        forwardAuthIdentities.personForPortalSubject.mockImplementation((issuer, subject) => resolver.personForPortalSubject(issuer, subject));
+      });
+
+      /** Everything the reply set, so a case can say what is there and what is not. */
+      const replyOf = (calls: unknown[][]) => ({
+        headers: Object.fromEntries(calls) as Record<string, string>,
+        names: calls.map(([name]) => String(name).toLowerCase()),
+      });
+
+      it.each(Object.entries(KEYS))('sets no AID header in the reply for a signed-in person when the app has %s', async (_shape, resolved) => {
+        forwardAuthSecrets.resolveForHost.mockResolvedValue(resolved as never);
+        const req = { user: { id: 7, username: 'owner@example.com' }, headers: { 'x-forwarded-host': 'ci-memory.ci.lan' } } as unknown as Request;
+        const setHeader = vi.fn();
+        const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader } as unknown as Response;
+
+        await authController.traefik(req, res);
+
+        const { headers, names } = replyOf(setHeader.mock.calls);
+        // The stable id did reach the reply, so the absence below is not a reply that never carried an identity.
+        expect(headers['X-CI-Hub-User-Issuer']).toBe(STABLE_ISSUER);
+        expect(headers['X-CI-Hub-User-Id']).toBe(PUBLIC_ID);
+        for (const reserved of AID_HEADERS) {
+          expect(names, reserved).not.toContain(reserved);
+        }
+        expect(res.status).toHaveBeenCalledWith(200);
+      });
+
+      it.each(Object.entries(KEYS))('sets no AID header in the reply for a Portal Bearer caller when the app has %s', async (_shape, resolved) => {
+        config.get.mockImplementation((key: string) => (key === 'ciCloudUrl' ? 'https://hub.ci.computer' : (undefined as never)));
+        vi.mocked(verifyPortalIdToken).mockResolvedValue({ sub: 'portal-sub', email: 'new-portal@example.com', name: 'Owner' });
+        authService.resolvePairedOrgMembership.mockResolvedValue('member');
+        forwardAuthSecrets.resolveForHost.mockResolvedValue(resolved as never);
+        const req = {
+          user: undefined,
+          headers: { authorization: 'Bearer portal.id.token', 'x-forwarded-host': 'ci-memory.ci.lan' },
+        } as unknown as Request;
+        const setHeader = vi.fn();
+        const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader, redirect: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
+
+        await authController.traefik(req, res);
+
+        const { headers, names } = replyOf(setHeader.mock.calls);
+        expect(headers['X-CI-Hub-User']).toBe('owner@example.com');
+        expect(headers['X-CI-Hub-User-Issuer']).toBe(STABLE_ISSUER);
+        expect(headers['X-CI-Hub-User-Id']).toBe(PUBLIC_ID);
+        for (const reserved of AID_HEADERS) {
+          expect(names, reserved).not.toContain(reserved);
+        }
+        expect(res.status).toHaveBeenCalledWith(200);
+      });
+    });
+
+    // Traefik's ci-hub-sw-reset middleware turns this 401, and only a 401, into the self-removing worker (#2324).
+    it('refuses a signed-out service worker script fetch with a 401 rather than the sign-in redirect', async () => {
+      forwardAuthSecrets.resolveAppUrnForHost.mockResolvedValue('jellyfin:ci-marketplace' as never);
+      const req = {
+        user: undefined,
+        headers: {
+          'service-worker': 'script',
+          'x-forwarded-uri': '/sw.js',
+          'x-forwarded-proto': 'https',
+          'x-forwarded-host': 'jellyfin-myorg.companionintelligence.com',
+        },
+      } as unknown as Request;
+      const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), redirect: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
+
+      await authController.traefik(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.redirect).not.toHaveBeenCalled();
+    });
+
     it('routes an unauthenticated LAN visitor into edge-sso on the derived root-domain origin', async () => {
       // The host map vouches for this host, so the edge-SSO hop will accept it as a target.
       forwardAuthSecrets.resolveAppUrnForHost.mockResolvedValue('jellyfin:ci-marketplace' as never);
@@ -764,7 +1248,7 @@ describe('AuthController', () => {
           'x-forwarded-host': 'jellyfin-myorg.companionintelligence.com',
         },
       } as unknown as Request;
-      const res = { status: vi.fn().mockReturnThis(), redirect: vi.fn() } as unknown as Response;
+      const res = { status: vi.fn().mockReturnThis(), redirect: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
 
       await authController.traefik(req, res);
 
@@ -798,7 +1282,7 @@ describe('AuthController', () => {
           'x-forwarded-host': 'importer-core-2-org.ci.lan',
         },
       } as unknown as Request;
-      const res = { status: vi.fn().mockReturnThis(), redirect: vi.fn() } as unknown as Response;
+      const res = { status: vi.fn().mockReturnThis(), redirect: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
 
       await authController.traefik(req, res);
 
@@ -817,7 +1301,7 @@ describe('AuthController', () => {
         user: undefined,
         headers: { 'cf-ray': 'abc-LAX', 'x-forwarded-uri': '/', 'x-forwarded-proto': 'http', 'x-forwarded-host': 'importer-org.ci.lan' },
       } as unknown as Request;
-      const res = { status: vi.fn().mockReturnThis(), redirect: vi.fn() } as unknown as Response;
+      const res = { status: vi.fn().mockReturnThis(), redirect: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
 
       await authController.traefik(req, res);
 
@@ -846,7 +1330,7 @@ describe('AuthController', () => {
           'x-forwarded-host': 'nextcloud-test-echolign.ci.lan',
         },
       } as unknown as Request;
-      const res = { status: vi.fn().mockReturnThis(), redirect: vi.fn() } as unknown as Response;
+      const res = { status: vi.fn().mockReturnThis(), redirect: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
 
       await expect(authController.traefik(req, res)).resolves.toBeUndefined();
 
@@ -868,7 +1352,7 @@ describe('AuthController', () => {
         user: undefined,
         headers: { 'cf-ray': 'ray-LAX', 'x-forwarded-uri': '/x', 'x-forwarded-proto': 'http', 'x-forwarded-host': 'brand-new-org.ci.lan' },
       } as unknown as Request;
-      const res = { status: vi.fn().mockReturnThis(), redirect: vi.fn() } as unknown as Response;
+      const res = { status: vi.fn().mockReturnThis(), redirect: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
 
       await authController.traefik(req, res);
 
@@ -884,7 +1368,7 @@ describe('AuthController', () => {
         user: undefined,
         headers: { 'x-forwarded-uri': '/panel', 'x-forwarded-proto': 'https', 'x-forwarded-host': 'legacy-router.ci.lan' },
       } as unknown as Request;
-      const res = { status: vi.fn().mockReturnThis(), redirect: vi.fn() } as unknown as Response;
+      const res = { status: vi.fn().mockReturnThis(), redirect: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
 
       await authController.traefik(req, res);
 
@@ -899,7 +1383,7 @@ describe('AuthController', () => {
       // The old code called host.split(...) on undefined — a 500 the visitor saw as a server
       // error. A forward-auth subrequest with no forwarded host has nothing to route back to.
       const req = { user: undefined, headers: { 'x-forwarded-uri': '/', 'x-forwarded-proto': 'https' } } as unknown as Request;
-      const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), redirect: vi.fn() } as unknown as Response;
+      const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), redirect: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
 
       await authController.traefik(req, res);
 
@@ -920,7 +1404,8 @@ describe('AuthController', () => {
           headers: { 'x-forwarded-uri': uri, 'x-forwarded-proto': 'https', 'x-forwarded-host': host, ...headers },
           cookies: { 'ci-hub-app-sid': 'app-sid-1' },
         }) as unknown as Request;
-      const makeRes = () => ({ status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader: vi.fn(), redirect: vi.fn() }) as unknown as Response;
+      const makeRes = () =>
+        ({ status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader: vi.fn(), redirect: vi.fn(), clearCookie: vi.fn() }) as unknown as Response;
       const signedHeaders = (res: Response) => Object.fromEntries((res.setHeader as ReturnType<typeof vi.fn>).mock.calls);
 
       const memoryCache = () => {
@@ -1109,7 +1594,14 @@ describe('AuthController', () => {
       }) as unknown as Request;
 
     const consumeRes = () =>
-      ({ status: vi.fn().mockReturnThis(), redirect: vi.fn(), cookie: vi.fn(), send: vi.fn(), setHeader: vi.fn() }) as unknown as Response;
+      ({
+        status: vi.fn().mockReturnThis(),
+        redirect: vi.fn(),
+        clearCookie: vi.fn(),
+        cookie: vi.fn(),
+        send: vi.fn(),
+        setHeader: vi.fn(),
+      }) as unknown as Response;
 
     const APP = 'importer:ci-marketplace';
 
@@ -1495,7 +1987,13 @@ describe('AuthController', () => {
     const TARGET = `https://${APP_HOST}/files?dir=%2Fdata`;
 
     const ssoRes = () =>
-      ({ status: vi.fn().mockReturnThis(), redirect: vi.fn(), type: vi.fn().mockReturnThis(), send: vi.fn() }) as unknown as Response;
+      ({
+        status: vi.fn().mockReturnThis(),
+        redirect: vi.fn(),
+        clearCookie: vi.fn(),
+        type: vi.fn().mockReturnThis(),
+        send: vi.fn(),
+      }) as unknown as Response;
 
     beforeEach(() => {
       config.getConfig.mockReturnValue({ localDomain: 'ci.lan' } as never);
@@ -1546,31 +2044,54 @@ describe('AuthController', () => {
       expect(res.status).toHaveBeenCalledWith(302); // accepted → login redirect
     });
 
-    it('sends an unauthenticated visitor to login with an absolute same-origin return address', async () => {
-      const req = {
-        user: undefined,
-        headers: { 'x-forwarded-proto': 'https', 'x-forwarded-host': 'hub-core-2-org.companionintelligence.com' },
+    const HUB_HEADERS = { 'x-forwarded-proto': 'https', 'x-forwarded-host': 'hub-core-2-org.companionintelligence.com' };
+    const jsonRes = () => ({ status: vi.fn().mockReturnThis(), json: vi.fn(), redirect: vi.fn(), clearCookie: vi.fn() }) as unknown as Response;
+    const jsonOf = (res: Response) => (res.json as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    /** The Hub page's mint request: authenticated by its session token, which the middleware opened into `hubSessionId`. */
+    const pageReq = (hubSessionId: string | undefined) =>
+      ({
+        user: hubSessionId ? { id: 1, username: 'op' } : undefined,
+        hubSessionId,
+        cookies: {},
         get: vi.fn(),
-      } as unknown as Request;
+        headers: HUB_HEADERS,
+      }) as unknown as Request;
+
+    it('hands every navigation to the Hub page on this origin, which mints with its own token', async () => {
+      const req = { user: undefined, headers: HUB_HEADERS, get: vi.fn() } as unknown as Request;
       const res = ssoRes();
 
       await authController.edgeSso(TARGET, req, res);
 
       const location = new URL((res.redirect as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]);
-      expect(location.pathname).toBe('/login');
-      // Absolute, on THIS origin: the portal OIDC callback only honors same-origin-absolute
-      // redirect targets, and the login page must land back on this exact endpoint.
-      const returnTo = new URL(location.searchParams.get('redirect_url') ?? '');
-      expect(returnTo.origin).toBe('https://hub-core-2-org.companionintelligence.com');
-      expect(returnTo.pathname).toBe('/api/auth/edge-sso');
-      expect(returnTo.searchParams.get('redirect')).toBe(TARGET);
-      expect(location.searchParams.get('app')).toBe('importer-core-2-org');
+      expect(location.origin).toBe('https://hub-core-2-org.companionintelligence.com');
+      expect(location.pathname).toBe('/sso');
+      expect(location.searchParams.get('redirect')).toBe(TARGET);
     });
 
-    it('builds an https self-URL for a tunnel visitor even though the hop proto is http', async () => {
-      // This endpoint is itself reached through the plain-HTTP tunnel entrypoint. An http
-      // self-URL survives the round trip only to be rejected as cross-origin by the login page's
-      // redirect check, silently stranding the visitor on /home.
+    /*
+     * The 2026-11-17 audit: the navigation carried `ci-hub-sid`, which every port on the Hub's host
+     * receives, so an app holding it could have this route mint tickets for any other app.
+     */
+    it('mints nothing on the navigation, whatever session the request seems to carry', async () => {
+      const req = {
+        user: { id: 1, username: 'op' },
+        hubSessionId: 'sid-9',
+        cookies: { 'ci-hub-sid': 'sid-9' },
+        get: vi.fn(),
+        headers: HUB_HEADERS,
+      } as unknown as Request;
+      const res = ssoRes();
+
+      await authController.edgeSso(TARGET, req, res);
+
+      expect(new URL((res.redirect as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).pathname).toBe('/sso');
+      expect(cache.set).not.toHaveBeenCalled();
+    });
+
+    it('builds an https page URL for a tunnel visitor even though the hop proto is http', async () => {
+      // This endpoint is itself reached through the plain-HTTP tunnel entrypoint. An http page URL
+      // would leave the visitor on the wrong origin, without the token its storage holds.
       const req = {
         user: undefined,
         headers: { 'cf-ray': 'ray-LAX', 'x-forwarded-proto': 'http', 'x-forwarded-host': 'hub-core-2-org.companionintelligence.com' },
@@ -1580,39 +2101,30 @@ describe('AuthController', () => {
 
       await authController.edgeSso(TARGET, req, res);
 
-      const location = new URL((res.redirect as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]);
-      expect(location.protocol).toBe('https:');
-      expect(new URL(location.searchParams.get('redirect_url') ?? '').protocol).toBe('https:');
+      expect(new URL((res.redirect as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).protocol).toBe('https:');
     });
 
-    it('treats a Bearer-authenticated request as having no session to hand off', async () => {
-      // Bearer auth sets req.user but carries no session cookie — there is nothing to plant on
-      // the app host, so the browser flow is the only way through.
-      const req = {
-        user: { id: 1, username: 'op' },
-        cookies: {},
-        get: vi.fn().mockReturnValue(undefined),
-        headers: { 'x-forwarded-proto': 'https', 'x-forwarded-host': 'hub-core-2-org.companionintelligence.com' },
-      } as unknown as Request;
-      const res = ssoRes();
+    it('refuses the page’s mint without a Hub session (a Bearer caller has none to hand off)', async () => {
+      const req = { ...pageReq(undefined), user: { id: 1, username: 'op' } } as unknown as Request;
 
-      await authController.edgeSso(TARGET, req, res);
-
-      expect(String((res.redirect as ReturnType<typeof vi.fn>).mock.calls[0]?.[0])).toContain('/login');
+      await expect(authController.mintEdgeSsoTicket({ redirect: TARGET }, req, jsonRes())).rejects.toThrow('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN');
       expect(cache.set).not.toHaveBeenCalled();
     });
 
-    it('mints a host-bound single-use ticket and bounces the browser back to the app', async () => {
-      cache.get.mockReturnValue(undefined as never); // no prior mints
-      const req = {
-        user: { id: 1, username: 'op' },
-        cookies: { 'ci-hub-sid': 'sid-9' },
-        get: vi.fn().mockReturnValue(undefined),
-        headers: { 'x-forwarded-proto': 'https', 'x-forwarded-host': 'hub-core-2-org.companionintelligence.com' },
-      } as unknown as Request;
-      const res = ssoRes();
+    it('refuses the page’s mint for a target no installed app claims', async () => {
+      forwardAuthSecrets.resolveAppUrnForHost.mockResolvedValue(null);
 
-      await authController.edgeSso(TARGET, req, res);
+      await expect(authController.mintEdgeSsoTicket({ redirect: 'https://evil.example.com/' }, pageReq('sid-9'), jsonRes())).rejects.toThrow(
+        'Unsupported edge SSO target',
+      );
+      await expect(authController.mintEdgeSsoTicket({ redirect: ['https://x/'] }, pageReq('sid-9'), jsonRes())).rejects.toThrow();
+    });
+
+    it('mints a host-bound single-use ticket and answers the app URL to go to', async () => {
+      cache.get.mockReturnValue(undefined as never); // no prior mints
+      const res = jsonRes();
+
+      await authController.mintEdgeSsoTicket({ redirect: TARGET }, pageReq('sid-9'), res);
 
       const ticketCall = (cache.set as ReturnType<typeof vi.fn>).mock.calls.find(([key]) => String(key).startsWith('edge_sso:'));
       expect(ticketCall).toBeDefined();
@@ -1628,7 +2140,8 @@ describe('AuthController', () => {
       expect(forwardAuthSecrets.resolveAppUrnForHost).toHaveBeenCalledWith(APP_HOST);
       expect(ticketCall?.[2]).toBe(60); // short-lived — the browser consumes it within one hop
 
-      const location = new URL((res.redirect as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]);
+      expect(res.status).toHaveBeenCalledWith(200);
+      const location = new URL(jsonOf(res).url);
       expect(location.hostname).toBe(APP_HOST);
       expect(location.pathname).toBe('/files');
       expect(location.searchParams.get('dir')).toBe('/data');
@@ -1637,39 +2150,25 @@ describe('AuthController', () => {
 
     it('appends the ticket without re-encoding the app query', async () => {
       // `searchParams.set` re-serializes the WHOLE query — `%20`→`+`, `~`→`%7E`, bare `flag`→`flag=`
-      // — the same corruption parseForwardedUri avoids, and it reaches the app whenever this hop's
-      // URL is the one the browser ends up on (an already-authenticated ticket, or a failed consume).
+      // — the same corruption parseForwardedUri avoids.
       cache.get.mockReturnValue(undefined as never);
-      const req = {
-        user: { id: 1, username: 'op' },
-        cookies: { 'ci-hub-sid': 'sid-9' },
-        get: vi.fn().mockReturnValue(undefined),
-        headers: { 'x-forwarded-proto': 'https', 'x-forwarded-host': 'hub-core-2-org.companionintelligence.com' },
-      } as unknown as Request;
-      const res = ssoRes();
+      const res = jsonRes();
 
-      await authController.edgeSso(`https://${APP_HOST}/search?q=a%20b&s=~z&flag`, req, res);
+      await authController.mintEdgeSsoTicket({ redirect: `https://${APP_HOST}/search?q=a%20b&s=~z&flag` }, pageReq('sid-9'), res);
 
       const ticketCall = (cache.set as ReturnType<typeof vi.fn>).mock.calls.find(([key]) => String(key).startsWith('edge_sso:'));
       const ticket = String(ticketCall?.[0]).slice('edge_sso:'.length);
-      expect((res.redirect as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toBe(`https://${APP_HOST}/search?q=a%20b&s=~z&flag&cihub_sso=${ticket}`);
+      expect(jsonOf(res).url).toBe(`https://${APP_HOST}/search?q=a%20b&s=~z&flag&cihub_sso=${ticket}`);
     });
 
-    it('breaks the redirect loop for a cookie-refusing browser instead of minting forever', async () => {
+    it('breaks the loop for a cookie-refusing browser instead of minting forever', async () => {
       cache.get.mockReturnValue('3' as never); // mint counter at the cap
-      const req = {
-        user: { id: 1, username: 'op' },
-        cookies: { 'ci-hub-sid': 'sid-9' },
-        get: vi.fn().mockReturnValue(undefined),
-        headers: { 'x-forwarded-proto': 'https', 'x-forwarded-host': 'hub-core-2-org.companionintelligence.com' },
-      } as unknown as Request;
-      const res = ssoRes();
+      const res = jsonRes();
 
-      await authController.edgeSso(TARGET, req, res);
+      await authController.mintEdgeSsoTicket({ redirect: TARGET }, pageReq('sid-9'), res);
 
       expect(res.status).toHaveBeenCalledWith(409);
-      expect(res.redirect).not.toHaveBeenCalled();
-      expect(vi.mocked(res.send).mock.calls[0]?.[0]).toContain(HUB_FAVICON_LINK_TAG);
+      expect(jsonOf(res)).toEqual({ code: 'EDGE_SSO_COOKIES_REQUIRED' });
       expect((cache.set as ReturnType<typeof vi.fn>).mock.calls.every(([key]) => !String(key).startsWith('edge_sso:'))).toBe(true);
     });
   });
@@ -1704,19 +2203,23 @@ describe('AuthController', () => {
       });
       authService.admitHubPerson.mockResolvedValue({ id: 7 } as never);
       sessionManager.createSession.mockResolvedValue('sid-mobile' as never);
-      const res = { cookie: vi.fn() } as unknown as Response;
+      const res = { cookie: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
 
       await expect(authController.establishPortalMobileSession(req, res)).resolves.toEqual({
-        sessionId: 'sid-mobile',
+        sessionId: tokenFor('sid-mobile'),
         redirectPath: '/home',
       });
+      // Only a token Portal minted for the Hub's own client: one for the extension, the applet or
+      // Capture is not a Hub sign-in.
+      expect(verifyPortalIdToken).toHaveBeenCalledWith('portal.id.token', expect.objectContaining({ audiences: ['ci-hub'] }));
       expect(authService.admitHubPerson).toHaveBeenCalledWith({
         issuer: 'https://hub.ci.computer',
         subject: 'portal-sub',
         email: 'demo-1@lifescope.io',
         emailVerified: true,
       });
-      expect(res.cookie).toHaveBeenCalledWith('ci-hub-sid', 'sid-mobile', expect.objectContaining({ httpOnly: true }));
+      // No session cookie: it reached every app on the Hub's host. The body carries the signed token.
+      expect(res.cookie).not.toHaveBeenCalled();
     });
 
     it('refuses an id_token whose email is not verified', async () => {
@@ -1726,15 +2229,125 @@ describe('AuthController', () => {
         name: null,
         emailVerified: false,
       });
-      const res = { cookie: vi.fn() } as unknown as Response;
+      const res = { cookie: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
 
       await expect(authController.establishPortalMobileSession(req, res)).rejects.toBeInstanceOf(UnauthorizedException);
       expect(authService.admitHubPerson).not.toHaveBeenCalled();
     });
   });
 
+  describe('establishPortalDesktopSession', () => {
+    const req = {
+      protocol: 'https',
+      get: vi.fn((header: string) => (header === 'host' ? 'hub.example.com' : undefined)),
+      headers: { authorization: 'Bearer portal-access-token', 'x-forwarded-proto': 'https', 'x-forwarded-host': 'hub.example.com' },
+      cookies: {},
+    } as unknown as Request;
+
+    beforeEach(() => {
+      // Module-level mock, so its calls outlive a test unless cleared here.
+      vi.mocked(fetchPortalUserinfo).mockReset();
+      config.get.mockImplementation((key: string) => {
+        if (key === 'ciCloudUrl') return 'https://hub.ci.computer/';
+        if (key === 'userSettings') return { experimental: { insecureCookie: true } };
+        return undefined as never;
+      });
+    });
+
+    it("turns the access token from the app's own Portal sign-in into a Hub session", async () => {
+      vi.mocked(fetchPortalUserinfo).mockResolvedValue({
+        ok: true,
+        email: 'demo-1@lifescope.io',
+        subject: 'portal-sub',
+        issuer: 'https://hub.ci.computer',
+        status: 200,
+      });
+      authService.admitHubPerson.mockResolvedValue({ id: 7 } as never);
+      sessionManager.createSession.mockResolvedValue('sid-desktop' as never);
+      const res = { cookie: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
+
+      await expect(authController.establishPortalDesktopSession(req, res)).resolves.toEqual({
+        sessionId: tokenFor('sid-desktop'),
+        redirectPath: '/home',
+      });
+      expect(fetchPortalUserinfo).toHaveBeenCalledWith({ publicPortalBaseUrl: 'https://hub.ci.computer', accessToken: 'portal-access-token' });
+      expect(authService.admitHubPerson).toHaveBeenCalledWith({
+        issuer: 'https://hub.ci.computer',
+        subject: 'portal-sub',
+        email: 'demo-1@lifescope.io',
+        emailVerified: true,
+      });
+      expect(sessionManager.createSession).toHaveBeenCalledWith(7);
+      // No session cookie: it reached every app on the Hub's host. The body carries the signed token.
+      expect(res.cookie).not.toHaveBeenCalled();
+    });
+
+    it('refuses a request with no Bearer token, without asking Portal', async () => {
+      const res = { cookie: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
+      const unsigned = { ...req, headers: {} } as unknown as Request;
+
+      await expect(authController.establishPortalDesktopSession(unsigned, res)).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(fetchPortalUserinfo).not.toHaveBeenCalled();
+      expect(authService.admitHubPerson).not.toHaveBeenCalled();
+    });
+
+    it('refuses when this Hub has no Portal configured, without asking Portal', async () => {
+      config.get.mockImplementation((key: string) => {
+        if (key === 'userSettings') return { experimental: { insecureCookie: true } };
+        return undefined as never;
+      });
+      const res = { cookie: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
+
+      await expect(authController.establishPortalDesktopSession(req, res)).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(fetchPortalUserinfo).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['the Portal refused the token', { ok: false as const, reason: 'userinfo_failed' as const, status: 401 }],
+      ['the Portal did not mark the address verified', { ok: false as const, reason: 'email_unverified' as const, status: 200 }],
+      ['the Portal gave no address', { ok: false as const, reason: 'missing_email' as const, status: 200 }],
+      ['the Portal did not answer', { ok: false as const, reason: 'network_error' as const, detail: 'ETIMEDOUT' }],
+    ])('refuses when %s', async (_label, userinfo) => {
+      vi.mocked(fetchPortalUserinfo).mockResolvedValue(userinfo);
+      const res = { cookie: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
+
+      await expect(authController.establishPortalDesktopSession(req, res)).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(authService.admitHubPerson).not.toHaveBeenCalled();
+      expect(sessionManager.createSession).not.toHaveBeenCalled();
+    });
+
+    it('refuses a Portal answer that names no subject', async () => {
+      vi.mocked(fetchPortalUserinfo).mockResolvedValue({
+        ok: true,
+        email: 'demo-1@lifescope.io',
+        subject: null,
+        issuer: null,
+        status: 200,
+      });
+      const res = { cookie: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
+
+      await expect(authController.establishPortalDesktopSession(req, res)).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(authService.admitHubPerson).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('portalDesktopConfig', () => {
+    it('returns the configured Portal origin without a trailing slash', () => {
+      config.get.mockImplementation((key: string) => {
+        if (key === 'ciCloudUrl') return 'https://hub.ci.computer/';
+        return undefined as never;
+      });
+
+      expect(authController.portalDesktopConfig()).toEqual({ portalUrl: 'https://hub.ci.computer' });
+    });
+
+    it('returns a null portalUrl when no Portal is configured', () => {
+      expect(authController.portalDesktopConfig()).toEqual({ portalUrl: null });
+    });
+  });
+
   describe('exchangePortalDesktopLogin', () => {
-    it('returns the cached desktop handoff once and plants the session cookie on the webview', async () => {
+    it('returns the cached desktop handoff once, as a signed session token for the webview', async () => {
       cache.get.mockReturnValue(JSON.stringify({ sessionId: 'session-123', redirectPath: '/settings?tab=auth', userId: 1 }));
       sessionManager.resolveSessionUserId.mockReturnValue(1 as never);
       config.get.mockReturnValue({ experimental: { insecureCookie: true } });
@@ -1745,15 +2358,15 @@ describe('AuthController', () => {
         headers: {},
         cookies: {},
       } as unknown as Request;
-      const res = { cookie: vi.fn() } as unknown as Response;
+      const res = { cookie: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
 
       await expect(authController.exchangePortalDesktopLogin(req, res, 'desktop-token')).resolves.toEqual({
-        sessionId: 'session-123',
+        sessionId: tokenFor('session-123'),
         redirectPath: '/settings?tab=auth',
       });
       expect(cache.get).toHaveBeenCalledWith('portal_sso_desktop:desktop-token');
       expect(cache.del).toHaveBeenCalledWith('portal_sso_desktop:desktop-token');
-      expect(res.cookie).toHaveBeenCalled();
+      expect(res.cookie).not.toHaveBeenCalled();
     });
 
     it('mints a fresh session when the cached session id is gone', async () => {
@@ -1768,10 +2381,10 @@ describe('AuthController', () => {
         headers: {},
         cookies: {},
       } as unknown as Request;
-      const res = { cookie: vi.fn() } as unknown as Response;
+      const res = { cookie: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
 
       await expect(authController.exchangePortalDesktopLogin(req, res, 'desktop-token')).resolves.toEqual({
-        sessionId: 'session-fresh',
+        sessionId: tokenFor('session-fresh'),
         redirectPath: '/home',
       });
       expect(sessionManager.createSession).toHaveBeenCalledWith(7);
@@ -1783,20 +2396,15 @@ describe('AuthController', () => {
       authService.refreshSession.mockResolvedValue('session-next');
       config.get.mockReturnValue({ experimental: { insecureCookie: true } });
 
-      const req = {
-        cookies: {},
-        get: vi.fn((header: string) => (header === 'x-ci-hub-session' ? 'session-old' : undefined)),
-        headers: {},
-      } as unknown as Request;
-      const res = {
-        cookie: vi.fn(),
-      } as unknown as Response;
+      // The middleware opened the presented token into `hubSessionId`; nothing else names the session.
+      const req = { hubSessionId: 'session-old', cookies: {}, get: vi.fn(), headers: {} } as unknown as Request;
+      const res = { cookie: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
 
       const result = await authController.refreshSession(req, res);
 
       expect(authService.refreshSession).toHaveBeenCalledWith('session-old');
-      expect(res.cookie).toHaveBeenCalled();
-      expect(result.sessionId).toBe('session-next');
+      expect(res.cookie).not.toHaveBeenCalled();
+      expect(result.sessionId).toBe(tokenFor('session-next'));
       expect(result.issuedAt).toEqual(expect.any(Number));
     });
   });
@@ -1809,9 +2417,12 @@ describe('AuthController', () => {
           redirectUrl: null,
           hubOrigin: 'http://localhost:5002',
           desktop: true,
+          binding: 'test-binding',
         }),
       );
-      config.get.mockReturnValue('https://hub.ci.computer');
+      config.get.mockImplementation((key: string) =>
+        key === 'userSettings' ? { experimental: { insecureCookie: false } } : 'https://hub.ci.computer',
+      );
       vi.mocked(exchangePortalAuthorizationCode).mockResolvedValue({
         ok: true,
         accessToken: 'access-token',
@@ -1826,19 +2437,26 @@ describe('AuthController', () => {
         protocol: 'http',
         get: vi.fn((header: string) => (header === 'host' ? 'localhost:5002' : undefined)),
         headers: {},
+        cookies: { [portalBindingCookieName('state-123')]: 'test-binding' },
       } as unknown as Request;
       const res = {
         redirect: vi.fn(),
+        clearCookie: vi.fn(),
       } as unknown as Response;
 
       await authController.portalCallback(req, res, 'auth-code', 'state-123');
 
+      expect(authService.admitHubPerson).toHaveBeenCalled();
       expect(res.redirect).toHaveBeenCalledWith('cihub://auth?error=callback_error');
     });
 
     it('logs why the code exchange got no answer from the Portal', async () => {
-      cache.get.mockReturnValue(JSON.stringify({ codeVerifier: 'verifier', redirectUrl: null, hubOrigin: 'http://localhost:5002' }));
-      config.get.mockReturnValue('https://hub.ci.computer');
+      cache.get.mockReturnValue(
+        JSON.stringify({ codeVerifier: 'verifier', redirectUrl: null, hubOrigin: 'http://localhost:5002', binding: 'test-binding' }),
+      );
+      config.get.mockImplementation((key: string) =>
+        key === 'userSettings' ? { experimental: { insecureCookie: false } } : 'https://hub.ci.computer',
+      );
       vi.mocked(exchangePortalAuthorizationCode).mockResolvedValue({
         ok: false,
         reason: 'network_error',
@@ -1848,8 +2466,9 @@ describe('AuthController', () => {
         protocol: 'http',
         get: vi.fn((header: string) => (header === 'host' ? 'localhost:5002' : undefined)),
         headers: {},
+        cookies: { [portalBindingCookieName('state-123')]: 'test-binding' },
       } as unknown as Request;
-      const res = { redirect: vi.fn() } as unknown as Response;
+      const res = { redirect: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
 
       await authController.portalCallback(req, res, 'auth-code', 'state-123');
 
@@ -1867,9 +2486,11 @@ describe('AuthController', () => {
         protocol: 'http',
         get: vi.fn((header: string) => (header === 'host' ? 'localhost:5002' : undefined)),
         headers: {},
+        cookies: { [portalBindingCookieName('state-123')]: 'test-binding' },
       } as unknown as Request;
       const res = {
         redirect: vi.fn(),
+        clearCookie: vi.fn(),
       } as unknown as Response;
 
       await authController.portalCallback(req, res, 'auth-code', 'state-123');
@@ -1884,6 +2505,7 @@ describe('AuthController', () => {
           redirectUrl: null,
           hubOrigin: 'http://localhost:5005',
           desktop: true,
+          binding: 'test-binding',
         }),
       );
       config.get.mockImplementation((key: string) => {
@@ -1910,10 +2532,11 @@ describe('AuthController', () => {
         protocol: 'http',
         get: vi.fn((header: string) => (header === 'host' ? 'localhost:5005' : undefined)),
         headers: {},
-        cookies: {},
+        cookies: { [portalBindingCookieName('state-123')]: 'test-binding' },
       } as unknown as Request;
       const res = {
         redirect: vi.fn(),
+        clearCookie: vi.fn(),
         cookie: vi.fn(),
         status: vi.fn().mockReturnThis(),
         setHeader: vi.fn(),
@@ -1928,6 +2551,61 @@ describe('AuthController', () => {
       expect(cache.set).toHaveBeenCalledWith(expect.stringMatching(/^portal_sso_desktop:/), expect.any(String), 60);
     });
 
+    it('carries the app challenge onto the one-time code it hands the app', async () => {
+      cache.get.mockReturnValue(
+        JSON.stringify({
+          codeVerifier: 'verifier',
+          redirectUrl: null,
+          hubOrigin: 'http://localhost:5005',
+          desktop: true,
+          binding: 'test-binding',
+          appChallenge: 'c'.repeat(43),
+        }),
+      );
+      config.get.mockImplementation((key: string) => {
+        if (key === 'ciCloudUrl') {
+          return 'https://hub.ci.computer';
+        }
+        if (key === 'userSettings') {
+          return { experimental: { insecureCookie: true } };
+        }
+        return '';
+      });
+      vi.mocked(exchangePortalAuthorizationCode).mockResolvedValue({
+        ok: true,
+        accessToken: 'access-token',
+        email: 'operator@example.com',
+        emailVerified: true,
+        subject: 'portal-user-1',
+        issuer: 'https://hub.ci.computer',
+      });
+      authService.admitHubPerson.mockResolvedValue({ id: 1, username: 'operator@example.com' } as never);
+      sessionManager.createSession.mockResolvedValue('session-123');
+
+      const req = {
+        protocol: 'http',
+        get: vi.fn((header: string) => (header === 'host' ? 'localhost:5005' : undefined)),
+        headers: {},
+        cookies: { [portalBindingCookieName('state-123')]: 'test-binding' },
+      } as unknown as Request;
+      const res = {
+        redirect: vi.fn(),
+        clearCookie: vi.fn(),
+        cookie: vi.fn(),
+        status: vi.fn().mockReturnThis(),
+        setHeader: vi.fn(),
+        send: vi.fn().mockReturnThis(),
+      } as unknown as Response;
+
+      const returned = await authController.portalCallback(req, res, 'auth-code', 'state-123');
+
+      expect(returned).toBeUndefined();
+      expect(res.send).toHaveBeenCalledWith(expect.stringContaining('cihub://auth?token='));
+      expect(res.redirect).not.toHaveBeenCalled();
+      const codeCall = vi.mocked(cache.set).mock.calls.find(([key]) => typeof key === 'string' && key.startsWith('portal_sso_desktop:'));
+      expect(JSON.parse(codeCall?.[1] as string)).toMatchObject({ appChallenge: 'c'.repeat(43) });
+    });
+
     it('hands a loopback browser callback to the running Tauri app', async () => {
       cache.get.mockImplementation((key: string) => {
         if (key === 'portal_sso_desktop_present') {
@@ -1938,6 +2616,7 @@ describe('AuthController', () => {
           redirectUrl: null,
           hubOrigin: 'http://localhost:5005',
           desktop: false,
+          binding: 'test-binding',
         });
       });
       config.get.mockImplementation((key: string) => {
@@ -1964,10 +2643,11 @@ describe('AuthController', () => {
         protocol: 'http',
         get: vi.fn((header: string) => (header === 'host' ? 'localhost:5005' : undefined)),
         headers: {},
-        cookies: {},
+        cookies: { [portalBindingCookieName('state-123')]: 'test-binding' },
       } as unknown as Request;
       const res = {
         redirect: vi.fn(),
+        clearCookie: vi.fn(),
         cookie: vi.fn(),
         status: vi.fn().mockReturnThis(),
         setHeader: vi.fn(),
@@ -1992,6 +2672,7 @@ describe('AuthController', () => {
       } as unknown as Request;
       const res = {
         redirect: vi.fn(),
+        clearCookie: vi.fn(),
       } as unknown as Response;
 
       await authController.startPortalLogin(req, res, undefined, '1');
@@ -2036,7 +2717,7 @@ describe('AuthController', () => {
           get: vi.fn((header: string) => (header === 'host' ? 'hub-device-org.example.com' : undefined)),
           cookies: {},
         }) as unknown as Request;
-      const startRes = { redirect: vi.fn() } as unknown as Response;
+      const startRes = { redirect: vi.fn(), clearCookie: vi.fn(), cookie: vi.fn() } as unknown as Response;
 
       await authController.startPortalLogin(publicRequest(), startRes);
 
@@ -2044,16 +2725,556 @@ describe('AuthController', () => {
       const state = authorizeUrl.searchParams.get('state') ?? '';
       const callbackRes = {
         redirect: vi.fn(),
+        clearCookie: vi.fn(),
         cookie: vi.fn(),
         status: vi.fn().mockReturnThis(),
         setHeader: vi.fn(),
         send: vi.fn().mockReturnThis(),
       } as unknown as Response;
 
-      await authController.portalCallback(publicRequest(), callbackRes, 'auth-code', state);
+      const startBinding = vi.mocked(startRes.cookie).mock.calls.find(([name]) => name === portalBindingCookieName(state))?.[1] as string;
+      const callbackReq = {
+        ...(publicRequest() as unknown as Record<string, unknown>),
+        cookies: { [portalBindingCookieName(state)]: startBinding },
+      } as unknown as Request;
+
+      await authController.portalCallback(callbackReq, callbackRes, 'auth-code', state);
 
       expect(callbackRes.send).not.toHaveBeenCalled();
-      expect(callbackRes.redirect).toHaveBeenCalledWith('https://hub-device-org.example.com/home');
+      expect(callbackRes.redirect).toHaveBeenCalledWith(signedInAt('https://hub-device-org.example.com/home'));
+    });
+  });
+
+  describe('portal sign-in browser binding', () => {
+    // The sign-in is tied to the browser that ran /start by a short-lived httpOnly cookie whose
+    // value is also stored with the PKCE state. A callback that does not carry the same value back
+    // cannot complete the sign-in, so a callback opened in another browser can neither finish the
+    // flow nor replace the initiating browser's session.
+    const STORED_BINDING = 'browser-binding-xyz';
+    const BINDING_COOKIE = portalBindingCookieName('state-123');
+
+    /** The `__Host-` name an https Hub gives one sign-in's binding cookie. */
+    const hostPrefixedName = (state: string) => `__Host-${portalBindingCookieName(state)}`;
+
+    /** The binding cookie `/start` set (either form), found by the state it put in the authorize URL. */
+    const startedSignIn = (res: Response) => {
+      const authorizeUrl = new URL(vi.mocked(res.redirect).mock.calls.at(-1)?.[0] as unknown as string);
+      const state = authorizeUrl.searchParams.get('state') ?? '';
+      const cookieCall = vi
+        .mocked(res.cookie)
+        .mock.calls.find(([name]) => name === portalBindingCookieName(state) || name === hostPrefixedName(state));
+      return { state, cookieCall, name: cookieCall?.[0] as string | undefined };
+    };
+
+    /** Real cookie attributes (no insecure-cookie dev mode), with a Domain the session cookie would take. */
+    const configWithRealCookies = (insecureCookie = false) => {
+      authService.getCookieDomain.mockImplementation(((host?: string) => (host ? `.${host}` : undefined)) as never);
+      config.get.mockImplementation((key: string) => {
+        if (key === 'ciCloudUrl') {
+          return 'https://hub.ci.computer';
+        }
+        if (key === 'userSettings') {
+          return { experimental: { insecureCookie } };
+        }
+        return '';
+      });
+    };
+
+    /** A request behind the Hub's proxy, over https or plain http, carrying `cookies`. */
+    const proxiedRequest = (scheme: 'https' | 'http', cookies: Record<string, string> = {}) => {
+      const host = scheme === 'https' ? 'hub.example.com' : 'ci.lan';
+      return {
+        protocol: 'http',
+        headers: { 'x-forwarded-proto': scheme, 'x-forwarded-host': host },
+        get: vi.fn((header: string) => (header === 'host' ? host : undefined)),
+        cookies,
+      } as unknown as Request;
+    };
+
+    const cachedStateWithBinding = () =>
+      JSON.stringify({
+        codeVerifier: 'verifier',
+        redirectUrl: null,
+        hubOrigin: 'http://localhost:5002',
+        desktop: false,
+        binding: STORED_BINDING,
+      });
+
+    const configWithPortal = () =>
+      config.get.mockImplementation((key: string) => {
+        if (key === 'ciCloudUrl') {
+          return 'https://hub.ci.computer';
+        }
+        if (key === 'userSettings') {
+          return { experimental: { insecureCookie: true } };
+        }
+        return '';
+      });
+
+    const callbackReqWithCookies = (cookies: Record<string, string>) =>
+      ({
+        protocol: 'http',
+        get: vi.fn((header: string) => (header === 'host' ? 'localhost:5002' : undefined)),
+        headers: {},
+        cookies,
+      }) as unknown as Request;
+
+    const callbackRes = () =>
+      ({
+        redirect: vi.fn(),
+        cookie: vi.fn(),
+        clearCookie: vi.fn(),
+        status: vi.fn().mockReturnThis(),
+        setHeader: vi.fn(),
+        send: vi.fn().mockReturnThis(),
+      }) as unknown as Response;
+
+    describe('binding the one-time code to the app that asked', () => {
+      const verifier = 'v'.repeat(43);
+      const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
+      const localReq = () =>
+        ({
+          protocol: 'http',
+          get: vi.fn((header: string) => (header === 'host' ? 'localhost:5002' : undefined)),
+          headers: {},
+        }) as unknown as Request;
+      const storedState = () => {
+        const call = vi.mocked(cache.set).mock.calls.find(([key]) => typeof key === 'string' && key.startsWith('portal_sso:'));
+
+        return JSON.parse(call?.[1] as string) as { appChallenge?: string };
+      };
+
+      it('/start keeps the app challenge of a desktop or phone sign-in', async () => {
+        configWithPortal();
+        await authController.startPortalLogin(localReq(), callbackRes(), undefined, '1', undefined, challenge);
+
+        expect(storedState().appChallenge).toBe(challenge);
+      });
+
+      it('/start ignores an app challenge on a browser sign-in, and a malformed one', async () => {
+        configWithPortal();
+        await authController.startPortalLogin(localReq(), callbackRes(), undefined, undefined, undefined, challenge);
+        expect(storedState().appChallenge).toBeUndefined();
+
+        vi.mocked(cache.set).mockClear();
+        await authController.startPortalLogin(localReq(), callbackRes(), undefined, '1', undefined, 'short');
+        expect(storedState().appChallenge).toBeUndefined();
+      });
+
+      const exchangeReq = () =>
+        ({
+          protocol: 'http',
+          get: vi.fn((header: string) => (header === 'host' ? 'localhost:5005' : undefined)),
+          headers: {},
+          cookies: {},
+        }) as unknown as Request;
+      const exchangeRes = () => ({ cookie: vi.fn(), clearCookie: vi.fn() }) as unknown as Response;
+      const boundCode = () =>
+        cache.get.mockReturnValue(JSON.stringify({ sessionId: 'session-123', redirectPath: '/home', userId: 1, appChallenge: challenge }));
+
+      it('redeems a bound code for the app holding its secret', async () => {
+        boundCode();
+        sessionManager.resolveSessionUserId.mockReturnValue(1 as never);
+        config.get.mockReturnValue({ experimental: { insecureCookie: true } });
+
+        await expect(authController.exchangePortalDesktopLogin(exchangeReq(), exchangeRes(), 'desktop-token', verifier)).resolves.toEqual({
+          sessionId: tokenFor('session-123'),
+          redirectPath: '/home',
+        });
+      });
+
+      it.each([
+        ['no secret', undefined],
+        ['the wrong secret', 'w'.repeat(43)],
+        ['the challenge itself', challenge],
+      ])('refuses a bound code presented with %s, and burns it', async (_label, presented) => {
+        boundCode();
+        sessionManager.resolveSessionUserId.mockReturnValue(1 as never);
+
+        await expect(authController.exchangePortalDesktopLogin(exchangeReq(), exchangeRes(), 'desktop-token', presented)).rejects.toThrow(
+          'Invalid or expired desktop exchange token',
+        );
+        expect(cache.del).toHaveBeenCalledWith('portal_sso_desktop:desktop-token');
+        expect(sessionManager.createSession).not.toHaveBeenCalled();
+      });
+
+      it('refuses an unbound code presented with an app secret, and burns it', async () => {
+        cache.get.mockReturnValue(JSON.stringify({ sessionId: 'session-123', redirectPath: '/home', userId: 1 }));
+        sessionManager.resolveSessionUserId.mockReturnValue(1 as never);
+
+        await expect(authController.exchangePortalDesktopLogin(exchangeReq(), exchangeRes(), 'desktop-token', verifier)).rejects.toThrow(
+          'Invalid or expired desktop exchange token',
+        );
+        expect(cache.del).toHaveBeenCalledWith('portal_sso_desktop:desktop-token');
+        expect(cache.set).not.toHaveBeenCalledWith('portal_sso_desktop_done:desktop-token', expect.anything(), expect.anything());
+        expect(sessionManager.createSession).not.toHaveBeenCalled();
+      });
+
+      it('still redeems an unbound code for an app that sends no secret', async () => {
+        cache.get.mockReturnValue(JSON.stringify({ sessionId: 'session-123', redirectPath: '/home', userId: 1 }));
+        sessionManager.resolveSessionUserId.mockReturnValue(1 as never);
+        config.get.mockReturnValue({ experimental: { insecureCookie: true } });
+
+        await expect(authController.exchangePortalDesktopLogin(exchangeReq(), exchangeRes(), 'desktop-token')).resolves.toEqual({
+          sessionId: tokenFor('session-123'),
+          redirectPath: '/home',
+        });
+      });
+    });
+
+    it('/start stores the binding with the state and drops the same value as a cookie', async () => {
+      configWithPortal();
+
+      const req = {
+        protocol: 'http',
+        get: vi.fn((header: string) => (header === 'host' ? 'localhost:5002' : undefined)),
+        headers: {},
+      } as unknown as Request;
+      const res = { redirect: vi.fn(), clearCookie: vi.fn(), cookie: vi.fn() } as unknown as Response;
+
+      await authController.startPortalLogin(req, res);
+
+      const stateCall = vi.mocked(cache.set).mock.calls.find(([key]) => typeof key === 'string' && key.startsWith('portal_sso:'));
+      expect(stateCall).toBeDefined();
+      const storedBinding = (JSON.parse(stateCall?.[1] as string) as { binding?: string }).binding;
+      expect(storedBinding).toBeTruthy();
+
+      const { cookieCall } = startedSignIn(res);
+      expect(cookieCall).toBeDefined();
+      // The cookie carries the value stored with the state. It is httpOnly and scoped to the callback.
+      expect(cookieCall?.[1]).toBe(storedBinding);
+      expect(cookieCall?.[2]).toMatchObject({ httpOnly: true, sameSite: 'lax', path: '/api/auth/portal/callback' });
+    });
+
+    it('/start sets a __Host- binding cookie, Secure with Path=/ and no Domain, on an https Hub', async () => {
+      // The default (non-insecureCookie) branch derives Secure from the request, like the session
+      // cookie. Over https the cookie takes the `__Host-` prefix, which the browser only stores when
+      // it is Secure, has Path=/ and no Domain, so no other host under the same parent domain can
+      // set a cookie with this name.
+      configWithRealCookies();
+      const res = { redirect: vi.fn(), clearCookie: vi.fn(), cookie: vi.fn() } as unknown as Response;
+
+      await authController.startPortalLogin(proxiedRequest('https'), res);
+
+      const { state, cookieCall, name } = startedSignIn(res);
+      expect(name).toBe(hostPrefixedName(state));
+      expect(cookieCall?.[2]).toEqual({ httpOnly: true, sameSite: 'lax', path: '/', secure: true, maxAge: 600_000 });
+      expect(portalBindingCookie(state, true)).toEqual({ name: hostPrefixedName(state), path: '/', secure: true });
+    });
+
+    it('/start sets the plain binding cookie on the callback path on a plain-http Hub', async () => {
+      // The prefix needs Secure, which plain http cannot have, so http keeps the unprefixed name.
+      configWithRealCookies();
+      const res = { redirect: vi.fn(), clearCookie: vi.fn(), cookie: vi.fn() } as unknown as Response;
+
+      await authController.startPortalLogin(proxiedRequest('http'), res);
+
+      const { state, cookieCall, name } = startedSignIn(res);
+      expect(name).toBe(portalBindingCookieName(state));
+      expect(cookieCall?.[2]).toEqual({ httpOnly: true, sameSite: 'lax', path: '/api/auth/portal/callback', secure: false, maxAge: 600_000 });
+    });
+
+    it('uses the plain-http form in insecure-cookie mode, even over https', async () => {
+      // Dev insecure-cookie mode drops Secure, and a `__Host-` cookie without Secure is never stored.
+      configWithRealCookies(true);
+      const res = { redirect: vi.fn(), clearCookie: vi.fn(), cookie: vi.fn() } as unknown as Response;
+
+      await authController.startPortalLogin(proxiedRequest('https'), res);
+
+      const { state, cookieCall, name } = startedSignIn(res);
+      expect(name).toBe(portalBindingCookieName(state));
+      expect(cookieCall?.[2]).toMatchObject({ path: '/api/auth/portal/callback', secure: false });
+    });
+
+    it('completes an https callback that carries the __Host- binding and clears that cookie', async () => {
+      vi.mocked(exchangePortalAuthorizationCode).mockClear();
+      configWithRealCookies();
+      cache.get.mockReturnValue(
+        JSON.stringify({
+          codeVerifier: 'verifier',
+          redirectUrl: null,
+          hubOrigin: 'https://hub.example.com',
+          desktop: false,
+          binding: STORED_BINDING,
+        }),
+      );
+      vi.mocked(exchangePortalAuthorizationCode).mockResolvedValue({
+        ok: true,
+        accessToken: 'access-token',
+        email: 'operator@example.com',
+        emailVerified: true,
+        subject: 'portal-user-1',
+        issuer: 'https://hub.ci.computer',
+      });
+      authService.admitHubPerson.mockResolvedValue({ id: 9, username: 'operator@example.com' } as never);
+      sessionManager.createSession.mockResolvedValue('session-999');
+      const res = callbackRes();
+
+      await authController.portalCallback(
+        proxiedRequest('https', { [hostPrefixedName('state-123')]: STORED_BINDING }),
+        res,
+        'auth-code',
+        'state-123',
+      );
+
+      expect(exchangePortalAuthorizationCode).toHaveBeenCalled();
+      expect(res.redirect).toHaveBeenCalledWith(signedInAt('https://hub.example.com/home'));
+      // The binding cookie alone; a sign-in also clears the `ci-hub-sid` an older Hub planted.
+      expect(vi.mocked(res.clearCookie).mock.calls.filter(([name]) => name !== 'ci-hub-sid')).toHaveLength(1);
+      expect(res.clearCookie).toHaveBeenCalledWith(hostPrefixedName('state-123'), { httpOnly: true, sameSite: 'lax', path: '/', secure: true });
+    });
+
+    it('refuses an https callback whose binding arrives only under the plain name', async () => {
+      // Any host under the same parent domain can set a cookie with the plain name for that parent,
+      // so over https only the `__Host-` name counts, whatever value the plain one holds.
+      vi.mocked(exchangePortalAuthorizationCode).mockReset();
+      configWithRealCookies();
+      cache.get.mockReturnValue(
+        JSON.stringify({
+          codeVerifier: 'verifier',
+          redirectUrl: null,
+          hubOrigin: 'https://hub.example.com',
+          desktop: false,
+          binding: STORED_BINDING,
+        }),
+      );
+      const res = callbackRes();
+
+      await authController.portalCallback(
+        proxiedRequest('https', { [portalBindingCookieName('state-123')]: STORED_BINDING }),
+        res,
+        'auth-code',
+        'state-123',
+      );
+
+      expect(exchangePortalAuthorizationCode).not.toHaveBeenCalled();
+      expect(sessionManager.createSession).not.toHaveBeenCalled();
+      expect(res.redirect).toHaveBeenCalledWith('https://hub.example.com/login?portal_error=state_expired');
+      // Only the cookie this scheme sets is cleared.
+      // The binding cookie alone; a sign-in also clears the `ci-hub-sid` an older Hub planted.
+      expect(vi.mocked(res.clearCookie).mock.calls.filter(([name]) => name !== 'ci-hub-sid')).toHaveLength(1);
+      expect(res.clearCookie).toHaveBeenCalledWith(hostPrefixedName('state-123'), expect.objectContaining({ path: '/', secure: true }));
+    });
+
+    it.each([
+      ['https at /start, http at the callback', 'https', 'http'],
+      ['http at /start, https at the callback', 'http', 'https'],
+    ] as const)('refuses a sign-in whose scheme changed between /start and the callback (%s)', async (_label, startScheme, callbackScheme) => {
+      // A proxy that forwards the protocol for one request and not the other. The callback reads only
+      // the name its own scheme gives, so the cookie /start set is not found and the sign-in fails closed.
+      vi.mocked(exchangePortalAuthorizationCode).mockReset();
+      const store = new Map<string, string>();
+      cache.get.mockImplementation((key: string) => store.get(key));
+      cache.set.mockImplementation((key: string, value: string) => {
+        store.set(key, value);
+      });
+      cache.del.mockImplementation((key: string) => {
+        store.delete(key);
+      });
+      configWithRealCookies();
+      const startRes = { redirect: vi.fn(), clearCookie: vi.fn(), cookie: vi.fn() } as unknown as Response;
+      await authController.startPortalLogin(proxiedRequest(startScheme), startRes);
+      const { state, name, cookieCall } = startedSignIn(startRes);
+      const res = callbackRes();
+
+      await authController.portalCallback(proxiedRequest(callbackScheme, { [name as string]: cookieCall?.[1] as string }), res, 'auth-code', state);
+
+      expect(exchangePortalAuthorizationCode).not.toHaveBeenCalled();
+      expect(sessionManager.createSession).not.toHaveBeenCalled();
+      expect(vi.mocked(res.redirect).mock.calls[0]?.[0]).toContain('/login?portal_error=state_expired');
+    });
+
+    it('keeps the binding cookie host-only and unflagged on a plain-http LAN Hub at the domain root', async () => {
+      // The session cookie on `ci.lan` is `Domain=.ci.lan` so every `<app>.ci.lan` shares it. The
+      // binding must not follow it there: the callback always returns to the host that served
+      // /start, so no app host has any use for it. Over plain http a Secure flag would make the
+      // browser drop the cookie and fail every sign-in.
+      config.get.mockImplementation((key: string) => {
+        if (key === 'ciCloudUrl') {
+          return 'https://hub.ci.computer';
+        }
+        if (key === 'userSettings') {
+          return { experimental: { insecureCookie: false } };
+        }
+        return '';
+      });
+      authService.getCookieDomain.mockImplementation(((host?: string) => (host ? `.${host}` : undefined)) as never);
+
+      const lanRequest = () =>
+        ({
+          protocol: 'http',
+          headers: { 'x-forwarded-proto': 'http', 'x-forwarded-host': 'ci.lan' },
+          get: vi.fn((header: string) => (header === 'host' ? 'ci.lan' : undefined)),
+          cookies: {},
+        }) as unknown as Request;
+      const startRes = { redirect: vi.fn(), clearCookie: vi.fn(), cookie: vi.fn() } as unknown as Response;
+
+      await authController.startPortalLogin(lanRequest(), startRes);
+
+      const { state, cookieCall } = startedSignIn(startRes);
+      expect(cookieCall?.[2]).toMatchObject({ httpOnly: true, sameSite: 'lax', path: '/api/auth/portal/callback', secure: false });
+      expect(cookieCall?.[2]).not.toHaveProperty('domain');
+
+      // The callback clears it with the same attributes, or the browser would keep it.
+      const stateCall = vi.mocked(cache.set).mock.calls.find(([key]) => key === `portal_sso:${state}`);
+      cache.get.mockReturnValue(stateCall?.[1] as string);
+      const callbackRes = { redirect: vi.fn(), cookie: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
+      await authController.portalCallback(lanRequest(), callbackRes, 'auth-code', state);
+
+      const clearCall = vi.mocked(callbackRes.clearCookie).mock.calls.find(([name]) => name === portalBindingCookieName(state));
+      expect(clearCall?.[1]).toMatchObject({ httpOnly: true, sameSite: 'lax', path: '/api/auth/portal/callback', secure: false });
+      expect(clearCall?.[1]).not.toHaveProperty('domain');
+    });
+
+    it('refuses a callback that carries no binding cookie, before any code exchange', async () => {
+      vi.mocked(exchangePortalAuthorizationCode).mockReset();
+      cache.get.mockReturnValue(cachedStateWithBinding());
+      configWithPortal();
+
+      const req = callbackReqWithCookies({});
+      const res = callbackRes();
+
+      await authController.portalCallback(req, res, 'auth-code', 'state-123');
+
+      expect(exchangePortalAuthorizationCode).not.toHaveBeenCalled();
+      expect(authService.admitHubPerson).not.toHaveBeenCalled();
+      expect(sessionManager.createSession).not.toHaveBeenCalled();
+      expect(res.clearCookie).toHaveBeenCalledWith(BINDING_COOKIE, expect.any(Object));
+      expect(res.redirect).toHaveBeenCalledWith('http://localhost:5002/login?portal_error=state_expired');
+    });
+
+    it('refuses a callback whose binding cookie does not match the stored value', async () => {
+      vi.mocked(exchangePortalAuthorizationCode).mockReset();
+      cache.get.mockReturnValue(cachedStateWithBinding());
+      configWithPortal();
+
+      const req = callbackReqWithCookies({ [BINDING_COOKIE]: 'some-other-browser' });
+      const res = callbackRes();
+
+      await authController.portalCallback(req, res, 'auth-code', 'state-123');
+
+      expect(exchangePortalAuthorizationCode).not.toHaveBeenCalled();
+      expect(sessionManager.createSession).not.toHaveBeenCalled();
+      expect(res.clearCookie).toHaveBeenCalledWith(BINDING_COOKIE, expect.any(Object));
+      expect(res.redirect).toHaveBeenCalledWith('http://localhost:5002/login?portal_error=state_expired');
+    });
+
+    it('completes a callback whose binding cookie matches and clears the cookie on success', async () => {
+      // A module-level mock: clear the calls earlier tests made so the assertion below is about this one.
+      vi.mocked(exchangePortalAuthorizationCode).mockClear();
+      cache.get.mockReturnValue(cachedStateWithBinding());
+      configWithPortal();
+      vi.mocked(exchangePortalAuthorizationCode).mockResolvedValue({
+        ok: true,
+        accessToken: 'access-token',
+        email: 'operator@example.com',
+        emailVerified: true,
+        subject: 'portal-user-1',
+        issuer: 'https://hub.ci.computer',
+      });
+      authService.admitHubPerson.mockResolvedValue({ id: 9, username: 'operator@example.com' } as never);
+      sessionManager.createSession.mockResolvedValue('session-999');
+
+      const req = callbackReqWithCookies({ [BINDING_COOKIE]: STORED_BINDING });
+      const res = callbackRes();
+
+      await authController.portalCallback(req, res, 'auth-code', 'state-123');
+
+      expect(exchangePortalAuthorizationCode).toHaveBeenCalled();
+      expect(sessionManager.createSession).toHaveBeenCalledWith(9);
+      // Session cookie set, binding cookie cleared.
+      expect(res.cookie).not.toHaveBeenCalledWith('ci-hub-sid', expect.anything(), expect.anything());
+      expect(res.clearCookie).toHaveBeenCalledWith(BINDING_COOKIE, expect.any(Object));
+      expect(res.redirect).toHaveBeenCalledWith(signedInAt('http://localhost:5002/home'));
+    });
+
+    it('refuses a binding that only another sign-in in this browser holds', async () => {
+      vi.mocked(exchangePortalAuthorizationCode).mockReset();
+      cache.get.mockReturnValue(cachedStateWithBinding());
+      configWithPortal();
+
+      const req = callbackReqWithCookies({ [portalBindingCookieName('state-other')]: STORED_BINDING });
+      const res = callbackRes();
+
+      await authController.portalCallback(req, res, 'auth-code', 'state-123');
+
+      expect(exchangePortalAuthorizationCode).not.toHaveBeenCalled();
+      // Only this state's cookie is cleared; the other sign-in keeps its binding.
+      // The binding cookie alone; a sign-in also clears the `ci-hub-sid` an older Hub planted.
+      expect(vi.mocked(res.clearCookie).mock.calls.filter(([name]) => name !== 'ci-hub-sid')).toHaveLength(1);
+      expect(res.clearCookie).toHaveBeenCalledWith(BINDING_COOKIE, expect.any(Object));
+      expect(res.redirect).toHaveBeenCalledWith('http://localhost:5002/login?portal_error=state_expired');
+    });
+
+    it.each([
+      ['in the order they started, over https', false, 'https'],
+      ['in reverse order, over https', true, 'https'],
+      ['in the order they started, over http', false, 'http'],
+      ['in reverse order, over http', true, 'http'],
+    ] as const)('lets two sign-ins started in one browser both complete %s', async (_label, reverse, scheme) => {
+      // A desktop sign-in button clicked twice opens two browser tabs, so two /start requests run
+      // before either callback. Neither may overwrite or clear the other's binding.
+      const store = new Map<string, string>();
+      cache.get.mockImplementation((key: string) => store.get(key));
+      cache.set.mockImplementation((key: string, value: string) => {
+        store.set(key, value);
+      });
+      cache.del.mockImplementation((key: string) => {
+        store.delete(key);
+      });
+      configWithRealCookies();
+      vi.mocked(exchangePortalAuthorizationCode).mockResolvedValue({
+        ok: true,
+        accessToken: 'access-token',
+        email: 'operator@example.com',
+        emailVerified: true,
+        subject: 'portal-user-1',
+        issuer: 'https://hub.ci.computer',
+      });
+      authService.admitHubPerson.mockResolvedValue({ id: 9, username: 'operator@example.com' } as never);
+      sessionManager.createSession.mockResolvedValue('session-999');
+
+      const firstStart = { redirect: vi.fn(), clearCookie: vi.fn(), cookie: vi.fn() } as unknown as Response;
+      const secondStart = { redirect: vi.fn(), clearCookie: vi.fn(), cookie: vi.fn() } as unknown as Response;
+      await authController.startPortalLogin(proxiedRequest(scheme), firstStart);
+      await authController.startPortalLogin(proxiedRequest(scheme), secondStart);
+
+      const first = startedSignIn(firstStart);
+      const second = startedSignIn(secondStart);
+      expect(first.state).not.toBe(second.state);
+      const expectedName = (state: string) => (scheme === 'https' ? hostPrefixedName(state) : portalBindingCookieName(state));
+      expect(first.name).toBe(expectedName(first.state));
+      const jar: Record<string, string> = {
+        [first.name as string]: first.cookieCall?.[1] as string,
+        [second.name as string]: second.cookieCall?.[1] as string,
+      };
+
+      for (const signIn of reverse ? [second, first] : [first, second]) {
+        const res = callbackRes();
+        await authController.portalCallback(proxiedRequest(scheme, { ...jar }), res, 'auth-code', signIn.state);
+
+        expect(res.redirect).toHaveBeenCalledWith(signedInAt(scheme === 'https' ? 'https://hub.example.com/home' : 'http://ci.lan/home'));
+        // Each callback clears only its own binding, so the other sign-in's cookie survives it.
+        // The binding cookie alone; a sign-in also clears the `ci-hub-sid` an older Hub planted.
+        expect(vi.mocked(res.clearCookie).mock.calls.filter(([name]) => name !== 'ci-hub-sid')).toHaveLength(1);
+        expect(res.clearCookie).toHaveBeenCalledWith(expectedName(signIn.state), expect.any(Object));
+        delete jar[signIn.name as string];
+      }
+    });
+
+    it('clears the binding cookie when the sign-in fails after the binding matched', async () => {
+      cache.get.mockReturnValue(cachedStateWithBinding());
+      configWithPortal();
+      vi.mocked(exchangePortalAuthorizationCode).mockResolvedValue({ ok: false, reason: 'network_error', detail: 'ETIMEDOUT' });
+
+      const req = callbackReqWithCookies({ [BINDING_COOKIE]: STORED_BINDING });
+      const res = callbackRes();
+
+      await authController.portalCallback(req, res, 'auth-code', 'state-123');
+
+      expect(sessionManager.createSession).not.toHaveBeenCalled();
+      expect(res.clearCookie).toHaveBeenCalledWith(BINDING_COOKIE, expect.any(Object));
+      expect(res.redirect).toHaveBeenCalledWith('http://localhost:5002/login?portal_error=callback_error');
     });
   });
 
@@ -2152,17 +3373,21 @@ describe('AuthController', () => {
       });
     });
 
-    it('records that the desktop app is waiting for a sign-in when its window sends desktop=1', async () => {
-      config.get.mockReturnValue('https://hub.ci.computer');
-
-      await authController.portalSessionHint(desktopWindowRequest(), '1');
-
-      expect(cache.set).toHaveBeenCalledWith('portal_sso_desktop_present', '1', 600);
-    });
+    /** A container on the Hub's network, calling the Hub directly and naming loopback in X-Forwarded-Host. */
+    const appContainerRequest = () =>
+      ({
+        protocol: 'http',
+        ip: '10.128.11.3',
+        socket: { remoteAddress: '10.128.11.3' },
+        headers: { host: 'ci-hub:5002', 'x-forwarded-host': 'localhost:5002' },
+        get: vi.fn((header: string) => (header === 'host' ? 'ci-hub:5002' : undefined)),
+      }) as unknown as Request;
 
     it.each([
       ['through the tunnel, naming a loopback host', tunnelVisitorRequest],
       ['from another device on the network', lanDeviceRequest],
+      ['from an app container that names a loopback host', appContainerRequest],
+      ['to the loopback address without the desktop app proof', () => desktopWindowRequest()],
     ])('ignores desktop=1 sent %s', async (_caller, buildRequest) => {
       config.get.mockReturnValue('https://hub.ci.computer');
 
@@ -2209,6 +3434,7 @@ describe('AuthController', () => {
           redirectUrl: null,
           hubOrigin: 'http://localhost:5002',
           desktop: false,
+          binding: 'test-binding',
         }),
       );
       config.get.mockImplementation((key: string) => {
@@ -2236,10 +3462,11 @@ describe('AuthController', () => {
         protocol: 'http',
         get: vi.fn((header: string) => (header === 'host' ? 'localhost:5002' : undefined)),
         headers: {},
-        cookies: {},
+        cookies: { [portalBindingCookieName('state-123')]: 'test-binding' },
       } as unknown as Request;
       const res = {
         redirect: vi.fn(),
+        clearCookie: vi.fn(),
         cookie: vi.fn(),
       } as unknown as Response;
 
@@ -2251,7 +3478,7 @@ describe('AuthController', () => {
         email: 'first@example.com',
         emailVerified: true,
       });
-      expect(res.redirect).toHaveBeenCalledWith('http://localhost:5002/home');
+      expect(res.redirect).toHaveBeenCalledWith(signedInAt('http://localhost:5002/home'));
     });
 
     it('refuses a Portal login that is not a member of this Hub org', async () => {
@@ -2265,6 +3492,7 @@ describe('AuthController', () => {
           redirectUrl: null,
           hubOrigin: 'http://localhost:5002',
           desktop: false,
+          binding: 'test-binding',
         }),
       );
       config.get.mockImplementation((key: string) => {
@@ -2292,10 +3520,11 @@ describe('AuthController', () => {
         protocol: 'http',
         get: vi.fn((header: string) => (header === 'host' ? 'localhost:5002' : undefined)),
         headers: {},
-        cookies: {},
+        cookies: { [portalBindingCookieName('state-123')]: 'test-binding' },
       } as unknown as Request;
       const res = {
         redirect: vi.fn(),
+        clearCookie: vi.fn(),
         cookie: vi.fn(),
       } as unknown as Response;
 
@@ -2316,6 +3545,7 @@ describe('AuthController', () => {
           redirectUrl: null,
           hubOrigin: 'http://localhost:5002',
           desktop: false,
+          binding: 'test-binding',
         }),
       );
       config.get.mockImplementation((key: string) => {
@@ -2342,9 +3572,9 @@ describe('AuthController', () => {
         protocol: 'http',
         get: vi.fn((header: string) => (header === 'host' ? 'localhost:5002' : undefined)),
         headers: {},
-        cookies: {},
+        cookies: { [portalBindingCookieName('state-123')]: 'test-binding' },
       } as unknown as Request;
-      const res = { redirect: vi.fn(), cookie: vi.fn() } as unknown as Response;
+      const res = { redirect: vi.fn(), cookie: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
 
       await authController.portalCallback(req, res, 'auth-code', 'state-123');
 
@@ -2362,6 +3592,7 @@ describe('AuthController', () => {
           redirectUrl: null,
           hubOrigin: 'http://localhost:5002',
           desktop: false,
+          binding: 'test-binding',
         }),
       );
       config.get.mockImplementation((key: string) => {
@@ -2388,10 +3619,11 @@ describe('AuthController', () => {
         protocol: 'http',
         get: vi.fn((header: string) => (header === 'host' ? 'localhost:5002' : undefined)),
         headers: {},
-        cookies: {},
+        cookies: { [portalBindingCookieName('state-123')]: 'test-binding' },
       } as unknown as Request;
       const res = {
         redirect: vi.fn(),
+        clearCookie: vi.fn(),
         cookie: vi.fn(),
       } as unknown as Response;
 
@@ -2399,7 +3631,120 @@ describe('AuthController', () => {
 
       expect(sessionManager.createSession).toHaveBeenCalledWith(7);
       expect(userRepository.updateUser).not.toHaveBeenCalled();
-      expect(res.redirect).toHaveBeenCalledWith('http://localhost:5002/home');
+      expect(res.redirect).toHaveBeenCalledWith(signedInAt('http://localhost:5002/home'));
+    });
+  });
+
+  describe('POST /auth/portal/desktop-waiting', () => {
+    const HUB_LOCAL_KEY = '3f'.repeat(32);
+    const UNISSUED = 'ab'.repeat(32);
+
+    /** The desktop shell's request from Rust: loopback through the published port, carrying `headers`. */
+    const shellRequest = (headers: Record<string, string> = {}) =>
+      ({
+        protocol: 'http',
+        ip: '172.18.0.1',
+        socket: { remoteAddress: '172.18.0.1' },
+        headers: { host: '127.0.0.1:5002', ...headers },
+        get: vi.fn((header: string) => (header === 'host' ? '127.0.0.1:5002' : undefined)),
+      }) as unknown as Request;
+
+    /** A fresh challenge from the Hub, then the headers that answer it with a proof made with `key`. */
+    const answeredChallenge = (key = HUB_LOCAL_KEY) => {
+      const { nonce } = authController.desktopSignInWaitChallenge(shellRequest());
+      return { 'x-ci-hub-desktop-nonce': nonce, 'x-ci-hub-desktop-proof': desktopSignInWaitProof(key, nonce) };
+    };
+
+    beforeEach(() => {
+      config.get.mockImplementation(((key: string) => (key === 'hubLocalKey' ? HUB_LOCAL_KEY : undefined)) as never);
+    });
+
+    it('records that the desktop app is waiting for a sign-in when it answers a fresh challenge with the host-local key', () => {
+      authController.desktopSignInWait(shellRequest(answeredChallenge()));
+
+      expect(cache.set).toHaveBeenCalledWith('portal_sso_desktop_present', '1', 600);
+    });
+
+    it('refuses the same nonce the second time', () => {
+      const headers = answeredChallenge();
+      authController.desktopSignInWait(shellRequest(headers));
+      cache.set.mockClear();
+
+      expect(() => authController.desktopSignInWait(shellRequest(headers))).toThrow(UnauthorizedException);
+      expect(cache.set).not.toHaveBeenCalled();
+    });
+
+    it('burns the nonce on a wrong proof, so the right one cannot follow it', () => {
+      const headers = answeredChallenge();
+
+      expect(() => authController.desktopSignInWait(shellRequest({ ...headers, 'x-ci-hub-desktop-proof': 'f'.repeat(64) }))).toThrow(
+        UnauthorizedException,
+      );
+      expect(() => authController.desktopSignInWait(shellRequest(headers))).toThrow(UnauthorizedException);
+      expect(cache.set).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['no nonce or proof', () => ({})],
+      [
+        'a nonce the Hub never issued',
+        () => ({ 'x-ci-hub-desktop-nonce': UNISSUED, 'x-ci-hub-desktop-proof': desktopSignInWaitProof(HUB_LOCAL_KEY, UNISSUED) }),
+      ],
+      ['no proof', () => ({ 'x-ci-hub-desktop-nonce': authController.desktopSignInWaitChallenge(shellRequest()).nonce })],
+      ['a proof made with another key', () => answeredChallenge('a'.repeat(64))],
+      ['a proof of the wrong length', () => ({ ...answeredChallenge(), 'x-ci-hub-desktop-proof': 'abc' })],
+      ['the host-local key itself in place of the proof', () => ({ ...answeredChallenge(), 'x-ci-hub-desktop-proof': HUB_LOCAL_KEY })],
+      ['the host-local key as a bearer token', () => ({ authorization: `Bearer ${HUB_LOCAL_KEY}` })],
+    ])('refuses a request with %s', (_case, headers: () => Record<string, string>) => {
+      expect(() => authController.desktopSignInWait(shellRequest(headers()))).toThrow(UnauthorizedException);
+      expect(cache.set).not.toHaveBeenCalled();
+    });
+
+    it('refuses every proof while the Hub has no host-local key', () => {
+      config.get.mockReturnValue(null as never);
+      const request = shellRequest(answeredChallenge(''));
+
+      expect(() => authController.desktopSignInWait(request)).toThrow(UnauthorizedException);
+      expect(cache.set).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['the bridge gateway, as a published port forwards it on Linux and the WSL engine', '172.17.0.1'],
+      ['the Docker Desktop VM', '192.168.65.1'],
+      ['loopback, for a Hub running on the host itself', '127.0.0.1'],
+      ['IPv4-mapped loopback', '::ffff:127.0.0.1'],
+    ])('hands the shell a challenge when its request arrives from %s', (_source, address) => {
+      const request = { ...shellRequest(), ip: address, socket: { remoteAddress: address } } as unknown as Request;
+
+      expect(authController.desktopSignInWaitChallenge(request).nonce).toMatch(/^[0-9a-f]{64}$/);
+    });
+
+    it.each([
+      [
+        'a caller through the tunnel',
+        {
+          ip: '10.20.0.2',
+          socket: { remoteAddress: '10.20.0.2' },
+          headers: { host: 'hub-device-org.example.com', 'x-forwarded-host': 'localhost:5002', 'cf-ray': '8c1f2e3d4a5b6c7d-AMS' },
+          host: 'hub-device-org.example.com',
+        },
+      ],
+      [
+        'another device on the LAN, by the host address',
+        { ip: '192.168.1.50', socket: { remoteAddress: '192.168.1.50' }, headers: { host: '192.168.1.20:5002' }, host: '192.168.1.20:5002' },
+      ],
+    ])('hands no challenge to %s, so it cannot push the shell nonce out', (_caller, { host, ...rest }) => {
+      const request = { protocol: 'http', ...rest, get: vi.fn((header: string) => (header === 'host' ? host : undefined)) } as unknown as Request;
+
+      expect(() => authController.desktopSignInWaitChallenge(request)).toThrow(ForbiddenException);
+    });
+
+    it('rate-limits the challenge like the other unauthenticated auth routes', () => {
+      for (let i = 0; i < 10; i += 1) {
+        authController.desktopSignInWaitChallenge(shellRequest());
+      }
+
+      expect(() => authController.desktopSignInWaitChallenge(shellRequest())).toThrow('AUTH_ERROR_RATE_LIMITED');
     });
   });
 
@@ -2415,7 +3760,9 @@ describe('AuthController', () => {
       mockHubOrigin();
       const req = {
         cookies: {},
-        get: vi.fn((header: string) => (header === 'x-ci-hub-session' ? 'sess-1' : undefined)),
+        // The middleware opened the presented token into `hubSessionId`; nothing else names the session.
+        hubSessionId: 'sess-1',
+        get: vi.fn(),
         headers: {},
       } as unknown as Request;
 
@@ -2425,7 +3772,8 @@ describe('AuthController', () => {
       expect(result.url).toEqual(
         expect.stringMatching(/^https:\/\/hub-core-2-myorg\.companionintelligence\.com\/api\/auth\/browser-handoff\?ticket=/),
       );
-      expect(cache.set).toHaveBeenCalledTimes(1);
+      // The ticket, then the issued record that explains a later refusal of it.
+      expect(cache.set).toHaveBeenCalledTimes(2);
       const [key, value, ttl] = cache.set.mock.calls[0];
       expect(key).toMatch(/^browser_handoff:/);
       expect(JSON.parse(value as string)).toEqual({ sessionId: 'sess-1', next });
@@ -2434,7 +3782,7 @@ describe('AuthController', () => {
 
     it('accepts an app sibling origin under the public domain root as the target', async () => {
       mockHubOrigin();
-      const req = { cookies: { 'ci-hub-sid': 'sess-2' }, get: vi.fn(), headers: {} } as unknown as Request;
+      const req = { hubSessionId: 'sess-2', cookies: {}, get: vi.fn(), headers: {} } as unknown as Request;
 
       const result = await authController.mintBrowserHandoff({ next: 'https://ci-hermes-core-2-myorg.companionintelligence.com/' }, req);
 
@@ -2443,7 +3791,7 @@ describe('AuthController', () => {
 
     it('rejects an off-domain handoff target', async () => {
       mockHubOrigin();
-      const req = { cookies: { 'ci-hub-sid': 'sess-3' }, get: vi.fn(), headers: {} } as unknown as Request;
+      const req = { hubSessionId: 'sess-3', cookies: {}, get: vi.fn(), headers: {} } as unknown as Request;
 
       await expect(authController.mintBrowserHandoff({ next: 'https://evil.example/steal' }, req)).rejects.toThrow();
       expect(cache.set).not.toHaveBeenCalled();
@@ -2451,7 +3799,7 @@ describe('AuthController', () => {
 
     it('rejects a co-tenant host on the shared registrable domain (different org slug)', async () => {
       mockHubOrigin();
-      const req = { cookies: { 'ci-hub-sid': 'sess-3b' }, get: vi.fn(), headers: {} } as unknown as Request;
+      const req = { hubSessionId: 'sess-3b', cookies: {}, get: vi.fn(), headers: {} } as unknown as Request;
 
       // Same registrable domain, but a different org's `-<slug>` boundary — not one of
       // this appliance's own app hosts, so it must not be an accepted redirect target.
@@ -2464,7 +3812,7 @@ describe('AuthController', () => {
     it('fails open with url:null when no public Hub origin is known yet', async () => {
       deviceRegistration.getFirstDeviceRegistration.mockResolvedValue(null as never);
       config.getConfig.mockReturnValue({ domain: 'example.com', localDomain: 'ci.lan' } as never);
-      const req = { cookies: { 'ci-hub-sid': 'sess-4' }, get: vi.fn(), headers: {} } as unknown as Request;
+      const req = { hubSessionId: 'sess-4', cookies: {}, get: vi.fn(), headers: {} } as unknown as Request;
 
       const result = await authController.mintBrowserHandoff({ next: `${hubOrigin}/x` }, req);
 
@@ -2482,7 +3830,7 @@ describe('AuthController', () => {
 
       // The real desktop flow arrives as a user-initiated navigation (Sec-Fetch-Site: none).
       const req = { cookies: {}, get: vi.fn((h: string) => (h === 'sec-fetch-site' ? 'none' : undefined)), headers: {} } as unknown as Request;
-      const res = { cookie: vi.fn(), redirect: vi.fn() } as unknown as Response;
+      const res = { cookie: vi.fn(), redirect: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
 
       await authController.consumeBrowserHandoff('ticket-abc', req, res);
 
@@ -2491,34 +3839,55 @@ describe('AuthController', () => {
       // The browser must NOT receive the minting (desktop) session id: sharing one id
       // let the browser's first-load rotation delete the desktop's session (#944).
       expect(sessionManager.createSession).toHaveBeenCalledWith(7);
-      expect(res.cookie).toHaveBeenCalledWith('ci-hub-sid', 'browser-sess', expect.objectContaining({ httpOnly: true }));
-      expect(res.redirect).toHaveBeenCalledWith(next);
+      // No session cookie: it reached every app on the Hub's host. The body carries the signed token.
+      expect(res.cookie).not.toHaveBeenCalled();
+      expect(res.redirect).toHaveBeenCalledWith(signedInAt(next));
     });
 
-    it('consume keeps a live session the browser already holds for the same user', async () => {
+    it('consume mints a fresh browser session whatever cookie the browser brings', async () => {
+      // It used to reuse the session a `ci-hub-sid` named. The cookie names nothing now: it reached
+      // every app on the Hub's host, so a session it names proves nothing about this browser.
       mockHubOrigin();
       config.get.mockReturnValue({ experimental: { insecureCookie: true } } as never);
       const next = `${hubOrigin}/api/memory-connect/start?app=urn:store:ci-hermes`;
       cache.get.mockReturnValue(JSON.stringify({ sessionId: 'sess-1', next }));
       sessionManager.resolveSessionUserId.mockReturnValue(7 as never);
       sessionManager.touchSession.mockReturnValue(true);
+      sessionManager.createSession.mockResolvedValue('browser-sess');
 
       const req = {
         cookies: { 'ci-hub-sid': 'browser-already-here' },
         get: vi.fn((h: string) => (h === 'sec-fetch-site' ? 'none' : undefined)),
         headers: {},
       } as unknown as Request;
-      const res = { cookie: vi.fn(), redirect: vi.fn() } as unknown as Response;
+      const res = { cookie: vi.fn(), redirect: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
 
       await authController.consumeBrowserHandoff('ticket-abc', req, res);
 
-      // Re-minting on every open would leave a trail of week-long sessions behind.
-      expect(sessionManager.createSession).not.toHaveBeenCalled();
-      expect(sessionManager.touchSession).toHaveBeenCalledWith('browser-already-here');
-      // The SAME id is re-planted: `touchSession` moved the server expiry, and the cookie's
-      // own `maxAge` has to move with it or it dies mid-consent.
-      expect(res.cookie).toHaveBeenCalledWith('ci-hub-sid', 'browser-already-here', expect.objectContaining({ httpOnly: true }));
-      expect(res.redirect).toHaveBeenCalledWith(next);
+      expect(sessionManager.createSession).toHaveBeenCalledWith(7);
+      expect(sessionManager.touchSession).not.toHaveBeenCalled();
+      expect(res.cookie).not.toHaveBeenCalled();
+      expect(res.redirect).toHaveBeenCalledWith(`${next}#ci_hub_session=${encodeURIComponent(tokenFor('browser-sess'))}`);
+    });
+
+    it('consume sends a handoff to an app through the Hub page that signs in to it, never with the token on the app', async () => {
+      mockHubOrigin();
+      config.get.mockReturnValue({ experimental: { insecureCookie: true } } as never);
+      const next = 'https://ci-hermes-core-2-myorg.companionintelligence.com/chat';
+      cache.get.mockReturnValue(JSON.stringify({ sessionId: 'sess-1', next }));
+      sessionManager.resolveSessionUserId.mockReturnValue(7 as never);
+      sessionManager.createSession.mockResolvedValue('browser-sess');
+
+      const req = { cookies: {}, get: vi.fn((h: string) => (h === 'sec-fetch-site' ? 'none' : undefined)), headers: {} } as unknown as Request;
+      const res = { cookie: vi.fn(), redirect: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
+
+      await authController.consumeBrowserHandoff('ticket-abc', req, res);
+
+      const location = new URL(vi.mocked(res.redirect).mock.calls[0]?.[0] as unknown as string);
+      expect(location.origin).toBe(hubOrigin);
+      expect(location.pathname).toBe('/sso');
+      expect(location.searchParams.get('redirect')).toBe(next);
+      expect(location.hash).toBe(`#ci_hub_session=${encodeURIComponent(tokenFor('browser-sess'))}`);
     });
 
     it('consume replaces a browser session that is only in its rotation-grace window', async () => {
@@ -2536,14 +3905,15 @@ describe('AuthController', () => {
         get: vi.fn((h: string) => (h === 'sec-fetch-site' ? 'none' : undefined)),
         headers: {},
       } as unknown as Request;
-      const res = { cookie: vi.fn(), redirect: vi.fn() } as unknown as Response;
+      const res = { cookie: vi.fn(), redirect: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
 
       await authController.consumeBrowserHandoff('ticket-abc', req, res);
 
       // Reusing it would hand the flow a cookie that dies part-way through consent.
       expect(sessionManager.createSession).toHaveBeenCalledWith(7);
-      expect(res.cookie).toHaveBeenCalledWith('ci-hub-sid', 'browser-sess', expect.objectContaining({ httpOnly: true }));
-      expect(res.redirect).toHaveBeenCalledWith(next);
+      // No session cookie: it reached every app on the Hub's host. The body carries the signed token.
+      expect(res.cookie).not.toHaveBeenCalled();
+      expect(res.redirect).toHaveBeenCalledWith(signedInAt(next));
     });
 
     it('consume replaces a session the browser holds for a DIFFERENT user', async () => {
@@ -2559,13 +3929,14 @@ describe('AuthController', () => {
         get: vi.fn((h: string) => (h === 'sec-fetch-site' ? 'none' : undefined)),
         headers: {},
       } as unknown as Request;
-      const res = { cookie: vi.fn(), redirect: vi.fn() } as unknown as Response;
+      const res = { cookie: vi.fn(), redirect: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
 
       await authController.consumeBrowserHandoff('ticket-abc', req, res);
 
       expect(sessionManager.createSession).toHaveBeenCalledWith(7);
-      expect(res.cookie).toHaveBeenCalledWith('ci-hub-sid', 'browser-sess', expect.objectContaining({ httpOnly: true }));
-      expect(res.redirect).toHaveBeenCalledWith(next);
+      // No session cookie: it reached every app on the Hub's host. The body carries the signed token.
+      expect(res.cookie).not.toHaveBeenCalled();
+      expect(res.redirect).toHaveBeenCalledWith(signedInAt(next));
     });
 
     it('consume redirects home without delegating when the minting session died inside the ticket window', async () => {
@@ -2575,13 +3946,13 @@ describe('AuthController', () => {
       sessionManager.resolveSessionUserId.mockReturnValue(null as never);
 
       const req = { cookies: {}, get: vi.fn((h: string) => (h === 'sec-fetch-site' ? 'none' : undefined)), headers: {} } as unknown as Request;
-      const res = { cookie: vi.fn(), redirect: vi.fn() } as unknown as Response;
+      const res = { cookie: vi.fn(), redirect: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
 
       await authController.consumeBrowserHandoff('ticket-abc', req, res);
 
       expect(sessionManager.createSession).not.toHaveBeenCalled();
       expect(res.cookie).not.toHaveBeenCalled();
-      expect(res.redirect).toHaveBeenCalledWith('/');
+      expect(res.redirect).toHaveBeenCalledWith('/?handoff=failed');
     });
 
     it.each([
@@ -2591,24 +3962,51 @@ describe('AuthController', () => {
       // A spoofed multi-valued header (duplicate Sec-Fetch-Site joined by the runtime)
       // must not slip past the `=== 'none'` allow-list.
       'none, cross-site',
-    ])('consume rejects a %s navigation without touching the ticket or setting a cookie', async (fetchSite) => {
+    ])('consume answers a %s navigation with a confirmation page, spending nothing and planting no cookie', async (fetchSite) => {
+      mockHubOrigin();
+      const next = `${hubOrigin}/api/memory-connect/start?app=urn:store:ci-hermes`;
+      cache.get.mockReturnValue(JSON.stringify({ sessionId: 'sess-1', next }));
+      sessionManager.resolveSessionUserId.mockReturnValue(7 as never);
+      userRepository.getUserDtoById.mockResolvedValue({ id: 7, username: 'op@example.com', accessStatus: 'active' } as never);
       const req = { cookies: {}, get: vi.fn((h: string) => (h === 'sec-fetch-site' ? fetchSite : undefined)), headers: {} } as unknown as Request;
-      const res = { cookie: vi.fn(), redirect: vi.fn() } as unknown as Response;
+      const res = {
+        cookie: vi.fn(),
+        redirect: vi.fn(),
+        clearCookie: vi.fn(),
+        status: vi.fn(),
+        setHeader: vi.fn(),
+        send: vi.fn(),
+      } as unknown as Response;
 
       await authController.consumeBrowserHandoff('ticket-abc', req, res);
 
-      // Login-CSRF guard fires before the ticket is read, so a lured victim never
-      // gets the attacker's session and the ticket is left intact.
-      expect(cache.get).not.toHaveBeenCalled();
+      // Login-CSRF guard: a lured, page-initiated request gets a page that asks, never a session,
+      // and the ticket is neither spent nor redeemed.
       expect(cache.del).not.toHaveBeenCalled();
       expect(res.cookie).not.toHaveBeenCalled();
-      expect(res.redirect).toHaveBeenCalledWith('/');
+      expect(sessionManager.createSession).not.toHaveBeenCalled();
+      expect(res.redirect).not.toHaveBeenCalled();
+      const html = vi.mocked(res.send).mock.calls[0]?.[0] as string;
+      expect(html).toContain('Continue in this browser?');
+      // Kept out of Cloudflare's email obfuscation, which would turn it into a dead "[email protected]" link.
+      expect(html).toContain('<strong><!--email_off-->op@example.com<!--/email_off--></strong> and connect an app to CI Memory');
+      expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'no-store, no-transform');
+      expect(html).toContain('<form id="handoff-confirm" method="post" action="/api/auth/browser-handoff/confirm">');
+      expect(html).toContain('data-busy="Connecting…"');
+      expect(html).toContain('name="ticket" value="ticket-abc"');
+      // The page must not be framed by the site that lured someone to it, or that site could take the click.
+      expect(res.setHeader).toHaveBeenCalledWith('Content-Security-Policy', expect.stringContaining("frame-ancestors 'none'"));
+      expect(res.setHeader).toHaveBeenCalledWith('X-Frame-Options', 'DENY');
+      // Chrome applies form-action to the redirects after Continue, and the last one leaves this
+      // origin (CI Memory's consent page), so the directive would silently stop the flow.
+      const csp = vi.mocked(res.setHeader).mock.calls.find(([name]) => name === 'Content-Security-Policy')?.[1];
+      expect(csp).not.toContain('form-action');
     });
 
     it('consume redirects home for a missing/expired/replayed ticket without setting a cookie or writing', async () => {
       cache.get.mockReturnValue(undefined as never);
       const req = { cookies: {}, get: vi.fn(), headers: {} } as unknown as Request;
-      const res = { cookie: vi.fn(), redirect: vi.fn() } as unknown as Response;
+      const res = { cookie: vi.fn(), redirect: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
 
       await authController.consumeBrowserHandoff('gone', req, res);
 
@@ -2616,19 +4014,221 @@ describe('AuthController', () => {
       // A cache miss must not trigger a delete — this endpoint is unauthenticated, so a
       // per-miss SQLite write would be a flood amplifier.
       expect(cache.del).not.toHaveBeenCalled();
-      expect(res.redirect).toHaveBeenCalledWith('/');
+      expect(res.redirect).toHaveBeenCalledWith('/?handoff=failed');
     });
 
     it('consume refuses a stored next that no longer passes validation', async () => {
       mockHubOrigin();
       cache.get.mockReturnValue(JSON.stringify({ sessionId: 'sess-1', next: 'https://evil.example/x' }));
       const req = { cookies: {}, get: vi.fn(), headers: {} } as unknown as Request;
-      const res = { cookie: vi.fn(), redirect: vi.fn() } as unknown as Response;
+      const res = { cookie: vi.fn(), redirect: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
 
       await authController.consumeBrowserHandoff('ticket-xyz', req, res);
 
       expect(res.cookie).not.toHaveBeenCalled();
-      expect(res.redirect).toHaveBeenCalledWith('/');
+      expect(res.redirect).toHaveBeenCalledWith('/?handoff=failed');
+    });
+
+    describe('saying why a real ticket was refused', () => {
+      const next = `${hubOrigin}/api/memory-connect/start?app=urn:store:ci-hermes`;
+      const issuedKey = (ticket: string) => `browser_handoff_issued:${ticket}`;
+      /** A cache holding exactly these keys, so the ticket and its issued record can differ. */
+      const cacheWith = (entries: Record<string, unknown>) =>
+        cache.get.mockImplementation(((key: string) => (key in entries ? JSON.stringify(entries[key]) : undefined)) as never);
+      const navigation = (fetchSite: string | undefined) =>
+        ({
+          cookies: {},
+          get: vi.fn((h: string) =>
+            h === 'sec-fetch-site' ? fetchSite : h === 'user-agent' ? 'Mozilla/5.0 (Linux; Android 10; K) Chrome/157' : undefined,
+          ),
+          headers: {},
+        }) as unknown as Request;
+      const response = () => ({ cookie: vi.fn(), redirect: vi.fn(), clearCookie: vi.fn() }) as unknown as Response;
+
+      it('mint keeps an issued record that outlives the ticket', async () => {
+        mockHubOrigin();
+        const req = { hubSessionId: 'sess-1', cookies: {}, get: vi.fn(), headers: {} } as unknown as Request;
+
+        await authController.mintBrowserHandoff({ next }, req);
+
+        expect(cache.set).toHaveBeenCalledWith(expect.stringMatching(/^browser_handoff:/), expect.any(String), 60);
+        expect(cache.set).toHaveBeenCalledWith(expect.stringMatching(/^browser_handoff_issued:/), expect.stringContaining('"mintedAt"'), 600);
+      });
+
+      it('logs a cross-site arrival of a spent ticket instead of offering to confirm it', async () => {
+        cacheWith({ [issuedKey('ticket-abc')]: { mintedAt: Date.now() - 3000, usedAt: Date.now() - 1000 } });
+        const res = response();
+
+        await authController.consumeBrowserHandoff('ticket-abc', navigation('cross-site'), res);
+
+        expect(res.redirect).toHaveBeenCalledWith('/?handoff=failed');
+        expect(logger.warn).toHaveBeenCalledWith(
+          expect.stringMatching(/minted 3s ago, used 1s ago: already used \(sec-fetch-site=cross-site, ua=Mozilla/),
+        );
+      });
+
+      it('gives a confirmation page five minutes from the mint, and no more on a reload', async () => {
+        mockHubOrigin();
+        cacheWith({ [issuedKey('ticket-abc')]: { mintedAt: Date.now() - 10_000 }, 'browser_handoff:ticket-abc': { sessionId: 'sess-1', next } });
+        sessionManager.resolveSessionUserId.mockReturnValue(7 as never);
+        userRepository.getUserDtoById.mockResolvedValue({ id: 7, username: 'op@example.com', accessStatus: 'active' } as never);
+        const res = { ...response(), status: vi.fn(), setHeader: vi.fn(), send: vi.fn() } as unknown as Response;
+
+        await authController.consumeBrowserHandoff('ticket-abc', navigation('cross-site'), res);
+
+        const [, , ttl] = cache.set.mock.calls.find(([key]) => key === 'browser_handoff:ticket-abc') ?? [];
+        expect(ttl).toBeGreaterThanOrEqual(289);
+        expect(ttl).toBeLessThanOrEqual(290);
+        expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('asked to confirm a ticket minted 10s ago (sec-fetch-site=cross-site)'));
+      });
+
+      it('will not offer to sign a browser in as a person whose access was revoked', async () => {
+        mockHubOrigin();
+        cacheWith({ [issuedKey('ticket-abc')]: { mintedAt: Date.now() - 1000 }, 'browser_handoff:ticket-abc': { sessionId: 'sess-1', next } });
+        sessionManager.resolveSessionUserId.mockReturnValue(7 as never);
+        userRepository.getUserDtoById.mockResolvedValue({ id: 7, username: 'op@example.com', accessStatus: 'revoked' } as never);
+        const res = { ...response(), status: vi.fn(), setHeader: vi.fn(), send: vi.fn() } as unknown as Response;
+
+        await authController.consumeBrowserHandoff('ticket-abc', navigation('cross-site'), res);
+
+        expect(res.send).not.toHaveBeenCalled();
+        expect(res.redirect).toHaveBeenCalledWith('/?handoff=failed');
+      });
+
+      it('logs a second arrival of a ticket as already used, and when', async () => {
+        cacheWith({ [issuedKey('ticket-abc')]: { mintedAt: Date.now() - 5000, usedAt: Date.now() - 2000 } });
+        const res = response();
+
+        await authController.consumeBrowserHandoff('ticket-abc', navigation('none'), res);
+
+        expect(res.redirect).toHaveBeenCalledWith('/?handoff=failed');
+        expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('minted 5s ago, used 2s ago: already used'));
+        // A miss still writes nothing.
+        expect(cache.set).not.toHaveBeenCalled();
+        expect(cache.del).not.toHaveBeenCalled();
+      });
+
+      it('logs a ticket that is gone without ever being used', async () => {
+        cacheWith({ [issuedKey('ticket-abc')]: { mintedAt: Date.now() - 70_000 } });
+        const res = response();
+
+        await authController.consumeBrowserHandoff('ticket-abc', navigation(undefined), res);
+
+        expect(logger.warn).toHaveBeenCalledWith(
+          expect.stringContaining('minted 70s ago: not found and never used (tickets last 60s) (sec-fetch-site=absent'),
+        );
+      });
+
+      it('stays silent and write-free for a ticket this Hub never issued', async () => {
+        cacheWith({});
+        const res = response();
+
+        await authController.consumeBrowserHandoff('made-up', navigation('cross-site'), res);
+        await authController.consumeBrowserHandoff('made-up', navigation('none'), res);
+
+        expect(logger.warn).not.toHaveBeenCalled();
+        expect(cache.set).not.toHaveBeenCalled();
+        expect(cache.del).not.toHaveBeenCalled();
+        expect(res.redirect).toHaveBeenCalledWith('/?handoff=failed');
+      });
+
+      it('logs the minting session having ended', async () => {
+        mockHubOrigin();
+        cacheWith({ [issuedKey('ticket-abc')]: { mintedAt: Date.now() - 1000 }, 'browser_handoff:ticket-abc': { sessionId: 'sess-gone', next } });
+        sessionManager.resolveSessionUserId.mockReturnValue(null as never);
+
+        await authController.consumeBrowserHandoff('ticket-abc', navigation('none'), response());
+
+        expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('the minting session has ended'));
+      });
+
+      it('records the use on success, so a repeat can be told apart from an expiry', async () => {
+        mockHubOrigin();
+        config.get.mockReturnValue({ experimental: { insecureCookie: true } } as never);
+        cacheWith({ [issuedKey('ticket-abc')]: { mintedAt: Date.now() - 2000 }, 'browser_handoff:ticket-abc': { sessionId: 'sess-1', next } });
+        sessionManager.resolveSessionUserId.mockReturnValue(7 as never);
+        sessionManager.createSession.mockResolvedValue('browser-sess');
+        const res = response();
+
+        await authController.consumeBrowserHandoff('ticket-abc', navigation('none'), res);
+
+        expect(res.redirect).toHaveBeenCalledWith(signedInAt(next));
+        expect(cache.set).toHaveBeenCalledWith(issuedKey('ticket-abc'), expect.stringContaining('"usedAt"'), 600);
+        expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('redeemed a ticket minted 2s ago'));
+        expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('[BrowserHandoff]'));
+      });
+    });
+
+    describe("the confirmation page's Continue", () => {
+      const next = `${hubOrigin}/api/memory-connect/start?app=urn:store:ci-hermes`;
+      const post = (headers: Record<string, string>) =>
+        ({ method: 'POST', cookies: {}, get: vi.fn((h: string) => headers[h.toLowerCase()]), headers: {} }) as unknown as Request;
+      const response = () => ({ cookie: vi.fn(), redirect: vi.fn(), clearCookie: vi.fn() }) as unknown as Response;
+      const liveTicket = () => {
+        mockHubOrigin();
+        config.get.mockReturnValue({ experimental: { insecureCookie: true } } as never);
+        cache.get.mockImplementation(((key: string) =>
+          key === 'browser_handoff:ticket-abc' ? JSON.stringify({ sessionId: 'sess-1', next }) : undefined) as never);
+        sessionManager.resolveSessionUserId.mockReturnValue(7 as never);
+        sessionManager.createSession.mockResolvedValue('browser-sess');
+      };
+
+      it('redeems on a same-origin POST from the page, then continues with a 303', async () => {
+        liveTicket();
+        const res = response();
+
+        await authController.confirmBrowserHandoff('ticket-abc', post({ 'sec-fetch-site': 'same-origin', origin: hubOrigin }), res);
+
+        expect(cache.del).toHaveBeenCalledWith('browser_handoff:ticket-abc');
+        // No session cookie: it reached every app on the Hub's host. The body carries the signed token.
+        expect(res.cookie).not.toHaveBeenCalled();
+        expect(res.redirect).toHaveBeenCalledWith(303, signedInAt(next));
+      });
+
+      it('accepts the null Origin Chrome sends for a same-origin post when the page hides its referrer', async () => {
+        liveTicket();
+        const res = response();
+
+        await authController.confirmBrowserHandoff('ticket-abc', post({ 'sec-fetch-site': 'same-origin', origin: 'null' }), res);
+
+        expect(res.redirect).toHaveBeenCalledWith(303, signedInAt(next));
+      });
+
+      it('accepts a browser without Fetch Metadata when its Origin is this Hub', async () => {
+        liveTicket();
+        const res = response();
+
+        await authController.confirmBrowserHandoff('ticket-abc', post({ origin: hubOrigin }), res);
+
+        expect(res.redirect).toHaveBeenCalledWith(303, signedInAt(next));
+      });
+
+      it.each([
+        ['a cross-site POST', { 'sec-fetch-site': 'cross-site', origin: 'https://evil.example' }],
+        ['a same-site POST from an app host', { 'sec-fetch-site': 'same-site', origin: 'https://ci-hermes-core-2-myorg.companionintelligence.com' }],
+        ['a same-origin claim with another Origin', { 'sec-fetch-site': 'same-origin', origin: 'https://evil.example' }],
+        ['no Fetch Metadata and a foreign Origin', { origin: 'https://evil.example' }],
+        ['no Fetch Metadata and no Origin', {}],
+        ['no Fetch Metadata and a null Origin', { origin: 'null' }],
+        ['a cross-site POST with a null Origin', { 'sec-fetch-site': 'cross-site', origin: 'null' }],
+      ])('refuses %s without spending the ticket or planting a session', async (_label, headers) => {
+        liveTicket();
+        const res = response();
+
+        await authController.confirmBrowserHandoff('ticket-abc', post(headers), res);
+
+        expect(cache.del).not.toHaveBeenCalled();
+        expect(res.cookie).not.toHaveBeenCalled();
+        expect(res.redirect).toHaveBeenCalledWith(303, '/?handoff=failed');
+      });
+
+      it('refuses a POST without a ticket', async () => {
+        const res = response();
+
+        await authController.confirmBrowserHandoff(undefined, post({ 'sec-fetch-site': 'same-origin', origin: hubOrigin }), res);
+
+        expect(res.redirect).toHaveBeenCalledWith(303, '/?handoff=failed');
+      });
     });
   });
 
@@ -2636,9 +4236,9 @@ describe('AuthController', () => {
    * `cihub claim` — the headless way to create a Hub's first operator.
    *
    * The gap it closes: `cihub register` writes the device key and the organization id and stops. The
-   * `user` row was only ever written by an interactive Portal login, and `POST /api/auth/register`
-   * cannot finish unattended because Portal answers it with `requiresEmailVerification`. So a Hub
-   * installed over SSH came up paired, keyed, and unable to authenticate its own operator API.
+   * `user` row was only ever written by an interactive Portal login. `POST /api/auth/register`
+   * refuses on a paired Hub, since the CI Account it would make is in no organization (#2061). So a
+   * Hub installed over SSH came up paired and keyed but unable to authenticate its own operator API.
    *
    * These tests are about the three gates, because a claim route that is one gate short is a way in
    * rather than a way out: the host-local device key, a Hub that is actually paired, and no existing
@@ -2668,7 +4268,11 @@ describe('AuthController', () => {
       // Not a second user-creation path. `admitHubPerson` owns the first-operator bootstrap rule (the
       // one admission that skips the Portal membership check), so this route asks it rather than
       // writing a row of its own.
-      expect(authService.admitHubPerson).toHaveBeenCalledWith({ issuer: '', subject: null, email: 'Owner@Example.com', emailVerified: false });
+      // The device-key claim is the one subject-less first operator a paired Hub admits (#2062).
+      expect(authService.admitHubPerson).toHaveBeenCalledWith(
+        { issuer: '', subject: null, email: 'Owner@Example.com', emailVerified: false },
+        { hostLocalClaim: true },
+      );
     });
 
     it('refuses a caller who did not present the host-local key', async () => {
@@ -2783,6 +4387,8 @@ describe('AuthController — GET /api/auth/favicon.png, real HTTP dispatch', () 
         { provide: BearerOrgMembershipCache, useValue: mock<BearerOrgMembershipCache>() },
         { provide: SessionUserCache, useValue: mock<SessionUserCache>() },
         { provide: ForwardAuthIdentityResolver, useValue: mock<ForwardAuthIdentityResolver>() },
+        // Memory's answer about an API key; tests that care set what Memory would answer.
+        { provide: MemoryApiKeyCheck, useValue: mock<MemoryApiKeyCheck>() },
         AuthRateLimiter,
       ],
     }).compile();
@@ -2807,5 +4413,73 @@ describe('AuthController — GET /api/auth/favicon.png, real HTTP dispatch', () 
     expect(res.headers.get('content-type')).toBe('image/png');
     expect(res.headers.get('cache-control')).toBe('public, max-age=86400');
     expect(Buffer.from(await res.arrayBuffer()).equals(HUB_FAVICON_PNG)).toBe(true);
+  });
+});
+
+describe('AuthController — POST /api/auth/portal/desktop-waiting, real HTTP dispatch', () => {
+  const HUB_LOCAL_KEY = '3f'.repeat(32);
+  let app: INestApplication;
+  let baseUrl: string;
+  const config = mock<ConfigurationService>();
+  const cache = mock<CacheService>();
+
+  beforeAll(async () => {
+    config.get.mockImplementation(((key: string) => (key === 'hubLocalKey' ? HUB_LOCAL_KEY : undefined)) as never);
+    const moduleRef = await Test.createTestingModule({
+      controllers: [AuthController],
+      providers: [
+        { provide: AuthService, useValue: mock<AuthService>() },
+        { provide: ForwardAuthSecretResolver, useValue: mock<ForwardAuthSecretResolver>() },
+        { provide: LoggerService, useValue: mock<LoggerService>() },
+        { provide: ConfigurationService, useValue: config },
+        { provide: CacheService, useValue: cache },
+        { provide: UserRepository, useValue: mock<UserRepository>() },
+        { provide: SessionManager, useValue: mock<SessionManager>() },
+        { provide: RegistrationService, useValue: mock<RegistrationService>() },
+        { provide: DeviceRegistrationRepository, useValue: mock<DeviceRegistrationRepository>() },
+        { provide: BearerOrgMembershipCache, useValue: mock<BearerOrgMembershipCache>() },
+        { provide: SessionUserCache, useValue: mock<SessionUserCache>() },
+        { provide: ForwardAuthIdentityResolver, useValue: mock<ForwardAuthIdentityResolver>() },
+        // Memory's answer about an API key; tests that care set what Memory would answer.
+        { provide: MemoryApiKeyCheck, useValue: mock<MemoryApiKeyCheck>() },
+        AuthRateLimiter,
+      ],
+    }).compile();
+
+    app = moduleRef.createNestApplication();
+    app.setGlobalPrefix('/api');
+    await app.init();
+    await app.listen(0);
+    const address = app.getHttpServer().address();
+    baseUrl = `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}`;
+  });
+
+  afterAll(async () => {
+    await app?.close();
+  });
+
+  afterEach(() => {
+    cache.set.mockClear();
+  });
+
+  it('answers 204 to the challenge, path and headers the desktop shell sends', async () => {
+    const challenge = await fetch(`${baseUrl}/api/auth/portal/desktop-waiting/challenge`, { method: 'POST' });
+    expect(challenge.status).toBe(200);
+    const { nonce } = (await challenge.json()) as { nonce: string };
+
+    const res = await fetch(`${baseUrl}/api/auth/portal/desktop-waiting`, {
+      method: 'POST',
+      headers: { 'X-CI-Hub-Desktop-Nonce': nonce, 'X-CI-Hub-Desktop-Proof': desktopSignInWaitProof(HUB_LOCAL_KEY, nonce) },
+    });
+
+    expect(res.status).toBe(204);
+    expect(cache.set).toHaveBeenCalledWith('portal_sso_desktop_present', '1', 600);
+  });
+
+  it('answers 401 without the proof', async () => {
+    const res = await fetch(`${baseUrl}/api/auth/portal/desktop-waiting`, { method: 'POST' });
+
+    expect(res.status).toBe(401);
+    expect(cache.set).not.toHaveBeenCalled();
   });
 });

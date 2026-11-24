@@ -22,6 +22,10 @@ describe('bundled hub assets', () => {
     expect(BUNDLED_HUB_COMPOSE).toMatch(/^\s+ci-hub-queue:$/m);
     expect(BUNDLED_HUB_COMPOSE).toMatch(/^\s+ci-hub:$/m);
     expect(BUNDLED_HUB_COMPOSE).not.toMatch(/^\s+build:$/m);
+    // The env file has to name the broker password: no shared `admin` fallback (Companion-Hub#884).
+    expect(BUNDLED_HUB_COMPOSE).toMatch(/^\s+RABBITMQ_DEFAULT_PASS: \$\{RABBITMQ_PASSWORD:\?/m);
+    expect(BUNDLED_HUB_COMPOSE).toMatch(/^\s+RABBITMQ_PASSWORD: \$\{RABBITMQ_PASSWORD:\?/m);
+    expect(BUNDLED_HUB_COMPOSE).not.toContain('RABBITMQ_PASSWORD:-');
     expect(BUNDLED_TRAEFIK_YML).toContain('{{ACME_EMAIL}}');
     expect(BUNDLED_TRAEFIK_DYNAMIC_YML.length).toBeGreaterThan(0);
     // init-traefik writes it as is, before the Hub runs, and Traefik reads it as a Go template: a

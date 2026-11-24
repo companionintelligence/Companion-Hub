@@ -80,7 +80,7 @@ export function ReadyStep({
   return (
     <div className="flex flex-1 flex-col gap-4" data-testid="pool-setup-step-ready">
       <div className="space-y-0.5">
-        <h3 tabIndex={-1} data-step-heading className="text-base font-semibold outline-none">
+        <h3 tabIndex={-1} data-step-heading className="text-base font-medium outline-none">
           {t('HUB_POOL_SETUP_READY_TITLE')}
         </h3>
         <p className="text-sm text-muted-foreground">{t('HUB_POOL_SETUP_READY_INTRO')}</p>
@@ -150,7 +150,7 @@ function CheckRow({
           <span className="text-sm font-medium">{t(CHECK_LABEL_KEYS[check.id])}</span>
           <span className="text-xs text-muted-foreground">{t(STATE_LABEL_KEYS[display])}</span>
         </div>
-        {check.detailKey ? <p className="break-words text-xs text-muted-foreground">{t(check.detailKey, check.detailParams)}</p> : null}
+        {check.detailKey ? <p className="break-words text-xs text-muted-foreground">{t(check.detailKey, check.detailParams ?? {})}</p> : null}
         {waitingForSignIn ? <p className="text-xs text-muted-foreground">{t('HUB_POOL_SETUP_TAILSCALE_WAITING')}</p> : null}
         {check.remedy ? (
           <code

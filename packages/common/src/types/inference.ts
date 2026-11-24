@@ -37,9 +37,11 @@ export interface HardwareProfile {
      * Which Docker backend the daemon is (from `docker info` OS/kernel). Drives GPU
      * setup guidance: Docker Desktop manages the container GPU runtime itself, a
      * native engine inside WSL2 needs nvidia-container-toolkit installed in the
-     * distro, and native Linux needs it on the host. Optional on older profiles.
+     * distro, and native Linux needs it on the host. `apple-container` is Apple's `container`
+     * runtime behind socktainer's Docker-compatible socket (experimental; no container GPU).
+     * Optional on older profiles.
      */
-    containerHostKind?: 'docker-desktop' | 'wsl-engine' | 'native-linux' | 'unknown';
+    containerHostKind?: 'docker-desktop' | 'wsl-engine' | 'native-linux' | 'apple-container' | 'unknown';
   };
   npu: {
     available: boolean;
@@ -166,7 +168,7 @@ export interface ModelMemoryUsage {
  * `getStatus().backends`, the discovered-model list, `hub_list_inference_backends`, and pool
  * candidate selection with no compile error anywhere.
  */
-export const INFERENCE_BACKEND_TYPES = ['ollama', 'vllm', 'lemonade', 'omlx'] as const;
+export const INFERENCE_BACKEND_TYPES = ['ollama', 'vllm', 'lemonade', 'omlx', 'localai'] as const;
 
 export type InferenceBackendType = (typeof INFERENCE_BACKEND_TYPES)[number];
 
@@ -176,6 +178,36 @@ export type ModelPurpose = 'general' | 'coding' | 'reasoning' | 'fast' | 'voice'
 export type ModelState = 'available' | 'pulling' | 'pulled' | 'loading' | 'loaded' | 'pinned' | 'unloading' | 'error';
 
 export type TierRecommendation = 'recommended' | 'available' | 'not-recommended';
+
+/**
+ * What the Hub would load a text model at on this node's empty card, for the model picker: the window,
+ * the KV cache it would use for it, and whether that meets the context floors of the installed apps
+ * it could serve. From the same arithmetic as the load itself (`InferenceRouterService.contextPlanFor`),
+ * so the picker cannot promise a window the load will not give.
+ */
+export interface ModelContextPlan {
+  /** Tokens. Null when not even the smallest window (4096) fits an empty card here. */
+  window: number | null;
+  /** Quantized only when the 16-bit cache cannot reach an installed app's floor and the engine offers it: `q8_0`, or `q4_0` when only it reaches the floor. */
+  kvCacheType: 'f16' | 'q8_0' | 'q4_0';
+  /**
+   * Who sets the cache: `hub` (Lemonade, per model, as the Hub plans) or `server` (Ollama, one setting for
+   * every model, `OLLAMA_KV_CACHE_TYPE`, as the operator stated it to the Hub).
+   */
+  kvCacheSetBy: 'hub' | 'server';
+  /**
+   * For an Ollama model short of an installed app's floor: the server cache setting that would reach it,
+   * and the window it would give. The Hub cannot change it; the operator sets it on the daemon and states
+   * it (`inferenceOllamaKvCacheType`). Null when nothing is short, or nothing more compact would reach it.
+   */
+  kvCacheAdvice: { type: 'q8_0' | 'q4_0'; window: number; setting: string } | null;
+  /** `measured`: the per-token cost is measured (catalog or engine). `estimated`: a fixed assumption stood in. */
+  basis: 'measured' | 'estimated';
+  /** The model's catalog row was measured running with q8_0 (`runtime.kvCacheType`). */
+  kvCacheMeasured: boolean;
+  /** The largest floor among installed apps this model could serve, and whether `window` reaches it; null when none has one. */
+  floor: { minContextLength: number; apps: string[]; met: boolean } | null;
+}
 
 export interface CuratedModel {
   id: string;
@@ -233,6 +265,15 @@ export interface CuratedModel {
      * `head_count_kv`). Absent: the engine's own figure, else the context ladder's assumption.
      */
     kvMbPerToken?: number;
+    /**
+     * A quantized KV cache type this model was MEASURED to run well with: `q8_0`, 34 bytes per 32 values
+     * against 64, so twice the window in the same memory (Qwen 3.8 27B holds 65536 tokens on a 24 GiB
+     * card where its 16-bit cache holds 32768). Informational: the Hub offers q8_0 to every llama.cpp
+     * model on Lemonade when 16-bit cannot reach an installed app's floor, measured or not, and falls
+     * back to 16-bit for one that fails to load with it (`InferenceBackend.kvCacheTypesFor`). The model
+     * picker says which are measured. `kvMbPerToken` stays the 16-bit figure either way.
+     */
+    kvCacheType?: 'q8_0';
   };
   tiers: {
     high: TierRecommendation;
@@ -294,6 +335,17 @@ export interface CloudProviderConfig {
   enabled: boolean;
 }
 
+/** A cloud provider as `GET /api/inference/cloud-providers` reports it. The key itself is never sent. */
+export interface CloudProviderStatus {
+  provider: CloudProviderType;
+  enabled: boolean;
+  /** Whether the Hub holds a key for the provider. */
+  configured: boolean;
+  defaultModel: string;
+  /** Where the provider's requests go. Present only when that is another server than the provider's own. */
+  baseUrl?: string;
+}
+
 export interface InferenceModelInfo {
   id: string;
   object: 'model';
@@ -305,6 +357,8 @@ export interface InferenceModelInfo {
   local: boolean;
   context_window?: number;
   max_tokens?: number;
+  /** The id the engine knows this model by, on a model the Hub tracks. `id` is then its catalog id. */
+  backend_model_id?: string;
 }
 
 export interface InferenceStatus {

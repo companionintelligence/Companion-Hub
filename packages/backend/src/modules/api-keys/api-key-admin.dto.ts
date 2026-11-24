@@ -32,3 +32,43 @@ const updateApiKeySchema = z.object({
 });
 
 export class UpdateApiKeyBody extends createZodDto(updateApiKeySchema) {}
+
+/**
+ * Why a key can't use the MCP tools that change the whole Hub (`McpToolDefinition.hubWide`), as far as
+ * the Hub's own records tell:
+ *
+ * - 'app-key': a managed app key. It acts for its app, so there is no person whose role could be asked.
+ * - 'no-creator': nobody is recorded as creating it (the CLI, or a key made before v0.2.70).
+ * - 'creator-role': its creator may not manage the Hub, by the Hub's records: a stored member role, revoked
+ *   access, or no organization role the routes could read (no linked Portal identity, or an unpaired Hub).
+ */
+export const API_KEY_HUB_WIDE_BLOCKS = ['app-key', 'no-creator', 'creator-role'] as const;
+
+export type ApiKeyHubWideBlock = (typeof API_KEY_HUB_WIDE_BLOCKS)[number];
+
+/** The keys card's list (GET /api/api-keys). Never carries a raw key or its hash. */
+const apiKeyListSchema = z.object({
+  keys: z.array(
+    z.object({
+      id: z.number(),
+      name: z.string(),
+      prefix: z.string(),
+      scopes: z.array(z.string()),
+      capability: z.enum(API_KEY_CAPABILITIES),
+      managed: z.boolean(),
+      ownerAppUrn: z.string().nullable(),
+      expiresAt: z.string().nullable(),
+      lastUsedAt: z.string().nullable(),
+      createdAt: z.string(),
+      createdByUserId: z.number().nullable(),
+      createdByUsername: z.string().nullable(),
+      /**
+       * `null` when nothing the Hub holds stops the key (its creator's role, asked on each call, still
+       * decides), or when it opens no MCP tools at all.
+       */
+      hubWideBlocked: z.enum(API_KEY_HUB_WIDE_BLOCKS).nullable(),
+    }),
+  ),
+});
+
+export class ApiKeyListDto extends createZodDto(apiKeyListSchema) {}

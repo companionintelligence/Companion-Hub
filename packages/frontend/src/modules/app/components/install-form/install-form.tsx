@@ -30,10 +30,10 @@ import { Link } from 'react-router';
 import { Tooltip } from 'react-tooltip';
 import { HintMarker } from '@/components/ui/field-hint/field-hint';
 import type { AvailableDomain } from '@ci-hub/common/types';
-import { buildPublicWebIdentity, sanitizeAppSubdomain, selectOfferedDomains } from '@ci-hub/common/types';
+import { buildPublicWebIdentity, sanitizeAppSubdomain, selectOfferedDomains, servedExposureMode } from '@ci-hub/common/types';
 import { resolveExposureMode } from '@/modules/onboarding/helpers/agent-onboarding';
 import { saveBlobAsFile, splitSavedPath } from '@/lib/save-file';
-import { manifestDefaultsEdgeAuthOn } from '@ci-hub/common/schemas';
+import { requiresHubLoginOnPublicRoute, servedOpenPort } from '@ci-hub/common/schemas';
 import { isMcpOptionalOnlyInstall } from '@ci-hub/common/validation';
 import {
   type LastUsedInstallConfig,
@@ -43,6 +43,7 @@ import {
   recordLastUsedConfig,
   serializeInstallConfig,
 } from '@/modules/app/lib/install-config-storage';
+import { asLegacyTranslate } from '@/lib/i18n/legacy-translate';
 import { isInstallFormValid, mergeFormFieldDefaults, validateAppConfig } from './form-validators';
 import { HIDDEN_FIELD_TYPES } from '@ci-hub/common/validation';
 import { CloudflareSubdomainField } from './cloudflare-subdomain-field';
@@ -52,6 +53,10 @@ import { HostnamePreviewCard } from './hostname-preview-card';
 import { InstallFormField } from './install-form-field';
 import { keepsPublishedDomain, preselectedPublicDomain, publicDomainToUse } from './preselected-public-domain';
 import { useDnsAvailability } from './use-dns-availability';
+import { McpAccessPicker } from '@/components/capability-badge/mcp-access-picker';
+import { useCanGrantFull } from '@/lib/hooks/use-can-grant-full';
+import { useHubAccess } from '@/lib/hooks/use-hub-access';
+import type { McpAccessChoice } from '@ci-hub/common/types';
 
 /**
  * The expected URL to warn about, or `null` when this app needs no repair.
@@ -81,6 +86,12 @@ interface IProps {
   onValidityChange?: (isValid: boolean) => void;
   /** True while the operator has changed a field away from the value the form opened with. */
   onDirtyChange?: (hasEdits: boolean) => void;
+  /**
+   * True from the click on the submit button until the form either shows its errors or hands its
+   * values to `onSubmit`. On Public Web that includes a last DNS check, which can take seconds on a
+   * slow link, so the dialog's button shows its spinner from the click instead of from the request.
+   */
+  onSubmittingChange?: (submitting: boolean) => void;
   editingAppUrn?: string;
   /**
    * The form edits an app that is already installed (the settings dialog), rather
@@ -112,6 +123,11 @@ export type FormValues = {
    */
   customDomainTakeover?: boolean;
   autoRestartOnDomainChange?: boolean;
+  /**
+   * The answer to the app's request for the Hub's MCP tools (`hub_integration.mcp_client`), asked on
+   * install only. Later changes go through the app's Hub access section, never a settings save.
+   */
+  mcpAccess?: McpAccessChoice;
   /**
    * What this app was being served on when the dialog was drawn — the
    * compare-and-swap half of `customDomain: ''` (R2-HUBDOMAINS-3).
@@ -160,6 +176,7 @@ export const InstallForm: React.FC<IProps> = ({
   appStatus,
   onValidityChange,
   onDirtyChange,
+  onSubmittingChange,
   editingAppUrn,
   isEdit = false,
 }) => {
@@ -172,15 +189,15 @@ export const InstallForm: React.FC<IProps> = ({
   const orgSlug = ciHubOrganizationSlug ? ciHubOrganizationSlug.toLowerCase().replace(/\s+/g, '-') : undefined;
   const defaultAppSubdomain = info.urn.split(':')[0] ?? info.urn;
   /*
-   * The subdomain this app ROUTES on when the Local Subdomain field is empty —
-   * which is not `defaultAppSubdomain`, the field's placeholder.
+   * The subdomain this app ROUTES on when the Local Subdomain field is empty,
+   * which is not `defaultAppSubdomain`, the name a new public address starts from.
    *
    * ⚠ THE TWO DIFFER, AND ONLY THIS ONE MAY BE COMPARED AGAINST CI-CLOUD.
    * `resolveRoutingSubdomain` on the backend falls back to
    * `<appName>-<appStoreSlug>`, and that is what the bind sends and what comes
-   * back as `boundAppSlug`. The placeholder is the bare app name. Comparing the
-   * placeholder against CI-Cloud's answer makes every app whose `localSubdomain`
-   * is null — an API, MCP or restore install — read as somebody else's: the
+   * back as `boundAppSlug`. `defaultAppSubdomain` is the bare app name. Comparing
+   * it against CI-Cloud's answer makes every app whose `localSubdomain`
+   * is null (an API, MCP or restore install) read as somebody else's: the
    * picker asks the operator to confirm moving the app's own domain away from
    * itself, and drops the hint that says the save will stop serving it.
    */
@@ -190,7 +207,7 @@ export const InstallForm: React.FC<IProps> = ({
   const {
     register,
     handleSubmit,
-    formState: { errors, isDirty, dirtyFields },
+    formState: { errors, isDirty, dirtyFields, isSubmitting },
     setValue,
     watch,
     getValues,
@@ -207,8 +224,24 @@ export const InstallForm: React.FC<IProps> = ({
   const watchPort = watch('port', info.port ? info.port.toString() : '');
   const watchPublicDomainRaw = watch('publicDomain');
 
-  const initialExposureMode = typeof initialValues?.exposureMode === 'string' ? initialValues.exposureMode : undefined;
-  const keepsPublished = keepsPublishedDomain(isEdit, initialExposureMode);
+  // Only an edit has one. An installed app stays in the mode it runs in until somebody picks another,
+  // even while that mode's transport is down. `resolveExposureMode` would move a Private VPN app to
+  // Public Web. It would also give a form that names no mode whatever a new install gets.
+  // An app that is not exposable has no mode to keep: whatever its stored form names, a save sends it local.
+  const savedExposureMode = isEdit && info.exposable ? servedExposureMode({ config: initialValues }) : undefined;
+  // The app asks for the Hub's MCP tools; only an install asks back (see `mcpAccess`).
+  const asksForMcpAccess = !isEdit && Boolean(info.hub_integration?.mcp_client);
+  const { manageHub } = useHubAccess({ enabled: asksForMcpAccess });
+  const canGrantFull = useCanGrantFull({ enabled: asksForMcpAccess && manageHub });
+  const keepsPublished = keepsPublishedDomain(isEdit, savedExposureMode);
+  // What an empty Subdomain field stands for. An app already on the web with no subdomain stored (API,
+  // MCP, restore and older installs) is served on its routing name. Filling the field with the bare app
+  // name showed a different address from the app's page and moved the app on any save (#2272).
+  const fallbackSubdomain = keepsPublished ? sanitizeAppSubdomain(routingAppSubdomain) : defaultAppSubdomain;
+  // Whether a value is that routing name on an app with none stored. A save sends no name for it, so what
+  // stays published is `routingAppSubdomain`. The Portal keeps the underscore in a custom app's `<app>-_user`.
+  const holdsRoutingName = (subdomain?: string) => keepsPublished && !initialValues?.localSubdomain && subdomain === fallbackSubdomain;
+  const subdomainToCheck = (subdomain: string) => (holdsRoutingName(subdomain) ? routingAppSubdomain : subdomain);
 
   const availableDomainsQuery = useQuery(getDomainsOptions());
   const availableDomainsData = availableDomainsQuery.data;
@@ -235,14 +268,14 @@ export const InstallForm: React.FC<IProps> = ({
     if (watchExposureMode !== 'cloudflare' || !orgSlug) return null;
     const hubSubdomain = ciHubDeviceSlug ? `hub-${ciHubDeviceSlug}-${orgSlug}` : undefined;
     return buildPublicWebIdentity({
-      appSubdomain: watchLocalSubdomain || defaultAppSubdomain,
+      appSubdomain: watchLocalSubdomain || fallbackSubdomain,
       hubSubdomain,
       orgSlug,
       // The root only fills out the name while no domain is known; the address built on it is shown
       // and prefilled only once one is (`publicDomain`).
       publicDomainRoot: publicDomain || domain || 'example.com',
     });
-  }, [watchExposureMode, orgSlug, watchLocalSubdomain, defaultAppSubdomain, ciHubDeviceSlug, publicDomain, domain]);
+  }, [watchExposureMode, orgSlug, watchLocalSubdomain, fallbackSubdomain, ciHubDeviceSlug, publicDomain, domain]);
 
   const tailscalePreviewHost = useMemo(() => {
     if (watchExposureMode !== 'tailscale') return '';
@@ -333,10 +366,37 @@ export const InstallForm: React.FC<IProps> = ({
   const mcpOptionalOnly = useMemo(() => isMcpOptionalOnlyInstall(info), [info]);
   // What the enable-auth switch shows, and submits, when the form holds no value. A fresh install
   // starts protected. An EDIT shows what the Hub actually serves for a stored form that never
-  // decided: the manifest's `hub_integration.edge_auth.default`, else off. The switch used to show
-  // `?? true` on an edit while the backend persisted `?? false` and built the route without the
-  // login, so an install that never decided looked protected and was not (OpenClaw, 2026-09-28).
-  const enableAuthFallback = useMemo(() => (isEdit ? manifestDefaultsEdgeAuthOn(info) : true), [isEdit, info]);
+  // decided, by the rule the route builder uses (`requiresHubLoginOnPublicRoute`): the manifest's
+  // `hub_integration.edge_auth.default`, else the login while the host port is open, else off. The
+  // switch used to show `?? true` on an edit while the backend persisted `?? false` and built the
+  // route without the login, so an install that never decided looked protected and was not
+  // (OpenClaw, 2026-09-28). Then it showed the manifest default alone, which is OFF for a stored
+  // form on an open host port that the Hub serves WITH the login, and a save wrote that OFF over it.
+  //
+  // "Open host port" is `servedOpenPort`, not `Boolean(openPort)`: a stored form with NO `openPort`
+  // key (an API, MCP or onboarding install) is replayed through the queue schema, which defaults it
+  // to open, so the Hub serves it with the login. Reading the missing key as closed showed OFF for
+  // exactly the installs that never decided. An app with no public route (not exposable) has no
+  // login to show.
+  const storedOpenPort = servedOpenPort(initialValues);
+  const enableAuthFallback = useMemo(
+    () => (isEdit ? Boolean(info.exposable) && requiresHubLoginOnPublicRoute({ openPort: storedOpenPort }, info) : true),
+    [isEdit, info, storedOpenPort],
+  );
+  const hasAuthSwitch = Boolean(info.exposable && info.dynamic_config);
+  // The app goes on Public Web with the Hub login off. Simple mode shows the "Enable authentication"
+  // switch for this too, however the form got here (an import, a recently used config, the exposure
+  // buttons, or an app saved that way), so nobody puts an app on the internet without the login and
+  // without seeing it (#1984). The other modes don't count: the login guards the Public Web route only.
+  const watchEnableAuth = watch('enableAuth');
+  const loginOffOnPublicWeb = watchExposureMode === 'cloudflare' && (watchEnableAuth ?? enableAuthFallback) === false;
+  // Once shown that way the switch stays, so turning the login back on doesn't hide it.
+  const [authSwitchRevealed, setAuthSwitchRevealed] = useState(false);
+  useEffect(() => {
+    if (loginOffOnPublicWeb) setAuthSwitchRevealed(true);
+  }, [loginOffOnPublicWeb]);
+  // Whether the switch is drawn. An import reads this too, to tell when it leads somewhere nobody saw.
+  const authSwitchShown = hasAuthSwitch && (isAdvancedMode || showAdvancedSettings || loginOffOnPublicWeb || authSwitchRevealed);
   const watchedFormValues = watch();
 
   // Client-side install-config export/import + "recently used" list (no backend involved — see
@@ -348,13 +408,31 @@ export const InstallForm: React.FC<IProps> = ({
     setRecentConfigs(readLastUsedConfigs(info.id));
   }, [info.id]);
 
+  /**
+   * Sets the values. Returns true when they leave the app on Public Web with the Hub login off while
+   * the "Enable authentication" switch was hidden: the switch shows now (`loginOffOnPublicWeb`), and
+   * the caller says why in its toast (#1984).
+   */
   const applyImportedValues = useCallback(
-    (values: Record<string, unknown>) => {
+    (values: Record<string, unknown>): boolean => {
       for (const [key, value] of Object.entries(values)) {
         setValue(key, value as string, { shouldDirty: true, shouldValidate: true });
       }
+      return (
+        hasAuthSwitch && !authSwitchShown && getValues('exposureMode') === 'cloudflare' && (getValues('enableAuth') ?? enableAuthFallback) === false
+      );
     },
-    [setValue],
+    [setValue, getValues, enableAuthFallback, hasAuthSwitch, authSwitchShown],
+  );
+
+  // The mode a form asking for `requested` goes out on. An app that is not exposable or needs a public address offers no choice.
+  const offeredExposureMode = useCallback(
+    (requested: FormValues['exposureMode'] | undefined) => {
+      if (!info.exposable) return 'local';
+      if (info.force_expose) return 'cloudflare';
+      return resolveExposureMode(requested, { cloudflareAvailable, tailscaleAvailable });
+    },
+    [info.exposable, info.force_expose, cloudflareAvailable, tailscaleAvailable],
   );
 
   /**
@@ -368,10 +446,7 @@ export const InstallForm: React.FC<IProps> = ({
     (values: Record<string, unknown>): { values: Record<string, unknown>; dropped: string[] } => {
       const { exposureMode, publicDomain } = values;
       const dropped: string[] = [];
-      if (
-        exposureMode !== undefined &&
-        resolveExposureMode(exposureMode as FormValues['exposureMode'], { cloudflareAvailable, tailscaleAvailable }) !== exposureMode
-      ) {
+      if (exposureMode !== undefined && offeredExposureMode(exposureMode as FormValues['exposureMode']) !== exposureMode) {
         dropped.push('exposureMode');
       }
       if (
@@ -383,11 +458,17 @@ export const InstallForm: React.FC<IProps> = ({
       }
       return { values: Object.fromEntries(Object.entries(values).filter(([key]) => !dropped.includes(key))), dropped };
     },
-    [cloudflareAvailable, tailscaleAvailable, availableDomains],
+    [offeredExposureMode, availableDomains],
   );
 
   const handleExportConfig = useCallback(async () => {
-    const json = serializeInstallConfig(info.id, getValues(), formFields);
+    const values = getValues();
+    // As a save works it out: the form seeds `exposedLocal` true whatever the mode says.
+    const json = serializeInstallConfig(
+      info.id,
+      values.exposureMode ? { ...values, exposedLocal: Boolean(info.exposable) && values.exposureMode === 'cloudflare' } : values,
+      formFields,
+    );
     const blob = new Blob([json], { type: 'application/json' });
     try {
       // Only the desktop app reports a path; a browser shows its own download UI.
@@ -405,7 +486,7 @@ export const InstallForm: React.FC<IProps> = ({
           : t('APP_INSTALL_FORM_EXPORT_CONFIG_ERROR', { defaultValue: 'Could not save the install config.' }),
       );
     }
-  }, [getValues, formFields, info.id, t]);
+  }, [getValues, formFields, info.id, info.exposable, t]);
 
   const handleImportButtonClick = useCallback(() => {
     importFileInputRef.current?.click();
@@ -432,7 +513,7 @@ export const InstallForm: React.FC<IProps> = ({
       }
 
       const { values, dropped } = withoutUnofferedAccessSettings(result.values);
-      applyImportedValues(values);
+      const revealsLoginOff = applyImportedValues(values);
 
       const unrecognizedKeys = [...result.unrecognizedKeys, ...dropped];
       if (unrecognizedKeys.length > 0) {
@@ -443,7 +524,10 @@ export const InstallForm: React.FC<IProps> = ({
             fields: unrecognizedKeys.join(', '),
           }),
         );
-      } else {
+      }
+      if (revealsLoginOff) {
+        toast.warning(t('APP_INSTALL_FORM_IMPORT_CONFIG_AUTH_OFF'), { duration: 8000 });
+      } else if (unrecognizedKeys.length === 0) {
         toast.success(t('APP_INSTALL_FORM_IMPORT_CONFIG_SUCCESS', { defaultValue: 'Config imported.' }));
       }
     },
@@ -452,8 +536,11 @@ export const InstallForm: React.FC<IProps> = ({
 
   const handleApplyRecentConfig = useCallback(
     (entry: LastUsedInstallConfig) => {
-      applyImportedValues(withoutUnofferedAccessSettings(entry.values).values);
-      toast.success(t('APP_INSTALL_FORM_RECENTLY_USED_APPLIED', { defaultValue: 'Applied recently used config.' }));
+      if (applyImportedValues(withoutUnofferedAccessSettings(entry.values).values)) {
+        toast.warning(t('APP_INSTALL_FORM_RECENTLY_USED_APPLIED_AUTH_OFF'), { duration: 8000 });
+      } else {
+        toast.success(t('APP_INSTALL_FORM_RECENTLY_USED_APPLIED', { defaultValue: 'Applied recently used config.' }));
+      }
     },
     [withoutUnofferedAccessSettings, applyImportedValues, t],
   );
@@ -524,7 +611,7 @@ export const InstallForm: React.FC<IProps> = ({
       // `formatApiError`, not a fixed string: a repair the operator has no grant for
       // comes back as APP_ACTION_GRANT_DENIED, and "check the Hub logs" would send
       // them looking for a fault that is not there.
-      toast.error(formatApiError(error, t));
+      toast.error(formatApiError(error, asLegacyTranslate(t)));
     } finally {
       setIsRepairingPublicWeb(false);
     }
@@ -550,6 +637,13 @@ export const InstallForm: React.FC<IProps> = ({
       return;
     }
 
+    // These apps keep the name they first start with. With no domain known yet the form would save none,
+    // and Companion Portal could move the app to another after that first start (`publicDomainToUse`).
+    if (info.force_expose && (watchExposureMode !== 'cloudflare' || !cloudflareAvailable || !publicDomain)) {
+      onValidityChange(false);
+      return;
+    }
+
     const withDefaults = mergeFormFieldDefaults(watchedFormValues as Record<string, unknown>, formFields);
     const formValues = {
       ...withDefaults,
@@ -564,7 +658,20 @@ export const InstallForm: React.FC<IProps> = ({
     }
 
     onValidityChange(isInstallFormValid(formValues, formFields, { requirePortWhenExposedLocal: isProduction }));
-  }, [onValidityChange, info.exposable, info.dynamic_config, info.port, watchExposureMode, watchPort, formFields, watchedFormValues, isProduction]);
+  }, [
+    onValidityChange,
+    info.exposable,
+    info.dynamic_config,
+    info.force_expose,
+    info.port,
+    cloudflareAvailable,
+    publicDomain,
+    watchExposureMode,
+    watchPort,
+    formFields,
+    watchedFormValues,
+    isProduction,
+  ]);
 
   // Only fields the operator changed, and only while they differ from what the form opened with.
   // Not `isDirty`: the form has no defaultValues (the seeding effect fills it with setValue), so
@@ -572,11 +679,20 @@ export const InstallForm: React.FC<IProps> = ({
   // settings dialog as edited — its "changes will apply" banner showed on open and Update was never
   // disabled. Derived during render: `dirtyFields` is mutated in place, so an effect keyed on it
   // alone never re-runs.
-  const hasEdits = Object.keys(dirtyFields).some((key) => !isSameFormValue(watchedFormValues[key], initialValues?.[key]));
+  // The routing name is what a field with nothing stored opened on, and a save sends none for it.
+  const hasEdits = Object.keys(dirtyFields).some(
+    (key) =>
+      !(key === 'localSubdomain' && holdsRoutingName(watchedFormValues.localSubdomain)) &&
+      !isSameFormValue(watchedFormValues[key], initialValues?.[key]),
+  );
 
   useEffect(() => {
     onDirtyChange?.(hasEdits);
   }, [hasEdits, onDirtyChange]);
+
+  useEffect(() => {
+    onSubmittingChange?.(isSubmitting);
+  }, [isSubmitting, onSubmittingChange]);
 
   useEffect(() => {
     // Detect when the form is reused for a different app so we can force-reset
@@ -593,6 +709,12 @@ export const InstallForm: React.FC<IProps> = ({
     // openPort, enableAuth) would leave a switched-to app wearing half of its predecessor's config.
     const shouldSeed = !isDirty || appChanged;
 
+    // A switch clears the name the previous app left, as it does the domain below. The effect after
+    // this one fills in this app's own.
+    if (appChanged && !initialValues?.localSubdomain) {
+      resetField('localSubdomain');
+    }
+
     if (initialValues && shouldSeed) {
       // `HIDDEN_FIELD_TYPES` fields (currently `type: 'random'`, e.g. an app's auto-generated DB
       // password) are never rendered or editable by this form — the defaults loop right below
@@ -608,6 +730,11 @@ export const InstallForm: React.FC<IProps> = ({
         setValue(key, value as string);
       }
     }
+    // A stored form can still name a route on an app that is not exposable. What watches the mode, such
+    // as the suggested base URL, has to read what a save will send.
+    if (shouldSeed && !info.exposable && getValues('exposureMode') && getValues('exposureMode') !== 'local') {
+      setValue('exposureMode', 'local');
+    }
     // Seed catalog form_field defaults into RHF so empty installs submit working env values
     // (uncontrolled defaultValue alone is easy to miss on validate/submit).
     if (shouldSeed) {
@@ -621,16 +748,12 @@ export const InstallForm: React.FC<IProps> = ({
       }
     }
     if (info.force_expose) {
-      setValue('exposed', true);
       setValue('openPort', false);
     }
     // Set default exposure mode and port for exposable apps
     if (info.exposable && info.dynamic_config) {
-      // Auto-select first available mode: cloudflare > tailscale > local
-      const defaultMode = resolveExposureMode(initialValues?.exposureMode as FormValues['exposureMode'] | undefined, {
-        cloudflareAvailable,
-        tailscaleAvailable,
-      });
+      // A new install auto-selects the first available mode: cloudflare > tailscale > local
+      const defaultMode = savedExposureMode ?? offeredExposureMode(initialValues?.exposureMode as FormValues['exposureMode'] | undefined);
       if (shouldSeed) {
         setValue('exposureMode', defaultMode);
         setValue('exposedLocal', true); // backward compat
@@ -640,8 +763,11 @@ export const InstallForm: React.FC<IProps> = ({
       // which is what `initialValues?.X === undefined` still guards. `shouldSeed` covers the other
       // half: without it this effect re-asserted the default the moment the form went dirty, so a
       // first attempt to turn auth off, or to set a custom port, appeared to bounce back.
+      // On an EDIT the form the Hub is serving has no `openPort` key, so it is served open (see
+      // `servedOpenPort`); writing the install default (closed unless local) would close the port
+      // on the first save that touched anything else.
       if (shouldSeed && initialValues?.openPort === undefined) {
-        setValue('openPort', defaultMode === 'local');
+        setValue('openPort', isEdit ? storedOpenPort : defaultMode === 'local');
       }
       if (shouldSeed && initialValues?.enableAuth === undefined) {
         setValue('enableAuth', enableAuthFallback);
@@ -678,10 +804,12 @@ export const InstallForm: React.FC<IProps> = ({
     initialValues?.publicDomain,
     keepsPublished,
     resetField,
-    cloudflareAvailable,
+    offeredExposureMode,
     domain,
-    tailscaleAvailable,
     enableAuthFallback,
+    isEdit,
+    savedExposureMode,
+    storedOpenPort,
   ]);
 
   // Separate effect: only responsible for setting the default localSubdomain.
@@ -690,10 +818,9 @@ export const InstallForm: React.FC<IProps> = ({
   // as exposureMode, openPort, or enableAuth.
   useEffect(() => {
     if (watchExposureMode === 'cloudflare' && info.exposable && info.dynamic_config && !watchLocalSubdomain) {
-      const defaultSubdomain = info.urn.split(':')[0];
-      setValue('localSubdomain', defaultSubdomain);
+      setValue('localSubdomain', fallbackSubdomain);
     }
-  }, [watchExposureMode, info.exposable, info.dynamic_config, info.urn, watchLocalSubdomain, setValue]);
+  }, [watchExposureMode, info.exposable, info.dynamic_config, fallbackSubdomain, watchLocalSubdomain, setValue]);
 
   useEffect(() => {
     if (!suggestedAppBaseUrl) return;
@@ -732,13 +859,13 @@ export const InstallForm: React.FC<IProps> = ({
       hubDomain: domain,
       dirty: Boolean(dirtyFields.publicDomain),
       isEdit,
-      initialExposureMode,
+      initialExposureMode: savedExposureMode,
     });
 
     if (next) {
       setValue('publicDomain', next);
     }
-  }, [availableDomains, dirtyFields.publicDomain, domain, getValues, initialExposureMode, isEdit, setValue, watchExposureMode, info.urn]);
+  }, [availableDomains, dirtyFields.publicDomain, domain, getValues, savedExposureMode, isEdit, setValue, watchExposureMode, info.urn]);
 
   useEffect(() => {
     if (appStatus !== 'running' || watchExposureMode !== 'cloudflare') {
@@ -767,7 +894,7 @@ export const InstallForm: React.FC<IProps> = ({
   const _randomPortMutation = useMutation({
     ...getRandomPortMutation(),
     onError: (e: TranslatableError) => {
-      toast.error(t(e.message, e.intlParams));
+      toast.error(t(e.message, e.intlParams ?? {}));
     },
     onSuccess: (data: GetRandomPortResponse) => {
       setValue('port', data.port.toString(), { shouldDirty: true });
@@ -777,12 +904,12 @@ export const InstallForm: React.FC<IProps> = ({
   const { isCheckingDns, dnsAvailabilityError, domainAvailabilityError } = useDnsAvailability({
     // Only once there is a domain to ask about: none while Companion Portal's list is on its way.
     enabled: info.exposable && isProduction && watchExposureMode === 'cloudflare' && Boolean(publicDomain),
-    subdomain: watchLocalSubdomain || defaultAppSubdomain,
+    subdomain: subdomainToCheck(watchLocalSubdomain || fallbackSubdomain),
     selectedDomain: publicDomain,
     checkDnsAvailability,
     setError,
     clearErrors,
-    t,
+    t: asLegacyTranslate(t),
   });
 
   const renderField = (field: FormField) => {
@@ -824,12 +951,19 @@ export const InstallForm: React.FC<IProps> = ({
             <div className="grid grid-cols-3 gap-2">
               {(
                 [
-                  { key: 'local', label: t('APP_INSTALL_FORM_EXPOSURE_LOCAL'), available: true, tooltip: '' },
+                  {
+                    key: 'local',
+                    label: t('APP_INSTALL_FORM_EXPOSURE_LOCAL'),
+                    available: !info.force_expose,
+                    tooltip: t('APP_INSTALL_FORM_EXPOSURE_PUBLIC_WEB_ONLY'),
+                  },
                   {
                     key: 'tailscale',
                     label: t('COMMON_PRIVATE_VPN'),
-                    available: tailscaleAvailable,
-                    tooltip: t('APP_INSTALL_FORM_EXPOSURE_TAILSCALE_UNAVAILABLE'),
+                    available: tailscaleAvailable && !info.force_expose,
+                    tooltip: info.force_expose
+                      ? t('APP_INSTALL_FORM_EXPOSURE_PUBLIC_WEB_ONLY')
+                      : t('APP_INSTALL_FORM_EXPOSURE_TAILSCALE_UNAVAILABLE'),
                   },
                   {
                     key: 'cloudflare',
@@ -865,7 +999,8 @@ export const InstallForm: React.FC<IProps> = ({
             </div>
           )}
         />
-        {!tailscaleAvailable && info.exposable && info.dynamic_config && (
+        {info.force_expose && <p className="mt-2 text-xs text-muted-foreground">{t('APP_INSTALL_FORM_EXPOSURE_PUBLIC_WEB_ONLY')}</p>}
+        {!tailscaleAvailable && info.exposable && info.dynamic_config && !info.force_expose && (
           <p className="mt-2 text-xs text-muted-foreground">
             <Link to="/settings?tab=network" className="text-primary underline-offset-2 hover:underline">
               {t('APP_INSTALL_FORM_EXPOSURE_TAILSCALE_SETUP_LINK')}
@@ -900,7 +1035,7 @@ export const InstallForm: React.FC<IProps> = ({
     const cloudflareSuffix = publicWebPreview
       ? publicWebPreview.hostname
           .slice(0, publicWebPreview.hostname.indexOf('.'))
-          .slice(sanitizeAppSubdomain(watchLocalSubdomain || defaultAppSubdomain).length + 1)
+          .slice(sanitizeAppSubdomain(watchLocalSubdomain || fallbackSubdomain).length + 1)
       : (orgSlug ?? domain);
 
     return (
@@ -935,7 +1070,7 @@ export const InstallForm: React.FC<IProps> = ({
             loading={loading}
             localSubdomainError={errors.localSubdomain?.message || dnsAvailabilityError || undefined}
             publicDomainError={errors.publicDomain?.message || domainAvailabilityError || undefined}
-            placeholder={defaultAppSubdomain}
+            placeholder={fallbackSubdomain}
             isCheckingDns={isCheckingDns}
             domainListNote={domainListNote}
             onRetryDomainList={() => void availableDomainsQuery.refetch()}
@@ -977,7 +1112,7 @@ export const InstallForm: React.FC<IProps> = ({
             portalUrl={portalConfig?.portalUrl}
             onTakeoverChange={(confirmed) => setValue('customDomainTakeover', confirmed)}
             loading={loading}
-            t={t}
+            t={asLegacyTranslate(t)}
           />
         ) : null}
         {/*
@@ -1013,7 +1148,7 @@ export const InstallForm: React.FC<IProps> = ({
   };
 
   const renderAdvancedExposureOptions = () => {
-    if (!info.exposable || (!isAdvancedMode && !showAdvancedSettings)) return null;
+    if (!authSwitchShown) return null;
 
     return (
       <Controller
@@ -1043,7 +1178,7 @@ export const InstallForm: React.FC<IProps> = ({
   };
 
   const validate = async (values: FormValues) => {
-    const exposureMode = resolveExposureMode(values.exposureMode, { cloudflareAvailable, tailscaleAvailable });
+    const exposureMode = savedExposureMode ? (values.exposureMode ?? savedExposureMode) : offeredExposureMode(values.exposureMode);
     const withFieldDefaults: FormValues = { ...values };
     for (const field of formFields) {
       if (isHiddenFieldType(field.type)) continue;
@@ -1063,7 +1198,7 @@ export const InstallForm: React.FC<IProps> = ({
 
     // Set default subdomain if not provided and app is exposable
     if (info.exposable && formValues.exposureMode === 'cloudflare' && !formValues.localSubdomain) {
-      formValues.localSubdomain = info.urn.split(':')[0];
+      formValues.localSubdomain = fallbackSubdomain;
     }
 
     // The domain the form shows. None while Companion Portal's list has not given one: the app then
@@ -1077,6 +1212,31 @@ export const InstallForm: React.FC<IProps> = ({
     // In production, require port when publishing to internet (legacy path when exposedLocal set without port)
     if (isProduction && info.exposable && formValues.exposedLocal && info.dynamic_config && !formValues.port) {
       validationErrors.port = { messageKey: 'APP_INSTALL_FORM_ERROR_REQUIRED', params: { label: t('COMMON_PORT') } };
+    }
+
+    const showValidationErrors = () => {
+      for (const [key, value] of Object.entries(validationErrors)) {
+        if (value) {
+          setError(key, { message: t(value.messageKey, value.params ?? {}) });
+        }
+      }
+
+      const failingLabels = formFields
+        .filter((f) => validationErrors[f.env_variable])
+        .map((f) => f.label)
+        .join(', ');
+      toast.error(
+        failingLabels
+          ? t('APP_INSTALL_FORM_ERROR_INVALID_FIELDS', { fields: failingLabels, defaultValue: `Fix these fields: ${failingLabels}` })
+          : t('APP_INSTALL_FORM_ERROR_INVALID'),
+      );
+    };
+
+    // What the form can tell by itself it says at once. The DNS check below goes to Companion Portal
+    // and takes seconds on a slow link, and its answer cannot make an invalid form valid.
+    if (Object.keys(validationErrors).length > 0) {
+      showValidationErrors();
+      return;
     }
 
     // Check DNS availability synchronously if in production and exposable
@@ -1107,7 +1267,7 @@ export const InstallForm: React.FC<IProps> = ({
       }
       // Perform a final DNS check before submission
       try {
-        const response = await checkDnsAvailability(formValues.localSubdomain, formValues.publicDomain);
+        const response = await checkDnsAvailability(subdomainToCheck(formValues.localSubdomain), formValues.publicDomain);
 
         if (response.ok) {
           const data = await response.json();
@@ -1137,29 +1297,21 @@ export const InstallForm: React.FC<IProps> = ({
       }
     }
 
-    for (const [key, value] of Object.entries(validationErrors)) {
-      if (value) {
-        setError(key, { message: t(value.messageKey, value.params) });
-      }
+    // The DNS check can still find the subdomain taken.
+    if (Object.keys(validationErrors).length > 0) {
+      showValidationErrors();
+      return;
     }
 
-    if (Object.keys(validationErrors).length === 0) {
-      // Client-side "recently used" cache — mirrors community-scripts.org/generator's "Last used"
-      // list. Recorded at submission time (not after a backend round-trip), same as its export/copy
-      // actions. Secrets are stripped inside recordLastUsedConfig before anything touches storage.
-      setRecentConfigs(recordLastUsedConfig(info.id, formValues, formFields));
-      onSubmit(formValues);
-    } else {
-      const failingLabels = formFields
-        .filter((f) => validationErrors[f.env_variable])
-        .map((f) => f.label)
-        .join(', ');
-      toast.error(
-        failingLabels
-          ? t('APP_INSTALL_FORM_ERROR_INVALID_FIELDS', { fields: failingLabels, defaultValue: `Fix these fields: ${failingLabels}` })
-          : t('APP_INSTALL_FORM_ERROR_INVALID'),
-      );
-    }
+    // An app on the Web with no subdomain stored keeps none while the field holds its routing name. The
+    // Portal publishes `<app>-_user` as it is and this name has no underscore, so sending it would move the app.
+    const submitted = holdsRoutingName(formValues.localSubdomain) ? { ...formValues, localSubdomain: undefined } : formValues;
+
+    // Client-side "recently used" cache — mirrors community-scripts.org/generator's "Last used"
+    // list. Recorded at submission time (not after a backend round-trip), same as its export/copy
+    // actions. Secrets are stripped inside recordLastUsedConfig before anything touches storage.
+    setRecentConfigs(recordLastUsedConfig(info.id, submitted, formFields));
+    onSubmit(submitted);
   };
 
   const onInvalid = () => {
@@ -1216,11 +1368,37 @@ export const InstallForm: React.FC<IProps> = ({
       {info.exposable && info.dynamic_config && renderExposureModeSelector()}
       {renderHostnameSettings()}
 
+      {/* Asked on install, outside the advanced settings: what the app's own key may do to the apps
+          beside it is no detail to leave behind a toggle. "No access" is the default, so clicking
+          through grants nothing. Changing it later is the app's Hub access section. */}
+      {asksForMcpAccess && (
+        <div className="mb-4 rounded-md border border-border/60 p-3" data-testid="install-form-mcp-section">
+          <p className="text-sm font-medium">{t('APP_MCP_ACCESS_TITLE')}</p>
+          <p className="mb-2 text-xs text-muted-foreground">{t('APP_MCP_ACCESS_DESC')}</p>
+          <Controller
+            control={control}
+            name="mcpAccess"
+            defaultValue="none"
+            render={({ field: { onChange, value } }) => (
+              <McpAccessPicker
+                name="install-form"
+                value={value ?? 'none'}
+                onChange={onChange}
+                disabled={loading || !manageHub}
+                unavailable={canGrantFull ? [] : ['full']}
+                unavailableHint={t('APP_MCP_ACCESS_FULL_ROLE_REQUIRED')}
+              />
+            )}
+          />
+          {!manageHub && <p className="mt-2 text-xs text-muted-foreground">{t('APP_MCP_ACCESS_MANAGER_REQUIRED')}</p>}
+        </div>
+      )}
+
       {/* Configuration section. No scroll container of its own: both dialogs that host this form
           already scroll their body, and a nested fixed-height one showed a second scrollbar. */}
       {hasConfigSection && (
         <div>
-          {visibleFields.length > 0 && <h3 className="text-base font-bold tracking-wide text-foreground mb-3">{t('COMMON_SETTINGS')}</h3>}
+          {visibleFields.length > 0 && <h3 className="text-base font-medium  text-foreground mb-3">{t('COMMON_SETTINGS')}</h3>}
           {shouldShowAdvancedSettingsToggle && (
             <Switch
               className="mb-3"
@@ -1247,7 +1425,7 @@ export const InstallForm: React.FC<IProps> = ({
               )}
             />
           )}
-          {info.exposable && info.dynamic_config && renderAdvancedExposureOptions()}
+          {renderAdvancedExposureOptions()}
           {renderExposeForm()}
           {isAdvancedMode && (
             <div className="mb-3">

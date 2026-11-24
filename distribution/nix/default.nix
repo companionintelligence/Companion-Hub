@@ -5,7 +5,7 @@ pkgs.appimageTools.wrapType2 rec {
   version = "0.2.4";
 
   src = pkgs.fetchurl {
-    url = "https://github.com/companionintelligence/CI-Hub/releases/download/v${version}/Companion.Hub_${version}_amd64.AppImage";
+    url = "https://github.com/companionintelligence/Companion-Hub/releases/download/v${version}/Companion.Hub_${version}_amd64.AppImage";
     # TODO: replace with actual sha256 of the AppImage release asset
     # Run: nix-prefetch-url <url>  or  nix hash file --type sha256 <downloaded-file>
     sha256 = "sha256-PLACEHOLDER_SHA256_APPIMAGE_AMD64=";
@@ -31,7 +31,7 @@ EOF
       coordinates local AI services, and provides a unified interface for the
       companion intelligence ecosystem.
     '';
-    homepage = "https://github.com/companionintelligence/CI-Hub";
+    homepage = "https://github.com/companionintelligence/Companion-Hub";
     license = {
       shortName = "CI-Commercial-1.0";
       fullName = "Commercial Standard License";

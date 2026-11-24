@@ -40,4 +40,16 @@ export class FederatedIdentityRepository {
     const rows = await this.db.insert(federatedIdentity).values(data).returning();
     return rows[0];
   }
+
+  /**
+   * Remove one person's binding to one (issuer, subject). Scoped to the person: a binding that
+   * belongs to anyone else is not touched, and `false` says nothing was removed.
+   */
+  public async deleteByUserIssuerSubject(userId: number, issuer: string, subject: string): Promise<boolean> {
+    const rows = await this.db
+      .delete(federatedIdentity)
+      .where(and(eq(federatedIdentity.userId, Number(userId)), eq(federatedIdentity.issuer, issuer), eq(federatedIdentity.subject, subject)))
+      .returning({ id: federatedIdentity.id });
+    return rows.length > 0;
+  }
 }

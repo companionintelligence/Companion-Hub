@@ -72,6 +72,12 @@ describe('parseIntentAction', () => {
     expect(parseIntentAction('open')).toEqual({ kind: 'open', hub: '' });
   });
 
+  it('parses an app page action, and turns a junk app id into home rather than a route', () => {
+    expect(parseIntentAction('app?urn=ci-hermes%3Aci-marketplace')).toEqual({ kind: 'app', urn: 'ci-hermes:ci-marketplace' });
+    expect(parseIntentAction('app?urn=..%2F..%2Fsettings')).toEqual({ kind: 'home' });
+    expect(parseIntentAction('app')).toEqual({ kind: 'home' });
+  });
+
   it('is case-insensitive on the action and rejects junk', () => {
     expect(parseIntentAction('SETTINGS')).toEqual({ kind: 'settings' });
     expect(parseIntentAction('bogus')).toBeNull();
@@ -99,6 +105,15 @@ describe('resolveIntentNavigation', () => {
   it('maps home/settings without side effects', async () => {
     expect(await resolveIntentNavigation({ kind: 'home' }, HUBS)).toEqual({ path: '/', reload: false });
     expect(await resolveIntentNavigation({ kind: 'settings' }, HUBS)).toEqual({ path: '/settings', reload: false });
+    expect(mc.setHub).not.toHaveBeenCalled();
+    expect(mc.clearHub).not.toHaveBeenCalled();
+  });
+
+  it("opens an installed app's page for an app action, without re-pointing the Hub", async () => {
+    expect(await resolveIntentNavigation({ kind: 'app', urn: 'ci-hermes:ci-marketplace' }, HUBS)).toEqual({
+      path: '/apps/ci-marketplace/ci-hermes',
+      reload: false,
+    });
     expect(mc.setHub).not.toHaveBeenCalled();
     expect(mc.clearHub).not.toHaveBeenCalled();
   });

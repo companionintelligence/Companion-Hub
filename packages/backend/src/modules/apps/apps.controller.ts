@@ -1,11 +1,16 @@
 import { castAppUrn } from '@/common/helpers/app-helpers';
-import { Controller, Get, Param, Patch, Post, Req, Res, UseGuards } from '@nestjs/common';
+// The class only, as a ModuleRef token: AppsModule does not import AppLifecycleModule.
+import { AppOperationRegistry, type OperationCommand } from '../app-lifecycle/app-operation-registry';
+import { Body, Controller, Get, Param, Patch, Post, Req, Res, UseGuards } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { ModuleRef } from '@nestjs/core';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
+import { settingsReadAction } from '@/core/portal/local-app-reads';
 import { AuthGuard } from '../auth/auth.guard';
+import { GuestDashboardGuard } from '../auth/guest-dashboard.guard';
 import { ObservabilityRead, ObservabilityReadGuard } from '../auth/observability-read.guard';
 import { AppRuntimeMonitorService } from './app-runtime-monitor.service';
+import { HUB_RUNTIME_URN } from './constants';
 import { appStartingPageHeaders, appStartingPageStatus, renderAppStartingPage } from './app-starting-page';
 import { AppStartingPageService } from './app-starting-page.service';
 import { AppsReadService } from './apps-read.service';
@@ -18,6 +23,7 @@ import {
   GetConfigDiffDto,
   GetRandomPortDto,
   GuestAppsDto,
+  GuestVisibilityBodyDto,
   InstalledAppUrnsDto,
   MyAppsDto,
   UpdatesAvailableDto,
@@ -91,10 +97,11 @@ export class AppsController {
   }
 
   @Get('guest')
+  @UseGuards(GuestDashboardGuard)
   @ApiResponse({ type: GuestAppsDto })
   async getGuestApps() {
     const guest = await this.appsReadService.getGuestDashboardApps();
-    const installed = guest.map(({ app, info, metadata }) => ({ app: pickGuestAppFields(app), info, metadata }));
+    const installed = guest.map(({ app, info, metadata, publicUrl }) => ({ app: { ...pickGuestAppFields(app), publicUrl }, info, metadata }));
 
     return GuestAppsDto.parse({ installed }, { reportOnly: true });
   }
@@ -106,7 +113,7 @@ export class AppsController {
    * No guard: Traefik's `ci-hub-app-starting` errors middleware fetches it with the visitor's own
    * request headers and `Host`, and nothing that proves a Hub sign-in. That is also why it shows
    * nothing beyond the app's name and status. Declared above `:urn`, which would otherwise take
-   * `starting` for an app URN. Traefik answers the visitor with the app's own status code.
+   * `starting` for an app URN. Traefik answers the visitor with a 503, whatever status this sends.
    */
   @Get('starting')
   async getAppStartingPage(@Req() req: Request, @Res() res: Response) {
@@ -122,12 +129,21 @@ export class AppsController {
     return GetRandomPortDto.parse({ port }, { reportOnly: true });
   }
 
+  /**
+   * Every app's CPU, memory and containers, filtered to the apps this session may view, as
+   * `GET /apps/installed` is. A member who sees two apps on Home sees the same two here, in the
+   * snapshot and in every history sample. The Hub's own row ({@link HUB_RUNTIME_URN}) is not an app
+   * anyone holds a grant on, so it stays for everyone.
+   */
   @Get('resource-monitor')
   @UseGuards(AuthGuard)
   @ApiResponse({ type: AppRuntimeMonitorDto })
-  async getResourceMonitor() {
+  async getResourceMonitor(@Req() req: Request) {
     const snapshot = await this.runtimeMonitor.getRuntimeMonitorSnapshot();
-    return AppRuntimeMonitorDto.parse(snapshot, { reportOnly: true });
+    const apps = await this.whois.filterSessionByView(req, snapshot.apps, (app) => (app.appUrn === HUB_RUNTIME_URN ? undefined : app.appUrn), 'hub');
+    const visible = new Set(apps.map((app) => app.appUrn));
+    const history = snapshot.history.map((sample) => ({ ...sample, apps: sample.apps.filter((app) => visible.has(app.appUrn)) }));
+    return AppRuntimeMonitorDto.parse({ ...snapshot, apps, history }, { reportOnly: true });
   }
 
   /**
@@ -136,7 +152,7 @@ export class AppsController {
    * `config` is the form the operator filled in at install: admin passwords, provider API keys,
    * anything a manifest asks for. A test polling for `running` needs none of it, and a leaked test key
    * must not be a way to read every app's secrets, so it is removed for that principal rather than the
-   * route being opened as it is.
+   * route being opened as it is. `failure` is left out for the same principal; see `mayReadFailure`.
    */
   @Get(':urn')
   @UseGuards(ObservabilityReadGuard)
@@ -148,7 +164,45 @@ export class AppsController {
     const res = await this.appsReadService.getApp(appUrn);
     const mcpExtras = await this.buildMcpExtras(appUrn, res.info);
     const app = req.hubPrincipal === 'qa-read' && res.app ? { ...res.app, config: undefined } : res.app;
-    return GetAppDto.parse({ ...res, app, ...mcpExtras }, { reportOnly: true });
+    const failure = res.failure && (await this.mayReadFailure(req, appUrn)) ? res.failure : null;
+    return GetAppDto.parse({ ...res, app, failure, operation: this.operationFor(appUrn), ...mcpExtras }, { reportOnly: true });
+  }
+
+  /**
+   * A failure can quote the app's own log, so reading it takes what reading that log takes
+   * (`settingsReadAction`). A member who may only see a custom app does not get it. A test key has no
+   * more business reading it than `config`.
+   */
+  private async mayReadFailure(req: Request, appUrn: AppUrn): Promise<boolean> {
+    if (req.hubPrincipal === 'qa-read') {
+      return false;
+    }
+    const action = settingsReadAction(appUrn);
+    // `getApp` has just asserted `view`.
+    if (action === 'view') {
+      return true;
+    }
+    return this.whois.assertSessionAction(req, appUrn, action).then(
+      () => true,
+      () => false,
+    );
+  }
+
+  /** What the lifecycle has under way for the app, an install still in its checks included. */
+  private operationFor(appUrn: AppUrn): { command: OperationCommand } | null {
+    let registry: AppOperationRegistry | undefined;
+    try {
+      registry = this.moduleRef.get(AppOperationRegistry, { strict: false });
+    } catch {
+      return null;
+    }
+
+    const live = registry?.liveOperation(appUrn);
+    if (live) {
+      return { command: live.command };
+    }
+
+    return registry?.isInstallCallUnderWay(appUrn) ? { command: 'install' } : null;
   }
 
   private async buildMcpExtras(appUrn: AppUrn, info: { mcp?: unknown }) {
@@ -188,7 +242,8 @@ export class AppsController {
   @ApiResponse({ type: GetComposeDiffDto })
   async getAppComposeDiff(@Param('urn') urn: string, @Req() req: Request) {
     const appUrn = castAppUrn(urn);
-    await this.whois.assertSessionAction(req, appUrn, 'view');
+    // A custom app's compose holds its env values, which are its owner's and admins' (`settingsReadAction`).
+    await this.whois.assertSessionAction(req, appUrn, settingsReadAction(appUrn));
     const res = await this.appsReadService.getAppComposeDiff(appUrn);
     return GetComposeDiffDto.parse(res, { reportOnly: true });
   }
@@ -219,6 +274,15 @@ export class AppsController {
     const appUrn = castAppUrn(urn);
     await this.whois.assertSessionAction(req, appUrn, 'configure');
     return this.appsService.unignoreAppVersion(appUrn);
+  }
+
+  @Patch(':urn/guest-visibility')
+  @UseGuards(AuthGuard)
+  async setGuestVisibility(@Param('urn') urn: string, @Body() body: GuestVisibilityBodyDto, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    // The same grant as the app's Settings dialog, where this switch also lives.
+    await this.whois.assertSessionAction(req, appUrn, 'configure');
+    return this.appsService.setGuestVisibility(appUrn, body.visible);
   }
 
   /**

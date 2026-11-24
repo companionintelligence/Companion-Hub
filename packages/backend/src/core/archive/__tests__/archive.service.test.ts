@@ -96,6 +96,10 @@ describe('ArchiveService (argument vectors)', () => {
     await expect(service.extractTarGz(gzipFile, '/tmp/dest')).rejects.toThrow('Invalid backup archive');
   });
 
+  it('refuses a compressed file as a plain tar without running tar, since tar undoes compression only in a file it can seek in', async () => {
+    await expect(service.verifyPlainTar(gzipFile)).rejects.toThrow('Invalid backup archive');
+  });
+
   describe('listTarGz', () => {
     // busybox `tar -tv`: seconds in the timestamp, a `->` suffix on links. Splitting this on
     // whitespace to recover the path is what the two-listing approach exists to avoid.
@@ -257,6 +261,23 @@ describe.skipIf(!hasTar)('ArchiveService (real tar)', () => {
     await realFs.promises.writeFile(archive, bytes.subarray(0, Math.floor(bytes.length / 2)));
 
     await expect(service.listTarGz(archive)).rejects.toThrow('Invalid backup archive');
+  });
+
+  it('reads a plain tar through, and refuses one cut short inside a file', async () => {
+    const service = await realService();
+    const source = path.join(scratch, 'volume');
+    await realFs.promises.mkdir(source, { recursive: true });
+    await realFs.promises.writeFile(path.join(source, 'ibdata1'), Buffer.alloc(256 * 1024, 7));
+    const archive = path.join(scratch, 'volume.tar');
+    execFileSync('tar', ['-cf', archive, '-C', source, '.']);
+
+    await expect(service.verifyPlainTar(archive)).resolves.toBeUndefined();
+
+    // Inside the file's data: busybox handed the file by name seeks over it and reads the end as clean.
+    const bytes = await realFs.promises.readFile(archive);
+    await realFs.promises.writeFile(archive, bytes.subarray(0, 64 * 1024));
+
+    await expect(service.verifyPlainTar(archive)).rejects.toThrow('Invalid backup archive');
   });
 
   it('lists an archive of over a thousand long-named files end to end', async () => {

@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { act, render, screen, userEvent, waitFor } from '@/tests/test-utils';
 import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
@@ -38,6 +40,12 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   logoutMutation: () => ({ mutationFn: vi.fn() }),
 }));
 
+const { isMobileClient } = vi.hoisted(() => ({
+  isMobileClient: vi.fn(() => false),
+}));
+
+vi.mock('@/lib/mobile-connection', () => ({ isMobileClient }));
+
 // Polyfill ResizeObserver for Radix UI
 global.ResizeObserver = class ResizeObserver {
   observe() {}
@@ -45,10 +53,10 @@ global.ResizeObserver = class ResizeObserver {
   disconnect() {}
 };
 
-function renderHeader(isLoggedIn = true, initialEntry = '/dashboard') {
+function renderHeader(isLoggedIn = true, initialEntry = '/dashboard', onScrollToTop?: () => void) {
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>
-      <Header isLoggedIn={isLoggedIn} />
+      <Header isLoggedIn={isLoggedIn} onScrollToTop={onScrollToTop} />
     </MemoryRouter>,
   );
 }
@@ -91,6 +99,15 @@ describe('Header', () => {
     expect(header.style.height).toBe('var(--header-offset)');
   });
 
+  it('sits below the desktop title bar and does not count the bar again in its height', () => {
+    renderHeader(true);
+    expect(screen.getByTestId('app-header').style.top).toBe('var(--titlebar-height, 0px)');
+    // With the bar in --header-offset as well, the header was 40px taller in the desktop app than in a browser,
+    // and the page and the screenshot viewer, which start at its bottom edge, moved down with it.
+    const globalsCss = readFileSync(resolve(__dirname, '../../../styles/globals.css'), 'utf8');
+    expect(/--header-offset:\s*([^;]+);/.exec(globalsCss)?.[1]).toBe('calc(3.5rem + var(--safe-area-top, 0px))');
+  });
+
   it('opens the phone menu without a Radix portal', async () => {
     renderHeader(true);
     expect(screen.queryByTestId('mobile-app-menu')).not.toBeInTheDocument();
@@ -103,12 +120,22 @@ describe('Header', () => {
       'zoom-in-95',
       'slide-in-from-top-2',
       'overflow-y-auto',
-      'max-h-[calc(100dvh-var(--header-offset)-1rem)]',
+      'max-h-[calc(100dvh-var(--titlebar-height,0px)-var(--header-offset)-1rem)]',
     );
     const scrim = screen.getByTestId('mobile-app-menu-scrim');
     expect(scrim.style.top).toBe('calc(var(--titlebar-height, 0px) + var(--header-offset))');
     expect(scrim.className).not.toContain('inset-0');
     expect(screen.getByRole('menuitem', { name: /COMMON_SETTINGS|Settings/i })).toBeInTheDocument();
+  });
+
+  it('gives each theme in the phone menu an icon', async () => {
+    renderHeader(true);
+
+    await userEvent.click(screen.getByRole('button', { name: 'HEADER_OPEN_MENU' }));
+
+    for (const name of ['THEME_LIGHT', 'THEME_DARK', 'COMMON_SYSTEM']) {
+      expect(screen.getByRole('menuitem', { name }).querySelector('svg')).not.toBeNull();
+    }
   });
 
   it('dims the page from document.body and closes the phone menu when the page is clicked', async () => {
@@ -144,9 +171,8 @@ describe('Header', () => {
     renderHeader(true);
 
     await userEvent.click(screen.getByTestId('mobile-app-menu-btn'));
-    const logoLink = screen.getByAltText('CI Logo Icon').closest('a');
-    expect(logoLink).not.toBeNull();
-    await userEvent.click(logoLink as HTMLAnchorElement);
+    const logoLink = screen.getByRole('link', { name: 'core 2' });
+    await userEvent.click(logoLink);
 
     expect(screen.queryByTestId('mobile-app-menu')).not.toBeInTheDocument();
     expect(screen.queryByTestId('mobile-app-menu-scrim')).not.toBeInTheDocument();
@@ -214,5 +240,47 @@ describe('Header', () => {
     renderHeader(true, '/settings');
 
     expect(screen.getByRole('link', { name: /COMMON_SETTINGS|Settings/i })).toHaveClass('bg-accent', 'text-accent-foreground', 'btn-active');
+  });
+});
+
+describe('Header tap to top', () => {
+  beforeEach(() => {
+    logoutState.isPending = false;
+    isMobileClient.mockReturnValue(true);
+  });
+
+  // The iOS status-bar tap only scrolls the web view, and the store scrolls an inner pane, so on
+  // the mobile app the header band under the status bar does it instead (#1879).
+  it('scrolls the page to the top when the empty header band is tapped on the mobile app', async () => {
+    const onScrollToTop = vi.fn();
+    renderHeader(true, '/store', onScrollToTop);
+
+    await userEvent.click(screen.getByTestId('app-header'));
+
+    expect(onScrollToTop).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves the scroll alone when the tap lands on a link, a button or the open menu', async () => {
+    const onScrollToTop = vi.fn();
+    renderHeader(true, '/store', onScrollToTop);
+
+    await userEvent.click(screen.getByTestId('mobile-app-menu-btn'));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'THEME_DARK' }));
+    // The theme heading is part of the menu, not an item, and the menu stays open after a theme pick.
+    await userEvent.click(screen.getByText('HEADER_THEME'));
+    await userEvent.click(screen.getByTestId('mobile-app-menu-scrim'));
+    await userEvent.click(screen.getByRole('link', { name: 'core 2' }));
+
+    expect(onScrollToTop).not.toHaveBeenCalled();
+  });
+
+  it('does nothing on the desktop app or in a browser, where the window edge scrollbar is the control', async () => {
+    isMobileClient.mockReturnValue(false);
+    const onScrollToTop = vi.fn();
+    renderHeader(true, '/store', onScrollToTop);
+
+    await userEvent.click(screen.getByTestId('app-header'));
+
+    expect(onScrollToTop).not.toHaveBeenCalled();
   });
 });

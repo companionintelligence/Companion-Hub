@@ -17,6 +17,8 @@ main {
 
 body {
   overflow: hidden;
+  /* Flat surface: the token layer paints an aurora wash behind every route. */
+  background-image: none;
 }
 
 .tooltip {

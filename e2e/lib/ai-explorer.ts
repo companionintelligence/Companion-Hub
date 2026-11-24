@@ -40,6 +40,7 @@ async function getPageState(page: Page) {
         .slice(0, 30)
         .map((el) => ({
           tag: el.tagName.toLowerCase(),
+          // biome-ignore lint/performance/useDomNodeTextContent: this snapshot should report visible text only.
           text: (el as HTMLElement).innerText?.slice(0, 60).trim(),
           type: (el as HTMLInputElement).type || undefined,
           placeholder: (el as HTMLInputElement).placeholder || undefined,

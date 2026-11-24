@@ -1,0 +1,66 @@
+{
+  "id": "google/gemma-4-31B-it",
+  "sha": "842da3794eaa0b77d5f08bae87a17459d91ff475",
+  "gated": false,
+  "private": false,
+  "disabled": false,
+  "pipeline_tag": "image-text-to-text",
+  "library_name": "transformers",
+  "lastModified": "2026-07-20T16:42:18.000Z",
+  "safetensors": {
+    "parameters": {
+      "BF16": 31273088876
+    },
+    "total": 31273088876
+  },
+  "siblings": [
+    {
+      "rfilename": ".eval_results/mmmu_pro.yaml",
+      "size": 182
+    },
+    {
+      "rfilename": ".gitattributes",
+      "size": 1708
+    },
+    {
+      "rfilename": "README.md",
+      "size": 27963
+    },
+    {
+      "rfilename": "chat_template.jinja",
+      "size": 18683
+    },
+    {
+      "rfilename": "config.json",
+      "size": 4621
+    },
+    {
+      "rfilename": "generation_config.json",
+      "size": 208
+    },
+    {
+      "rfilename": "model-00001-of-00002.safetensors",
+      "size": 49784788364
+    },
+    {
+      "rfilename": "model-00002-of-00002.safetensors",
+      "size": 12761549884
+    },
+    {
+      "rfilename": "model.safetensors.index.json",
+      "size": 120246
+    },
+    {
+      "rfilename": "processor_config.json",
+      "size": 1689
+    },
+    {
+      "rfilename": "tokenizer.json",
+      "size": 32169626
+    },
+    {
+      "rfilename": "tokenizer_config.json",
+      "size": 3082
+    }
+  ]
+}

@@ -27,7 +27,7 @@ import { runFleetCommand } from './cli-fleet.js';
 import { runComposeRefreshCommand } from './cli-compose-refresh.js';
 import { runPoolCommand } from './cli-pool.js';
 import { confirmDestructiveAction } from './cli-prompt.js';
-import { registerHub, showDeviceId } from './cli-register.js';
+import { registerHub, showDeviceId, showSetupCode } from './cli-register.js';
 import { isApplianceMode } from './cli-repo-context.js';
 import { runWriteStatusFile } from './status-file.js';
 import { cleanHub, downHub, recreateHub, resetHub, restartHub } from './cli-teardown.js';
@@ -95,6 +95,11 @@ export async function runCli(rawArgs: string[]) {
     return;
   }
 
+  if (first === 'setup-code') {
+    showSetupCode(resolveEnvFromArgs(args.slice(1)));
+    return;
+  }
+
   if (first === 'device-id') {
     const fromHub = args.includes('--from-hub');
     const env = resolveEnvFromArgs(args.slice(1).filter((arg) => arg !== '--from-hub'));
@@ -115,16 +120,16 @@ export async function runCli(rawArgs: string[]) {
   }
 
   if (first === 'restart') {
-    const { detached, remaining } = normalizeDetachedFlag(args.slice(1));
-    await restartHub(resolveEnvFromArgs(remaining), detached);
+    const { detached, attached, remaining } = normalizeDetachedFlag(args.slice(1));
+    await restartHub(resolveEnvFromArgs(remaining), { detached, attached });
     return;
   }
 
   if (first === 'recreate') {
-    const { detached, remaining } = normalizeDetachedFlag(args.slice(1));
+    const { detached, attached, remaining } = normalizeDetachedFlag(args.slice(1));
     const force = remaining.includes('--yes');
     const env = resolveEnvFromArgs(remaining.filter((arg) => arg !== '--yes'));
-    await recreateHub(env, detached, force);
+    await recreateHub(env, { detached, attached }, force);
     return;
   }
 

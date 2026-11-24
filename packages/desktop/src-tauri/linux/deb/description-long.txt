@@ -6,5 +6,5 @@
  .
  Works without a graphical session: `companion-hub --detached` starts
  the Hub stack headless, and the bundled `cihub` CLI (installed to
- /usr/bin/cihub) manages the Hub entirely from the terminal — see
+ /usr/bin/cihub) manages the Hub entirely from the terminal. See
  `companion-hub --help` and `cihub --help`.

@@ -33,11 +33,12 @@ describe('MCP host-escape gates (R2-HUBHOSTESCAPE-5, -6)', () => {
   /**
    * A tools/call from an operator-created key holding `capability`, run the way `McpController` runs
    * it: inside the key's context. The lifecycle tools act only for a named caller (CI-Hub#1397), so a
-   * call with no key behind it is not one this surface can receive.
+   * call with no key behind it is not one this surface can receive. The key's creator may manage the
+   * Hub, so only capability decides here; who may use the Hub-wide tools is tested on its own.
    */
   const callAs = (capability: ApiKeyCapability, name: string, params: Record<string, unknown>) =>
-    mcpCallContext.run({ id: 1, name: 'agent', capability, ownerAppUrn: null, createdByUserId: null }, () =>
-      registry.callTool(name, params, { capability }),
+    mcpCallContext.run({ id: 1, name: 'agent', capability, ownerAppUrn: null, createdByUserId: 7 }, () =>
+      registry.callTool(name, params, { capability, assertMayManageHub: async () => undefined }),
     );
 
   beforeEach(() => {
@@ -81,10 +82,10 @@ describe('MCP host-escape gates (R2-HUBHOSTESCAPE-5, -6)', () => {
 
     it('does not offer either tool to a default-capability key in tools/list', async () => {
       // Statically destructive, so the agent is told up front rather than burning a turn on a refusal.
-      const visible = registry.listToolsForCapability(LEAKED).map((tool) => tool.name);
+      const visible = registry.listToolsForCapability(LEAKED, { mayManageHub: true }).map((tool) => tool.name);
       expect(visible).not.toContain('hub_add_app_store');
       expect(visible).not.toContain('hub_update_app_store');
-      expect(registry.listToolsForCapability('full').map((tool) => tool.name)).toEqual(
+      expect(registry.listToolsForCapability('full', { mayManageHub: true }).map((tool) => tool.name)).toEqual(
         expect.arrayContaining(['hub_add_app_store', 'hub_update_app_store']),
       );
     });
@@ -133,7 +134,7 @@ describe('MCP host-escape gates (R2-HUBHOSTESCAPE-5, -6)', () => {
       await expect(callAs(LEAKED, 'hub_update_app_config', { appUrn: 'nextcloud:ci-store', form: { port: 9090 } })).resolves.toEqual({
         requestId: 'config-1',
       });
-      expect(registry.listToolsForCapability(LEAKED).map((tool) => tool.name)).toEqual(
+      expect(registry.listToolsForCapability(LEAKED, { mayManageHub: true }).map((tool) => tool.name)).toEqual(
         expect.arrayContaining(['hub_install_app', 'hub_update_app_config']),
       );
     });

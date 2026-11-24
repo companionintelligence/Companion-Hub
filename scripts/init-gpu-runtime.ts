@@ -15,7 +15,11 @@ type NvidiaProbe = {
   updatedAt: string;
 };
 
-function runCapture(cmd: string, args: string[], extraEnv?: NodeJS.ProcessEnv): { ok: boolean; stdout: string; stderr: string } {
+function runCapture(
+  cmd: string,
+  args: string[],
+  extraEnv?: NodeJS.ProcessEnv,
+): { ok: boolean; status: number | null; stdout: string; stderr: string; notFound: boolean } {
   const result = spawnSync(cmd, args, {
     stdio: 'pipe',
     encoding: 'utf-8',
@@ -24,8 +28,10 @@ function runCapture(cmd: string, args: string[], extraEnv?: NodeJS.ProcessEnv): 
 
   return {
     ok: result.status === 0,
+    status: result.status,
     stdout: (result.stdout || '').toString(),
     stderr: (result.stderr || '').toString(),
+    notFound: (result.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT',
   };
 }
 
@@ -134,6 +140,18 @@ function setupNvidiaToolkitInWslDistro(distro: string): boolean {
   return runInWslDistro(distro, script);
 }
 
+/**
+ * A host tool (nvidia-smi, rocm-smi) run directly, not through `sh -lc`: a login shell sources
+ * `~/.profile` first. With dash, one bad line there (a `.` of a file that has gone) ends the shell
+ * before the tool starts. The login shell is only the fallback for a PATH that lacks the tool.
+ */
+function runHostTool(cmd: string, args: string[]): ReturnType<typeof runCapture> {
+  const direct = runCapture(cmd, args);
+  // Windows has no login shell to fall back to; a `sh` there is Git Bash, which knows no more tools.
+  if (direct.ok || !direct.notFound || process.platform === 'win32') return direct;
+  return runCapture('sh', ['-lc', [cmd, ...args].join(' ')]);
+}
+
 function hasCommand(cmd: string): boolean {
   if (process.platform === 'win32') {
     const where = runCapture('where', [cmd]);
@@ -148,8 +166,11 @@ function hasCommand(cmd: string): boolean {
     return ps.ok;
   }
 
-  const res = runCapture('sh', ['-lc', `command -v ${cmd} >/dev/null 2>&1`]);
-  return res.ok;
+  // This process's PATH first. A login shell sources ~/.profile. With dash one bad line there ends
+  // the shell: `docker` then read as missing and the NVIDIA probe below it never ran. The login
+  // shell is only the fallback for a PATH that lacks the command.
+  if (runCapture('sh', ['-c', `command -v ${cmd} >/dev/null 2>&1`]).ok) return true;
+  return runCapture('sh', ['-lc', `command -v ${cmd} >/dev/null 2>&1`]).ok;
 }
 
 function runCommand(cmd: string, args: string[], useSudo = false) {
@@ -234,7 +255,7 @@ function collectHostRocmProbeLinux(): RocmProbe {
     return { available: true, source: 'host-dev-kfd', updatedAt: new Date().toISOString() };
   }
 
-  const smi = runCapture('sh', ['-lc', 'rocm-smi --version']);
+  const smi = runHostTool('rocm-smi', ['--version']);
   if (smi.ok && smi.stdout.trim().length > 0) {
     return { available: false, source: 'host-rocm-smi', updatedAt: new Date().toISOString() };
   }
@@ -264,30 +285,63 @@ function clearNvidiaProbe(): void {
   }
 }
 
-function collectHostNvidiaProbe(): NvidiaProbe | null {
-  const probe = runCapture('sh', ['-lc', 'nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader,nounits | head -n 1']);
-  if (!probe.ok) return null;
+const NVIDIA_SMI_QUERY = ['--query-gpu=name,memory.total,driver_version', '--format=csv,noheader,nounits'];
 
-  const line = probe.stdout
+/**
+ * The host card as nvidia-smi names and sizes it, for `nvidia.json`. See {@link runHostTool}. The first
+ * GPU by default, as the desktop app's Linux probe takes; `largest` is what its Windows probe takes.
+ */
+export function collectHostNvidiaProbe(pick: 'first' | 'largest' = 'first'): NvidiaProbe | null {
+  const probe = runHostTool('nvidia-smi', NVIDIA_SMI_QUERY);
+  // The output decides, not the exit code: nvidia-smi exits non-zero when one card of several cannot
+  // be read and still lists the rest, as the desktop app's probe also allows. Through
+  // `sh -lc '… | head -n 1'` the exit code was head's, so such a run always wrote the file.
+
+  // nvidia-smi prints its errors on stdout too ("No devices were found", exit 6; "Failed to initialize
+  // NVML: Driver/library version mismatch", exit 18). After a failed run only a row shaped like the
+  // query's CSV, a name and a whole number of MiB, counts, or that message would be written as the
+  // card and stamped as proof that the driver answered.
+  const rows = probe.stdout
     .split('\n')
     .map((v) => v.trim())
-    .find((v) => v.length > 0);
-  if (!line) return null;
-
-  const [modelRaw, memoryRaw, driverRaw] = line.split(',').map((v) => v.trim());
-  const vramMb = Number.parseInt(memoryRaw || '', 10);
-  if (!modelRaw) return null;
+    .filter((v) => v.length > 0)
+    .map((line) => {
+      const [modelRaw, memoryRaw, driverRaw] = line.split(',').map((v) => v.trim());
+      const vramMb = Number.parseInt(memoryRaw || '', 10);
+      return {
+        model: modelRaw || '',
+        vramMb: Number.isFinite(vramMb) && vramMb > 0 ? vramMb : 0,
+        driverVersion: driverRaw || '',
+        sized: /^\d+$/.test(memoryRaw ?? ''),
+      };
+    })
+    .filter((row) => probe.ok || (row.model && row.sized));
+  const row = pick === 'largest' ? [...rows].sort((a, b) => b.vramMb - a.vramMb)[0] : rows[0];
+  if (!row?.model) return null;
+  if (!probe.ok) {
+    const stderr = probe.stderr.trim();
+    console.warn(
+      `init-gpu-runtime: nvidia-smi ended with exit code ${probe.status ?? 'none (signal)'} but listed a GPU; writing the NVIDIA probe from its output${stderr ? ` (${stderr})` : ''}.`,
+    );
+  }
 
   return {
-    model: modelRaw,
-    vramMb: Number.isFinite(vramMb) && vramMb > 0 ? vramMb : 0,
-    driverVersion: driverRaw || '',
+    model: row.model,
+    vramMb: row.vramMb,
+    driverVersion: row.driverVersion,
     source: 'host-nvidia-smi',
     updatedAt: new Date().toISOString(),
   };
 }
 
+/**
+ * The Windows host card, nvidia-smi.exe first as the desktop app's probe does, then WMI. WMI's
+ * `AdapterRAM` is 32 bits and reads about 4095 MB for any card over 4 GB, so it only stands in when
+ * nvidia-smi.exe is not on PATH.
+ */
 function collectHostNvidiaProbeWindows(): NvidiaProbe | null {
+  const fromSmi = collectHostNvidiaProbe('largest');
+  if (fromSmi) return fromSmi;
   const probe = runCapture('powershell.exe', [
     '-NoProfile',
     '-NonInteractive',
@@ -343,7 +397,7 @@ function dockerHasNvidiaRuntime(): boolean {
 function hasNvidiaGpuLinux(): boolean {
   if (existsSync('/proc/driver/nvidia/gpus')) return true;
 
-  const smi = runCapture('sh', ['-lc', 'nvidia-smi -L']);
+  const smi = runHostTool('nvidia-smi', ['-L']);
   if (smi.ok && smi.stdout.toLowerCase().includes('gpu')) return true;
 
   const lspci = runCapture('sh', ['-lc', "lspci 2>/dev/null | grep -i 'nvidia' || true"]);

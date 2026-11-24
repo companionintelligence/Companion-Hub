@@ -4,10 +4,13 @@ const writeFileSync = vi.fn();
 const envFileVars = vi.hoisted(() => ({ value: {} as Record<string, string> }));
 
 const GPU_NAME = 'NVIDIA GeForce RTX 4090';
+/** nvidia-smi.exe's CSV row when a test puts it on PATH; null leaves it failing, as on a host without it. */
+const nvidiaSmi = vi.hoisted(() => ({ row: null as string | null }));
 
 /** A Windows host with an NVIDIA GPU as WMI reports it, and no `sh` on PATH to find docker with. */
 vi.mock('node:child_process', () => ({
   spawnSync: (command: string, args: string[]) => {
+    if (command === 'nvidia-smi' && nvidiaSmi.row) return { status: 0, stdout: nvidiaSmi.row, stderr: '' };
     const script = String(args.at(-1));
     if (command === 'powershell.exe' && script.includes('ConvertTo-Json')) {
       return { status: 0, stdout: JSON.stringify({ Name: GPU_NAME, AdapterRAM: 4293918720, DriverVersion: '32.0.15.6094' }), stderr: '' };
@@ -52,6 +55,7 @@ describe('initGpuRuntime on a Windows install', () => {
   });
 
   afterEach(() => {
+    nvidiaSmi.row = null;
     Object.defineProperty(process, 'platform', { value: originalPlatform });
     for (const key of ENV_KEYS) {
       const value = saved.get(key);
@@ -59,6 +63,35 @@ describe('initGpuRuntime on a Windows install', () => {
       else process.env[key] = value;
     }
     vi.restoreAllMocks();
+  });
+
+  // WMI's AdapterRAM is 32 bits, so the 24 GB card below reads 4095 MB there. The desktop app asks
+  // nvidia-smi.exe first; `cihub up` now does the same, so both write the card's real size.
+  it("writes nvidia-smi's figure when nvidia-smi.exe answers, not WMI's 4 GB cap, with updatedAt", () => {
+    nvidiaSmi.row = `${GPU_NAME}, 24564, 581.80\n`;
+
+    initGpuRuntime();
+
+    const probe = JSON.parse(String(writeFileSync.mock.calls[0]?.[1]));
+    expect(probe).toMatchObject({ model: GPU_NAME, vramMb: 24564, driverVersion: '581.80', source: 'host-nvidia-smi' });
+    expect(Number.isFinite(Date.parse(probe.updatedAt))).toBe(true);
+  });
+
+  it('takes the largest card nvidia-smi.exe lists, as the desktop app does', () => {
+    nvidiaSmi.row = `NVIDIA GeForce GT 1030, 2048, 581.80\n${GPU_NAME}, 24564, 581.80\n`;
+
+    initGpuRuntime();
+
+    const probe = JSON.parse(String(writeFileSync.mock.calls[0]?.[1]));
+    expect(probe).toMatchObject({ model: GPU_NAME, vramMb: 24564 });
+  });
+
+  it('falls back to WMI without nvidia-smi.exe, still stamped', () => {
+    initGpuRuntime();
+
+    const probe = JSON.parse(String(writeFileSync.mock.calls[0]?.[1]));
+    expect(probe).toMatchObject({ model: GPU_NAME, vramMb: 4095, source: 'host-windows-wmi' });
+    expect(Number.isFinite(Date.parse(probe.updatedAt))).toBe(true);
   });
 
   it('writes the NVIDIA probe under the data dir the env file names, not under C:\\mnt', () => {

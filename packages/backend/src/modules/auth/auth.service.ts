@@ -19,6 +19,7 @@ import { parseRetryAfterSeconds } from '@/common/helpers/retry-after';
 import { PasswordService } from '@/core/password/password.service';
 import axios, { type AxiosResponse } from 'axios';
 import { PORTAL_GRANT_DENIED_CODE, PortalClientService } from '@/core/portal/portal-client.service';
+import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { FederatedIdentityRepository } from '@/modules/user/federated-identity.repository';
 import { normalizeUsername, UserRepository } from '@/modules/user/user.repository';
@@ -32,6 +33,7 @@ import { SessionUserCache } from '@/core/cache/session-user.cache';
 import { TotpAuthenticator } from './utils/totp-authenticator';
 import { BearerOrgMembershipCache } from './bearer-org-membership.cache';
 import type { User } from '@/core/database/drizzle/types';
+import { linksForCurrentPortal } from '@/modules/user/portal-links';
 
 /** How long a password-verified sign-in waits for its 2FA code before it must start over. */
 const TOTP_SESSION_EXPIRATION_SECONDS = 5 * 60;
@@ -50,6 +52,8 @@ export type UserOrgRole = 'owner' | 'admin' | 'member';
 export type PairedOrgMembershipDetail = {
   membership: PairedOrgMembership;
   role: UserOrgRole | null;
+  /** Set with `not-member` when this Hub is paired to no organization, so there was nobody to check against. */
+  unpaired?: true;
 };
 
 /** Portal never answered. Distinct from "Portal said these credentials are wrong". */
@@ -98,6 +102,7 @@ export class AuthService {
     private portal: PortalClientService,
     private deviceRegistration: DeviceRegistrationRepository,
     private bearerOrgMembership: BearerOrgMembershipCache,
+    private apiKeys: ApiKeyService,
   ) {}
 
   public getCookieDomain(domain?: string) {
@@ -154,24 +159,24 @@ export class AuthService {
     throw new TranslatableError('AUTH_ERROR_RATE_LIMITED', { retryAfter: String(retryAfter ?? 60) }, HttpStatus.TOO_MANY_REQUESTS);
   }
 
-  private async signInWithPortal(email: string, password: string) {
+  /**
+   * POST one of Portal's email auth routes. A Portal that never answered, or answered 5xx, is
+   * `PortalUnreachableError`: that is not credentials the person got wrong. A 429 is a wait.
+   */
+  private async postPortalEmailAuth<TBody>(path: string, payload: Record<string, string>) {
     const base = this.getPortalBaseUrl();
     const publicBase = this.getPublicPortalBaseUrl();
     const portalConfig = this.portalAxiosConfig();
     let response: AxiosResponse;
     try {
-      response = await axios.post(
-        `${base}/api/auth/sign-in/email`,
-        { email, password },
-        {
-          ...withPortalAxiosHeaders(portalConfig, {
-            'Content-Type': 'application/json',
-            Origin: publicBase,
-          }),
-          validateStatus: () => true,
-          timeout: 15_000,
-        },
-      );
+      response = await axios.post(`${base}${path}`, payload, {
+        ...withPortalAxiosHeaders(portalConfig, {
+          'Content-Type': 'application/json',
+          Origin: publicBase,
+        }),
+        validateStatus: () => true,
+        timeout: 15_000,
+      });
     } catch (error) {
       if (isPortalTransportFailure(error)) {
         throw new PortalUnreachableError(error);
@@ -179,10 +184,7 @@ export class AuthService {
       throw error;
     }
 
-    const body = (await Promise.resolve(response.data).catch(() => ({}))) as {
-      code?: string;
-      user?: { id?: string; email?: string; emailVerified?: boolean };
-    };
+    const body = ((await Promise.resolve(response.data).catch(() => ({}))) ?? {}) as TBody;
 
     this.throwIfPortalRateLimited(response);
 
@@ -190,7 +192,16 @@ export class AuthService {
       throw new PortalUnreachableError();
     }
 
-    if (response.status < 200 || response.status >= 300) {
+    return { status: response.status, body };
+  }
+
+  private async signInWithPortal(email: string, password: string) {
+    const { status, body } = await this.postPortalEmailAuth<{
+      code?: string;
+      user?: { id?: string; email?: string; emailVerified?: boolean };
+    }>('/api/auth/sign-in/email', { email, password });
+
+    if (status < 200 || status >= 300) {
       if (body.code === 'EMAIL_NOT_VERIFIED') {
         throw new TranslatableError('AUTH_ERROR_EMAIL_NOT_VERIFIED', {}, HttpStatus.BAD_REQUEST);
       }
@@ -206,32 +217,18 @@ export class AuthService {
   }
 
   private async signUpWithPortal(email: string, password: string, name: string) {
-    const base = this.getPortalBaseUrl();
-    const publicBase = this.getPublicPortalBaseUrl();
-    const portalConfig = this.portalAxiosConfig();
-    const response = await axios.post(
-      `${base}/api/auth/sign-up/email`,
-      { email, password, name },
-      {
-        ...withPortalAxiosHeaders(portalConfig, {
-          'Content-Type': 'application/json',
-          Origin: publicBase,
-        }),
-        validateStatus: () => true,
-        timeout: 15_000,
-      },
-    );
-
-    const body = (await Promise.resolve(response.data).catch(() => ({}))) as {
+    // A Portal that never answered used to reach the sign-up form as a bare 500 (#2061).
+    const { status, body } = await this.postPortalEmailAuth<{
       code?: string;
       token?: string | null;
       user?: { id?: string; email?: string };
-    };
+    }>('/api/auth/sign-up/email', { email, password, name });
 
-    this.throwIfPortalRateLimited(response);
-
-    if (response.status < 200 || response.status >= 300) {
-      if (body.code === 'USER_ALREADY_EXISTS') {
+    if (status < 200 || status >= 300) {
+      // Portal's Better Auth answers an address that already has an account with
+      // `USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL`. Only the older `USER_ALREADY_EXISTS` was matched, so the
+      // form said "Error creating user" to someone who only needed to sign in (#2061).
+      if (body.code === 'USER_ALREADY_EXISTS' || body.code === 'USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL') {
         throw new TranslatableError('AUTH_ERROR_USER_ALREADY_EXISTS', {}, HttpStatus.BAD_REQUEST);
       }
 
@@ -259,10 +256,16 @@ export class AuthService {
   /**
    * Admit a verified Portal person onto this Hub.
    *
-   * Existing federated links win. The first operator may bootstrap without an org check.
-   * Additional people need a Portal membership on the org this appliance is paired to.
+   * Existing federated links win. Everyone else with a Portal subject needs a membership on the org
+   * this appliance is paired to, the first operator included. A Hub paired to no organization admits
+   * its first operator without one, since there is nobody to check against. On a paired Hub the only
+   * first operator admitted with no subject is the device-key claim (`hostLocalClaim`), which proves
+   * access to the box rather than to a CI Account.
    */
-  public async admitHubPerson(params: { issuer: string; subject: string | null; email: string; emailVerified: boolean }) {
+  public async admitHubPerson(
+    params: { issuer: string; subject: string | null; email: string; emailVerified: boolean },
+    options: { hostLocalClaim?: boolean } = {},
+  ) {
     const issuer = (params.issuer || this.getPublicPortalBaseUrl()).trim();
     const subject = params.subject?.trim() || '';
 
@@ -280,47 +283,54 @@ export class AuthService {
     }
 
     const operators = await this.userRepository.getOperators();
-    if (operators.length > 0) {
-      if (!subject) {
-        throw new TranslatableError('AUTH_ERROR_INVALID_CREDENTIALS', {}, HttpStatus.BAD_REQUEST);
-      }
-      // "We could not ask Portal" is not "Portal said no". Both deny, but only one of them is the
-      // person's fault: answering a Portal outage with "you are not a member of this organization"
-      // sends an operator off to chase an invite that was never missing. 503 says retry.
-      const detail = await this.resolvePairedOrgMembershipDetail(subject);
-      if (detail.membership === 'unknown') {
-        throw new TranslatableError('AUTH_ERROR_ORG_CHECK_UNAVAILABLE', {}, HttpStatus.SERVICE_UNAVAILABLE);
-      }
-      if (detail.membership === 'not-member') {
-        throw new TranslatableError('AUTH_ERROR_NOT_ORG_MEMBER', {}, HttpStatus.FORBIDDEN);
-      }
-
-      const created = await this.ensureFederatedUser({
-        issuer,
-        subject,
-        email: params.email,
-        emailVerified: params.emailVerified,
-        allowCreateAdditionalOperator: true,
-      });
-      return this.markOperatorActive(created.id, detail.role, created);
-    }
+    const isFirstOperator = operators.length === 0;
 
     if (!subject) {
+      if (!isFirstOperator) {
+        throw new TranslatableError('AUTH_ERROR_INVALID_CREDENTIALS', {}, HttpStatus.BAD_REQUEST);
+      }
+      // ⚠ A SIGN-IN WITH NO SUBJECT CAN'T BE CHECKED, SO ON A PAIRED HUB IT IS NOT ADMITTED. Portal
+      // names the person in every real sign-in. A 2xx without `user.id` (a proxy answering for it, a
+      // misrouted internal URL) would otherwise make whoever typed the email the first admin, with no
+      // membership check (#2062). The device-key claim has no subject by design and stays allowed.
+      if (!options.hostLocalClaim && (await this.isPairedToAnOrganization())) {
+        throw new TranslatableError('AUTH_ERROR_ORG_CHECK_UNAVAILABLE', {}, HttpStatus.SERVICE_UNAVAILABLE);
+      }
       return this.ensureLocalCompanionUser(params.email);
     }
 
-    const first = await this.ensureFederatedUser({
+    /*
+     * ⚠ ASK PORTAL BEFORE CREATING ANY OPERATOR, THE FIRST ONE INCLUDED.
+     *
+     * The first operator's row used to be created first and the answer only decided its role. On a
+     * freshly paired Hub, anyone with a verified CI Account could sign in on its public `/login` or
+     * `/register` and be the admin until the next check-in sweep revoked them. What they made in
+     * between, an API key for one, outlived them (#2062). A Hub paired to no organization has nobody
+     * to check against and still admits its first operator.
+     *
+     * "We could not ask Portal" is not "Portal said no". Both deny, but only one of them is the
+     * person's fault: answering a Portal outage with "you are not a member of this organization"
+     * sends an operator off to chase an invite that was never missing. 503 says retry.
+     */
+    const detail = await this.resolvePairedOrgMembershipDetail(subject);
+    if (detail.membership === 'unknown') {
+      throw new TranslatableError('AUTH_ERROR_ORG_CHECK_UNAVAILABLE', {}, HttpStatus.SERVICE_UNAVAILABLE);
+    }
+    if (detail.membership === 'not-member' && !(isFirstOperator && detail.unpaired)) {
+      throw new TranslatableError('AUTH_ERROR_NOT_ORG_MEMBER', {}, HttpStatus.FORBIDDEN);
+    }
+
+    const admitted = await this.ensureFederatedUser({
       issuer,
       subject,
       email: params.email,
       emailVerified: params.emailVerified,
-      allowCreateAdditionalOperator: false,
+      allowCreateAdditionalOperator: !isFirstOperator,
     });
-    const firstDetail = await this.resolvePairedOrgMembershipDetail(subject);
-    if (firstDetail.membership === 'member') {
-      return this.markOperatorActive(first.id, firstDetail.role, first);
+    if (detail.membership === 'member') {
+      return this.markOperatorActive(admitted.id, detail.role, admitted);
     }
-    return first;
+    return admitted;
   }
 
   /**
@@ -338,6 +348,19 @@ export class AuthService {
    * grants, for the same reason: an organization it cannot read, or a WhoIs that failed, takes the
    * cache fallback rather than an empty grant.
    */
+  /** Whether this Hub holds a registration. A read that fails counts as paired, so the caller refuses. */
+  private async isPairedToAnOrganization(): Promise<boolean> {
+    try {
+      const configured = this.config.get('ciHubOrganizationId');
+      const preferred = configured ? await this.deviceRegistration.getDeviceRegistrationById(configured) : null;
+      const registration = preferred ?? (await this.deviceRegistration.getFirstDeviceRegistration());
+      return Boolean(registration?.id);
+    } catch (error) {
+      this.logger.warn(`Device registration read failed while admitting a first operator: ${error instanceof Error ? error.message : String(error)}`);
+      return true;
+    }
+  }
+
   public async resolvePairedOrgMembership(subject: string): Promise<PairedOrgMembership> {
     return (await this.resolvePairedOrgMembershipDetail(subject)).membership;
   }
@@ -369,7 +392,7 @@ export class AuthService {
     // Paired to no organization: nobody is a member of one this Hub does not have. That is a
     // settled local fact, so it is safe to remember, unlike a Portal we could not reach.
     if (!registration?.id) {
-      return { membership: 'not-member', role: null };
+      return { membership: 'not-member', role: null, unpaired: true };
     }
 
     // `whoisApps` does not catch transport failures: a DNS failure, a refused connection or its own
@@ -418,6 +441,8 @@ export class AuthService {
     });
     await this.sessionManager.destroyAllSessionsByUserId(userId);
     this.sessionUserCache.invalidate(userId);
+    // Their keys act with their grants, so they stop with them (#2062).
+    await this.revokeKeysCreatedBy(userId);
 
     if (subject) {
       this.bearerOrgMembership.delete(subject);
@@ -431,10 +456,20 @@ export class AuthService {
   }
 
   /**
-   * Hourly check-in sweep: WhoIs every active federated operator. Definitive removal revokes.
+   * Check-in sweep, after every accepted check-in (at least every 15 minutes): WhoIs every active
+   * federated operator. Definitive removal revokes.
    * A Portal blip (`unknown`) leaves the row alone.
    */
   public async reconcileOperatorMemberships() {
+    // Someone revoked before their keys went with them, or whose key delete failed then. One statement
+    // for everyone, judged by each row as it stands when it runs. The operator list read below goes
+    // stale while the sweep waits on Portal. A person let back in meanwhile may have made new keys.
+    try {
+      await this.apiKeys.revokeCreatedByRevokedPeople();
+    } catch (error) {
+      this.logger.warn(`Could not revoke the API keys of revoked operators: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
     const registration = await this.deviceRegistration.getFirstDeviceRegistration();
     if (!registration?.id) {
       return;
@@ -447,7 +482,7 @@ export class AuthService {
         continue;
       }
 
-      const links = await this.federatedIdentityRepository.findByUserId(operator.id);
+      const links = linksForCurrentPortal(await this.federatedIdentityRepository.findByUserId(operator.id), this.config.get('ciCloudUrl'));
       for (const link of links) {
         const detail = await this.resolvePairedOrgMembershipDetail(link.subject);
         if (detail.membership === 'not-member') {
@@ -462,6 +497,19 @@ export class AuthService {
     }
   }
 
+  /**
+   * Best effort, unlike the revocation itself: a key store that is down for a moment must not undo a
+   * revocation already written, or stop the sweep from reaching everyone else. The sweep deletes the
+   * keys of every revoked person, so a failure here is retried on the next check-in.
+   */
+  private async revokeKeysCreatedBy(userId: number) {
+    try {
+      await this.apiKeys.revokeCreatedBy(userId);
+    } catch (error) {
+      this.logger.warn(`Could not revoke the API keys of revoked operator ${userId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   public listOperators() {
     return this.userRepository.getOperators();
   }
@@ -471,8 +519,7 @@ export class AuthService {
 
     if (detail.membership === 'not-member') {
       // Unpaired is a local fact, not a Portal removal. Do not revoke the people who claimed this Hub.
-      const registration = await this.deviceRegistration.getFirstDeviceRegistration();
-      if (!registration?.id) {
+      if (detail.unpaired) {
         if (user.accessStatus === 'revoked') {
           throw new TranslatableError('AUTH_ERROR_NOT_ORG_MEMBER', {}, HttpStatus.FORBIDDEN);
         }
@@ -563,8 +610,8 @@ export class AuthService {
       hasCompletedOnboarding: operators.some((operator) => operator.hasCompletedOnboarding),
     };
 
-    // Claiming an empty Hub skips the Portal membership check (see `admitHubPerson`), so it is done
-    // atomically: two people arriving together must not both be admitted as the first operator.
+    // Nothing here checks Portal membership (`admitHubPerson` does that first on a paired Hub), so the
+    // claim is atomic: two people arriving together must not both be admitted as the first operator.
     if (operators.length === 0) {
       const claimed = await this.userRepository.createFirstOperator(newOperator);
       if (claimed) {
@@ -738,6 +785,15 @@ export class AuthService {
     try {
       portalIdentity = await this.signInWithPortal(email, password);
     } catch (error) {
+      if (error instanceof PortalUnreachableError) {
+        // A Hub with no admin yet has no cached password to fall back on. `/login` is its first-run
+        // page (#2061), so "email or password didn't match" here would blame correct credentials
+        // for a Portal outage.
+        const operators = await this.userRepository.getOperators();
+        if (operators.length === 0) {
+          throw new TranslatableError('AUTH_ERROR_FIRST_SIGN_IN_PORTAL_UNREACHABLE', {}, HttpStatus.SERVICE_UNAVAILABLE);
+        }
+      }
       if (error instanceof PortalUnreachableError || error instanceof ServiceUnavailableException) {
         return this.loginWithCachedPassword(email, password);
       }
@@ -767,6 +823,16 @@ export class AuthService {
   };
 
   /**
+   * The second step of a sign-in whose first factor was not a password (a DID key): the same
+   * short-lived id `login` hands a TOTP-enabled person, finished by {@link AuthService.verifyTotp}.
+   */
+  public beginTotpStep(userId: number): string {
+    const totpSessionId = crypto.randomUUID();
+    this.cache.set(totpSessionId, userId.toString(), TOTP_SESSION_EXPIRATION_SECONDS);
+    return totpSessionId;
+  }
+
+  /**
    * Verify TOTP code and return a JWT token
    *
    * @param {object} params - An object containing the TOTP session ID and the TOTP code
@@ -778,7 +844,7 @@ export class AuthService {
     const userId = this.cache.get(totpSessionId);
 
     if (!userId) {
-      throw new TranslatableError('AUTH_ERROR_TOTP_SESSION_NOT_FOUND');
+      throw new TranslatableError('AUTH_ERROR_TOTP_SESSION_NOT_FOUND', {}, HttpStatus.BAD_REQUEST);
     }
 
     const user = await this.userRepository.getUserById(Number(userId));
@@ -788,7 +854,7 @@ export class AuthService {
     // that no longer exists, so a burst of parallel guesses got far more than five tries. Everything
     // below this line runs without waiting, so the count and the check cannot be separated again.
     if (!this.cache.get(totpSessionId)) {
-      throw new TranslatableError('AUTH_ERROR_TOTP_SESSION_NOT_FOUND');
+      throw new TranslatableError('AUTH_ERROR_TOTP_SESSION_NOT_FOUND', {}, HttpStatus.BAD_REQUEST);
     }
 
     if (!user) {
@@ -819,7 +885,7 @@ export class AuthService {
       }
 
       this.cache.set(attemptsKey, String(attempts), TOTP_SESSION_EXPIRATION_SECONDS);
-      throw new TranslatableError('AUTH_ERROR_TOTP_INVALID_CODE');
+      throw new TranslatableError('AUTH_ERROR_TOTP_INVALID_CODE', {}, HttpStatus.BAD_REQUEST);
     }
 
     // Spent before the session is created, not after: two parallel requests carrying the same correct
@@ -846,6 +912,21 @@ export class AuthService {
       throw new TranslatableError('AUTH_ERROR_ADMIN_ALREADY_EXISTS', {}, HttpStatus.FORBIDDEN);
     }
 
+    /*
+     * ⚠ NO SIGN-UP ON A PAIRED HUB.
+     *
+     * This creates a brand-new CI Account. A brand-new account is in no organization. A Hub
+     * paired to one revokes, at its next check-in, every operator Portal doesn't put in that
+     * organization (`reconcileOperatorMemberships`). So whoever signed up here was the admin for
+     * about half a minute and then locked out for good (#2061). The first admin of a paired Hub is
+     * someone already in its organization, signing in on `/login`. Refused before Portal is asked,
+     * so no account is left behind at Portal either.
+     */
+    const registration = await this.deviceRegistration.getFirstDeviceRegistration();
+    if (registration?.id) {
+      throw new TranslatableError('AUTH_ERROR_REGISTER_PAIRED_HUB', {}, HttpStatus.FORBIDDEN);
+    }
+
     const { password, username } = input;
     const email = normalizeUsername(username);
 
@@ -867,7 +948,15 @@ export class AuthService {
       throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD_COMPLEXITY', {}, HttpStatus.BAD_REQUEST);
     }
 
-    const portalIdentity = await this.signUpWithPortal(email, password, email.split('@')[0] ?? 'User');
+    let portalIdentity: Awaited<ReturnType<AuthService['signUpWithPortal']>>;
+    try {
+      portalIdentity = await this.signUpWithPortal(email, password, email.split('@')[0] ?? 'User');
+    } catch (error) {
+      if (error instanceof PortalUnreachableError) {
+        throw new TranslatableError('AUTH_ERROR_PORTAL_UNREACHABLE', {}, HttpStatus.SERVICE_UNAVAILABLE);
+      }
+      throw error;
+    }
 
     if (!portalIdentity.signedIn) {
       return {
@@ -882,10 +971,10 @@ export class AuthService {
      * instead of their real grants — the appliance answers from a default rather
      * than from Portal.
      *
-     * Reached only when Portal signed the account in on sign-up, which it does
-     * only where `requireEmailVerification` is off (today's Portal has it on, so
-     * registration returns `requiresEmailVerification` above and the operator is
-     * linked on their first login instead). Portal issuing a session token is
+     * Reached when Portal signs the account in on sign-up, which it does unless it
+     * requires email verification. CI-Portal turned that requirement off on
+     * 2026-10-08 (948bc0d2), so this is the usual path. `requiresEmailVerification`
+     * above is for a Portal that still has it on. Portal issuing a session token is
      * itself the assertion that the account may sign in — the same assertion this
      * flow already acted on by provisioning an operator and a Hub session — so it
      * carries `emailVerified: true` rather than re-deriving a weaker signal.
@@ -932,21 +1021,7 @@ export class AuthService {
       throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN', undefined, HttpStatus.UNAUTHORIZED);
     }
 
-    const links = await this.federatedIdentityRepository.findByUserId(userId);
-    const subject = links[0]?.subject;
-    if (subject) {
-      const registration = await this.deviceRegistration.getFirstDeviceRegistration();
-      if (registration?.id) {
-        const detail = await this.resolvePairedOrgMembershipDetail(subject);
-        if (detail.membership === 'not-member') {
-          await this.revokeOperator(userId, subject);
-          throw new TranslatableError('AUTH_ERROR_NOT_ORG_MEMBER', {}, HttpStatus.FORBIDDEN);
-        }
-        if (detail.membership === 'member') {
-          await this.markOperatorActive(userId, detail.role);
-        }
-      }
-    }
+    await this.assertStillOrgMember(userId);
 
     const nextSessionId = await this.sessionManager.rotateSession(sessionId);
     if (!nextSessionId) {
@@ -955,6 +1030,39 @@ export class AuthService {
 
     return nextSessionId;
   };
+
+  /**
+   * Ask Portal whether a Portal-linked person is still in this Hub's organization, for a sign-in or a
+   * session refresh that did not go through {@link AuthService.admitHubPerson}. A definitive "not a
+   * member" revokes the person and answers 403; a member is marked active.
+   *
+   * Nothing is asked, and the person passes, when they have no Portal link at all (a local password
+   * person, a DID-only person), when the Hub is not paired to an organization, when the registration
+   * cannot be read, or when Portal cannot be reached ("unknown"). So an offline Hub still signs people
+   * in, as `admitHubPerson` does for an existing link. A person whose only Portal links are from
+   * another Portal is asked about that link, as the sweep and the refresh always have (#2178), and is
+   * revoked when Portal says they are not a member.
+   *
+   * It does not read the registration itself: {@link resolvePairedOrgMembershipDetail} does, and
+   * answers "unknown" when the read fails and `unpaired` when there is none. A Hub unpaired by a reset
+   * is a local fact and never revokes anyone, exactly as in `applyOnlineMembership`.
+   */
+  public async assertStillOrgMember(userId: number): Promise<void> {
+    const links = linksForCurrentPortal(await this.federatedIdentityRepository.findByUserId(userId), this.config.get('ciCloudUrl'));
+    const subject = links[0]?.subject;
+    if (!subject) {
+      return;
+    }
+
+    const detail = await this.resolvePairedOrgMembershipDetail(subject);
+    if (detail.membership === 'not-member' && !detail.unpaired) {
+      await this.revokeOperator(userId, subject);
+      throw new TranslatableError('AUTH_ERROR_NOT_ORG_MEMBER', {}, HttpStatus.FORBIDDEN);
+    }
+    if (detail.membership === 'member') {
+      await this.markOperatorActive(userId, detail.role);
+    }
+  }
 
   /**
    * Change the username of the currently logged in user.
@@ -975,19 +1083,19 @@ export class AuthService {
     const valid = await this.passwordService.verify(password, user.password);
 
     if (!valid) {
-      throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD');
+      throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD', {}, HttpStatus.BAD_REQUEST);
     }
 
     const email = normalizeUsername(newUsername);
 
     if (!validator.isEmail(email)) {
-      throw new TranslatableError('AUTH_ERROR_INVALID_USERNAME');
+      throw new TranslatableError('AUTH_ERROR_INVALID_USERNAME', {}, HttpStatus.BAD_REQUEST);
     }
 
     const existingUser = await this.userRepository.getUserByUsername(email);
 
     if (existingUser) {
-      throw new TranslatableError('AUTH_ERROR_USER_ALREADY_EXISTS');
+      throw new TranslatableError('AUTH_ERROR_USER_ALREADY_EXISTS', {}, HttpStatus.BAD_REQUEST);
     }
 
     await this.userRepository.updateUser(user.id, { username: email });
@@ -1012,11 +1120,11 @@ export class AuthService {
     const valid = await this.passwordService.verify(currentPassword, user.password);
 
     if (!valid) {
-      throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD');
+      throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD', {}, HttpStatus.BAD_REQUEST);
     }
 
     if (newPassword.length < 8) {
-      throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD_LENGTH');
+      throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD_LENGTH', {}, HttpStatus.BAD_REQUEST);
     }
 
     const hash = await this.passwordService.hash(newPassword);
@@ -1048,7 +1156,7 @@ export class AuthService {
 
     const isPasswordValid = await this.passwordService.verify(password, user.password);
     if (!isPasswordValid) {
-      throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD');
+      throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD', {}, HttpStatus.BAD_REQUEST);
     }
 
     if (user.totpEnabled) {
@@ -1091,7 +1199,7 @@ export class AuthService {
     const isValid = TotpAuthenticator.check(totpCode, totpSecret);
 
     if (!isValid) {
-      throw new TranslatableError('AUTH_ERROR_TOTP_INVALID_CODE');
+      throw new TranslatableError('AUTH_ERROR_TOTP_INVALID_CODE', {}, HttpStatus.BAD_REQUEST);
     }
 
     await this.userRepository.updateUser(userId, { totpEnabled: true });
@@ -1114,7 +1222,7 @@ export class AuthService {
 
     const isPasswordValid = await this.passwordService.verify(password, user.password);
     if (!isPasswordValid) {
-      throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD');
+      throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD', {}, HttpStatus.BAD_REQUEST);
     }
 
     await this.userRepository.updateUser(userId, { totpEnabled: false, totpSecret: null });

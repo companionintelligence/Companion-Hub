@@ -4,6 +4,8 @@ User documentation lives at **[docs.ci.computer](https://docs.ci.computer)**: in
 
 Use this index so Hub, Portal, Memory, and agent-only material stay distinct.
 
+To report a vulnerability, read [`../SECURITY.md`](../SECURITY.md) first.
+
 ## Product names
 
 | Name | What it is | Open source? |
@@ -44,12 +46,14 @@ Follow the [Google developer documentation style guide](https://developers.googl
 | [`portal-check-in.md`](portal-check-in.md) | Portal check-in, reading registration health without sending one, and recovering a Hub whose device key Portal rejects |
 | [`telemetry.md`](telemetry.md) | What Hub reports to Sentry, and the switches that stop it |
 | [`CLI.md`](CLI.md) | `cihub` CLI |
+| [`apple-container.md`](apple-container.md) | Run a Hub on Apple container through socktainer on a Mac: setup, how the desktop app chooses an engine, and what differs from Docker |
 | [`editor-inference.md`](editor-inference.md) | Point Continue, Zed, Cline, Aider, or an OpenAI SDK at the Hub: base URL, `inference` key, and model |
 | [`hub-stack-self-update.md`](hub-stack-self-update.md) | What the Hub self-updater moves and refuses, and how to turn off auto-update on a node |
 | [`fleet-setup.md`](fleet-setup.md) | End-to-end setup: account, devices, operators, tailnet, and pooling — the order to do them in |
 | [`private-vpn.md`](private-vpn.md) | Tailscale private VPN |
 | [`hub-pool.md`](hub-pool.md) | Multi-Hub inference pooling over Tailscale, with a quick start for the setup guide and the CLI |
 | [`inference-supervision.md`](inference-supervision.md) | Observing inference backends and Compose-wide crash loops — and why the Hub never restarts one |
+| [`inference-engine-comparison.md`](inference-engine-comparison.md) | Ollama, vLLM, Lemonade, and oMLX compared with the Strix Halo engines Halogen and Gufo, and what a fair test needs |
 | [`hub-pool-fleet-testing.md`](hub-pool-fleet-testing.md) | Two-node validation plan for Hub Pool |
 | [`hub-pool-vs-pair.md`](hub-pool-vs-pair.md) | Hub Pool compared with NVIDIA Personal-AI-Router |
 | [`fleet-router.md`](fleet-router.md) | Prompt every tailnet inference node when no Hub can run |

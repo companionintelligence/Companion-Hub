@@ -145,6 +145,18 @@ describe('AppStoreFilesManager and symbolic links', () => {
     });
   });
 
+  describe('copyAppFromRepoToInstalled', () => {
+    it('keeps a link inside the app relative, so it still works from the installed copy', async () => {
+      await write(path.join(repoApp, 'config.json'), '{}');
+      await write(path.join(repoApp, 'notes.txt'), 'notes');
+      await fs.promises.symlink('notes.txt', path.join(repoApp, 'alias.txt'));
+
+      await manager.copyAppFromRepoToInstalled(URN);
+
+      await expect(fs.promises.readlink(path.join(installedApp, 'alias.txt'))).resolves.toBe('notes.txt');
+    });
+  });
+
   describe('copyDataDir', () => {
     const runCopy = () => manager.copyDataDir(URN, new Map());
 

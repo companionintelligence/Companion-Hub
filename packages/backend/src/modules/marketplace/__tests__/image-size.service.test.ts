@@ -236,3 +236,173 @@ describe('ImageSizeService.getAppImageSize', () => {
     expect(size.totalBytes).toBe(30_001_000);
   });
 });
+
+describe('ImageSizeService.getImageLayerSizes', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const ghcr = 'https://ghcr.io/v2/besoeasy/zeronote/manifests';
+  const layered = (layers: Array<[string, number]>): StoredManifest => ({
+    mediaType: OCI_MANIFEST,
+    body: { schemaVersion: 2, mediaType: OCI_MANIFEST, config: { size: 1_000 }, layers: layers.map(([digest, size]) => ({ digest, size })) },
+  });
+
+  it("gives each layer's size, by digest, for the Hub's own platform", async () => {
+    vi.stubGlobal(
+      'fetch',
+      fakeRegistries({
+        [`${ghcr}/1.0.12`]: {
+          mediaType: OCI_INDEX,
+          body: {
+            schemaVersion: 2,
+            mediaType: OCI_INDEX,
+            manifests: [
+              { digest: 'sha256:arm', platform: { architecture: 'arm64', os: 'linux' } },
+              { digest: 'sha256:amd', platform: { architecture: 'amd64', os: 'linux' } },
+            ],
+          },
+        },
+        [`${ghcr}/sha256:amd`]: layered([
+          ['sha256:6a0ac1617861', 3_864_189],
+          ['sha256:612c0c1df4c5', 20_248_489],
+        ]),
+        [`${ghcr}/sha256:arm`]: layered([['sha256:ffffffffffff', 1]]),
+      }),
+    );
+
+    const sizes = await sizeServiceFor('unused').getImageLayerSizes('ghcr.io/besoeasy/zeronote:1.0.12');
+
+    expect(sizes).toEqual(
+      new Map([
+        ['sha256:6a0ac1617861', 3_864_189],
+        ['sha256:612c0c1df4c5', 20_248_489],
+      ]),
+    );
+  });
+
+  // Every manifest request to Docker Hub counts against its anonymous pull limit.
+  it('does not ask Docker Hub', async () => {
+    const fetch = fakeRegistries({});
+    vi.stubGlobal('fetch', fetch);
+
+    expect(await sizeServiceFor('unused').getImageLayerSizes('wordpress:6')).toBeNull();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('gives up within its time limit when the registry does not answer', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        (_input: unknown, init?: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            // Like fetch: a signal that has already fired rejects at once.
+            if (init?.signal?.aborted) reject(init.signal.reason);
+            init?.signal?.addEventListener('abort', () => reject(init.signal?.reason));
+          }),
+      ),
+    );
+
+    const started = Date.now();
+    expect(await sizeServiceFor('unused').getImageLayerSizes('ghcr.io/besoeasy/zeronote:1.0.12', { timeoutMs: 50 })).toBeNull();
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it('stops when the pull it serves is cancelled, without a warning', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        (_input: unknown, init?: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            if (init?.signal?.aborted) reject(init.signal.reason);
+            init?.signal?.addEventListener('abort', () => reject(init.signal?.reason));
+          }),
+      ),
+    );
+    const service = sizeServiceFor('unused');
+    const { logger } = service as unknown as { logger: LoggerService };
+    const cancel = new AbortController();
+
+    const lookup = service.getImageLayerSizes('ghcr.io/besoeasy/zeronote:1.0.12', { signal: cancel.signal });
+    cancel.abort();
+
+    expect(await lookup).toBeNull();
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+});
+
+// #2102: the registries an install asks before it registers, which took seconds each on a slow link.
+describe('ImageSizeService.verifyAppArchitecture', () => {
+  function serviceWithImages(images: string[]) {
+    const marketplace = mock<MarketplaceService>();
+    marketplace.getDockerComposeJson.mockResolvedValue({
+      content: { schemaVersion: 2, services: images.map((image, index) => ({ name: `s${index}`, image })) },
+    } as never);
+    return new ImageSizeService(mock<LoggerService>(), marketplace, mock<ConfigurationService>());
+  }
+
+  const held = () => {
+    let release!: (archs: string[] | null) => void;
+    const promise = new Promise<string[] | null>((resolve) => {
+      release = resolve;
+    });
+    return { promise, release };
+  };
+
+  it("asks every image's registry at once, not one after another", async () => {
+    const service = serviceWithImages(['web:1', 'db:2']);
+    const web = held();
+    const db = held();
+    const ask = vi.spyOn(service, 'getImageArchitectures').mockImplementation((image) => (image === 'web:1' ? web.promise : db.promise));
+
+    const verdict = service.verifyAppArchitecture('app:ci-marketplace' as AppUrn, 'amd64');
+    await vi.waitFor(() => expect(ask).toHaveBeenCalledTimes(2));
+    web.release(['amd64']);
+    db.release(['amd64', 'arm64']);
+
+    await expect(verdict).resolves.toEqual({ ok: true });
+  });
+
+  it('names the first image, in compose order, that lacks the architecture', async () => {
+    const service = serviceWithImages(['web:1', 'db:2']);
+    const web = held();
+    const db = held();
+    vi.spyOn(service, 'getImageArchitectures').mockImplementation((image) => (image === 'web:1' ? web.promise : db.promise));
+
+    const verdict = service.verifyAppArchitecture('app:ci-marketplace' as AppUrn, 'amd64');
+    await Promise.resolve();
+    db.release(['arm64']);
+    web.release(['arm64']);
+
+    await expect(verdict).resolves.toEqual({ ok: false, image: 'web:1', available: ['arm64'] });
+  });
+
+  // An install reads the images before the bundle download rewrites the compose, and checks those.
+  it('checks the images it is given without reading the compose again', async () => {
+    const service = serviceWithImages(['web:1']);
+    const ask = vi.spyOn(service, 'getImageArchitectures').mockResolvedValue(['amd64']);
+    const listed = vi.spyOn(service, 'listAppImages');
+
+    await expect(service.verifyAppArchitecture('app:ci-marketplace' as AppUrn, 'amd64', ['db:2'])).resolves.toEqual({ ok: true });
+
+    expect(listed).not.toHaveBeenCalled();
+    expect(ask).toHaveBeenCalledWith('db:2');
+    expect(ask).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not check a compose the caller could not read', async () => {
+    const service = serviceWithImages(['web:1']);
+    const ask = vi.spyOn(service, 'getImageArchitectures');
+
+    await expect(service.verifyAppArchitecture('app:ci-marketplace' as AppUrn, 'amd64', null)).resolves.toBeNull();
+
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('does not block on an image it could not inspect', async () => {
+    const service = serviceWithImages(['web:1', 'db:2']);
+    vi.spyOn(service, 'getImageArchitectures').mockImplementation(async (image) => (image === 'web:1' ? null : ['amd64']));
+
+    await expect(service.verifyAppArchitecture('app:ci-marketplace' as AppUrn, 'amd64')).resolves.toEqual({ ok: true });
+  });
+});

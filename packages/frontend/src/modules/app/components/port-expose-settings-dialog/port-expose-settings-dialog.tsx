@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
@@ -7,17 +7,19 @@ import { Tooltip } from 'react-tooltip';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { client } from '@/api-client/client.gen';
-import { getAppQueryKey, getDomainsOptions } from '@/api-client/@tanstack/react-query.gen';
+import { getAppQueryKey, getDomainsOptions, getInstalledAppsQueryKey } from '@/api-client/@tanstack/react-query.gen';
+import type { UpdatePortExposeAppDto } from '@/api-client/types.gen';
 import { Button } from '@/components/ui/Button';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { Input } from '@/components/ui/Input/Input';
 import { useAppContext } from '@/context/app-context';
 import { fetchDnsAvailability } from '@/lib/cloudflare-api';
+import { asLegacyTranslate } from '@/lib/i18n/legacy-translate';
 import { CloudflareSubdomainField } from '@/modules/app/components/install-form/cloudflare-subdomain-field';
 import { domainListNoteFor } from '@/modules/app/components/install-form/domain-list-note';
 import { preselectedPublicDomain, publicDomainToUse } from '@/modules/app/components/install-form/preselected-public-domain';
 import { useDnsAvailability } from '@/modules/app/components/install-form/use-dns-availability';
-import { resolveExposureMode } from '@/modules/onboarding/helpers/agent-onboarding';
+import { PublicPortConfirmDialog } from '@/modules/app/components/dialogs/public-port-confirm-dialog/public-port-confirm-dialog';
 import { buildPublicWebIdentity, sanitizeAppSubdomain, selectOfferedDomains } from '@ci-hub/common/types';
 import type { AvailableDomain } from '@ci-hub/common/types';
 import type { AppDetails, AppInfo } from '@/types/app.types';
@@ -77,10 +79,8 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
   } = useForm<FormValues>({
     values: {
       port: String(app.port ?? info.port ?? ''),
-      exposureMode: resolveExposureMode((app.exposureMode as ExposureMode | undefined) ?? 'local', {
-        cloudflareAvailable,
-        tailscaleAvailable,
-      }),
+      // The mode it is in, even while that mode's transport is down, until somebody picks another.
+      exposureMode: (app.exposureMode as ExposureMode | undefined) || 'local',
       localSubdomain: app.localSubdomain ?? info.id,
       // A new name has none until Companion Portal's list gives it one (`publicDomainToUse`).
       publicDomain: keepsPublished ? (app.publicDomain ?? domain) : (app.publicDomain ?? undefined),
@@ -155,11 +155,14 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
     checkDnsAvailability,
     setError,
     clearErrors,
-    t,
+    t: asLegacyTranslate(t),
   });
 
+  // A move onto Public web waiting on the person to agree that anyone with the address can open the port.
+  const [publicPortBody, setPublicPortBody] = useState<UpdatePortExposeAppDto | null>(null);
+
   const updatePortExpose = useMutation({
-    mutationFn: async (body: { port: number; exposureMode: ExposureMode; localSubdomain?: string; publicDomain?: string }) => {
+    mutationFn: async (body: UpdatePortExposeAppDto) => {
       const { error } = await client.patch({
         url: `/api/custom-apps/port-expose/${info.urn}`,
         body,
@@ -170,11 +173,18 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
       }
     },
     onSuccess: async () => {
+      // Home's tile says who can open the port, and the PATCH sends no event that would refresh it.
+      void queryClient.invalidateQueries({ queryKey: getInstalledAppsQueryKey() });
       await queryClient.invalidateQueries({ queryKey: getAppQueryKey({ path: { urn: info.urn } }) });
       toast.success(t('PORT_EXPOSE_SETTINGS_SUCCESS'));
       onClose();
     },
     onError: (error: TranslatableError) => {
+      // As on Expose a port: nothing listening is about the port typed here, so it goes under that field.
+      if (error.message === 'PORT_EXPOSE_PORT_UNREACHABLE') {
+        setError('port', { message: t(error.message, { ...error.intlParams }) });
+        return;
+      }
       toast.error(t(error.message || 'PORT_EXPOSE_UPDATE_ERROR', { ...error.intlParams }));
     },
   });
@@ -186,7 +196,7 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
       return;
     }
 
-    const exposureMode = resolveExposureMode(values.exposureMode, { cloudflareAvailable, tailscaleAvailable });
+    const { exposureMode } = values;
 
     if (exposureMode === 'cloudflare') {
       const subdomain = (values.localSubdomain || defaultAppSubdomain).trim();
@@ -237,16 +247,26 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
       }
     }
 
-    updatePortExpose.mutate({
+    const body: UpdatePortExposeAppDto = {
       port,
       exposureMode,
       localSubdomain: exposureMode === 'cloudflare' ? sanitizeAppSubdomain(values.localSubdomain || defaultAppSubdomain) : undefined,
       publicDomain: exposureMode === 'cloudflare' ? publicDomain : undefined,
-    });
+    };
+
+    // Asked as on Expose a port, when the port moves onto Public web. A port already there stays where
+    // it is, and its page and tile say it is open.
+    if (exposureMode === 'cloudflare' && app.exposureMode !== 'cloudflare') {
+      setPublicPortBody(body);
+      return;
+    }
+
+    updatePortExpose.mutate(body);
   };
 
   const handleClose = () => {
     reset();
+    setPublicPortBody(null);
     onClose();
   };
 
@@ -259,11 +279,13 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
         }
       }}
     >
-      <DialogContent className="max-h-[85vh] flex flex-col">
+      {/* The width of the app Settings dialog, so the three exposure choices fit on one line as they do there. */}
+      <DialogContent className="sm:max-w-2xl max-h-[calc(var(--app-height)-2rem)] flex flex-col">
         <DialogHeader>
-          <DialogTitle>{t('PORT_EXPOSE_SETTINGS_TITLE')}</DialogTitle>
+          <DialogTitle>{t('PORT_EXPOSE_SETTINGS_TITLE', { name: info.name })}</DialogTitle>
         </DialogHeader>
-        <form onSubmit={handleSubmit(onSubmit)} className="flex min-h-0 flex-1 flex-col">
+        {/* noValidate: onSubmit names a port out of range under the field, as on Expose a port, instead of the browser's own bubble. */}
+        <form onSubmit={handleSubmit(onSubmit)} noValidate className="flex min-h-0 flex-1 flex-col">
           <div className="flex-1 space-y-4 overflow-y-auto pr-1">
             <Input
               label={
@@ -368,6 +390,19 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
             </Button>
           </DialogFooter>
         </form>
+
+        {/* Inside this dialog's content, so Radix stacks it on top: its Cancel and Escape close only the question. */}
+        <PublicPortConfirmDialog
+          isOpen={publicPortBody !== null}
+          port={publicPortBody?.port ?? null}
+          onConfirm={() => {
+            if (publicPortBody) {
+              updatePortExpose.mutate(publicPortBody);
+            }
+            setPublicPortBody(null);
+          }}
+          onCancel={() => setPublicPortBody(null)}
+        />
       </DialogContent>
     </Dialog>
   );

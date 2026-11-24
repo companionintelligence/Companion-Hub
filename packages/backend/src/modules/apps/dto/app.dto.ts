@@ -2,7 +2,7 @@ import { APP_STATUS } from '@/core/database/drizzle/types';
 import { MetadataDto } from '@/modules/marketplace/dto/marketplace.dto';
 import { z } from 'zod';
 import { createZodDto } from '@/common/zod-dto';
-import { appInfoSchema } from '@ci-hub/common/schemas';
+import { appInfoSchema, appServiceFailureSchema, lifecycleOperationSchema } from '@ci-hub/common/schemas';
 
 const metadataSchema = (MetadataDto as unknown as { schema: z.ZodType }).schema;
 const appInfoSchemaRef = appInfoSchema;
@@ -116,7 +116,8 @@ export function pickGuestAppFields<T extends object>(app: T): Pick<T, Extract<ke
 const guestAppsSchema = z.object({
   installed: z.array(
     z.object({
-      app: guestAppSchema,
+      // The address of an app on Public web. It is public already, and a guest has nothing else to build it from.
+      app: guestAppSchema.extend({ publicUrl: z.string().nullable().optional() }),
       info: appInfoSchemaRef,
       metadata: metadataSchema,
     }),
@@ -125,6 +126,25 @@ const guestAppsSchema = z.object({
 
 const getAppSchema = z.object({
   app: appSchema.nullable().optional(),
+  /**
+   * The lifecycle operation the Hub has under way for the app, `null` when there is none. An install
+   * still in its checks has no row yet, so this is the only way another page can tell it is coming.
+   */
+  operation: z.object({ command: lifecycleOperationSchema }).nullable().optional(),
+  /**
+   * Why the app is down, as its last lifecycle command reported it: for a failed install and for a
+   * start or restart whose containers did not come up. `null` for anything else.
+   */
+  failure: z
+    .object({
+      message: z.string(),
+      errorCode: z.string().optional(),
+      errorDetail: z.string().optional(),
+      settingsPath: z.string().optional(),
+      serviceFailure: appServiceFailureSchema.optional(),
+    })
+    .nullable()
+    .optional(),
   info: appInfoSchemaRef,
   metadata: metadataSchema,
   appDataHostPath: z.string().nullable().optional(),
@@ -210,3 +230,10 @@ export class GetRandomPortDto extends createZodDto(getRandomPortSchema) {}
 export class GetConfigDiffDto extends createZodDto(getConfigDiffSchema) {}
 export class GetComposeDiffDto extends createZodDto(getComposeDiff) {}
 export class AppDataListingDto extends createZodDto(appDataListingSchema) {}
+
+/** Shows or hides one installed app on the guest dashboard, without touching its settings or restarting it. */
+const guestVisibilityBodySchema = z.object({
+  visible: z.boolean(),
+});
+
+export class GuestVisibilityBodyDto extends createZodDto(guestVisibilityBodySchema) {}

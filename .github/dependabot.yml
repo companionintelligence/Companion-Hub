@@ -3,13 +3,15 @@ updates:
   - package-ecosystem: 'npm'
     directory: '/'
     schedule:
-      interval: 'daily'
+      interval: 'weekly'
     rebase-strategy: 'auto'
     groups:
       minor-patch:
         update-types:
           - minor
           - patch
+      major:
+        update-types: ['major']
     ignore:
       # 7.76 changed how isDirty follows dirtyFields (react-hook-form#13370). The install form
       # re-seeds on !isDirty and prefills app_base_url from dirtyFields, and two of its tests fail
@@ -21,45 +23,70 @@ updates:
       # alone breaks the backend build. Lift this when 2FA moves to the otplib 13 API.
       - dependency-name: '@otplib/*'
         update-types: ['version-update:semver-major']
+      # better-ajv-errors 3.x imports styleText from node:util and calls it unguarded. The compose
+      # JSON editor runs it in the browser bundle, where node:util is a stub, so every schema
+      # error becomes "Invalid JSON format". Vitest runs on Node and tsc sees the module as any,
+      # so no check catches it. Lift this once upstream guards the call or the editor stops
+      # depending on the package.
+      - dependency-name: 'better-ajv-errors'
+        update-types: ['version-update:semver-major']
 
   - package-ecosystem: 'github-actions'
     directory: '/'
     schedule:
-      interval: 'daily'
+      interval: 'weekly'
     rebase-strategy: 'auto'
+    groups:
+      actions:
+        patterns: ['*']
 
   # Rust/Tauri desktop app crates
   - package-ecosystem: 'cargo'
     directory: '/packages/desktop/src-tauri'
     schedule:
-      interval: 'daily'
+      interval: 'weekly'
     rebase-strategy: 'auto'
     groups:
       minor-patch:
         update-types:
           - minor
           - patch
+      major:
+        update-types: ['major']
+    ignore:
+      # tauri-plugin-deep-link 2.6.2 builds ini::ParseOption with two of its four fields, so it
+      # doesn't compile against rust-ini 0.21.3 (0.21.2 is yanked). The code is Linux-only, so
+      # only the Linux desktop builds break. single-instance 2.5.4 requires deep-link ^2.6.2.
+      # Lift both once a fixed deep-link release is out.
+      - dependency-name: 'tauri-plugin-deep-link'
+        versions: ['2.6.2']
+      - dependency-name: 'tauri-plugin-single-instance'
+        versions: ['2.5.4']
 
   # Rust/Tauri mobile app crates
   - package-ecosystem: 'cargo'
     directory: '/packages/mobile/src-tauri'
     schedule:
-      interval: 'daily'
+      interval: 'weekly'
     rebase-strategy: 'auto'
     groups:
       minor-patch:
         update-types:
           - minor
           - patch
+      major:
+        update-types: ['major']
 
   # Isolated agent npm tree (not in the pnpm workspace)
   - package-ecosystem: 'npm'
     directory: '/agent'
     schedule:
-      interval: 'daily'
+      interval: 'weekly'
     rebase-strategy: 'auto'
     groups:
       minor-patch:
         update-types:
           - minor
           - patch
+      major:
+        update-types: ['major']

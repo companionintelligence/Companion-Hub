@@ -5,6 +5,8 @@ export default [
   // Inert on web/desktop (its loader redirects away when not on a phone).
   route('connect', './modules/mobile-connect/pages/connect-page.tsx', { id: 'mobile-connect' }),
   route('connect/advanced', './modules/mobile-connect/pages/connect-advanced-page.tsx', { id: 'mobile-connect-advanced' }),
+  // Finishes an app's sign-in with this page's session token (self-gated: sends to /login when signed out).
+  route('sso', './modules/auth/pages/edge-sso-page.tsx', { id: 'edge-sso' }),
   // Unauthenticated routes
   layout('./components/routes/unauthenticated-route.tsx', [
     route('login', './modules/auth/pages/login-page.tsx', { id: 'login' }),
@@ -18,12 +20,19 @@ export default [
   // Memory-connect finishing interstitial: the connect callback lands here while
   // the app restarts to pick up its new creds (full-page, self-gated).
   route('memory-connect/finishing', './modules/app/pages/memory-connect-finishing-page.tsx', { id: 'memory-connect-finishing' }),
+  // A Connect Memory navigation's next step, asked with this page's session token (self-gated like /sso).
+  route('memory-connect/continue', './modules/app/pages/memory-connect-continue-page.tsx', { id: 'memory-connect-continue' }),
+  // Where a connect started in the phone app ends, in the browser it handed the consent to:
+  // a "Back to the Hub app" button (full-page, self-gated like the finishing page).
+  route('memory-connect/return-to-app', './modules/app/pages/memory-connect-return-page.tsx', { id: 'memory-connect-return' }),
   // Authenticated routes
   layout('./components/routes/authenticated-route.tsx', [
     route('home', './modules/dashboard/pages/dashboard.tsx', { id: 'dashboard' }),
 
     // App store routes
     ...prefix('store', [
+      route('openclaw', './modules/app/pages/legacy-openclaw-redirect.tsx', { id: 'legacy-openclaw' }),
+      route('hermes', './modules/app/pages/legacy-hermes-redirect.tsx', { id: 'legacy-hermes' }),
       layout('./modules/app/layouts/app-store-layout.tsx', [
         index('./modules/app/pages/app-store-page.tsx', { id: 'app-store' }),
         route(':storeId', './modules/app/pages/app-store-page.tsx', { id: 'app-store-id' }),
@@ -46,7 +55,9 @@ export default [
 
     // Settings route
     ...prefix('settings', [index('./modules/settings/pages/settings-page.tsx', { id: 'settings' })]),
-    route('resource-monitor', './modules/system/pages/resource-monitor-page.tsx', { id: 'resource-monitor' }),
+    route('resource-monitor', './modules/system/v2/resources-page.tsx', { id: 'resource-monitor' }),
+    // Inside the signed-in layout so a page that doesn't exist keeps the Hub's header and navigation.
+    // A visitor who isn't signed in gets what the layout gives them: sign-in, or the guest dashboard.
+    route('*', './routes/not-found.tsx'),
   ]),
-  route('*', './routes/not-found.tsx'),
 ] satisfies RouteConfig;

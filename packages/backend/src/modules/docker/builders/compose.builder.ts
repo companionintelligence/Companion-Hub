@@ -1,21 +1,26 @@
-import { DEFAULT_LOCAL_DOMAIN, hubAppNetworkNames, managedAppLabels } from '@/common/constants';
-import { extractAppUrn } from '@/common/helpers/app-helpers';
+import { DEFAULT_LOCAL_DOMAIN, managedAppLabels } from '@/common/constants';
+import { appNetworkName, extractAppUrn } from '@/common/helpers/app-helpers';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import {
+  type DataMove,
   type Service,
   type ServiceInput,
   serviceSchema,
   collectServiceSecurityViolations,
+  describeNestedBindMounts,
+  findNestedBindMounts,
+  collectTraefikLabelIssues,
+  isReservedHubLabel,
   LOOPBACK_HOST_PORT_INTERFACE,
-  TRUSTED_APP_SECURITY_ALLOWLIST,
 } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import * as yaml from 'yaml';
 import { type BuiltService, ServiceBuilder } from './service.builder';
-import { TraefikLabelsBuilder, withAppStartingPage } from './traefik-labels.builder';
+import { labelsOfRoutersLosingTheirChain, TraefikLabelsBuilder, withAppStartingPage, withHubMiddlewaresFirst } from './traefik-labels.builder';
 import { publishesHostPort } from '@/modules/apps/app-exposure.helpers';
 import { requiresHubLoginOnPublicRoute } from '@/modules/apps/app-public-routing.helpers';
-import { isOfficialStoreApp } from '@/modules/apps/official-store.predicate';
+import { securityGrantsFor } from '@/modules/apps/security-grants';
+import { isHubReservedServiceName } from '@/modules/network/network-constants';
 import { z } from 'zod';
 
 export const INTERNAL_INFRASTRUCTURE_PORTS = [6543, 5672] as const;
@@ -36,7 +41,8 @@ export interface NetworkIsolationOptions {
    */
   internal?: boolean;
   /**
-   * Prevent services from being added to the shared Hub main network.
+   * No longer has an effect: no service of any app joins a shared Hub network. Kept so options that
+   * still set it are accepted.
    */
   disableMainNetwork?: boolean;
   /**
@@ -65,6 +71,47 @@ export interface ComposeBuilderOptions {
    * is read, by `requiresHubLoginOnPublicRoute`, for a stored form that never decided `enableAuth`.
    */
   manifest?: Parameters<typeof requiresHubLoginOnPublicRoute>[1];
+  /**
+   * The operator's Default app CPU limit from Settings, for services the install form and the
+   * manifest leave uncapped. Only that setting belongs here, never the resource allocator's
+   * host-sized recommendation: see the limits in `buildService`.
+   */
+  defaultAppCpuLimit?: string;
+  /**
+   * The ids of the apps the Hub knows about: installed ones and the ones its enabled stores list.
+   * An app's Traefik label names a router, service or middleware of its own only when no longer id
+   * among these covers the name (`collectTraefikLabelIssues`).
+   */
+  knownAppIds?: Iterable<string>;
+  /**
+   * Which of `APP_DOMAIN`, `APP_LOCAL_DOMAIN` and `APP_BASE_HOST` the Hub set in the app's env. An
+   * app's router rule may name only those (`collectTraefikLabelIssues`). Left out, a rule may name
+   * all three, as when the caller can't tell.
+   */
+  hostVariables?: Iterable<string>;
+  /**
+   * The app's data moves (`data_moves`). Where the Hub mounts a named volume instead of a bind
+   * (`requiresPosixPermissions` on a host without POSIX permissions), the data lives in a volume named
+   * after the host path, which a folder move on disk does not reach. A mount whose path a move
+   * produced keeps the volume of the path it came from, so the data is still there after the move.
+   */
+  dataMoves?: readonly DataMove[];
+}
+
+/**
+ * For each path a data move produced, the path whose volume it inherits: the first one in a chain of
+ * moves (`a` → `b`, then `b` → `c` gives `c` the volume of `a`). The data folder itself (`.`) never
+ * backs a volume of its own, so moves from it are left out.
+ */
+export function volumePathsBeforeMoves(moves: readonly DataMove[]): Map<string, string> {
+  const before = new Map<string, string>();
+  for (const { from, to } of moves) {
+    if (from === '.' || to === '.') {
+      continue;
+    }
+    before.set(to, before.get(from) ?? from);
+  }
+  return before;
 }
 
 interface Network {
@@ -143,6 +190,7 @@ export class DockerComposeBuilder {
    * volume would silently merge two data directories. This turns that into a build-time error.
    */
   private volumeSources: Record<string, string> = {};
+  private volumePathsBeforeMoves = new Map<string, string>();
   private localDomain: string;
   private cloudflareOriginHostname?: string;
   private cloudflarePublicHostname?: string;
@@ -151,6 +199,9 @@ export class DockerComposeBuilder {
   private securityOptions?: string[];
   private loopbackHostPort = false;
   private manifest?: Parameters<typeof requiresHubLoginOnPublicRoute>[1];
+  private defaultAppCpuLimit?: string;
+  private knownAppIds: string[] = [];
+  private hostVariables?: string[];
 
   /**
    * @param posixPermissionsSupported Whether the app-data filesystem can carry POSIX
@@ -229,6 +280,18 @@ export class DockerComposeBuilder {
     }
     if (options.manifest !== undefined) {
       this.manifest = options.manifest;
+    }
+    if (options.defaultAppCpuLimit !== undefined) {
+      this.defaultAppCpuLimit = options.defaultAppCpuLimit.trim() || undefined;
+    }
+    if (options.knownAppIds !== undefined) {
+      this.knownAppIds = [...options.knownAppIds];
+    }
+    if (options.hostVariables !== undefined) {
+      this.hostVariables = [...options.hostVariables];
+    }
+    if (options.dataMoves !== undefined) {
+      this.volumePathsBeforeMoves = volumePathsBeforeMoves(options.dataMoves);
     }
     return this;
   }
@@ -326,7 +389,8 @@ export class DockerComposeBuilder {
       .replace(/\$\{APP_DATA_DIR\}/g, '')
       .replace(/\/+/g, '/')
       .replace(/^\/+|\/+$/g, '');
-    const volumeName = deriveVolumeName(volume.hostPath);
+    // A path a data move produced keeps the volume its data is in (see `dataMoves`).
+    const volumeName = deriveVolumeName(this.volumePathsBeforeMoves.get(identity) ?? identity);
     this.registerVolume(volumeName, `hostPath:${identity}`);
 
     return { ...volume, hostPath: undefined, volumeName };
@@ -344,6 +408,14 @@ export class DockerComposeBuilder {
       );
     }
 
+    // A service name is a DNS alias on the app's network, which the Hub, Traefik and the VPN sidecar
+    // join. One named like a Hub container could answer their lookups of it (`HUB_RESERVED_SERVICE_NAMES`).
+    if (isHubReservedServiceName(params.name)) {
+      throw new Error(
+        `App "${appName}" service "${params.name}" has a name reserved for the Hub's own containers. Rename the service in the app's compose file.`,
+      );
+    }
+
     // Enforce the app sandbox at the install sink: reject host-privileged features
     // (privileged, host network/PID namespaces, denied host-path binds like /var/run/docker.sock)
     // unless the app is explicitly granted them in TRUSTED_APP_SECURITY_ALLOWLIST. A warn-only
@@ -353,10 +425,10 @@ export class DockerComposeBuilder {
     // The grant is keyed on provenance, not on the name. `TRUSTED_APP_SECURITY_ALLOWLIST` is keyed
     // by bare app name, so looking it up without asking where the app came from let any user-added
     // store — and `_user`, the custom-app path — claim `privileged: true` by naming its app
-    // `home-assistant`. `isOfficialStoreApp` is the provenance gate, and its doc comment explains
+    // `home-assistant`. `securityGrantsFor` applies that gate, and its doc comment explains
     // why the store segment is the one signal a manifest cannot forge. Everything else gets
     // `undefined` and is held to the bare reject-list.
-    const securityGrants = isOfficialStoreApp({ urn: appUrn }) ? TRUSTED_APP_SECURITY_ALLOWLIST[appName] : undefined;
+    const securityGrants = securityGrantsFor(appUrn);
     const securityViolations = collectServiceSecurityViolations(params, securityGrants);
     if (securityViolations.length > 0) {
       const details = securityViolations.map((v) => `${v.path.join('.')}${v.hostPath ? ` (${v.hostPath})` : ''} [${v.message}]`).join(', ');
@@ -388,12 +460,12 @@ export class DockerComposeBuilder {
       }
     }
 
-    // User-set form limits and app-manifest limits only. Auto-allocated
-    // per-app defaults (50% RAM / 75% CPUs) must not be copied onto every
+    // User-set form limits, the operator's Default app CPU limit, and app-manifest limits only.
+    // Auto-allocated per-app defaults (50% RAM / 75% CPUs) must not be copied onto every
     // service — that cgroup-kills one container at half the host while the
     // rest of RAM is free, and it does not reserve anything for inference
     // (vLLM/Ollama live outside these compose files).
-    const effectiveCpuLimit = form.cpuLimit?.trim() || undefined;
+    const effectiveCpuLimit = form.cpuLimit?.trim() || this.defaultAppCpuLimit;
     const effectiveMemoryLimit = typeof form.memoryLimit === 'string' ? form.memoryLimit.trim() || undefined : undefined;
     // App-provided limits always win; form limits only fill the gaps
     const applyCpuLimit = Boolean(effectiveCpuLimit && !params.deploy?.resources?.limits?.cpus);
@@ -470,17 +542,19 @@ export class DockerComposeBuilder {
       .setSysctls(params.sysctls)
       .setDNS(params.dns)
       .setPlatform(params.platform)
-      .setNetwork(`${appName}_${appStoreId}_network`);
+      .setRuntime(params.runtime)
+      // The app's own network and nothing else. Every app used to put its main container on the shared
+      // ci-hub_network too, where any other app could reach it without the Hub login and claim a name
+      // other containers looked up. `isMain` and `addToMainNetwork` no longer add one: the Hub,
+      // Traefik and the Private VPN sidecar join this network instead (`DockerService`).
+      .setNetwork(appNetworkName(appUrn));
 
     if (envFile) {
       service.setEnvFile([envFile]);
     }
 
-    if ((params.isMain || params.addToMainNetwork) && !isolation?.disableMainNetwork) {
-      hubAppNetworkNames().forEach((networkName, index) => {
-        service.setNetwork(networkName, index === 0 ? 1 : 0);
-      });
-    }
+    // The networks this service's container is on, which its labels may pin Traefik to.
+    const appNetworks = [appNetworkName(appUrn)];
 
     const effectiveExposureMode = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
 
@@ -519,10 +593,39 @@ export class DockerComposeBuilder {
       traefikLabels = traefikBuilder.build();
     }
 
+    // The Hub's own labels go last so nothing an app declares replaces them. Its extra labels lose any
+    // reserved key and any Traefik label that reaches past the app itself. A save refuses those, but
+    // a v1 compose never meets that check, and an installed compose saved before a rule existed is
+    // read with them kept (`parseInstalledComposeJson`), so this is where they are left out.
+    const appId = `${appName}-${appStoreId}`;
+    const leftOutLabels = new Map(
+      collectTraefikLabelIssues(params.extraLabels, appId, {
+        appNetworks,
+        knownAppIds: this.knownAppIds,
+        hostVariables: this.hostVariables,
+      }).map((issue) => [issue.label, issue.params.owner ? `${issue.message}, it is ${issue.params.owner}'s` : issue.message]),
+    );
+    for (const key of Object.keys(params.extraLabels ?? {})) {
+      if (isReservedHubLabel(key)) {
+        leftOutLabels.set(key, 'CUSTOM_APP_ERROR_LABEL_RESERVED');
+      }
+    }
+    // A router left without the chain it asked for would serve without the Hub login that chain may
+    // have held, so the rest of that router goes too.
+    for (const [label, chainLabel] of labelsOfRoutersLosingTheirChain(leftOutLabels.keys(), params.extraLabels ?? {}, appId)) {
+      if (!leftOutLabels.has(label)) {
+        leftOutLabels.set(label, `${leftOutLabels.get(chainLabel)} on ${chainLabel}`);
+      }
+    }
+    for (const [label, rule] of leftOutLabels) {
+      console.warn(`! App "${appName}" service "${params.name}": label ${label} was left out [${rule}]`);
+    }
+    const extraLabels = Object.fromEntries(Object.entries(params.extraLabels ?? {}).filter(([key]) => !leftOutLabels.has(key)));
     service
-      .setLabels({ ...defaultLabels, ...traefikLabels, ...params.extraLabels })
-      .interpolateVariables(`${appName}-${appStoreId}`, localDomain)
+      .setLabels({ ...traefikLabels, ...extraLabels, ...defaultLabels })
+      .interpolateVariables(appId, localDomain)
       // After interpolation, so a manifest's `{{CI_HUB_APP_ID}}` router is the same router as ours.
+      .transformLabels((labels) => withHubMiddlewaresFirst(labels, traefikLabels))
       .transformLabels(withAppStartingPage);
 
     return service.build();
@@ -538,7 +641,8 @@ export class DockerComposeBuilder {
     envFile?: string,
     cloudflareOriginHostname?: string,
     cloudflarePublicHostname?: string,
-    // Kept so callers can still pass UI recommendations; they are not applied.
+    // Kept so callers can still pass UI recommendations; they are not applied. The operator's own
+    // Default app CPU limit comes in through `ComposeBuilderOptions.defaultAppCpuLimit`.
     _defaultCpuLimit?: string,
     _defaultMemoryLimit?: string,
     options?: ComposeBuilderOptions,
@@ -548,8 +652,6 @@ export class DockerComposeBuilder {
     } else if (options) {
       this.applyOptions(options);
     }
-
-    const { appName, appStoreId } = extractAppUrn(appUrn);
 
     this.localDomain = localDomain || process.env.LOCAL_DOMAIN || DEFAULT_LOCAL_DOMAIN;
     this.cloudflareOriginHostname = cloudflareOriginHostname;
@@ -580,25 +682,33 @@ export class DockerComposeBuilder {
       return service;
     });
 
+    // One folder inside another the app can write to is a host escape (see bind-mount-nesting.ts in
+    // @ci-hub/common). Refused here, with the manifest's own paths, so an install fails before it
+    // starts anything; every start checks the expanded mounts again (DockerService.assertBindMountsSafe).
+    const nestedMounts = findNestedBindMounts(
+      fixedServices.flatMap((service) =>
+        (service.volumes ?? []).flatMap((volume) =>
+          volume.hostPath === undefined ? [] : [{ service: service.name, source: volume.hostPath, readOnly: volume.readOnly === true }],
+        ),
+      ),
+      { grantedHostPaths: securityGrantsFor(appUrn).hostPaths },
+    );
+    if (nestedMounts.length > 0) {
+      throw new Error(
+        `App "${extractAppUrn(appUrn).appName}" mounts a folder inside another folder it can write to: ${describeNestedBindMounts(nestedMounts)}. ` +
+          'Code in the app could replace the inner folder with a link to anywhere on this computer. Give each mount a folder of its own, side by side.',
+      );
+    }
+
     const myServices = fixedServices.map((service) => this.buildService(service, form, appUrn, envFile, options));
 
     const dockerCompose = this.addServices(myServices);
     const isolation = this.networkIsolationOptions;
-    if (!isolation?.disableMainNetwork) {
-      for (const networkName of hubAppNetworkNames()) {
-        dockerCompose.addNetwork({
-          key: networkName,
-          name: networkName,
-          external: true,
-        });
-      }
-    }
     // The Hub's boot-time network prune is filtered on the managed label, so only networks
-    // the Hub declared are ever pruned. The external Hub networks above are deliberately
-    // unlabelled here: they are shared infrastructure, not this app's to reclaim.
+    // the Hub declared are ever pruned.
     dockerCompose.addNetwork({
-      key: `${appName}_${appStoreId}_network`,
-      name: `${appName}_${appStoreId}_network`,
+      key: appNetworkName(appUrn),
+      name: appNetworkName(appUrn),
       external: false,
       subnet,
       internal: isolation?.internal,

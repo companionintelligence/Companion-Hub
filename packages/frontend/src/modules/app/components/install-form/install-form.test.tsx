@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
-import { StrictMode } from 'react';
+import { type ComponentProps, StrictMode } from 'react';
 import { MemoryRouter } from 'react-router';
 import { useForm } from 'react-hook-form';
 import type { AppInfo, FormField } from '@/types/app.types';
@@ -8,6 +9,7 @@ import { CustomDomainField } from './custom-domain-field';
 import { InstallForm } from './install-form';
 import { preselectedPublicDomain } from './preselected-public-domain';
 import { useAppContext } from '@/context/app-context';
+import { LAST_USED_CONFIGS_KEY_PREFIX } from '@/modules/app/lib/install-config-storage';
 import { TranslatableError } from '@/types/error.types';
 
 // Polyfill ResizeObserver for Radix UI
@@ -64,8 +66,13 @@ const { toast } = vi.hoisted(() => ({
   toast: {
     error: vi.fn(),
     success: vi.fn(),
+    warning: vi.fn(),
   },
 }));
+
+const MCP_ROLE = vi.hoisted(() => ({ manageHub: true, canGrantFull: true }));
+vi.mock('@/lib/hooks/use-hub-access', () => ({ useHubAccess: () => ({ manageHub: MCP_ROLE.manageHub, isPending: false }) }));
+vi.mock('@/lib/hooks/use-can-grant-full', () => ({ useCanGrantFull: () => MCP_ROLE.canGrantFull }));
 
 vi.mock('sonner', () => ({
   toast: toast,
@@ -314,6 +321,181 @@ describe('InstallForm', () => {
       'COMMON_PRIVATE_VPN',
       'APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE',
     ]);
+  });
+
+  // The app's own MCP key would reach the apps beside it, so an install asks first, and "No access"
+  // is what a click-through gives.
+  describe('an app that asks for the Hub MCP tools', () => {
+    const info = { ...baseInfo, urn: 'agent:someone-elses-store', hub_integration: { mcp_client: true } } as unknown as AppInfo;
+
+    beforeEach(() => {
+      MCP_ROLE.manageHub = true;
+      MCP_ROLE.canGrantFull = true;
+      vi.mocked(useAppContext).mockReturnValue(createContext(false) as unknown as ReturnType<typeof useAppContext>);
+    });
+
+    const renderForm = (props: Partial<ComponentProps<typeof InstallForm>> = {}) =>
+      render(
+        <MemoryRouter>
+          <InstallForm info={info} onSubmit={vi.fn()} formId="test-form" formFields={[]} {...props} />
+        </MemoryRouter>,
+      );
+
+    it('asks on install, with no access chosen', () => {
+      renderForm();
+
+      expect(screen.getByTestId('install-form-mcp-section')).toBeInTheDocument();
+      expect(screen.getByTestId('install-form-mcp-access-none')).toBeChecked();
+    });
+
+    it('submits no access when nothing was chosen', async () => {
+      const onSubmit = vi.fn();
+      renderForm({ onSubmit });
+
+      fireEvent.submit(document.getElementById('test-form') as HTMLFormElement);
+
+      await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+      expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ mcpAccess: 'none' });
+    });
+
+    it('submits the level chosen', async () => {
+      const onSubmit = vi.fn();
+      renderForm({ onSubmit });
+
+      await userEvent.click(screen.getByTestId('install-form-mcp-access-write'));
+      fireEvent.submit(document.getElementById('test-form') as HTMLFormElement);
+
+      await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+      expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ mcpAccess: 'write' });
+    });
+
+    it('lets a member see the question but give nothing', () => {
+      MCP_ROLE.manageHub = false;
+      renderForm();
+
+      expect(screen.getByTestId('install-form-mcp-access-write')).toBeDisabled();
+      expect(screen.getByText('APP_MCP_ACCESS_MANAGER_REQUIRED')).toBeInTheDocument();
+    });
+
+    it('offers full only to an owner or admin', () => {
+      MCP_ROLE.canGrantFull = false;
+      renderForm();
+
+      expect(screen.getByTestId('install-form-mcp-access-full')).toBeDisabled();
+      expect(screen.getByTestId('install-form-mcp-access-write')).toBeEnabled();
+    });
+
+    it('does not ask in the settings dialog, where the Hub access section answers it', () => {
+      renderForm({ isEdit: true, initialValues: {} });
+
+      expect(screen.queryByTestId('install-form-mcp-section')).not.toBeInTheDocument();
+    });
+
+    it('does not ask for an app that does not want the tools', () => {
+      render(
+        <MemoryRouter>
+          <InstallForm info={baseInfo} onSubmit={vi.fn()} formId="test-form" formFields={[]} />
+        </MemoryRouter>,
+      );
+
+      expect(screen.queryByTestId('install-form-mcp-section')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('an app whose listing needs a public address', () => {
+    const info = {
+      urn: 'matrix-conduit:store',
+      form_fields: [],
+      exposable: true,
+      dynamic_config: true,
+      force_expose: true,
+      port: 6167,
+    } as unknown as AppInfo;
+    const onValidityChange = vi.fn();
+
+    const renderForm = (props: Partial<ComponentProps<typeof InstallForm>> = {}, context: { cloudflareAvailable?: boolean } = {}) => {
+      vi.mocked(useAppContext).mockReturnValue({
+        ...createContext(false),
+        tailscaleAvailable: true,
+        ...context,
+      } as unknown as ReturnType<typeof useAppContext>);
+
+      return render(
+        <MemoryRouter>
+          <InstallForm info={info} onSubmit={vi.fn()} formId="test-form" formFields={[]} onValidityChange={onValidityChange} {...props} />
+        </MemoryRouter>,
+      );
+    };
+
+    it('offers only Public web and says why', async () => {
+      renderForm();
+
+      expect(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_LOCAL' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'COMMON_PRIVATE_VPN' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE' })).toBeEnabled();
+      expect(screen.getByText('APP_INSTALL_FORM_EXPOSURE_PUBLIC_WEB_ONLY')).toBeInTheDocument();
+      await waitFor(() => expect(onValidityChange).toHaveBeenLastCalledWith(true));
+    });
+
+    it('submits Public web with nothing that needs a typed domain', async () => {
+      const onSubmit = vi.fn();
+      renderForm({ onSubmit });
+
+      await waitFor(() => expect(onValidityChange).toHaveBeenLastCalledWith(true));
+      fireEvent.submit(document.getElementById('test-form') as HTMLFormElement);
+
+      await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+      const [submitted] = onSubmit.mock.calls[0] as [Record<string, unknown>];
+      expect(submitted).toMatchObject({ exposureMode: 'cloudflare', exposedLocal: true });
+      expect(submitted.exposed).toBeUndefined();
+    });
+
+    it('keeps Install off where this Hub has no Public web', async () => {
+      renderForm({}, { cloudflareAvailable: false });
+
+      expect(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE' })).toBeDisabled();
+      await waitFor(() => expect(onValidityChange).toHaveBeenCalled());
+      expect(onValidityChange).not.toHaveBeenCalledWith(true);
+    });
+
+    it('keeps Install off until the domain its name goes on is known', async () => {
+      MOCK_USE_QUERY_RESULT.isFetching = true;
+      renderForm();
+
+      await waitFor(() => expect(onValidityChange).toHaveBeenCalled());
+      expect(onValidityChange).not.toHaveBeenCalledWith(true);
+    });
+
+    it('keeps Install off when the domain list could not be read', async () => {
+      MOCK_AVAILABLE_DOMAINS.supported = false;
+      renderForm();
+
+      await waitFor(() => expect(onValidityChange).toHaveBeenCalled());
+      expect(onValidityChange).not.toHaveBeenCalledWith(true);
+    });
+
+    it('turns Install on once a domain the list offers is preselected', async () => {
+      MOCK_AVAILABLE_DOMAINS.domains = [{ id: '1', domain: 'ci9.pw', isDefault: true }];
+      renderForm();
+
+      await waitFor(() => expect(onValidityChange).toHaveBeenLastCalledWith(true));
+    });
+
+    it('still requires what the listing marks required', async () => {
+      const required = { label: 'Open registration', type: 'text', required: true, env_variable: 'REGISTRATION_OPEN' } as FormField;
+      renderForm({ formFields: [required] });
+
+      await waitFor(() => expect(onValidityChange).toHaveBeenCalled());
+      expect(onValidityChange).not.toHaveBeenCalledWith(true);
+    });
+
+    it('keeps the other modes for an app with no such need', () => {
+      renderForm({ info: { ...info, force_expose: false } });
+
+      expect(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_LOCAL' })).toBeEnabled();
+      expect(screen.getByRole('button', { name: 'COMMON_PRIVATE_VPN' })).toBeEnabled();
+      expect(screen.queryByText('APP_INSTALL_FORM_EXPOSURE_PUBLIC_WEB_ONLY')).not.toBeInTheDocument();
+    });
   });
 
   it('shows advanced settings toggle in simple mode when optional fields exist', () => {
@@ -570,6 +752,105 @@ describe('InstallForm', () => {
     });
 
     expect(fetchDnsAvailability).not.toHaveBeenCalled();
+  });
+
+  /*
+   * On Public Web the submit runs a last DNS check through Companion Portal, which took 4 to 7 s on
+   * a slow link. Nothing on screen moved in that time: a subdomain the form refuses by itself got
+   * its error only after the check, and the dialog's button had no spinner and still took clicks.
+   */
+  describe('submitting on Public Web in production', () => {
+    const INFO = { urn: 'cyberchef:ci-marketplace', form_fields: [], exposable: true, dynamic_config: true, port: 8080 } as unknown as AppInfo;
+    const CONTEXT = {
+      userSettings: {
+        ciHubOrganizationSlug: 'acme',
+        ciHubDeviceSlug: 'core2',
+        localDomain: 'ci.lan',
+        domain: 'companionintelligence.com',
+        maxBackups: 5,
+        guestDashboard: false,
+      },
+      user: { advancedMode: false },
+      isProduction: true,
+      cloudflareAvailable: true,
+      tailscaleAvailable: false,
+    } as unknown as ReturnType<typeof useAppContext>;
+
+    /** Every DNS check waits for `answerChecks`, as one does on a slow link. */
+    const pendingChecks: Array<(response: Response) => void> = [];
+    const answerChecks = () => {
+      for (const answer of pendingChecks.splice(0)) {
+        answer(new Response(JSON.stringify({ available: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+    };
+
+    beforeEach(() => {
+      MOCK_AVAILABLE_DOMAINS.domains = [{ id: 'd1', domain: 'companionintelligence.com', isDefault: true, offered: true }];
+      vi.mocked(useAppContext).mockReturnValue(CONTEXT);
+      fetchDnsAvailability.mockImplementation(() => new Promise<Response>((resolve) => pendingChecks.push(resolve)));
+    });
+
+    afterEach(() => {
+      answerChecks();
+      // `vi.clearAllMocks` keeps implementations, and later tests must not inherit a check that never answers.
+      fetchDnsAvailability.mockReset();
+    });
+
+    const renderForm = (localSubdomain: string, props: Partial<ComponentProps<typeof InstallForm>> = {}) =>
+      render(
+        <MemoryRouter>
+          <InstallForm
+            info={INFO}
+            onSubmit={vi.fn()}
+            formId="test-form"
+            formFields={[]}
+            initialValues={{ exposureMode: 'cloudflare', localSubdomain }}
+            isEdit
+            {...props}
+          />
+        </MemoryRouter>,
+      );
+
+    const submit = async (container: HTMLElement) => {
+      await act(async () => {
+        fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+      });
+    };
+
+    it('shows a subdomain it can refuse by itself at once, while the DNS check is still out', async () => {
+      const onSubmit = vi.fn();
+      const { container } = renderForm('My_App', { onSubmit });
+
+      await submit(container);
+
+      await waitFor(() => {
+        expect(toast.error).toHaveBeenCalledWith('APP_INSTALL_FORM_ERROR_INVALID');
+      });
+      expect(screen.getByText('APP_INSTALL_FORM_ERROR_LOCAL_SUBDOMAIN_FORMAT')).toBeInTheDocument();
+      expect(onSubmit).not.toHaveBeenCalled();
+    });
+
+    it('reports itself submitting from the submit until the DNS check answers', async () => {
+      const onSubmit = vi.fn();
+      const onSubmittingChange = vi.fn();
+      const { container } = renderForm('cyberchef', { onSubmit, onSubmittingChange });
+
+      await submit(container);
+
+      await waitFor(() => {
+        expect(onSubmittingChange).toHaveBeenLastCalledWith(true);
+      });
+      expect(onSubmit).not.toHaveBeenCalled();
+
+      // Answers every check that is out, the final one too once it has gone out.
+      await waitFor(() => {
+        answerChecks();
+        expect(onSubmit).toHaveBeenCalledOnce();
+      });
+      await waitFor(() => {
+        expect(onSubmittingChange).toHaveBeenLastCalledWith(false);
+      });
+    });
   });
 
   describe('restarting for a newly connected custom domain', () => {
@@ -1200,6 +1481,7 @@ describe('InstallForm', () => {
       ];
       // A `t` that shows its values, which the module-wide mock drops.
       const t = (key: string, values?: Record<string, string>) => (values ? `${key} ${Object.values(values).join(' ')}` : key);
+      // biome-ignore lint/correctness/noComponentHookFactories: this one-shot test harness is rendered once for this assertion.
       const Harness = () => {
         const { control } = useForm();
 
@@ -1792,11 +2074,14 @@ describe('InstallForm', () => {
   });
 
   // The Edit Settings flow (`isEdit`) must show what the Hub actually serves. A stored form that
-  // never decided enableAuth is persisted as false and routed without the login unless the
-  // manifest's edge-auth default says otherwise. The switch used to show ON regardless, which is
-  // how an OpenClaw install sat on the internet with no login while its settings dialog said
-  // "Enable authentication" was on (2026-09-28).
-  it('shows a stored form that never decided auth as OFF on edit', async () => {
+  // never decided enableAuth is routed WITHOUT the login only when the manifest's edge-auth default
+  // is off AND its host port is closed. A form with no `openPort` key at all (an API, MCP or
+  // onboarding install) is served as `openPort: true`, because the queue schema defaults it, so the
+  // Hub puts the login in front of it. The switch used to show ON regardless, which is how an
+  // OpenClaw install sat on the internet with no login while its settings dialog said "Enable
+  // authentication" was on (2026-09-28). Then it showed OFF for the no-key form, which is served
+  // WITH the login, and a save wrote that OFF over it.
+  it('shows a stored form that carries no openPort key and never decided auth as ON on edit, as the Hub serves it', async () => {
     vi.mocked(useAppContext).mockReturnValue(exposableContext());
 
     render(
@@ -1813,7 +2098,7 @@ describe('InstallForm', () => {
     );
 
     await waitFor(() => {
-      expect(getEnableAuthSwitch()).not.toBeChecked();
+      expect(getEnableAuthSwitch()).toBeChecked();
     });
   });
 
@@ -1840,6 +2125,254 @@ describe('InstallForm', () => {
     await waitFor(() => {
       expect(getEnableAuthSwitch()).toBeChecked();
     });
+  });
+
+  // The backend serves a stored form that never decided auth WITH the Hub login when its host port
+  // is open (`requiresHubLoginOnPublicRoute`: `Boolean(openPort)`). An edit that showed OFF and
+  // saved `enableAuth: false` took the login off an app that was behind it. Fail closed: the switch
+  // shows what the Hub serves, and a save without a touch keeps it.
+  describe('a stored form that never decided auth, on an open host port', () => {
+    const storedOpenPort = { exposureMode: 'cloudflare', openPort: true };
+
+    it('shows the switch ON on edit, as the Hub serves it', async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext());
+
+      render(
+        <MemoryRouter>
+          <InstallForm info={exposableInfo()} onSubmit={vi.fn()} formId="test-form" formFields={[]} initialValues={storedOpenPort} isEdit />
+        </MemoryRouter>,
+      );
+
+      await waitFor(() => {
+        expect(getEnableAuthSwitch()).toBeChecked();
+      });
+    });
+
+    it('is saved with enableAuth true, not false, when the dialog is saved untouched', async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext());
+      const onSubmit = vi.fn();
+
+      const { container } = render(
+        <MemoryRouter>
+          <InstallForm info={exposableInfo()} onSubmit={onSubmit} formId="test-form" formFields={[]} initialValues={storedOpenPort} isEdit />
+        </MemoryRouter>,
+      );
+      await waitFor(() => expect(getEnableAuthSwitch()).toBeChecked());
+
+      await act(async () => {
+        fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+      });
+
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+      expect(onSubmit.mock.calls[0]?.[0].enableAuth).toBe(true);
+    });
+
+    it('still lets the operator turn auth off, and saves that choice', async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext());
+      const onSubmit = vi.fn();
+
+      const { container } = render(
+        <MemoryRouter>
+          <InstallForm info={exposableInfo()} onSubmit={onSubmit} formId="test-form" formFields={[]} initialValues={storedOpenPort} isEdit />
+        </MemoryRouter>,
+      );
+      await waitFor(() => expect(getEnableAuthSwitch()).toBeChecked());
+      await act(async () => {
+        fireEvent.click(getEnableAuthSwitch());
+      });
+      await waitFor(() => expect(getEnableAuthSwitch()).not.toBeChecked());
+
+      await act(async () => {
+        fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+      });
+
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+      expect(onSubmit.mock.calls[0]?.[0].enableAuth).toBe(false);
+    });
+
+    it('leaves a closed host port with no decision and no manifest default OFF, as the Hub serves it', async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext());
+      const onSubmit = vi.fn();
+
+      const { container } = render(
+        <MemoryRouter>
+          <InstallForm
+            info={exposableInfo()}
+            onSubmit={onSubmit}
+            formId="test-form"
+            formFields={[]}
+            initialValues={{ exposureMode: 'cloudflare', openPort: false }}
+            isEdit
+          />
+        </MemoryRouter>,
+      );
+      await waitFor(() => expect(getEnableAuthSwitch()).not.toBeChecked());
+
+      await act(async () => {
+        fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+      });
+
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+      expect(onSubmit.mock.calls[0]?.[0].enableAuth).toBe(false);
+    });
+  });
+
+  // What the Hub serves for a stored form, written out by hand: the queue gives a missing `openPort`
+  // the value true (`queueAppFormSchema`), and the route builder puts the login in front of the
+  // public route when the form says so, else when the manifest defaults edge auth on, else while
+  // the host port is open (`requiresHubLoginOnPublicRoute`). The backend's own matrix test pins the
+  // same table against the real queue schema and compose builder.
+  describe('an edit shows and submits what the Hub serves for every stored shape', () => {
+    type Tri = boolean | undefined;
+    const tri: Tri[] = [true, false, undefined];
+    const served = (openPort: Tri, enableAuth: Tri, edgeDefault: Tri) => enableAuth ?? (edgeDefault === true || (openPort ?? true));
+
+    const infoWith = (exposable: boolean, edgeDefault: Tri) =>
+      ({
+        ...(exposableInfo() as object),
+        exposable,
+        ...(edgeDefault === undefined ? {} : { hub_integration: { edge_auth: { default: edgeDefault } } }),
+      }) as unknown as AppInfo;
+
+    const storedForm = (openPort: Tri, enableAuth: Tri) => ({
+      exposureMode: 'cloudflare',
+      ...(openPort === undefined ? {} : { openPort }),
+      ...(enableAuth === undefined ? {} : { enableAuth }),
+    });
+
+    const label = (v: Tri) => (v === undefined ? 'absent' : String(v));
+
+    const cases = tri.flatMap((openPort) => tri.flatMap((enableAuth) => tri.map((edgeDefault) => ({ openPort, enableAuth, edgeDefault }))));
+
+    it.each(cases)(
+      'exposable app, openPort $openPort, enableAuth $enableAuth, manifest edge default $edgeDefault: switch and untouched save agree with the Hub',
+      async ({ openPort, enableAuth, edgeDefault }) => {
+        vi.mocked(useAppContext).mockReturnValue(exposableContext());
+        const onSubmit = vi.fn();
+        const expected = served(openPort, enableAuth, edgeDefault);
+
+        const { container } = render(
+          <MemoryRouter>
+            <InstallForm
+              info={infoWith(true, edgeDefault)}
+              onSubmit={onSubmit}
+              formId="test-form"
+              formFields={[]}
+              initialValues={storedForm(openPort, enableAuth)}
+              isEdit
+            />
+          </MemoryRouter>,
+        );
+
+        await waitFor(() => {
+          if (expected) expect(getEnableAuthSwitch()).toBeChecked();
+          else expect(getEnableAuthSwitch()).not.toBeChecked();
+        });
+
+        await act(async () => {
+          fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+        });
+        await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+        const submitted = onSubmit.mock.calls[0]?.[0];
+        expect(submitted.enableAuth, `enableAuth for ${label(openPort)}/${label(enableAuth)}/${label(edgeDefault)}`).toBe(expected);
+        // A save the operator never touched the port on must not move the host port either: a form
+        // that said nothing about it is served as open, and stays open.
+        expect(submitted.openPort).toBe(openPort ?? true);
+      },
+    );
+
+    it.each(tri.flatMap((openPort) => ([false, undefined] as Tri[]).map((enableAuth) => ({ openPort, enableAuth }))))(
+      'app that is not exposable, openPort $openPort, enableAuth $enableAuth: never submits a login for a route it does not have',
+      async ({ openPort, enableAuth }) => {
+        vi.mocked(useAppContext).mockReturnValue(exposableContext());
+        const onSubmit = vi.fn();
+
+        const { container } = render(
+          <MemoryRouter>
+            <InstallForm
+              info={infoWith(false, true)}
+              onSubmit={onSubmit}
+              formId="test-form"
+              formFields={[]}
+              initialValues={storedForm(openPort, enableAuth)}
+              isEdit
+            />
+          </MemoryRouter>,
+        );
+
+        await act(async () => {
+          fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+        });
+        await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+        expect(onSubmit.mock.calls[0]?.[0].enableAuth).toBe(false);
+      },
+    );
+
+    it('lets the operator turn auth off on a stored form with no openPort key, and saves that choice', async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext());
+      const onSubmit = vi.fn();
+
+      const { container } = render(
+        <MemoryRouter>
+          <InstallForm
+            info={exposableInfo()}
+            onSubmit={onSubmit}
+            formId="test-form"
+            formFields={[]}
+            initialValues={{ exposureMode: 'cloudflare' }}
+            isEdit
+          />
+        </MemoryRouter>,
+      );
+      await waitFor(() => expect(getEnableAuthSwitch()).toBeChecked());
+      await act(async () => {
+        fireEvent.click(getEnableAuthSwitch());
+      });
+      await waitFor(() => expect(getEnableAuthSwitch()).not.toBeChecked());
+
+      await act(async () => {
+        fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+      });
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+      expect(onSubmit.mock.calls[0]?.[0].enableAuth).toBe(false);
+    });
+
+    it('treats a stored openPort that is not a boolean as absent, which the Hub serves as open', async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext());
+
+      render(
+        <MemoryRouter>
+          <InstallForm
+            info={exposableInfo()}
+            onSubmit={vi.fn()}
+            formId="test-form"
+            formFields={[]}
+            initialValues={{ exposureMode: 'cloudflare', openPort: 'false' }}
+            isEdit
+          />
+        </MemoryRouter>,
+      );
+
+      await waitFor(() => expect(getEnableAuthSwitch()).toBeChecked());
+    });
+  });
+
+  it('still starts a FRESH install protected, whatever the stored shapes above do', async () => {
+    vi.mocked(useAppContext).mockReturnValue(exposableContext());
+    const onSubmit = vi.fn();
+
+    const { container } = render(
+      <MemoryRouter>
+        <InstallForm info={exposableInfo()} onSubmit={onSubmit} formId="test-form" formFields={[]} />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(getEnableAuthSwitch()).toBeChecked());
+
+    await act(async () => {
+      fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+    });
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    expect(onSubmit.mock.calls[0]?.[0].enableAuth).toBe(true);
   });
 
   describe('the public domain Companion Portal preselects', () => {
@@ -2582,6 +3115,339 @@ describe('InstallForm - Public Web routing drift', () => {
 });
 
 /**
+ * Settings opened on what a new install gets, Public Web on a paired Hub, for any app whose stored
+ * form named no mode (every custom app). The next save published the app. A new install still
+ * takes the first mode on offer.
+ */
+describe('InstallForm - the exposure mode of an app already installed', () => {
+  const customApp = {
+    id: 'exp-test',
+    urn: 'exp-test:_user',
+    form_fields: [],
+    exposable: true,
+    dynamic_config: true,
+    port: 9898,
+  } as unknown as AppInfo;
+  const LOCAL = 'APP_INSTALL_FORM_EXPOSURE_LOCAL';
+  const VPN = 'COMMON_PRIVATE_VPN';
+  const PUBLIC = 'APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE';
+
+  class RecordingBlob {
+    parts: unknown[];
+    constructor(parts: unknown[]) {
+      this.parts = parts;
+    }
+  }
+
+  const hubOffers = ({ cloudflareAvailable = true, tailscaleAvailable = false } = {}) =>
+    vi.mocked(useAppContext).mockReturnValue({
+      userSettings: {
+        ciHubOrganizationSlug: 'bc',
+        ciHubDeviceSlug: 'blaptop',
+        localDomain: 'ci.lan',
+        domain: 'example.com',
+        maxBackups: 5,
+        guestDashboard: false,
+      },
+      user: { advancedMode: false },
+      isProduction: true,
+      cloudflareAvailable,
+      tailscaleAvailable,
+    } as unknown as ReturnType<typeof useAppContext>);
+
+  const renderForm = (
+    initialValues: Record<string, unknown> | undefined,
+    {
+      isEdit = true,
+      info = customApp,
+      onSubmit = vi.fn(),
+    }: { isEdit?: boolean; info?: AppInfo; onSubmit?: (values: Record<string, unknown>) => void } = {},
+  ) => {
+    const utils = render(
+      <MemoryRouter>
+        <InstallForm info={info} onSubmit={onSubmit} formId="exposure-form" formFields={[]} initialValues={initialValues} isEdit={isEdit} />
+      </MemoryRouter>,
+    );
+    return { ...utils, onSubmit };
+  };
+
+  const selectedMode = () => [LOCAL, VPN, PUBLIC].filter((name) => screen.getByRole('button', { name }).classList.contains('bg-primary'));
+
+  const submit = async (container: HTMLElement) => {
+    await act(async () => {
+      fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+    });
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    MOCK_AVAILABLE_DOMAINS.domains = [{ id: 'd1', domain: 'example.com', isDefault: true, offered: true }];
+    fetchDnsAvailability.mockImplementation(async () => new Response(JSON.stringify({ available: true }), { status: 200 }));
+    hubOffers();
+  });
+
+  afterEach(() => {
+    MOCK_AVAILABLE_DOMAINS.domains = [];
+    fetchDnsAvailability.mockReset();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('opens a form that names no mode on This Machine Only and saves it there', async () => {
+    const { container, onSubmit } = renderForm({ port: 9898 });
+
+    expect(selectedMode()).toEqual([LOCAL]);
+
+    await submit(container);
+
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'local', exposedLocal: false, port: 9898 }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.not.objectContaining({ publicDomain: expect.anything() }));
+    expect(fetchDnsAvailability).not.toHaveBeenCalled();
+  });
+
+  it('keeps a Private VPN app on the Private VPN while Tailscale is down, rather than moving it to Public Web', async () => {
+    const { container, onSubmit } = renderForm({ port: 9898, exposureMode: 'tailscale' });
+
+    expect(selectedMode()).toEqual([VPN]);
+    expect(screen.getByRole('button', { name: VPN })).toBeDisabled();
+
+    await submit(container);
+
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'tailscale', exposedLocal: false }));
+  });
+
+  it('keeps a Public Web app on Public Web while the tunnel is down, rather than taking it off', async () => {
+    hubOffers({ cloudflareAvailable: false });
+    const { container, onSubmit } = renderForm({ port: 9898, exposureMode: 'cloudflare', localSubdomain: 'exp-test', publicDomain: 'example.com' });
+
+    expect(selectedMode()).toEqual([PUBLIC]);
+
+    await submit(container);
+
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'cloudflare', exposedLocal: true, publicDomain: 'example.com' })),
+    );
+  });
+
+  // An app with no stored subdomain routes on `<app>-<store>`. Filling the field with the bare name showed
+  // a different address from the app's page and moved the app on a save that touched nothing else (#2272).
+  it.each([
+    ['exp-test:ci-marketplace', 'exp-test-ci-marketplace'],
+    ['exp-test:_user', 'exp-test-user'],
+  ])('keeps the routing name of %s on Public Web with no stored subdomain', async (urn, routingName) => {
+    const { container, onSubmit } = renderForm(
+      { port: 9898, exposureMode: 'cloudflare', publicDomain: 'example.com' },
+      { info: { ...customApp, urn } as AppInfo },
+    );
+
+    await waitFor(() => expect(screen.getByLabelText(/APP_INSTALL_FORM_LOCAL_SUBDOMAIN/)).toHaveValue(routingName));
+
+    await submit(container);
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.not.objectContaining({ localSubdomain: expect.anything() })));
+  });
+
+  // The Portal keeps the underscore, so the name without it is another record that says nothing about this one.
+  it("asks about a custom app's own name as the Portal has it, on a move to another domain", async () => {
+    MOCK_AVAILABLE_DOMAINS.domains = [
+      { id: 'd1', domain: 'example.com', isDefault: true, offered: true },
+      { id: 'd2', domain: 'other.example', isDefault: false, offered: true },
+    ];
+    const { container } = renderForm({ port: 9898, exposureMode: 'cloudflare', publicDomain: 'other.example' });
+
+    await waitFor(() => expect(screen.getByLabelText(/APP_INSTALL_FORM_LOCAL_SUBDOMAIN/)).toHaveValue('exp-test-user'));
+    await submit(container);
+
+    await waitFor(() => expect(fetchDnsAvailability).toHaveBeenCalled());
+    expect(fetchDnsAvailability.mock.calls.every(([subdomain]) => subdomain === 'exp-test-_user')).toBe(true);
+  });
+
+  it("gives the next app its own routing name when one form is reused, not the last app's", async () => {
+    const edit = (urn: string) => (
+      <MemoryRouter>
+        <InstallForm
+          info={{ ...customApp, urn } as AppInfo}
+          onSubmit={vi.fn()}
+          formId="exposure-form"
+          formFields={[]}
+          initialValues={{ port: 9898, exposureMode: 'cloudflare', publicDomain: 'example.com' }}
+          isEdit
+        />
+      </MemoryRouter>
+    );
+    const { rerender } = render(edit('first:ci-marketplace'));
+    await waitFor(() => expect(screen.getByLabelText(/APP_INSTALL_FORM_LOCAL_SUBDOMAIN/)).toHaveValue('first-ci-marketplace'));
+
+    rerender(edit('second:ci-marketplace'));
+
+    await waitFor(() => expect(screen.getByLabelText(/APP_INSTALL_FORM_LOCAL_SUBDOMAIN/)).toHaveValue('second-ci-marketplace'));
+  });
+
+  it('reports no edit once the field is back on the routing name it opened with', async () => {
+    const onDirtyChange = vi.fn();
+    render(
+      <MemoryRouter>
+        <InstallForm
+          info={{ ...customApp, urn: 'exp-test:ci-marketplace' } as AppInfo}
+          onSubmit={vi.fn()}
+          formId="exposure-form"
+          formFields={[]}
+          initialValues={{ port: 9898, exposureMode: 'cloudflare', publicDomain: 'example.com' }}
+          onDirtyChange={onDirtyChange}
+          isEdit
+        />
+      </MemoryRouter>,
+    );
+    const field = screen.getByLabelText(/APP_INSTALL_FORM_LOCAL_SUBDOMAIN/);
+    await waitFor(() => expect(field).toHaveValue('exp-test-ci-marketplace'));
+
+    fireEvent.change(field, { target: { value: 'renamed' } });
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true));
+    fireEvent.change(field, { target: { value: 'exp-test-ci-marketplace' } });
+
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false));
+  });
+
+  it('sends a name typed over the routing name of an app with no stored subdomain', async () => {
+    const { container, onSubmit } = renderForm(
+      { port: 9898, exposureMode: 'cloudflare', publicDomain: 'example.com' },
+      { info: { ...customApp, urn: 'exp-test:ci-marketplace' } as AppInfo },
+    );
+
+    await waitFor(() => expect(screen.getByLabelText(/APP_INSTALL_FORM_LOCAL_SUBDOMAIN/)).toHaveValue('exp-test-ci-marketplace'));
+    fireEvent.change(screen.getByLabelText(/APP_INSTALL_FORM_LOCAL_SUBDOMAIN/), { target: { value: 'renamed' } });
+
+    await submit(container);
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ localSubdomain: 'renamed' })));
+  });
+
+  it('keeps the bare app name as the default for an app moving to Public Web from This machine only', async () => {
+    renderForm({ port: 9898, exposureMode: 'local' });
+
+    fireEvent.click(screen.getByRole('button', { name: PUBLIC }));
+
+    await waitFor(() => expect(screen.getByLabelText(/APP_INSTALL_FORM_LOCAL_SUBDOMAIN/)).toHaveValue('exp-test'));
+  });
+
+  it('shows an app saved on Public Web as Public Web, on a Hub that offers it', async () => {
+    const { container, onSubmit } = renderForm({ port: 9898, exposureMode: 'cloudflare', localSubdomain: 'exp-test', publicDomain: 'example.com' });
+
+    expect(selectedMode()).toEqual([PUBLIC]);
+
+    await submit(container);
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'cloudflare', exposedLocal: true })));
+  });
+
+  it('reads a legacy form that carried only exposedLocal as the Public Web app it is', () => {
+    renderForm({ port: 9898, exposedLocal: true, localSubdomain: 'exp-test' });
+
+    expect(selectedMode()).toEqual([PUBLIC]);
+  });
+
+  it('saves This Machine Only for a form that names no mode and shows no modes to pick from', async () => {
+    const notExposable = { ...customApp, exposable: false } as AppInfo;
+    const { container, onSubmit } = renderForm({ port: 9898 }, { info: notExposable });
+
+    expect(screen.queryByRole('button', { name: PUBLIC })).not.toBeInTheDocument();
+
+    await submit(container);
+
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'local', exposedLocal: false }));
+  });
+
+  it('moves the app only when somebody picks another mode, with nothing to save after going back', async () => {
+    const onDirtyChange = vi.fn();
+    render(
+      <MemoryRouter>
+        <InstallForm
+          info={customApp}
+          onSubmit={vi.fn()}
+          formId="exposure-form"
+          formFields={[]}
+          initialValues={{ port: 9898, exposureMode: 'local' }}
+          onDirtyChange={onDirtyChange}
+          isEdit
+        />
+      </MemoryRouter>,
+    );
+
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+
+    fireEvent.click(screen.getByRole('button', { name: PUBLIC }));
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true));
+    expect(selectedMode()).toEqual([PUBLIC]);
+
+    fireEvent.click(screen.getByRole('button', { name: LOCAL }));
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false));
+  });
+
+  it('exports the mode the app is in, with an exposedLocal that agrees with it', async () => {
+    vi.stubGlobal('Blob', RecordingBlob);
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    const createObjectUrl = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:export');
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+
+    renderForm({ port: 9898, exposureMode: 'local' });
+    fireEvent.click(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPORT_CONFIG' }));
+
+    await waitFor(() => expect(createObjectUrl).toHaveBeenCalled());
+    const blob = createObjectUrl.mock.calls[0]?.[0] as unknown as RecordingBlob;
+    const { values } = JSON.parse(String(blob.parts[0]));
+
+    expect(values).toMatchObject({ exposureMode: 'local', exposedLocal: false, openPort: true, port: 9898 });
+  });
+
+  it('still lets an imported file ask for Public Web and saves what it asked for', async () => {
+    const { container, onSubmit } = renderForm({ port: 9898, exposureMode: 'local' });
+    const file = new File(
+      [
+        JSON.stringify({
+          schemaVersion: 1,
+          appId: 'exp-test',
+          exportedAt: '2026-11-02T00:00:00.000Z',
+          values: { exposureMode: 'cloudflare', localSubdomain: 'exp-test' },
+        }),
+      ],
+      'exp-test-install-config.json',
+      { type: 'application/json' },
+    );
+
+    await act(async () => {
+      fireEvent.change(container.querySelector('input[type="file"]') as HTMLInputElement, { target: { files: [file] } });
+    });
+    await waitFor(() => expect(selectedMode()).toEqual([PUBLIC]));
+
+    await submit(container);
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'cloudflare', exposedLocal: true })));
+  });
+
+  it('opens the retry of a failed install on the mode it asked for', () => {
+    renderForm({ exposureMode: 'local' }, { isEdit: false });
+
+    expect(selectedMode()).toEqual([LOCAL]);
+  });
+
+  it('gives a new install the first mode on offer, as before', async () => {
+    const paired = renderForm(undefined, { isEdit: false });
+    expect(selectedMode()).toEqual([PUBLIC]);
+    paired.unmount();
+
+    hubOffers({ cloudflareAvailable: false, tailscaleAvailable: true });
+    const vpnOnly = renderForm(undefined, { isEdit: false });
+    expect(selectedMode()).toEqual([VPN]);
+    vpnOnly.unmount();
+
+    hubOffers({ cloudflareAvailable: false, tailscaleAvailable: false });
+    renderForm(undefined, { isEdit: false });
+    expect(selectedMode()).toEqual([LOCAL]);
+  });
+});
+
+/**
  * Export config wrote the dialog's access settings, and Import config threw them all
  * away as fields that "don't apply to this app", so a This Machine Only export came
  * back as Public Web with an error toast.
@@ -2722,5 +3588,456 @@ describe('InstallForm - importing a config it just exported', () => {
     } finally {
       MOCK_AVAILABLE_DOMAINS.domains = [];
     }
+  });
+});
+
+/**
+ * An app whose listing says it is not exposable offers no exposure choice, so nothing the form holds
+ * (a default, a stored form, an imported file) may send it anywhere but This Machine Only.
+ */
+describe('InstallForm - an app that is not exposable', () => {
+  const secret = { type: 'text', label: 'Access Password', env_variable: 'APP_PASSWORD', required: true } as unknown as FormField;
+  const murmur = {
+    id: 'murmur',
+    urn: 'murmur:ci-marketplace',
+    form_fields: [secret],
+    exposable: false,
+    dynamic_config: true,
+    port: 3101,
+  } as unknown as AppInfo;
+  const cyberchef = { ...(murmur as object), id: 'cyberchef', urn: 'cyberchef:ci-marketplace', exposable: true } as unknown as AppInfo;
+
+  const renderForm = (info: AppInfo, onSubmit: (values: Record<string, unknown>) => void, props: Partial<ComponentProps<typeof InstallForm>> = {}) =>
+    render(
+      <MemoryRouter>
+        <InstallForm info={info} onSubmit={onSubmit} formId="test-form" formFields={[secret]} {...props} />
+      </MemoryRouter>,
+    );
+
+  const submit = async (container: HTMLElement) => {
+    await act(async () => {
+      fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+    });
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    fetchDnsAvailability.mockImplementation(async () => new Response(JSON.stringify({ available: true }), { status: 200 }));
+    vi.mocked(useAppContext).mockReturnValue({
+      userSettings: {
+        ciHubOrganizationSlug: 'bc',
+        ciHubDeviceSlug: 'blaptop',
+        localDomain: 'ci.lan',
+        domain: 'example.com',
+        maxBackups: 5,
+        guestDashboard: false,
+      },
+      user: { advancedMode: false },
+      isProduction: true,
+      cloudflareAvailable: true,
+      tailscaleAvailable: true,
+    } as unknown as ReturnType<typeof useAppContext>);
+  });
+
+  afterEach(() => {
+    fetchDnsAvailability.mockReset();
+  });
+
+  it('installs on This Machine Only on a Hub that offers Public Web', async () => {
+    const onSubmit = vi.fn();
+    const { container } = renderForm(murmur, onSubmit);
+    fireEvent.change(await screen.findByLabelText(/Access Password/), { target: { value: 'a-long-password-here' } });
+
+    await submit(container);
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ exposureMode: 'local', exposedLocal: false });
+  });
+
+  it('saves on This Machine Only when its stored form names Public Web', async () => {
+    const onSubmit = vi.fn();
+    const { container } = renderForm(murmur, onSubmit, {
+      isEdit: true,
+      initialValues: { exposureMode: 'cloudflare', exposedLocal: false, openPort: false, APP_PASSWORD: 'a-long-password-here' },
+    });
+    await screen.findByLabelText(/Access Password/);
+
+    await submit(container);
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ exposureMode: 'local', exposedLocal: false });
+  });
+
+  it.each(['cloudflare', 'tailscale'])('leaves out %s from an imported config and says so', async (exposureMode) => {
+    const file = JSON.stringify({
+      schemaVersion: 1,
+      appId: 'murmur',
+      exportedAt: '2026-10-01T10:00:00.000Z',
+      values: { APP_PASSWORD: 'a-long-password-here', exposureMode },
+    });
+    const onSubmit = vi.fn();
+    const { container } = renderForm(murmur, onSubmit);
+    await screen.findByLabelText(/Access Password/);
+
+    await act(async () => {
+      fireEvent.change(container.querySelector('input[type="file"]') as HTMLInputElement, { target: { files: [{ text: async () => file }] } });
+    });
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_UNRECOGNIZED'));
+
+    await submit(container);
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ APP_PASSWORD: 'a-long-password-here', exposureMode: 'local', exposedLocal: false });
+  });
+
+  it('imports a config it exported on This Machine Only with nothing ignored', async () => {
+    const file = JSON.stringify({
+      schemaVersion: 1,
+      appId: 'murmur',
+      exportedAt: '2026-10-01T10:00:00.000Z',
+      values: { APP_PASSWORD: 'a-long-password-here', exposureMode: 'local', exposedLocal: false, openPort: true },
+    });
+    const { container } = renderForm(murmur, vi.fn());
+    await screen.findByLabelText(/Access Password/);
+
+    await act(async () => {
+      fireEvent.change(container.querySelector('input[type="file"]') as HTMLInputElement, { target: { files: [{ text: async () => file }] } });
+    });
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_SUCCESS'));
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it('suggests a local base URL when its stored form names Public Web', async () => {
+    const baseUrl = { type: 'app_base_url', label: 'Base URL', env_variable: 'APP_BASE_URL', required: false } as unknown as FormField;
+    const onSubmit = vi.fn();
+    const { container } = renderForm(murmur, onSubmit, {
+      isEdit: true,
+      formFields: [secret, baseUrl],
+      initialValues: { exposureMode: 'cloudflare', publicDomain: 'example.com', APP_PASSWORD: 'a-long-password-here' },
+    });
+    await screen.findByLabelText(/Access Password/);
+
+    await submit(container);
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ exposureMode: 'local', APP_BASE_URL: 'http://localhost:3101' });
+  });
+
+  it('still lets an exposable app be imported on the Private VPN', async () => {
+    const file = JSON.stringify({
+      schemaVersion: 1,
+      appId: 'cyberchef',
+      exportedAt: '2026-10-01T10:00:00.000Z',
+      values: { APP_PASSWORD: 'a-long-password-here', exposureMode: 'tailscale' },
+    });
+    const onSubmit = vi.fn();
+    const { container } = renderForm(cyberchef, onSubmit);
+    await screen.findByLabelText(/Access Password/);
+
+    await act(async () => {
+      fireEvent.change(container.querySelector('input[type="file"]') as HTMLInputElement, { target: { files: [{ text: async () => file }] } });
+    });
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_SUCCESS'));
+
+    await submit(container);
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ exposureMode: 'tailscale' });
+  });
+});
+
+/*
+ * Companion-Hub#1984. In simple mode "Enable authentication" sits behind "Show advanced settings",
+ * and a config that turned it off said only "Config imported.", so an app could go on Public Web
+ * without the Hub login and nobody saw the switch move. Simple mode now shows the switch whenever
+ * the app is on Public Web with the login off, and an import that leads there says so.
+ */
+describe('InstallForm - an imported config that turns the Hub login off', () => {
+  const adminEmail = { type: 'text', label: 'Admin Email', env_variable: 'ADMIN_EMAIL', required: true } as unknown as FormField;
+  const cyberchef = {
+    id: 'cyberchef',
+    urn: 'cyberchef:ci-marketplace',
+    form_fields: [adminEmail],
+    exposable: true,
+    dynamic_config: true,
+    port: 8000,
+  } as unknown as AppInfo;
+  const cyberchefWithEdgeAuth = { ...(cyberchef as object), hub_integration: { edge_auth: { default: true } } } as unknown as AppInfo;
+
+  const context = (advancedMode: boolean) =>
+    ({
+      userSettings: {
+        ciHubOrganizationSlug: 'bc',
+        ciHubDeviceSlug: 'blaptop',
+        localDomain: 'ci.lan',
+        domain: 'example.com',
+        maxBackups: 5,
+        guestDashboard: false,
+      },
+      user: { advancedMode },
+      isProduction: true,
+      cloudflareAvailable: true,
+      tailscaleAvailable: false,
+    }) as unknown as ReturnType<typeof useAppContext>;
+
+  const configValues = (values: Record<string, unknown>) => ({ ADMIN_EMAIL: 'ops@example.org', exposureMode: 'cloudflare', ...values });
+  const configFile = (values: Record<string, unknown>) =>
+    JSON.stringify({ schemaVersion: 1, appId: 'cyberchef', exportedAt: '2026-10-01T10:00:00.000Z', values: configValues(values) });
+
+  const renderForm = (props: Partial<ComponentProps<typeof InstallForm>> = {}) =>
+    render(
+      <MemoryRouter>
+        <InstallForm info={cyberchef} onSubmit={vi.fn()} formId="import-auth-form" formFields={[adminEmail]} {...props} />
+      </MemoryRouter>,
+    );
+
+  const importFile = async (container: HTMLElement, json: string) => {
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(fileInput, { target: { files: [{ text: async () => json }] } });
+    });
+  };
+
+  // A switch is named by its visible label; the edge-auth app's label adds "recommended" after it.
+  const authSwitch = () => screen.queryByRole('switch', { name: /APP_INSTALL_FORM_ENABLE_AUTH/ });
+  const advancedSettingsSwitch = () => screen.getByRole('switch', { name: 'APP_INSTALL_FORM_SHOW_ADVANCED_SETTINGS' });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    fetchDnsAvailability.mockImplementation(async () => new Response(JSON.stringify({ available: true }), { status: 200 }));
+    vi.mocked(useAppContext).mockReturnValue(context(false));
+  });
+
+  afterEach(() => {
+    fetchDnsAvailability.mockReset();
+  });
+
+  it.each([
+    ['an app', cyberchef],
+    ['an app whose manifest defaults the login on', cyberchefWithEdgeAuth],
+  ])('shows the switch turned off, and says so, when a file turns the login off for %s', async (_, info) => {
+    const onSubmit = vi.fn();
+    const { container } = renderForm({ info, onSubmit });
+    await screen.findByLabelText(/Admin Email/);
+    expect(authSwitch()).not.toBeInTheDocument();
+
+    await importFile(container, configFile({ enableAuth: false }));
+
+    await waitFor(() => expect(authSwitch()).toBeInTheDocument());
+    expect(authSwitch()).not.toBeChecked();
+    expect(advancedSettingsSwitch()).not.toBeChecked();
+    expect(toast.warning).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_AUTH_OFF', { duration: 8000 });
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(toast.error).not.toHaveBeenCalled();
+
+    // The import itself is not second-guessed: what the switch shows is what gets saved.
+    await act(async () => {
+      fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+    });
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ enableAuth: false, exposureMode: 'cloudflare' });
+  });
+
+  it.each([
+    ['saved with the login on', cyberchef, { enableAuth: true }],
+    ['that never chose, on a manifest that defaults the login on', cyberchefWithEdgeAuth, {}],
+  ])('shows the switch turned off, and says so, when a file turns the login off for an installed app %s', async (_, info, saved) => {
+    const { container } = renderForm({
+      info,
+      isEdit: true,
+      initialValues: { ADMIN_EMAIL: 'ops@example.org', exposureMode: 'cloudflare', ...saved },
+    });
+    await screen.findByLabelText(/Admin Email/);
+    expect(authSwitch()).not.toBeInTheDocument();
+
+    await importFile(container, configFile({ enableAuth: false }));
+
+    await waitFor(() => expect(authSwitch()).toBeInTheDocument());
+    expect(authSwitch()).not.toBeChecked();
+    expect(toast.warning).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_AUTH_OFF', { duration: 8000 });
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it('names the login as well as the fields it ignored', async () => {
+    const { container } = renderForm();
+    await screen.findByLabelText(/Admin Email/);
+
+    await importFile(container, configFile({ enableAuth: false, SOME_OTHER_APPS_FIELD: 'x' }));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_UNRECOGNIZED'));
+    expect(toast.warning).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_AUTH_OFF', { duration: 8000 });
+    expect(authSwitch()).not.toBeChecked();
+  });
+
+  it('shows the switch turned off, and says so, when a recently used config turns the login off', async () => {
+    localStorage.setItem(
+      `${LAST_USED_CONFIGS_KEY_PREFIX}cyberchef`,
+      JSON.stringify([{ id: 'recent-1', savedAt: '2026-10-01T10:00:00.000Z', values: configValues({ enableAuth: false }) }]),
+    );
+    const user = userEvent.setup();
+    renderForm();
+    await screen.findByLabelText(/Admin Email/);
+    expect(authSwitch()).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /APP_INSTALL_FORM_RECENTLY_USED/ }));
+    await user.click(await screen.findByRole('menuitem'));
+
+    await waitFor(() => expect(authSwitch()).toBeInTheDocument());
+    expect(authSwitch()).not.toBeChecked();
+    expect(advancedSettingsSwitch()).not.toBeChecked();
+    expect(toast.warning).toHaveBeenCalledWith('APP_INSTALL_FORM_RECENTLY_USED_APPLIED_AUTH_OFF', { duration: 8000 });
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['keeps the login on', { enableAuth: true }],
+    ['does not mention the login', {}],
+  ])('changes nothing on screen when the file %s', async (_, values) => {
+    const { container } = renderForm();
+    await screen.findByLabelText(/Admin Email/);
+
+    await importFile(container, configFile(values));
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_SUCCESS'));
+    expect(toast.warning).not.toHaveBeenCalled();
+    expect(advancedSettingsSwitch()).not.toBeChecked();
+    expect(authSwitch()).not.toBeInTheDocument();
+  });
+
+  // "Never chose" is only unprotected where the Hub serves it unprotected: a closed host port, with a manifest that
+  // leaves the login off. A stored form with NO openPort key is served open, with the login, so it is its own case
+  // below, and must not raise this warning.
+  it.each([
+    ['saved with the login off', { enableAuth: false }],
+    ['that never chose, on a closed host port, on a manifest that leaves the login off', { openPort: false }],
+  ])('shows the switch turned off, and says so, when a file only moves an installed app %s onto Public Web', async (_, saved) => {
+    const onSubmit = vi.fn();
+    const { container } = renderForm({
+      isEdit: true,
+      onSubmit,
+      initialValues: { ADMIN_EMAIL: 'ops@example.org', exposureMode: 'local', ...saved },
+    });
+    await screen.findByLabelText(/Admin Email/);
+    expect(authSwitch()).not.toBeInTheDocument();
+
+    await importFile(container, JSON.stringify({ schemaVersion: 1, appId: 'cyberchef', values: { exposureMode: 'cloudflare' } }));
+
+    await waitFor(() => expect(authSwitch()).toBeInTheDocument());
+    expect(authSwitch()).not.toBeChecked();
+    expect(toast.warning).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_AUTH_OFF', { duration: 8000 });
+    expect(toast.success).not.toHaveBeenCalled();
+
+    await act(async () => {
+      fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+    });
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ enableAuth: false, exposureMode: 'cloudflare' });
+  });
+
+  it('does not warn when a file moves an installed app with no stored openPort key onto Public Web: the Hub serves it open, with the login', async () => {
+    const onSubmit = vi.fn();
+    const { container } = renderForm({
+      isEdit: true,
+      onSubmit,
+      initialValues: { ADMIN_EMAIL: 'ops@example.org', exposureMode: 'local' },
+    });
+    await screen.findByLabelText(/Admin Email/);
+
+    await importFile(container, JSON.stringify({ schemaVersion: 1, appId: 'cyberchef', values: { exposureMode: 'cloudflare' } }));
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_SUCCESS'));
+    expect(toast.warning).not.toHaveBeenCalled();
+    expect(authSwitch()).not.toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+    });
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    const saved = onSubmit.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(saved).toMatchObject({ exposureMode: 'cloudflare', openPort: true });
+    expect(saved.enableAuth).not.toBe(false);
+  });
+
+  // The Hub login sits on the Public Web route only, so on This Machine Only or Private VPN a file
+  // that turns it off changes nothing anyone can reach.
+  it.each(['local', 'tailscale'])('keeps the plain toast when a file turns the login off on %s', async (exposureMode) => {
+    vi.mocked(useAppContext).mockReturnValue({ ...context(false), tailscaleAvailable: true });
+    const { container } = renderForm();
+    await screen.findByLabelText(/Admin Email/);
+
+    await importFile(container, configFile({ exposureMode, enableAuth: false }));
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_SUCCESS'));
+    expect(toast.warning).not.toHaveBeenCalled();
+    expect(advancedSettingsSwitch()).not.toBeChecked();
+    expect(authSwitch()).not.toBeInTheDocument();
+  });
+
+  it('shows the switch when someone picks Public Web for an app whose login is off, and keeps it there once turned on', async () => {
+    renderForm({
+      isEdit: true,
+      initialValues: { ADMIN_EMAIL: 'ops@example.org', exposureMode: 'local', enableAuth: false },
+    });
+    await screen.findByLabelText(/Admin Email/);
+    expect(authSwitch()).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE' }));
+
+    await waitFor(() => expect(authSwitch()).toBeInTheDocument());
+    expect(authSwitch()).not.toBeChecked();
+    expect(advancedSettingsSwitch()).not.toBeChecked();
+
+    // Turning the login on must not make the switch vanish under the pointer.
+    fireEvent.click(authSwitch() as HTMLElement);
+    await waitFor(() => expect(authSwitch()).toBeChecked());
+    expect(toast.warning).not.toHaveBeenCalled();
+  });
+
+  it('shows the switch from the start for an installed app already on Public Web with the login off', async () => {
+    const { container } = renderForm({
+      isEdit: true,
+      initialValues: { ADMIN_EMAIL: 'ops@example.org', exposureMode: 'cloudflare', enableAuth: false },
+    });
+    await screen.findByLabelText(/Admin Email/);
+    await waitFor(() => expect(authSwitch()).toBeInTheDocument());
+    expect(authSwitch()).not.toBeChecked();
+    expect(advancedSettingsSwitch()).not.toBeChecked();
+
+    // Already on screen, so a file that keeps it off is a plain import.
+    await importFile(container, configFile({ enableAuth: false }));
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_SUCCESS'));
+    expect(toast.warning).not.toHaveBeenCalled();
+    expect(authSwitch()).not.toBeChecked();
+  });
+
+  it('keeps the plain toast in advanced mode, where the switch is already on screen', async () => {
+    vi.mocked(useAppContext).mockReturnValue(context(true));
+    const { container } = renderForm();
+    await waitFor(() => expect(authSwitch()).toBeChecked());
+
+    await importFile(container, configFile({ enableAuth: false }));
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_SUCCESS'));
+    expect(authSwitch()).not.toBeChecked();
+    expect(toast.warning).not.toHaveBeenCalled();
+  });
+
+  it('keeps the plain toast in advanced mode when a file moves an app whose login is off onto Public Web', async () => {
+    vi.mocked(useAppContext).mockReturnValue(context(true));
+    const { container } = renderForm({
+      isEdit: true,
+      initialValues: { ADMIN_EMAIL: 'ops@example.org', exposureMode: 'local', enableAuth: false },
+    });
+    await waitFor(() => expect(authSwitch()).toBeInTheDocument());
+
+    await importFile(container, JSON.stringify({ schemaVersion: 1, appId: 'cyberchef', values: { exposureMode: 'cloudflare' } }));
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_SUCCESS'));
+    expect(toast.warning).not.toHaveBeenCalled();
+    expect(authSwitch()).not.toBeChecked();
   });
 });

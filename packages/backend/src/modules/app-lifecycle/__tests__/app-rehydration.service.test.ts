@@ -10,12 +10,21 @@ import { AppStoreService } from '@/modules/app-stores/app-store.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.service';
+import { PortExposeService } from '@/modules/custom-apps/port-expose.service';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { UserRepository } from '@/modules/user/user.repository';
 import type { AppUrn } from '@ci-hub/common/types';
 import { AppLifecycleService } from '../app-lifecycle.service';
-import { buildRehydrationPlan, type RehydrationPlan, type RehydrationStateFile } from '../app-rehydration';
+import {
+  buildRehydrationPlan,
+  CATALOG_DOWNLOAD_WAIT_MS,
+  CatalogStillDownloadingError,
+  EXPOSED_PORT_OUTSIDE_RESTORE_REASON,
+  type RehydrationPlan,
+  type RehydrationStateFile,
+  UNLISTED_REASON,
+} from '../app-rehydration';
 import { AppRehydrationService } from '../app-rehydration.service';
 import * as recovery from '../registration-recovery-state';
 
@@ -24,6 +33,9 @@ vi.mock('../registration-recovery-state', () => ({
   writeRehydrationState: vi.fn(),
   hasRestoreIntent: vi.fn(),
   clearRestoreIntent: vi.fn(),
+  readPairingAppCheck: vi.fn(),
+  readRestoreNotice: vi.fn(),
+  acknowledgeRestoreNotice: vi.fn(),
 }));
 
 // The plan is built by `buildRehydrationPlan`; here it is an input.
@@ -54,10 +66,13 @@ describe('AppRehydrationService.executeRehydrate', () => {
   let users: MockProxy<UserRepository>;
   let cloudflare: MockProxy<CloudflareClientService>;
   let marketplace: MockProxy<MarketplaceService>;
+  let appStores: MockProxy<AppStoreService>;
+  let portExpose: MockProxy<PortExposeService>;
   let service: AppRehydrationService;
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    vi.mocked(recovery.readPairingAppCheck).mockResolvedValue(null);
 
     // The state file, in memory: a run recorded as done must read back as done.
     let stateFile: RehydrationStateFile | null = null;
@@ -67,6 +82,7 @@ describe('AppRehydrationService.executeRehydrate', () => {
     vi.mocked(recovery.readRehydrationState).mockImplementation(async () => stateFile);
     vi.mocked(recovery.hasRestoreIntent).mockResolvedValue(true);
     vi.mocked(recovery.clearRestoreIntent).mockResolvedValue(undefined);
+    vi.mocked(recovery.readRestoreNotice).mockResolvedValue(null);
     vi.mocked(buildRehydrationPlan).mockReturnValue(installPlan);
 
     lifecycle = mock<AppLifecycleService>();
@@ -77,12 +93,15 @@ describe('AppRehydrationService.executeRehydrate', () => {
     cloudflare.getDeviceApplications.mockResolvedValue([{ name: 'immich' }] as never);
     marketplace = mock<MarketplaceService>();
     marketplace.getAvailableAppUrns.mockResolvedValue([appUrn] as never);
-    const appStores = mock<AppStoreService>();
+    appStores = mock<AppStoreService>();
+    appStores.isDownloadingCatalog.mockReturnValue(false);
+    appStores.waitForCatalogDownloads.mockResolvedValue(true);
     appStores.getEnabledAppStores.mockResolvedValue([{ slug: 'ci-marketplace' }] as never);
     const apps = mock<AppsRepository>();
     apps.getApps.mockResolvedValue([]);
     const files = mock<AppFilesManager>();
     files.getAppPaths.mockReturnValue({ appInstalledDir: '/nonexistent/immich' } as never);
+    portExpose = mock<PortExposeService>();
 
     const module = await Test.createTestingModule({
       providers: [
@@ -97,6 +116,7 @@ describe('AppRehydrationService.executeRehydrate', () => {
         { provide: AppFilesManager, useValue: files },
         { provide: AppLifecycleService, useValue: lifecycle },
         { provide: UserRepository, useValue: users },
+        { provide: PortExposeService, useValue: portExpose },
       ],
     }).compile();
     service = module.get(AppRehydrationService);
@@ -113,13 +133,27 @@ describe('AppRehydrationService.executeRehydrate', () => {
     expect(recovery.clearRestoreIntent).toHaveBeenCalled();
   });
 
+  // Dropped before the plan, such an app was missing from the record and so from the summary the next sign-in shows.
+  it('records an app the Portal lists that no store here does as not restored', async () => {
+    cloudflare.getDeviceApplications.mockResolvedValue([{ name: 'immich' }, { name: 'my-wiki' }] as never);
+    lifecycle.installApp.mockResolvedValue({ requestId: 'r' } as never);
+
+    const result = await service.executeRehydrate({ source: 'restore', operatorUserId: 7, actor: OPERATOR });
+
+    const unlisted = { name: 'my-wiki', reason: 'No matching marketplace app found for Portal application', code: 'unlisted' };
+    expect(result).toMatchObject({ queued: [appUrn], skipped: [unlisted] });
+    expect(recovery.writeRehydrationState).toHaveBeenCalledWith(expect.objectContaining({ queuedUrns: [appUrn], skipped: [unlisted] }));
+  });
+
   it('reports an install refused for this person, and does not record the run as done', async () => {
     lifecycle.installApp.mockRejectedValue(refusal());
 
     const result = await service.executeRehydrate({ source: 'restore', operatorUserId: 7, actor: OPERATOR });
 
     expect(result).toMatchObject({ success: true, incomplete: true, queued: [], started: [] });
-    expect(result.skipped).toEqual([{ name: 'Immich', reason: 'APP_ACTION_GRANT_DENIED' }]);
+    expect(result.skipped).toEqual([
+      { name: 'Immich', reason: 'APP_ACTION_GRANT_DENIED', appUrn, code: 'refused', params: { action: 'install', app: 'immich' } },
+    ]);
     // Recorded as done, the refusal was final: nothing retried it without `force`.
     expect(recovery.writeRehydrationState).not.toHaveBeenCalled();
     // The intent is cleared all the same — left standing, it holds Cloudflare sync for the whole Hub.
@@ -146,6 +180,23 @@ describe('AppRehydrationService.executeRehydrate', () => {
 
     expect(result).toMatchObject({ incomplete: false, skipped: [{ name: 'Immich', reason: 'APP_ERROR_PORT_ALREADY_IN_USE' }] });
     expect(recovery.writeRehydrationState).toHaveBeenCalled();
+  });
+
+  /*
+   * The restore sends only what the Portal keeps for an app, its address and port. Kimai's admin
+   * password has no default, so its install form is refused on every restore. The log said
+   * `APP_INSTALL_FORM_ERROR_INVALID` and nothing told the person which settings were missing.
+   */
+  it('keeps the form fields an install was refused for, so the restore can say what is missing', async () => {
+    lifecycle.installApp.mockRejectedValue(
+      new TranslatableError('APP_INSTALL_FORM_ERROR_INVALID', { fields: 'Admin Password' }, HttpStatus.BAD_REQUEST),
+    );
+
+    const result = await service.executeRehydrate({ actor: { kind: 'system', reason: 'restore-after-pairing' } });
+
+    const expected = { name: 'Immich', reason: 'APP_INSTALL_FORM_ERROR_INVALID', appUrn, code: 'failed', params: { fields: 'Admin Password' } };
+    expect(result.skipped).toEqual([expected]);
+    expect(recovery.writeRehydrationState).toHaveBeenCalledWith(expect.objectContaining({ skipped: [expected] }));
   });
 
   it('starts an installed app as the person who asked, and keeps a refused start open for retry', async () => {
@@ -188,7 +239,7 @@ describe('AppRehydrationService.executeRehydrate', () => {
 
     expect(lifecycle.installApp).not.toHaveBeenCalled();
     expect(lifecycle.startApp).not.toHaveBeenCalled();
-    expect(result).toMatchObject({ incomplete: false, skipped: [{ name: 'Immich', reason: expect.stringContaining('in progress') }] });
+    expect(result).toMatchObject({ incomplete: false, skipped: [{ name: 'Immich', reason: expect.stringContaining('in progress'), code: 'busy' }] });
   });
   /*
    * After a pairing the Hub restores on its own, and the restore page asks too. Both used to plan from
@@ -229,6 +280,18 @@ describe('AppRehydrationService.executeRehydrate', () => {
     expect(recovery.clearRestoreIntent).toHaveBeenCalled();
   });
 
+  // `cihub register` re-pairs without a registration reset, so the last pairing's record is still there.
+  it("restores again for this pairing when the only finished record is an earlier pairing's", async () => {
+    lifecycle.installApp.mockResolvedValue({ requestId: 'r' } as never);
+    await service.executeRehydrate({ actor: { kind: 'system', reason: 'restore-after-pairing' } });
+    vi.mocked(recovery.readRestoreNotice).mockResolvedValue({ startedAt: new Date(Date.now() + 60_000).toISOString() });
+
+    const result = await service.executeRehydrate({ source: 'restore', operatorUserId: 7, actor: OPERATOR });
+
+    expect(result.alreadyCompleted).toBeUndefined();
+    expect(lifecycle.installApp).toHaveBeenCalledTimes(2);
+  });
+
   it('reports a finished run even when the Portal cannot be asked for its plan', async () => {
     lifecycle.installApp.mockResolvedValue({ requestId: 'r' } as never);
     await service.executeRehydrate({ source: 'restore', operatorUserId: 7, actor: OPERATOR });
@@ -256,5 +319,381 @@ describe('AppRehydrationService.executeRehydrate', () => {
 
     expect(recovery.writeRehydrationState).not.toHaveBeenCalled();
     expect(lifecycle.installApp).not.toHaveBeenCalled();
+  });
+
+  /*
+   * After a factory reset the Hub downloads the catalog. The pairing after it came while that ran.
+   * The catalog listed only the apps it had reached, so the device's apps were skipped as unlisted. The
+   * run was recorded as done and the next sync released them.
+   */
+  /*
+   * A port made with "Expose a port" lives only in this Hub's database, so a reinstall that deleted it
+   * lost the port. The restore skipped it as an app no store lists (#2131). The Portal now keeps
+   * its kind, port and mode. The restore after a pairing exposes it again.
+   */
+  describe('ports this device exposed', () => {
+    const gameUrn = 'game:_user';
+    const game = {
+      id: 'id-game',
+      name: 'game',
+      slug: 'game',
+      port: 80,
+      publicDomain: 'ci0.pw',
+      pinned: false,
+      kind: 'port-expose',
+      upstreamPort: 3080,
+      exposureMode: 'cloudflare',
+    };
+    const SYSTEM: LifecycleActor = { kind: 'system', reason: 'restore-after-pairing' };
+
+    beforeEach(() => {
+      vi.mocked(recovery.readPairingAppCheck).mockResolvedValue({ markedAt: new Date().toISOString() });
+      cloudflare.getDeviceApplications.mockResolvedValue([{ name: 'immich' }, game] as never);
+      lifecycle.installApp.mockResolvedValue({ requestId: 'r' } as never);
+      portExpose.createPortExposeApp.mockResolvedValue({ appUrn: gameUrn as AppUrn, appName: 'game', storeId: '_user' });
+    });
+
+    it('exposes the port again during the restore after a pairing, in the mode it had', async () => {
+      const result = await service.executeRehydrate({ actor: SYSTEM });
+
+      expect(portExpose.createPortExposeApp).toHaveBeenCalledWith({
+        name: 'game',
+        port: 3080,
+        exposureMode: 'cloudflare',
+        localSubdomain: 'game',
+        publicDomain: 'ci0.pw',
+      });
+      expect(result).toMatchObject({ queued: [appUrn], started: [gameUrn], skipped: [] });
+      expect(result.message).toContain('exposed 1 port(s) again');
+      expect(recovery.writeRehydrationState).toHaveBeenCalledWith(expect.objectContaining({ startedUrns: [gameUrn] }));
+    });
+
+    it('puts a This Machine Only or Private VPN port back where it was', async () => {
+      cloudflare.getDeviceApplications.mockResolvedValue([
+        { ...game, name: 'notes', slug: 'notes', port: 8091, publicDomain: null, pinned: true, upstreamPort: 8091, exposureMode: 'tailscale' },
+      ] as never);
+
+      await service.executeRehydrate({ actor: SYSTEM });
+
+      expect(portExpose.createPortExposeApp).toHaveBeenCalledWith({ name: 'notes', port: 8091, exposureMode: 'tailscale', localSubdomain: 'notes' });
+    });
+
+    it('leaves an exposed port alone outside the restore after a pairing', async () => {
+      vi.mocked(recovery.readPairingAppCheck).mockResolvedValue(null);
+
+      const result = await service.executeRehydrate({ source: 'restore', operatorUserId: 7, actor: OPERATOR });
+
+      expect(portExpose.createPortExposeApp).not.toHaveBeenCalled();
+      expect(result.skipped).toEqual([{ name: 'game', reason: EXPOSED_PORT_OUTSIDE_RESTORE_REASON, code: 'unlisted', appUrn: gameUrn }]);
+    });
+
+    it('records a port nothing answers on as not restored, saying why', async () => {
+      portExpose.createPortExposeApp.mockRejectedValue(
+        new TranslatableError('PORT_EXPOSE_PORT_UNREACHABLE', { port: '3080', host: 'host.docker.internal' }, HttpStatus.BAD_REQUEST),
+      );
+
+      const result = await service.executeRehydrate({ actor: SYSTEM });
+
+      const expected = {
+        name: 'game',
+        reason: 'PORT_EXPOSE_PORT_UNREACHABLE',
+        appUrn: gameUrn,
+        code: 'failed',
+        params: { port: '3080', host: 'host.docker.internal' },
+      };
+      expect(result).toMatchObject({ incomplete: false, started: [], skipped: [expected] });
+      expect(recovery.writeRehydrationState).toHaveBeenCalledWith(expect.objectContaining({ skipped: [expected] }));
+    });
+
+    // An exposed port comes from no store, so a Hub whose catalog is not there yet can still put it back.
+    it('exposes the port again when the app catalog is empty', async () => {
+      cloudflare.getDeviceApplications.mockResolvedValue([game] as never);
+      marketplace.getAvailableAppUrns.mockResolvedValue([]);
+
+      await expect(service.executeRehydrate({ actor: SYSTEM })).resolves.toMatchObject({ started: [gameUrn] });
+    });
+
+    // Only the tunnel sync writes a public row. A registry row claiming one is not taken at its word.
+    it('does not put a registry row back on the public web', async () => {
+      cloudflare.getDeviceApplications.mockResolvedValue([{ ...game, pinned: true }] as never);
+
+      const result = await service.executeRehydrate({ actor: SYSTEM });
+
+      expect(portExpose.createPortExposeApp).not.toHaveBeenCalled();
+      expect(result.skipped).toEqual([expect.objectContaining({ name: 'game', code: 'unlisted' })]);
+    });
+
+    // A row marked as an exposed port is never a store app, even when a store lists an app of its name.
+    it('does not install a store app in place of an exposed port it cannot rebuild', async () => {
+      cloudflare.getDeviceApplications.mockResolvedValue([{ ...game, name: 'immich', slug: 'immich', pinned: true }] as never);
+      vi.mocked(buildRehydrationPlan).mockReturnValue({ items: [], portalAppCount: 0, localAppDataCount: 0 });
+
+      const result = await service.executeRehydrate({ actor: SYSTEM });
+
+      expect(buildRehydrationPlan).toHaveBeenCalledWith(expect.objectContaining({ portalApps: [] }));
+      expect(lifecycle.installApp).not.toHaveBeenCalled();
+      expect(portExpose.createPortExposeApp).not.toHaveBeenCalled();
+      expect(result.skipped).toEqual([{ name: 'immich', reason: UNLISTED_REASON, code: 'unlisted' }]);
+    });
+
+    // The restore does not come through the form's route, so it is held to the form's schema itself.
+    it('refuses what the expose form would refuse', async () => {
+      const longName = 'a'.repeat(51);
+      cloudflare.getDeviceApplications.mockResolvedValue([{ ...game, name: longName, slug: 'game' }] as never);
+
+      const result = await service.executeRehydrate({ actor: SYSTEM });
+
+      expect(portExpose.createPortExposeApp).not.toHaveBeenCalled();
+      expect(result.skipped).toEqual([
+        {
+          name: longName,
+          reason: "CI Portal's details for this exposed port are not ones Expose a port accepts, so it was not exposed again",
+          appUrn: `${longName}:_user`,
+          code: 'failed',
+        },
+      ]);
+    });
+  });
+
+  describe('while the app catalog is still downloading', () => {
+    // Another app's folder is already there, so the catalog is not empty.
+    beforeEach(() => {
+      marketplace.getAvailableAppUrns.mockResolvedValue(['filler-01:ci-marketplace'] as never);
+    });
+
+    it('waits for the download to end, then restores from the whole catalog', async () => {
+      let downloaded: (done: boolean) => void = () => undefined;
+      appStores.isDownloadingCatalog.mockReturnValueOnce(true);
+      appStores.waitForCatalogDownloads.mockReturnValueOnce(
+        new Promise((resolve) => {
+          downloaded = resolve;
+        }),
+      );
+      lifecycle.installApp.mockResolvedValue({ requestId: 'r' } as never);
+
+      const run = service.executeRehydrate({ source: 'restore', operatorUserId: 7, actor: OPERATOR });
+      await vi.waitFor(() => expect(appStores.waitForCatalogDownloads).toHaveBeenCalledWith(CATALOG_DOWNLOAD_WAIT_MS));
+      expect(marketplace.getAvailableAppUrns).not.toHaveBeenCalled();
+
+      marketplace.getAvailableAppUrns.mockResolvedValue([appUrn] as never);
+      downloaded(true);
+
+      await expect(run).resolves.toMatchObject({ success: true, queued: [appUrn], skipped: [] });
+    });
+
+    // A factory reset during the wait took the device key. A pairing after it may name another device.
+    it("reads the device's apps again after the wait", async () => {
+      appStores.isDownloadingCatalog.mockReturnValueOnce(true);
+      cloudflare.getDeviceApplications.mockResolvedValueOnce([{ name: 'immich' }] as never).mockResolvedValueOnce([{ name: 'paperless' }] as never);
+      lifecycle.installApp.mockResolvedValue({ requestId: 'r' } as never);
+
+      const result = await service.executeRehydrate({ source: 'restore', operatorUserId: 7, actor: OPERATOR });
+
+      expect(cloudflare.getDeviceApplications).toHaveBeenCalledTimes(2);
+      // The catalog lists neither, so the app the run names is the one read after the wait.
+      expect(result.skipped.map((entry) => entry.name)).toEqual(['paperless']);
+    });
+
+    it('does not record a run or skip the apps the catalog has not reached yet when the download outlasts the wait', async () => {
+      appStores.isDownloadingCatalog.mockReturnValue(true);
+      appStores.waitForCatalogDownloads.mockResolvedValue(false);
+
+      await expect(service.executeRehydrate({ source: 'restore', operatorUserId: 7, actor: OPERATOR })).rejects.toThrow(CatalogStillDownloadingError);
+
+      expect(marketplace.getAvailableAppUrns).not.toHaveBeenCalled();
+      expect(recovery.writeRehydrationState).not.toHaveBeenCalled();
+      expect(lifecycle.installApp).not.toHaveBeenCalled();
+    });
+
+    it('counts a download that started while the catalog was being read', async () => {
+      appStores.isDownloadingCatalog.mockReturnValueOnce(false).mockReturnValue(true);
+
+      await expect(service.executeRehydrate({ source: 'restore', operatorUserId: 7, actor: OPERATOR })).rejects.toThrow(CatalogStillDownloadingError);
+
+      expect(appStores.waitForCatalogDownloads).not.toHaveBeenCalled();
+      expect(recovery.writeRehydrationState).not.toHaveBeenCalled();
+    });
+  });
+});
+
+/*
+ * After a pairing the Hub restores the device's apps with nobody signed in. Whether the next sign-in
+ * showed the restore used to depend on a choice one browser kept, so any other browser, the CLI or
+ * the desktop app got the setup wizard on a Hub that had its apps back. A failed app went unsaid.
+ */
+describe('AppRehydrationService restore status', () => {
+  const kimai = 'kimai:ci-marketplace';
+  const excalidraw = 'excalidraw:ci-marketplace';
+  const openclaw = 'ci-openclaw:ci-marketplace';
+  const finishedRun: RehydrationStateFile = {
+    completedAt: new Date().toISOString(),
+    queuedUrns: [excalidraw, openclaw],
+    startedUrns: [],
+    skipped: [
+      { name: 'kimai', reason: 'APP_INSTALL_FORM_ERROR_INVALID', appUrn: kimai, code: 'failed', params: { fields: 'Admin Password' } },
+      { name: 'cyberchef', reason: 'App is already running locally', appUrn: 'cyberchef:ci-marketplace', code: 'already_running' },
+      { name: 'my-wiki', reason: 'No matching marketplace app found for Portal application', code: 'unlisted' },
+    ],
+  };
+  const listings: Record<string, { name: string; categories?: string[] }> = {
+    [kimai]: { name: 'Kimai' },
+    [excalidraw]: { name: 'Excalidraw' },
+    // As CI-Marketplace lists it: no `ai` category and no inference mapping, yet an agent the Hub hands a model.
+    [openclaw]: { name: 'OpenClaw', categories: ['development'] },
+    'cyberchef:ci-marketplace': { name: 'CyberChef' },
+  };
+
+  let users: MockProxy<UserRepository>;
+  let preferredModel: string | null;
+  let service: AppRehydrationService;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    preferredModel = null;
+    vi.mocked(recovery.readRehydrationState).mockResolvedValue(finishedRun);
+    vi.mocked(recovery.hasRestoreIntent).mockResolvedValue(false);
+    vi.mocked(recovery.readPairingAppCheck).mockResolvedValue({
+      markedAt: finishedRun.completedAt,
+      restore: { startedAt: finishedRun.completedAt, portalAppNames: [] },
+    });
+    vi.mocked(recovery.readRestoreNotice).mockResolvedValue({ startedAt: finishedRun.completedAt });
+
+    users = mock<UserRepository>();
+    const marketplace = mock<MarketplaceService>();
+    marketplace.getAppInfoFromAppStoreOrInstalled.mockImplementation(async (urn) => listings[urn] as never);
+    const apps = mock<AppsRepository>();
+    apps.getApps.mockResolvedValue([
+      { appName: 'excalidraw', appStoreSlug: 'ci-marketplace', status: 'running' },
+      { appName: 'ci-openclaw', appStoreSlug: 'ci-marketplace', status: 'installing' },
+      { appName: 'cyberchef', appStoreSlug: 'ci-marketplace', status: 'running' },
+    ] as never);
+
+    const module = await Test.createTestingModule({
+      providers: [
+        AppRehydrationService,
+        { provide: LoggerService, useValue: mock<LoggerService>() },
+        {
+          provide: ConfigurationService,
+          useValue: { getConfig: () => ({ ciHubApiKey: 'device-key' }), getInferencePreferences: () => ({ preferredModel }) },
+        },
+        { provide: RegistrationService, useValue: mock<RegistrationService>() },
+        { provide: CloudflareClientService, useValue: mock<CloudflareClientService>() },
+        { provide: AppStoreService, useValue: mock<AppStoreService>() },
+        { provide: MarketplaceService, useValue: marketplace },
+        { provide: AppsRepository, useValue: apps },
+        { provide: AppFilesManager, useValue: mock<AppFilesManager>() },
+        { provide: AppLifecycleService, useValue: mock<AppLifecycleService>() },
+        { provide: UserRepository, useValue: users },
+      ],
+    }).compile();
+    service = module.get(AppRehydrationService);
+  });
+
+  it('shows someone who may manage the Hub what the restore brought back and what it could not, until they have seen it', async () => {
+    const status = await service.getRestoreStatus(async () => true);
+
+    expect(status).toMatchObject({ completed: true, checking: false, noticePending: true });
+    expect(status.summary).toEqual({
+      completedAt: finishedRun.completedAt,
+      restored: [
+        { name: 'Excalidraw', urn: excalidraw, status: 'running', usesAi: false },
+        { name: 'OpenClaw', urn: openclaw, status: 'installing', usesAi: true },
+        { name: 'CyberChef', urn: 'cyberchef:ci-marketplace', status: 'running', usesAi: false },
+      ],
+      notRestored: [
+        { name: 'Kimai', urn: kimai, reason: 'APP_INSTALL_FORM_ERROR_INVALID', code: 'failed', params: { fields: 'Admin Password' } },
+        { name: 'my-wiki', reason: 'No matching marketplace app found for Portal application', code: 'unlisted' },
+      ],
+      aiModelChosen: false,
+    });
+  });
+
+  it("says whether a chat model has been chosen, since restored AI apps use the setup wizard's default until then", async () => {
+    preferredModel = 'gemma3-270m';
+
+    const status = await service.getRestoreStatus(async () => true);
+
+    expect(status.summary?.aiModelChosen).toBe(true);
+  });
+
+  it('keeps the notice from a member, who is not offered the setup wizard either', async () => {
+    const status = await service.getRestoreStatus(async () => false);
+
+    expect(status.noticePending).toBe(false);
+    expect(status.summary).toBeUndefined();
+  });
+
+  it('does not ask about the person, or show anything, once the restore has been seen', async () => {
+    vi.mocked(recovery.readRestoreNotice).mockResolvedValue({ startedAt: finishedRun.completedAt, acknowledgedAt: new Date().toISOString() });
+    const mayManage = vi.fn(async () => true);
+
+    const status = await service.getRestoreStatus(mayManage);
+
+    expect(status).toMatchObject({ noticePending: false });
+    expect(status.summary).toBeUndefined();
+    expect(mayManage).not.toHaveBeenCalled();
+  });
+
+  it('reports a restore under way, with no summary until it has finished', async () => {
+    vi.mocked(recovery.readRehydrationState).mockResolvedValue(null);
+
+    const status = await service.getRestoreStatus(async () => true);
+
+    expect(status).toMatchObject({ completed: false, noticePending: true, checking: false });
+    expect(status.summary).toBeUndefined();
+  });
+
+  it("does not show an earlier pairing's restore while this pairing's is still running", async () => {
+    vi.mocked(recovery.readRestoreNotice).mockResolvedValue({ startedAt: new Date(Date.parse(finishedRun.completedAt) + 60_000).toISOString() });
+
+    const status = await service.getRestoreStatus(async () => true);
+
+    expect(status).toMatchObject({ noticePending: true });
+    expect(status.summary).toBeUndefined();
+  });
+
+  // Restore was chosen for a device the Portal lists no apps for. "Your apps could not be restored" said otherwise.
+  it('opens setup instead of a summary when the restore found no app to bring back', async () => {
+    vi.mocked(recovery.readRehydrationState).mockResolvedValue({ ...finishedRun, queuedUrns: [], startedUrns: [], skipped: [] });
+    const mayManage = vi.fn(async () => true);
+
+    const status = await service.getRestoreStatus(mayManage);
+
+    expect(status).toMatchObject({ completed: true, noticePending: false });
+    expect(status.summary).toBeUndefined();
+    expect(mayManage).not.toHaveBeenCalled();
+  });
+
+  it('reports a pairing whose apps check has not decided yet', async () => {
+    vi.mocked(recovery.readRehydrationState).mockResolvedValue(null);
+    vi.mocked(recovery.readRestoreNotice).mockResolvedValue(null);
+    vi.mocked(recovery.readPairingAppCheck).mockResolvedValue({ markedAt: new Date().toISOString() });
+
+    await expect(service.getRestoreStatus(async () => true)).resolves.toMatchObject({ checking: true, noticePending: false });
+  });
+
+  it('skips the setup wizard for every operator once a finished restore has been seen', async () => {
+    await service.acknowledgeRestore();
+
+    expect(recovery.acknowledgeRestoreNotice).toHaveBeenCalled();
+    expect(users.markApplianceOnboardingComplete).toHaveBeenCalled();
+  });
+
+  it('leaves the setup wizard when the restore found no app to bring back', async () => {
+    vi.mocked(recovery.readRehydrationState).mockResolvedValue({ ...finishedRun, queuedUrns: [], startedUrns: [], skipped: [] });
+
+    await service.acknowledgeRestore();
+
+    expect(recovery.acknowledgeRestoreNotice).toHaveBeenCalled();
+    expect(users.markApplianceOnboardingComplete).not.toHaveBeenCalled();
+  });
+
+  it('leaves the setup wizard when the restore never finished', async () => {
+    vi.mocked(recovery.readRehydrationState).mockResolvedValue(null);
+
+    await service.acknowledgeRestore();
+
+    expect(recovery.acknowledgeRestoreNotice).toHaveBeenCalled();
+    expect(users.markApplianceOnboardingComplete).not.toHaveBeenCalled();
   });
 });

@@ -75,6 +75,8 @@ export function shouldOpenPortalSsoInSystemBrowser(input: { isMobileClient: bool
 /** Same Hub host as {@link buildPortalSsoStartUrl} — the one-time token is stored there. */
 export function buildPortalDesktopExchangeUrl(input: {
   token: string;
+  /** The secret of the sign-in this app started (deep-link-app-binding), when it has one. */
+  verifier?: string | null;
   remoteHubUrl?: string | null;
   isTauriDesktop: boolean;
   isMobileClient: boolean;
@@ -89,6 +91,9 @@ export function buildPortalDesktopExchangeUrl(input: {
   });
   const url = new URL('/api/auth/portal/desktop-exchange', baseUrl);
   url.searchParams.set('token', input.token);
+  if (input.verifier) {
+    url.searchParams.set('verifier', input.verifier);
+  }
   return url.toString();
 }
 

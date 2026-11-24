@@ -4,6 +4,7 @@ import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { LoggerService } from '@/core/logger/logger.service';
+import { PortManagerService } from '@/modules/network/port-manager.service';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
@@ -13,12 +14,14 @@ describe('CustomAppService', () => {
   let configService: MockProxy<ConfigurationService>;
   let appsRepository: MockProxy<AppsRepository>;
   let logger: MockProxy<LoggerService>;
+  let portManager: MockProxy<PortManagerService>;
 
   beforeEach(async () => {
     filesystem = mock<FilesystemService>();
     configService = mock<ConfigurationService>();
     appsRepository = mock<AppsRepository>();
     logger = mock<LoggerService>();
+    portManager = mock<PortManagerService>();
 
     configService.get.mockImplementation((key) => {
       if (key === 'directories') return { dataDir: '/data', appDataDir: '/app-data' } as any;
@@ -32,6 +35,25 @@ describe('CustomAppService', () => {
     filesystem.writeTextFile.mockResolvedValue(true);
     filesystem.writeBinaryFile.mockResolvedValue(true);
 
+    // No other app is installed. Nothing holds a port and the port manager hands out 10000 for
+    // whatever it is asked.
+    appsRepository.getApps.mockResolvedValue([]);
+    appsRepository.getAppsByPort.mockResolvedValue([] as any);
+    portManager.isPortAvailable.mockResolvedValue(true);
+    portManager.getAllAllocations.mockResolvedValue([]);
+    portManager.releaseAll.mockResolvedValue(0);
+    portManager.allocatePorts.mockImplementation(async (appUrn, requests) =>
+      requests.map((request, index) => ({
+        id: index + 1,
+        appUrn,
+        hostPort: 10000,
+        containerPort: request.containerPort,
+        protocol: 'tcp' as const,
+        label: request.label,
+        createdAt: '2026-10-10T00:00:00.000Z',
+      })),
+    );
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         CustomAppService,
@@ -39,6 +61,7 @@ describe('CustomAppService', () => {
         { provide: ConfigurationService, useValue: configService },
         { provide: AppsRepository, useValue: appsRepository },
         { provide: LoggerService, useValue: logger },
+        { provide: PortManagerService, useValue: portManager },
       ],
     }).compile();
 
@@ -47,6 +70,151 @@ describe('CustomAppService', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  describe('a port no container can listen on or publish', () => {
+    const composeWithPort = (internalPort: unknown) =>
+      ({ schemaVersion: 2, services: [{ name: 'web', image: 'nginx', isMain: true, internalPort }] }) as any;
+
+    it.each([
+      ['70000', 'CUSTOM_APP_ERROR_INTERNAL_PORT_MAX'],
+      [70000, 'CUSTOM_APP_ERROR_INTERNAL_PORT_MAX'],
+      [0, 'CUSTOM_APP_ERROR_INTERNAL_PORT_MIN'],
+    ])('refuses a new app with port %j before writing anything', async (port, refusal) => {
+      appsRepository.getAppByUrn.mockResolvedValue(undefined as any);
+
+      await expect(service.createCustomApp({ name: 'Port Seventy', config: composeWithPort(port) } as any)).rejects.toThrow(refusal);
+
+      expect(filesystem.writeTextFile).not.toHaveBeenCalled();
+      expect(appsRepository.createApp).not.toHaveBeenCalled();
+    });
+
+    it('refuses an edit and leaves the app as it was', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1 } as any);
+
+      await expect(service.updateCustomApp('myapp:_user' as any, composeWithPort('0'))).rejects.toThrow('CUSTOM_APP_ERROR_INTERNAL_PORT_MIN');
+
+      expect(filesystem.writeTextFile).not.toHaveBeenCalled();
+    });
+
+    it.each(['abc', '80.5', ' 80 '])('refuses a new app whose port is %j, which is not a port, before writing anything', async (port) => {
+      appsRepository.getAppByUrn.mockResolvedValue(undefined as any);
+
+      await expect(service.createCustomApp({ name: 'Port Text', config: composeWithPort(port) } as any)).rejects.toThrow(
+        'CUSTOM_APP_ERROR_INTERNAL_PORT_INVALID',
+      );
+
+      expect(filesystem.writeTextFile).not.toHaveBeenCalled();
+      expect(appsRepository.createApp).not.toHaveBeenCalled();
+    });
+
+    it('refuses an edit that maps a backwards range', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1 } as any);
+      const config = {
+        ...composeWithPort(80),
+        services: [{ name: 'web', image: 'nginx', isMain: true, internalPort: 80, addPorts: [{ hostPort: '8010-8000', containerPort: 80 }] }],
+      };
+
+      await expect(service.updateCustomApp('myapp:_user' as any, config)).rejects.toThrow('CUSTOM_APP_ERROR_HOST_PORT_INVALID');
+
+      expect(filesystem.writeTextFile).not.toHaveBeenCalled();
+    });
+
+    it('refuses it in an override too', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1 } as any);
+      const config = { ...composeWithPort(80), overrides: [{ services: [{ name: 'web', internalPort: '99999' }] }] };
+
+      await expect(service.updateCustomApp('myapp:_user' as any, config)).rejects.toThrow('CUSTOM_APP_ERROR_INTERNAL_PORT_MAX');
+    });
+
+    it('refuses a number too, which is how an MCP call with no schema sends it', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1 } as any);
+
+      await expect(service.updateCustomApp('myapp:_user' as any, composeWithPort(70000))).rejects.toThrow('CUSTOM_APP_ERROR_INTERNAL_PORT_MAX');
+
+      expect(filesystem.writeTextFile).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [{ hostPort: '70000', containerPort: 80 }, 'CUSTOM_APP_ERROR_HOST_PORT_MAX'],
+      [{ hostPort: 8081, containerPort: '70000' }, 'CUSTOM_APP_ERROR_CONTAINER_PORT_MAX'],
+      [{ hostPort: '0', containerPort: 80 }, 'CUSTOM_APP_ERROR_HOST_PORT_MIN'],
+      [{ hostPort: '8000-8010', containerPort: '70000-70010' }, 'CUSTOM_APP_ERROR_CONTAINER_PORT_MAX'],
+    ])('refuses a Port Mapping %j before writing anything', async (mapping, refusal) => {
+      appsRepository.getAppByUrn.mockResolvedValue(undefined as any);
+      const config = { ...composeWithPort(80), services: [{ name: 'web', image: 'nginx', isMain: true, internalPort: 80, addPorts: [mapping] }] };
+
+      await expect(service.createCustomApp({ name: 'Port Seventy', config } as any)).rejects.toThrow(refusal);
+
+      expect(filesystem.writeTextFile).not.toHaveBeenCalled();
+      expect(appsRepository.createApp).not.toHaveBeenCalled();
+    });
+
+    it('refuses a Port Mapping in an override', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1 } as any);
+      const config = { ...composeWithPort(80), overrides: [{ services: [{ name: 'web', addPorts: [{ hostPort: '99999', containerPort: 80 }] }] }] };
+
+      await expect(service.updateCustomApp('myapp:_user' as any, config)).rejects.toThrow('CUSTOM_APP_ERROR_HOST_PORT_MAX');
+    });
+
+    it('names the port it refused, which is all an MCP caller gets besides the key', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1 } as any);
+
+      await expect(service.updateCustomApp('myapp:_user' as any, composeWithPort('70000'))).rejects.toMatchObject({
+        response: { message: 'CUSTOM_APP_ERROR_INTERNAL_PORT_MAX', intlParams: { port: '70000' } },
+      });
+    });
+
+    it('still takes an env reference', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1 } as any);
+
+      await expect(service.updateCustomApp('myapp:_user' as any, composeWithPort('${APP_PORT}'))).resolves.toBeUndefined();
+    });
+
+    it('still takes a mapping written as an env reference or a range', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1 } as any);
+      const addPorts = [
+        { hostPort: '${EXTRA_PORT}', containerPort: 9000 },
+        { hostPort: '8000-8010', containerPort: '8000-8010' },
+      ];
+      const config = { ...composeWithPort(80), services: [{ name: 'web', image: 'nginx', isMain: true, internalPort: 80, addPorts }] };
+
+      await expect(service.updateCustomApp('myapp:_user' as any, config)).resolves.toBeUndefined();
+    });
+
+    // Saving only rewrites the compose file; a running app keeps its old containers until it restarts.
+    it('marks a running app as needing a restart', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 7, status: 'running' } as any);
+
+      await service.updateCustomApp('myapp:_user' as any, composeWithPort(80));
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { pendingRestart: true });
+    });
+
+    it('owes no restart for a save that leaves the file as it was', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 7, status: 'running' } as any);
+      const config = composeWithPort(80);
+      filesystem.readTextFile.mockResolvedValue(`${JSON.stringify(config, null, 2)}\n`);
+
+      await service.updateCustomApp('myapp:_user' as any, config);
+
+      expect(filesystem.writeTextFile).toHaveBeenCalled();
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+    });
+
+    it('leaves a stopped app alone, since its next start reads the new file', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 7, status: 'stopped' } as any);
+
+      await service.updateCustomApp('myapp:_user' as any, composeWithPort(80));
+
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+    });
+
+    it('does not throw on a malformed config, which only an MCP call can send', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1 } as any);
+
+      await expect(service.updateCustomApp('myapp:_user' as any, { overrides: 'x', services: { web: {} } } as any)).resolves.toBeUndefined();
+    });
   });
 
   describe('createCustomApp', () => {
@@ -104,6 +272,207 @@ describe('CustomAppService', () => {
       appsRepository.getAppByUrn.mockResolvedValue({ id: 1 } as any);
       await expect(service.createCustomApp({ name: 'myapp', config: '' as any as any })).rejects.toThrow('CUSTOM_APP_ERROR_DUPLICATE_NAME');
     });
+
+    // `a-b` here is `a-b-_user`, the id of app `a` from a store `b-_user`.
+    it('refuses a name whose app id an installed app already has, before anything is written', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue(null as any);
+      appsRepository.getApps.mockResolvedValue([{ appName: 'a', appStoreSlug: 'b-_user' }] as any);
+
+      await expect(service.createCustomApp({ name: 'a-b', config: { services: [] } as any })).rejects.toThrow('APP_ERROR_APP_ID_IN_USE');
+      expect(filesystem.createDirectory).not.toHaveBeenCalled();
+      expect(appsRepository.createApp).not.toHaveBeenCalled();
+    });
+  });
+
+  /*
+   * A custom app is created, not installed, so it never got the host port an install allocates: its
+   * main service was published on the host at its own internal port. One on port 80, which the Hub's
+   * Traefik holds, could never start ("Bind for 0.0.0.0:80 failed: port is already allocated").
+   */
+  describe('the host port a custom app publishes on', () => {
+    const createWith = (services: unknown[]) => service.createCustomApp({ name: 'Port Probe', config: { services } as any });
+    const refusalOf = (services: unknown[]) =>
+      createWith(services).then(
+        () => {
+          throw new Error('expected the create to be refused');
+        },
+        (error: { getResponse: () => unknown; getStatus: () => number }) => ({ response: error.getResponse(), status: error.getStatus() }),
+      );
+    const webOn = (internalPort: string, addPorts?: unknown[]) => [{ name: 'web', image: 'nginx:alpine', isMain: true, internalPort, addPorts }];
+
+    beforeEach(() => {
+      // The Hub's web ports come from the env, so a developer's own HTTP_PORT must not leak in.
+      vi.stubEnv('HTTP_PORT', '');
+      vi.stubEnv('HTTPS_PORT', '');
+      vi.stubEnv('TRAEFIK_DASHBOARD_PORT', '');
+      appsRepository.getAppByUrn.mockResolvedValue(null as any);
+      configService.get.mockImplementation((key) => {
+        if (key === 'directories') return { dataDir: '/data', appDataDir: '/app-data' } as any;
+        if (key === 'demoMode') return false;
+        if (key === 'userSettings') return { port: 80, sslPort: 443 } as any;
+        return null;
+      });
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('gets one from the port manager, asking for its internal port first, and keeps it on the row', async () => {
+      await createWith(webOn('8081'));
+
+      expect(portManager.allocatePorts).toHaveBeenCalledWith('port-probe:_user', [{ containerPort: 8081, label: 'main', preferredHostPort: 8081 }]);
+      expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ config: { port: 10000 }, port: 10000 }));
+    });
+
+    // New custom apps behave like installs: 3000 is reserved by the port manager, so it hands out another.
+    it('asks the port manager for a new app on 3000 and keeps what it hands out', async () => {
+      await createWith(webOn('3000'));
+
+      expect(portManager.allocatePorts).toHaveBeenCalledWith('port-probe:_user', [{ containerPort: 3000, label: 'main', preferredHostPort: 3000 }]);
+      expect(portManager.migrateExistingApp).not.toHaveBeenCalled();
+      expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ config: { port: 10000 }, port: 10000 }));
+    });
+
+    it("does not ask for its internal port when that is the Hub's HTTP port, 80", async () => {
+      await createWith(webOn('80'));
+
+      expect(portManager.allocatePorts).toHaveBeenCalledWith('port-probe:_user', [
+        { containerPort: 80, label: 'main', preferredHostPort: undefined },
+      ]);
+      expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ config: { port: 10000 }, port: 10000 }));
+    });
+
+    it('allocates none for an app with no single access port', async () => {
+      await createWith(webOn('${PORT}'));
+
+      expect(portManager.allocatePorts).not.toHaveBeenCalled();
+      expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ config: {} }));
+    });
+
+    it('gives the allocation back when the app cannot be created after it', async () => {
+      appsRepository.createApp.mockRejectedValue(new Error('db down'));
+
+      await expect(createWith(webOn('80'))).rejects.toThrow('CUSTOM_APP_ERROR_CREATION_FAILED');
+      expect(portManager.releaseAll).toHaveBeenLastCalledWith('port-probe:_user');
+      expect(portManager.releaseAll.mock.invocationCallOrder.at(-1)).toBeGreaterThan(portManager.allocatePorts.mock.invocationCallOrder[0] ?? 0);
+    });
+
+    it('clears an allocation an earlier app of the same name left behind before allocating', async () => {
+      await createWith(webOn('8081'));
+
+      expect(portManager.releaseAll).toHaveBeenCalledWith('port-probe:_user');
+      expect(portManager.releaseAll.mock.invocationCallOrder[0]).toBeLessThan(portManager.allocatePorts.mock.invocationCallOrder[0] ?? 0);
+    });
+
+    it('holds the Port Mappings of an edit to the same rule', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 3 } as any);
+
+      await expect(
+        service.updateCustomApp('port-probe:_user' as any, { services: webOn('8081', [{ containerPort: 80, hostPort: 80 }]) } as any),
+      ).rejects.toThrow('CUSTOM_APP_ERROR_HOST_PORT_IN_USE');
+      expect(filesystem.writeTextFile).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['the port the Hub serves HTTP on', () => undefined, 80],
+      ['the port the Hub serves HTTPS on', () => undefined, 443],
+      ["the port the desktop app moved the Hub's HTTP to", () => vi.stubEnv('HTTP_PORT', '8880'), 8880],
+      ['a port another app publishes', () => appsRepository.getAppsByPort.mockResolvedValue([{ appName: 'wordpress' }] as any), 8213],
+      ["the port the Hub's API publishes", () => undefined, 5002],
+      ["the port the Hub's database publishes on 127.0.0.1", () => undefined, 6543],
+      [
+        'a port the port manager gave another app',
+        () => portManager.getAllAllocations.mockResolvedValue([{ hostPort: 15000, protocol: 'tcp', appUrn: 'grafana:ci-marketplace' }] as any),
+        15000,
+      ],
+      [
+        'a privileged port another app was given',
+        () => portManager.getAllAllocations.mockResolvedValue([{ hostPort: 53, protocol: 'tcp', appUrn: 'adguard:ci-marketplace' }] as any),
+        53,
+      ],
+    ])('refuses a Port Mapping on %s, naming it, before anything is written', async (_label, arrange, hostPort) => {
+      arrange();
+
+      await expect(refusalOf(webOn('8081', [{ containerPort: 80, hostPort }]))).resolves.toEqual({
+        response: { message: 'CUSTOM_APP_ERROR_HOST_PORT_IN_USE', intlParams: { port: String(hostPort) } },
+        status: 409,
+      });
+      expect(filesystem.createDirectories).not.toHaveBeenCalled();
+      expect(portManager.allocatePorts).not.toHaveBeenCalled();
+      expect(appsRepository.createApp).not.toHaveBeenCalled();
+    });
+
+    it('refuses the same host port mapped twice', async () => {
+      await expect(
+        refusalOf(
+          webOn('8081', [
+            { containerPort: 80, hostPort: '9100' },
+            { containerPort: 81, hostPort: 9100 },
+          ]),
+        ),
+      ).resolves.toMatchObject({ response: { message: 'CUSTOM_APP_ERROR_HOST_PORT_IN_USE', intlParams: { port: '9100' } } });
+    });
+
+    /*
+     * The port manager keeps a list of ports it never hands out, but most of them (3000, 5432, 5672,
+     * 9091) are the Hub's development ports, not ports a running Hub publishes. A Port Mapping is
+     * published exactly as given, so one there was accepted before and still works.
+     */
+    it("allows a Port Mapping on a port the port manager won't hand out but the Hub doesn't publish, such as 5432", async () => {
+      portManager.isPortAvailable.mockResolvedValue(false);
+
+      await expect(createWith(webOn('8081', [{ containerPort: 5432, hostPort: 5432 }]))).resolves.toMatchObject({ appUrn: 'port-probe:_user' });
+    });
+
+    it('lets an edit keep a Port Mapping on such a port', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 3 } as any);
+      portManager.isPortAvailable.mockResolvedValue(false);
+
+      await service.updateCustomApp('port-probe:_user' as any, { services: webOn('8081', [{ containerPort: 3000, hostPort: 3000 }]) } as any);
+
+      expect(filesystem.writeTextFile).toHaveBeenCalledWith(expect.stringContaining('docker-compose.json'), expect.any(String));
+    });
+
+    it('allows a privileged Port Mapping nobody holds, such as 53 for a DNS server', async () => {
+      await expect(createWith(webOn('8081', [{ containerPort: 53, hostPort: 53, udp: true }]))).resolves.toMatchObject({
+        appUrn: 'port-probe:_user',
+      });
+    });
+
+    it('keeps the main port off a host port the app maps itself', async () => {
+      await createWith(webOn('9200', [{ containerPort: 9200, hostPort: 9200 }]));
+
+      expect(portManager.allocatePorts).toHaveBeenCalledWith('port-probe:_user', [
+        { containerPort: 9200, label: 'main', preferredHostPort: undefined },
+      ]);
+    });
+
+    /*
+     * The desktop app moves Traefik's host ports when it can't have the defaults. On Linux only root
+     * may open a port below 1024, so HTTP and HTTPS go to 8880 and 8443. The port manager's probe runs
+     * inside the Hub container and sees neither.
+     */
+    it("keeps the main port off the host port the desktop app moved the Hub's HTTPS to", async () => {
+      vi.stubEnv('HTTPS_PORT', '8443');
+
+      await createWith(webOn('8443'));
+
+      expect(portManager.allocatePorts).toHaveBeenCalledWith('port-probe:_user', [
+        { containerPort: 8443, label: 'main', preferredHostPort: undefined },
+      ]);
+    });
+
+    it("keeps the main port off a port another app's row publishes", async () => {
+      // A port-expose app points at a service already running on the host and gets no allocation.
+      appsRepository.getAppsByPort.mockImplementation(async (port) => (port === 8096 ? [{ appName: 'jellyfin' }] : []) as any);
+
+      await createWith(webOn('8096'));
+
+      expect(portManager.allocatePorts).toHaveBeenCalledWith('port-probe:_user', [
+        { containerPort: 8096, label: 'main', preferredHostPort: undefined },
+      ]);
+    });
   });
 
   describe('uploadAppImage', () => {
@@ -128,20 +497,114 @@ describe('CustomAppService', () => {
 
     it.each([
       ['a number', 8080, 8080],
-      ['the string the create form submits', '8080', 8080],
-      ['a string with stray whitespace', ' 3000 ', 3000],
+      ['digits as text', '8080', 8080],
     ])('takes %s', async (_name, input, expected) => {
       await expect(portWrittenFor(input)).resolves.toBe(expected);
+    });
+
+    it('refuses a string with stray whitespace, which Docker does not read as a port at start', async () => {
+      await expect(portWrittenFor(' 3000 ')).rejects.toThrow('CUSTOM_APP_ERROR_INTERNAL_PORT_INVALID');
     });
 
     it.each([
       ['an environment reference', '${APP_PORT}'],
       ['a range', '8000-8010'],
-      ['zero', 0],
-      ['a number past the port range', 70000],
       ['an empty string', ''],
     ])('leaves the port unset for %s', async (_name, input) => {
       await expect(portWrittenFor(input)).resolves.toBeUndefined();
+    });
+  });
+
+  describe('updateAppMetadata', () => {
+    const CUSTOM = 'myapp:_user' as any;
+    const appInfo = {
+      id: 'myapp',
+      name: 'My Nginx',
+      categories: ['utilities'],
+      description: 'Custom application: My Nginx',
+      version: '1.0.0',
+      supported_architectures: ['amd64'],
+    };
+
+    beforeEach(() => {
+      filesystem.readJsonFile.mockResolvedValue(appInfo as any);
+    });
+
+    it('leaves the app alone when the note has no frontmatter', async () => {
+      await service.updateAppMetadata(CUSTOM, '# Hello');
+
+      expect(filesystem.writeJsonFile).not.toHaveBeenCalled();
+      expect(filesystem.writeTextFile).toHaveBeenCalledWith('/data/apps/_user/myapp/metadata/description.md', '# Hello');
+    });
+
+    it('keeps the category and description when the note states neither', async () => {
+      await service.updateAppMetadata(CUSTOM, '---\nname: "My Nginx"\nshort_desc: User-created custom app\nversion: 1.0.0\n---\n\n# Hello\n');
+
+      expect(filesystem.writeJsonFile).toHaveBeenCalledWith('/data/apps/_user/myapp/config.json', {
+        ...appInfo,
+        name: 'My Nginx',
+        short_desc: 'User-created custom app',
+        version: '1.0.0',
+      });
+    });
+
+    it('still takes what a note states', async () => {
+      await service.updateAppMetadata(CUSTOM, '---\nversion: 2.0.0\ncategories:\n  - media\n---\n\n# Hello\n');
+
+      expect(filesystem.writeJsonFile).toHaveBeenCalledWith('/data/apps/_user/myapp/config.json', {
+        ...appInfo,
+        version: '2.0.0',
+        categories: ['media'],
+      });
+    });
+
+    it('keeps dashes inside a stated value', async () => {
+      await service.updateAppMetadata(CUSTOM, '---\nname: "My---App"\nwebsite: https://a---b.example.com\n---\n\n# Hello\n');
+
+      expect(filesystem.writeJsonFile).toHaveBeenCalledWith('/data/apps/_user/myapp/config.json', {
+        ...appInfo,
+        name: 'My---App',
+        website: 'https://a---b.example.com',
+      });
+    });
+
+    it('leaves the app alone when the frontmatter names nothing the app has', async () => {
+      await service.updateAppMetadata(CUSTOM, '---\ntitle: Mine\n---\n\n# Hello\n');
+
+      expect(filesystem.writeJsonFile).not.toHaveBeenCalled();
+    });
+
+    it('refuses a note for an app with no config.json and writes nothing', async () => {
+      filesystem.readJsonFile.mockResolvedValue(null);
+
+      const refusal = service.updateAppMetadata(CUSTOM, '---\ncategories:\n  - not-a-category\n---\n');
+
+      await expect(refusal).rejects.toThrow('CUSTOM_APP_ERROR_NOT_FOUND');
+      await expect(refusal).rejects.toMatchObject({ status: 404 });
+
+      expect(filesystem.writeJsonFile).not.toHaveBeenCalled();
+      expect(filesystem.writeTextFile).not.toHaveBeenCalled();
+    });
+
+    it('refuses a note with frontmatter that is not valid with a 400 naming the key, and writes nothing', async () => {
+      const refusal = service.updateAppMetadata(CUSTOM, '---\ncategories:\n  - not-a-category\n---\n');
+
+      await expect(refusal).rejects.toMatchObject({
+        status: 400,
+        response: { message: 'CUSTOM_APP_ERROR_FRONTMATTER_INVALID', intlParams: { key: 'categories.0' } },
+      });
+
+      expect(filesystem.writeJsonFile).not.toHaveBeenCalled();
+      expect(filesystem.writeTextFile).not.toHaveBeenCalled();
+    });
+
+    it('saves a note that opens with a horizontal rule as text and leaves config.json alone', async () => {
+      const note = '---\nCheck backups weekly.\n---\nThe rest of the note';
+
+      await expect(service.updateAppMetadata(CUSTOM, note)).resolves.toBeUndefined();
+
+      expect(filesystem.writeJsonFile).not.toHaveBeenCalled();
+      expect(filesystem.writeTextFile).toHaveBeenCalledWith('/data/apps/_user/myapp/metadata/description.md', note);
     });
   });
 

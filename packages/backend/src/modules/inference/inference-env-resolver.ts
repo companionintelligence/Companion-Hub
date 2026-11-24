@@ -5,9 +5,10 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { ModelRegistryService } from './model-registry.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { OllamaBackend } from './backends/ollama.backend';
-import { CloudFallbackService } from './cloud-fallback.service';
+import { omlxAppApiKey } from './backends/omlx.backend';
+import { CloudFallbackService, isCloudFallbackAllowed } from './cloud-fallback.service';
 import { InferenceEndpointService } from './inference-endpoint.service';
-import { isCatalogModelInstalled, isServedModelForCatalog, trackedPullCounts } from './model-availability.util';
+import { handoutIdForCatalogModel, isCatalogModelInstalled, isServedModelForCatalog, trackedPullCounts } from './model-availability.util';
 import { appInferenceRequirements, checkModelRequirements, type AppInferenceRequirements } from './app-inference-requirements';
 import {
   capHandoutAtServedWindow,
@@ -16,10 +17,11 @@ import {
   handoutContextLength,
   selectPoolChatModel,
 } from './app-model-handout';
-import { MemoryManagerService, modelMemoryCeilingMb } from './memory-manager.service';
+import { handoutCeilingMb, MemoryManagerService, modelMemoryCeilingMb } from './memory-manager.service';
 import { appBearerFor } from './engine-credential-scope';
 import { catalogEmbedsOn, embedderEngineId, embeddingBackendFor, pickEmbeddingModel } from './embedder-handout';
 import { pickUtilityModel } from './utility-handout';
+import { installedDefaultChatModel } from './default-chat-model-handout';
 import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
 
 /**
@@ -47,7 +49,7 @@ export interface StandardizedAiEnv {
   CI_VISION_MODEL?: string;
   /**
    * The model for an app's background calls (extraction, classification, titling): a smaller
-   * installed model that fits beside the chat model, else the chat model itself. See
+   * installed model of at least 2B that fits beside the chat model, else the chat model itself. See
    * `pickUtilityModel`. Always set when a chat model is.
    */
   CI_UTILITY_MODEL?: string;
@@ -125,8 +127,9 @@ export class InferenceEnvResolver {
   async resolve(options?: InferenceEnvResolveOptions): Promise<StandardizedAiEnv> {
     const requirements = resolveRequirements(options);
     const appLabel = options?.appSlug || 'this app';
-    const cloudProviderEnv = this.cloudFallback.toAppEnv();
-    const cloudProviders = this.cloudFallback.getEnabledProviders();
+    const allowCloudFallback = isCloudFallbackAllowed();
+    const cloudProviderEnv = allowCloudFallback ? this.cloudFallback.toAppEnv() : {};
+    const cloudProviders = allowCloudFallback ? this.cloudFallback.getEnabledProviders() : [];
     const fallbackCloud = cloudProviders[0];
 
     const preferences = this.config.getInferencePreferences();
@@ -188,7 +191,7 @@ export class InferenceEnvResolver {
     // The engine's own credential. It goes into the env only if the app ends up talking to the
     // engine directly, which is decided after pool routing below.
     const configuredVllmKey = preferences.preferredVllmApiKey?.trim();
-    const engineKey = (backendType === 'vllm' && configuredVllmKey) || backend.getApiKey?.()?.trim();
+    const engineKey = (backendType === 'vllm' && configuredVllmKey) || (backendType === 'omlx' ? omlxAppApiKey() : backend.getApiKey?.()?.trim());
 
     // ── Chat model ────────────────────────────────────────────────────────
     let chatCurated: CuratedModel | undefined;
@@ -305,7 +308,8 @@ export class InferenceEnvResolver {
               profile,
             })
           : undefined;
-      env.CI_UTILITY_MODEL = utility && utility.id !== chatCurated?.id ? utility.backendModelId : chatModel;
+      env.CI_UTILITY_MODEL =
+        utility && utility.id !== chatCurated?.id ? handoutIdForCatalogModel(utility, backendHealth.modelsLoaded ?? []) : chatModel;
       if (env.CI_UTILITY_MODEL !== chatModel) {
         this.logger.info(`[InferenceEnvResolver] ${appLabel}: utility=${env.CI_UTILITY_MODEL} beside chat=${chatModel}`);
       }
@@ -325,7 +329,7 @@ export class InferenceEnvResolver {
       // same three sources against the same ceiling; it differs by the app's floor and cap, and it
       // asks the model's own engine where this asks the active one.
       const askOllama = chatServedLocally && backendType === 'ollama';
-      const [sizing, residentContextLength, servedContextLength] = await Promise.all([
+      const [sizing, residentContextLength, servedContextLength, ceilingMb] = await Promise.all([
         chatServedLocally
           ? probeLocalSizing({
               backendType,
@@ -337,7 +341,12 @@ export class InferenceEnvResolver {
             })
           : null,
         askOllama ? this.ollamaBackend.residentContextLength(chatCurated.backendModelId) : null,
-        chatServedLocally ? Promise.resolve(backend.servedContextLength?.(chatCurated.backendModelId) ?? null).catch(() => null) : null,
+        // Asked for the id the app is handed: a host-managed engine may serve a model the catalog row
+        // does not name (the runtime fallback above, or a --served-model-name alias).
+        chatServedLocally ? Promise.resolve(backend.servedContextLength?.(chatModel) ?? null).catch(() => null) : null,
+        // Not counting what the model itself holds now, or a resident model is sized against itself.
+        // Asked of the model's own engine: a pool model served here need not be on the active one.
+        chatServedLocally ? handoutCeilingMb(this.memoryManager, profile, chatCurated) : modelMemoryCeilingMb(profile),
       ]);
       // Through the pool, the largest cap among the nodes serving the model — the proxy places a
       // request only on nodes whose cap can take its window, so no smaller node binds (see
@@ -347,15 +356,16 @@ export class InferenceEnvResolver {
       const sized = handoutContextLength({
         model: chatCurated,
         servedLocally: chatServedLocally,
-        effectiveInferenceMemoryMb: modelMemoryCeilingMb(profile),
+        effectiveInferenceMemoryMb: ceilingMb,
         minContextLength: requirements.minContextLength,
         kvMbPerToken: sizing?.kvMbPerToken ?? null,
+        fixedKvMb: sizing?.fixedKvMb ?? null,
         weightMb: sizing?.weightMb ?? null,
         kvSlots: sizing?.kvSlots ?? null,
         sighting: sizing?.sighting ?? null,
         maxContextLength,
       });
-      // Never above the one window Lemonade serves this model at to every caller.
+      // Never above the one window Lemonade or vLLM serves this model at to every caller.
       const served = capHandoutAtServedWindow({
         appSlug: appLabel,
         engineId: chatModel,
@@ -465,7 +475,19 @@ export class InferenceEnvResolver {
     if (backendPreferredCurated && this.isInstalled(backendPreferredCurated, modelsLoaded, listedBy) && suitable(backendPreferredCurated)) {
       chatCurated = backendPreferredCurated;
     } else {
-      chatCurated = llmCandidates.find((m) => this.isInstalled(m, modelsLoaded, listedBy) && suitable(m));
+      /*
+       * ⚠ WITH NO MODEL CHOSEN, THE SETUP WIZARD'S DEFAULT, RANKED BY THE LIST THE WIZARD SHOWS.
+       * `llmCandidates` is read at `profile.tier` while the wizard reads the onboarding tier: for a card
+       * the container runtime cannot reach yet, those differ. A Hub restored after pairing skips the
+       * wizard, so its apps run on what the wizard would have marked (`installedDefaultChatModel`).
+       */
+      const wizardDefault = preferredId ? undefined : this.wizardDefault(backendType, modelsLoaded, listedBy, profile, suitable);
+      if (wizardDefault) {
+        this.logger.info(
+          `[InferenceEnvResolver] ${appLabel}: no chat model chosen yet; handing out the setup wizard's default ${wizardDefault.backendModelId}`,
+        );
+      }
+      chatCurated = wizardDefault ?? llmCandidates.find((m) => this.isInstalled(m, modelsLoaded, listedBy) && suitable(m));
     }
     if (!chatCurated) {
       chatCurated = [backendPreferredCurated, ...llmCandidates].find((m) => suitable(m));
@@ -476,7 +498,9 @@ export class InferenceEnvResolver {
         );
       }
     }
-    let engineId = chatCurated?.backendModelId;
+    // The engine's own spelling when it lists the model under another name (oMLX does not list the
+    // catalog's), which is also what the `includes` below must look for.
+    let engineId = chatCurated ? handoutIdForCatalogModel(chatCurated, modelsLoaded) : undefined;
     // Host-managed vLLM/Lemonade can serve models outside the Hub catalog (e.g. an
     // operator's existing `vllm serve` on :8000). When nothing catalog-shaped matches
     // but the backend reports loaded models, emit the first runtime id so apps get a
@@ -497,6 +521,24 @@ export class InferenceEnvResolver {
       return { error: describeNoSuitableChatModel({ appSlug: appLabel, requirements, rejected, scope: 'local' }) };
     }
     return { curated: chatCurated, engineId };
+  }
+
+  /** The setup wizard's Default among the models this backend has, skipping ones `suitable` rules out. */
+  private wizardDefault(
+    backendType: InferenceBackendType,
+    modelsLoaded: string[],
+    listedBy: InferenceBackendType | null,
+    profile: Awaited<ReturnType<HardwareInspectorService['getProfile']>>,
+    suitable: (model: CuratedModel) => boolean,
+  ): CuratedModel | undefined {
+    return installedDefaultChatModel({
+      registry: this.modelRegistry,
+      profile,
+      computeTier: (gpu, ram) => this.hardwareInspector.computeTier(gpu, ram),
+      backend: backendType,
+      isInstalled: (model) => this.isInstalled(model, modelsLoaded, listedBy),
+      accept: suitable,
+    });
   }
 
   /** The catalog's verdict on a host-served engine id, or `unverified` when no catalog row matches it. */

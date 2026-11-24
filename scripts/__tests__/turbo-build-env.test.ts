@@ -60,7 +60,9 @@ describe('turbo hands the frontend build every variable vite.config.ts bakes in'
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     dryRun = JSON.parse(output) as TurboDryRun;
-  });
+    // The dry run starts turbo, which hashes every input of both tasks. That takes under a second on an
+    // idle machine but took 15 s while the backend and frontend suites ran alongside, past the 10 s default.
+  }, 60_000);
 
   it('finds the define entries it guards', () => {
     // A pattern that stopped matching would let every check below pass on an empty list.

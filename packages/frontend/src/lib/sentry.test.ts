@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { CONSENT_REFRESH_INTERVAL_MS } from './telemetry-consent';
 
 type MutableImportMetaEnv = {
   -readonly [K in keyof ImportMetaEnv]: ImportMetaEnv[K];
@@ -8,6 +9,7 @@ const testEnv = import.meta.env as MutableImportMetaEnv;
 
 const {
   fetchDeviceRegistrationInfoResult,
+  addBreadcrumb,
   captureException,
   captureMessage,
   init,
@@ -20,6 +22,7 @@ const {
   replayIntegration,
 } = vi.hoisted(() => ({
   fetchDeviceRegistrationInfoResult: vi.fn(),
+  addBreadcrumb: vi.fn(),
   captureException: vi.fn(),
   captureMessage: vi.fn(),
   init: vi.fn(),
@@ -32,7 +35,18 @@ const {
   replayIntegration: vi.fn(() => ({ name: 'Replay' })),
 }));
 
+const { consoleIntegration, makeFetchTransport, transportSend } = vi.hoisted(() => {
+  const transportSend = vi.fn(async () => ({ statusCode: 200 }));
+
+  return {
+    transportSend,
+    consoleIntegration: vi.fn((options: object) => ({ name: 'Console', ...options })),
+    makeFetchTransport: vi.fn(() => ({ send: transportSend, flush: vi.fn(async () => true) })),
+  };
+});
+
 vi.mock('@sentry/react', () => ({
+  addBreadcrumb,
   captureMessage,
   captureException,
   init,
@@ -41,6 +55,8 @@ vi.mock('@sentry/react', () => ({
   withScope,
   browserTracingIntegration,
   replayIntegration,
+  consoleIntegration,
+  makeFetchTransport,
 }));
 
 vi.mock('./registration-api', () => ({
@@ -60,6 +76,7 @@ const { telemetryAllowed, refreshTelemetryConsent, refreshTelemetryConsentIfStal
 }));
 
 vi.mock('./telemetry-consent', () => ({
+  CONSENT_REFRESH_INTERVAL_MS: 60_000,
   isTelemetryAllowed: () => telemetryAllowed.value,
   refreshTelemetryConsent,
   refreshTelemetryConsentIfStale,
@@ -128,10 +145,11 @@ describe('frontend sentry', () => {
     );
     expect(browserTracingIntegration).toHaveBeenCalledOnce();
     // Factories being called is not enough — dropping their return values from
-    // `init` silently disables production tracing.
+    // `init` silently disables production tracing. The console integration is the
+    // same-named replacement that switches off console breadcrumbs.
     expect(init).toHaveBeenCalledWith(
       expect.objectContaining({
-        integrations: [{ name: 'BrowserTracing' }],
+        integrations: [{ name: 'BrowserTracing' }, { name: 'Console', levels: [] }],
       }),
     );
     /*
@@ -202,6 +220,25 @@ describe('frontend sentry', () => {
     expect(captureMessage).toHaveBeenCalledWith('startup fallback warning', 'warning');
   });
 
+  it('records a breadcrumb without sending an event of its own', async () => {
+    const { addHubBreadcrumb } = await import('./sentry');
+
+    addHubBreadcrumb('status temporarily unavailable', { status: 0 });
+
+    expect(addBreadcrumb).toHaveBeenCalledWith({ category: 'hub', level: 'warning', message: 'status temporarily unavailable', data: { status: 0 } });
+    expect(captureMessage).not.toHaveBeenCalled();
+    expect(captureException).not.toHaveBeenCalled();
+  });
+
+  it('records no breadcrumb while Sentry is not running', async () => {
+    testEnv.DEV = true;
+    const { addHubBreadcrumb } = await import('./sentry');
+
+    addHubBreadcrumb('status temporarily unavailable');
+
+    expect(addBreadcrumb).not.toHaveBeenCalled();
+  });
+
   it('drops known handled frontend noise in beforeSend', async () => {
     await import('./sentry');
 
@@ -245,6 +282,52 @@ describe('frontend sentry', () => {
         },
       }),
     ).toBeNull();
+  });
+
+  it('drops fetch failures against the configured local Hub API and keeps the rest', async () => {
+    const { client } = await import('@/api-client/client.gen');
+    await import('./sentry');
+
+    type SentryEventInput = { exception?: { values?: Array<{ value?: string }> } };
+    const beforeSend = init.mock.calls[0]?.[0]?.beforeSend as ((event: SentryEventInput) => SentryEventInput | null) | undefined;
+    expect(beforeSend).toBeTypeOf('function');
+    const failed = (value: string) => ({ exception: { values: [{ value }] } });
+
+    try {
+      client.setConfig({ baseUrl: 'http://127.0.0.1:5002' });
+      // The SDK records whichever loopback name the request used.
+      expect(beforeSend?.(failed('Failed to fetch (localhost:5002)'))).toBeNull();
+      expect(beforeSend?.(failed('Load failed (127.0.0.1:5002)'))).toBeNull();
+      // Another port or host is not the configured Hub API.
+      expect(beforeSend?.(failed('Failed to fetch (127.0.0.1:5004)'))).not.toBeNull();
+      expect(beforeSend?.(failed('Failed to fetch (hub.ci.computer)'))).not.toBeNull();
+      // Without a host there is no origin to match, so the event is kept.
+      expect(beforeSend?.(failed('Failed to fetch'))).not.toBeNull();
+
+      // When the Hub API is on another machine, a failure here is not that Hub.
+      client.setConfig({ baseUrl: 'https://hub-home.ci.computer' });
+      expect(beforeSend?.(failed('Failed to fetch (localhost:5002)'))).not.toBeNull();
+    } finally {
+      client.setConfig({ baseUrl: '' });
+    }
+  });
+
+  it('drops a store load that got no response and an injected automation call, and keeps the rest', async () => {
+    await import('./sentry');
+
+    type SentryEventInput = { exception?: { values?: Array<{ value?: string }> } };
+    const beforeSend = init.mock.calls[0]?.[0]?.beforeSend as ((event: SentryEventInput) => SentryEventInput | null) | undefined;
+    expect(beforeSend).toBeTypeOf('function');
+    const failed = (value: string) => ({ exception: { values: [{ value }] } });
+
+    // Status 0 means no response reached the app: the device is offline, or the network dropped.
+    expect(beforeSend?.(failed('Failed to load store listings (0)'))).toBeNull();
+    expect(beforeSend?.(failed('Failed to load alternatives (0): something'))).toBeNull();
+    // A status the server did answer with is a real failure and is kept.
+    expect(beforeSend?.(failed('Failed to load store listings (503): Service Unavailable'))).not.toBeNull();
+    // Only the call an automation script injects is dropped; another missing page function is the app's own.
+    expect(beforeSend?.(failed('Function "__seenText" is not exposed'))).toBeNull();
+    expect(beforeSend?.(failed('Function "renderPage" is not exposed'))).not.toBeNull();
   });
 
   it('rewrites TranslatableError events with HTTP status and path, and drops 4xx', async () => {
@@ -395,5 +478,85 @@ describe('frontend sentry', () => {
     beforeSend?.({ exception: { values: [{ value: 'a real bug' }] } });
     // Also refreshed on the dropped path, so an opt-in is noticed.
     expect(refreshTelemetryConsentIfStale).toHaveBeenCalled();
+  });
+
+  it('switches off console breadcrumbs with the SDK console integration', async () => {
+    await import('./sentry');
+
+    // A same-named integration replaces the SDK default, so the levels option is the switch.
+    expect(consoleIntegration).toHaveBeenCalledWith({ levels: [] });
+  });
+
+  it('sends no trace, session or replay envelope while consent is off', async () => {
+    await import('./sentry');
+
+    type TransportLike = { send: (envelope: unknown) => Promise<unknown>; flush: (timeout?: number) => Promise<boolean> };
+    const createTransport = init.mock.calls[0]?.[0]?.transport as ((options: object) => TransportLike) | undefined;
+    expect(createTransport).toBeTypeOf('function');
+
+    const options = { url: 'https://example.ingest.sentry.io/api/1/envelope/' };
+    const transport = createTransport?.(options);
+    expect(makeFetchTransport).toHaveBeenCalledWith(options);
+    const envelope = [{ event_id: 'abc' }, [[{ type: 'span' }, { items: [] }]]];
+
+    // Span envelopes never reach beforeSend, so the transport is what keeps them in the browser.
+    telemetryAllowed.value = false;
+    await expect(transport?.send(envelope)).resolves.toEqual({});
+    expect(transportSend).not.toHaveBeenCalled();
+
+    telemetryAllowed.value = true;
+    await transport?.send(envelope);
+    expect(transportSend).toHaveBeenCalledWith(envelope);
+  });
+
+  it('scrubs span URLs, identity attributes and secrets before a span is sent', async () => {
+    await import('./sentry');
+
+    type SpanLike = { name: string; attributes: Record<string, unknown> };
+    const beforeSendSpan = init.mock.calls[0]?.[0]?.beforeSendSpan as ((span: SpanLike) => SpanLike) | undefined;
+    expect(beforeSendSpan).toBeTypeOf('function');
+
+    const scrubbed = beforeSendSpan?.({
+      name: 'GET /Users/bennett/devel/api',
+      attributes: {
+        'http.url': 'https://hub.ci.localhost/auth/join?token=one-time-secret',
+        'http.target': '/auth/join?token=one-time-secret',
+        'http.query': '?token=one-time-secret',
+        'user.email': 'bennett@example.com',
+        'user.ip_address': '203.0.113.7',
+        'http.request.header.authorization': 'Bearer abc123',
+        'http.response.status_code': 200,
+      },
+    });
+
+    expect(scrubbed?.name).toBe('GET ~/devel/api');
+    expect(scrubbed?.attributes['http.url']).toBe('https://hub.ci.localhost/auth/join');
+    expect(scrubbed?.attributes['http.target']).toBe('/auth/join');
+    expect(scrubbed?.attributes['http.query']).toBe('[Filtered]');
+    expect(scrubbed?.attributes).not.toHaveProperty('user.email');
+    expect(scrubbed?.attributes).not.toHaveProperty('user.ip_address');
+    expect(scrubbed?.attributes).not.toHaveProperty('http.request.header.authorization');
+    expect(scrubbed?.attributes['http.response.status_code']).toBe(200);
+  });
+
+  it('re-asks the Hub for consent on a timer, so a switch flipped elsewhere reaches an idle page', async () => {
+    // Only the interval is faked, so the module import itself is not affected.
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+
+    try {
+      await import('./sentry');
+      refreshTelemetryConsent.mockClear();
+
+      vi.advanceTimersByTime(CONSENT_REFRESH_INTERVAL_MS - 1);
+      expect(refreshTelemetryConsent).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(1);
+      expect(refreshTelemetryConsent).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(CONSENT_REFRESH_INTERVAL_MS);
+      expect(refreshTelemetryConsent).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

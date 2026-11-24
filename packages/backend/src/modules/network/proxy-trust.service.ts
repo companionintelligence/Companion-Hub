@@ -5,8 +5,9 @@ import { Inject, Injectable, type OnModuleDestroy, type OnModuleInit } from '@ne
 import type Dockerode from 'dockerode';
 import { DOCKERODE } from '../docker/constants';
 import { parseIpv4Cidr } from './cidr-overlap';
-import { resolveEdgeHops } from './edge-hops';
-import { HUB_EDGE_NETWORK_NAME, TRAEFIK_CONTAINER_NAME } from './network-constants';
+import { traefikAddressOnAppSubnet } from './app-network-addresses';
+import { resolveEdgeHopAddress, resolveEdgeHops } from './edge-hops';
+import { DEFAULT_HUB_EDGE_TRAEFIK_IP, HUB_EDGE_NETWORK_NAME, TRAEFIK_CONTAINER_NAME } from './network-constants';
 
 /** How often the resolved hops are re-read from Docker. */
 const REFRESH_INTERVAL_MS = 60_000;
@@ -20,10 +21,18 @@ interface Range {
   end: number;
 }
 
+/** A fixed address on the edge network that may be trusted, by the container that holds it. */
+interface NamedHop {
+  name: string;
+  address: string;
+}
+
 /** One completed read of the hops, as handed to {@link ProxyTrustService.onResolved} listeners. */
 export interface ProxyTrustSnapshot {
   /** {@link ProxyTrustService.trustedProxyCidrs} as of this read. */
   cidrs: string[];
+  /** The edge hops an app trusts besides its own Traefik address ({@link ProxyTrustService.appTrustedProxyCidrs}). */
+  appEdgeCidrs: string[];
   /**
    * Whether this read found Traefik's address. A read that did not (Traefik being recreated, Docker
    * not answering) is a partial answer, not news that the hops changed, so nothing should be
@@ -44,7 +53,7 @@ export interface ProxyTrustSnapshot {
  * anyone could trigger). Trusting too much — a whole Docker subnet — lets any
  * container on it choose the address it appears as.
  *
- * So the trusted set is exactly two things:
+ * So the Hub's trusted set is exactly three things:
  *
  *  - the edge hops, cloudflared and the Tailscale sidecar, each as a /32 at the
  *    fixed address the compose file pins it to ({@link resolveEdgeHops}) —
@@ -53,9 +62,17 @@ export interface ProxyTrustSnapshot {
  *    `edgeHops`). Never the subnet itself: its gateway is the host's own
  *    address on the bridge, so anything the host sends or routes onto it
  *    arrives from there;
- *  - Traefik's current address on the Hub network, as a /32. Traefik is what
- *    the Hub and every app see as their peer, and its address on that network
- *    is assigned by Docker, so it is looked up rather than assumed.
+ *  - Traefik's fixed address on the edge network, checked the same way. Its
+ *    Hub login check reaches the Hub there: Traefik pins `ci-hub` to the Hub's
+ *    edge address rather than ask Docker DNS (compose `extra_hosts`);
+ *  - Traefik's current address on the Hub network, as a /32, where it reaches
+ *    the Hub's own routes. Assigned by Docker, so it is looked up rather than
+ *    assumed.
+ *
+ * An app is on none of those networks. Traefik reaches each app on the app's
+ * own network, at the fixed address {@link traefikAddressOnAppSubnet} gives,
+ * so an app is told the edge hops plus that address
+ * ({@link appTrustedProxyCidrs}).
  *
  * Re-read every minute, so a recreated Traefik is picked up without a restart.
  * Until the first read completes, nothing is trusted, which is the pre-change
@@ -69,7 +86,10 @@ export interface ProxyTrustSnapshot {
  * Hub's port or an app container directly; those reach their target through
  * the host or from a bridge address that is in neither set, so their
  * forwarded headers are ignored and the peer is named as it was before.
- * A narrower answer, never a spoofable one.
+ * A narrower answer, never a spoofable one. The one reader of the visitor's
+ * Cloudflare header on that route is the sign-in rate limit
+ * (`AuthRateLimiter.admitRequest`), which needs a key to count under, not an
+ * identity.
  *
  * Two consumers: `main.ts` hands Express a `trust proxy` function backed by
  * {@link isTrustedProxy}, and `AppHelpers.generateEnvFile` passes
@@ -78,6 +98,8 @@ export interface ProxyTrustSnapshot {
 @Injectable()
 export class ProxyTrustService implements OnModuleInit, OnModuleDestroy {
   private ranges: Range[] = [];
+  /** The edge hops an app trusts: cloudflared and the Tailscale sidecar, not Traefik's edge address. */
+  private appEdgeRanges: Range[] = [];
   private timer: NodeJS.Timeout | null = null;
   private resolving: Promise<string[]> | null = null;
   private readonly listeners = new Set<(snapshot: ProxyTrustSnapshot) => void>();
@@ -180,9 +202,20 @@ export class ProxyTrustService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  /** The hops as CIDR strings, in a stable order; empty when nothing is trusted. */
+  /** The hops the Hub trusts, as CIDR strings, in a stable order; empty when nothing is trusted. */
   trustedProxyCidrs(): string[] {
     return this.ranges.map((range) => range.cidr);
+  }
+
+  /**
+   * The hops an app on `subnet` trusts (HUB_TRUSTED_PROXY_CIDRS): the edge hops the Hub can vouch for,
+   * and Traefik's fixed address on the app's own network. Not Traefik's other addresses: they are on
+   * networks the app is not on, so nothing reaches the app from them. Without a subnet, the edge hops
+   * alone.
+   */
+  appTrustedProxyCidrs(subnet: string | null | undefined): string[] {
+    const traefik = traefikAddressOnAppSubnet(subnet);
+    return [...this.appEdgeRanges.map((range) => range.cidr), ...(traefik ? [`${traefik}/32`] : [])];
   }
 
   /** Whether `ip` is one of the trusted hops. IPv4 only; anything else is untrusted. */
@@ -215,21 +248,31 @@ export class ProxyTrustService implements OnModuleInit, OnModuleDestroy {
   private async resolve(): Promise<string[]> {
     const next: Range[] = [];
 
-    next.push(...(await this.edgeHops()));
+    const traefikEdgeHop: NamedHop = {
+      name: TRAEFIK_CONTAINER_NAME,
+      address: resolveEdgeHopAddress(process.env.HUB_EDGE_TRAEFIK_IP, DEFAULT_HUB_EDGE_TRAEFIK_IP),
+    };
+    const edge = await this.edgeHops([...resolveEdgeHops(), traefikEdgeHop]);
+    next.push(...edge);
 
     const traefik = await this.traefikAddress();
-    if (traefik) {
+    if (traefik && !next.some((range) => range.cidr === traefik.cidr)) {
       next.push(traefik);
     }
 
     const before = this.trustedProxyCidrs().join(',');
     this.ranges = next;
+    this.appEdgeRanges = edge.filter((range) => range.name !== TRAEFIK_CONTAINER_NAME);
     const after = this.trustedProxyCidrs().join(',');
     if (before !== after) {
       this.logger.info(`Trusted proxy hops: ${after || '(none)'}`);
     }
 
-    const snapshot: ProxyTrustSnapshot = { cidrs: this.trustedProxyCidrs(), traefikResolved: traefik !== null };
+    const snapshot: ProxyTrustSnapshot = {
+      cidrs: this.trustedProxyCidrs(),
+      appEdgeCidrs: this.appEdgeRanges.map((range) => range.cidr),
+      traefikResolved: traefik !== null,
+    };
     for (const listener of this.listeners) {
       try {
         listener(snapshot);
@@ -258,7 +301,7 @@ export class ProxyTrustService implements OnModuleInit, OnModuleDestroy {
    * with an override that covers a hop — would hand the address to whatever
    * joins first, so its hops are not trusted.
    */
-  private async edgeHops(): Promise<Range[]> {
+  private async edgeHops(candidates: NamedHop[]): Promise<Array<Range & { name: string }>> {
     let configs: Array<{ Subnet?: string; Gateway?: string; IPRange?: string }>;
     try {
       const info = await this.docker.getNetwork(HUB_EDGE_NETWORK_NAME).inspect();
@@ -281,8 +324,8 @@ export class ProxyTrustService implements OnModuleInit, OnModuleDestroy {
       const gateway = (config.Gateway ? parseIpv4Cidr(`${config.Gateway}/32`)?.start : undefined) ?? subnet.start + 1;
       // No range means Docker allocates from the whole subnet.
       const dynamic = (config.IPRange ? parseIpv4Cidr(config.IPRange) : null) ?? subnet;
-      const hops: Range[] = [];
-      for (const hop of resolveEdgeHops()) {
+      const hops: Array<Range & { name: string }> = [];
+      for (const hop of candidates) {
         const parsed = parseIpv4Cidr(`${hop.address}/32`);
         if (!parsed || parsed.start < subnet.start || parsed.start > subnet.end || parsed.start === gateway) {
           this.logger.warn(`Edge hop ${hop.name} at ${hop.address} is not a host address on ${subnet.normalized}; it is untrusted`);
@@ -296,7 +339,7 @@ export class ProxyTrustService implements OnModuleInit, OnModuleDestroy {
           );
           continue;
         }
-        hops.push({ cidr: parsed.normalized, start: parsed.start, end: parsed.end });
+        hops.push({ name: hop.name, cidr: parsed.normalized, start: parsed.start, end: parsed.end });
       }
       return hops;
     }

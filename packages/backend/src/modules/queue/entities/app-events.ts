@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { optionalCpuLimitSchema } from '@/common/validation/cpu-limit';
 import { optionalMemoryLimitSchema } from '@/common/validation/memory-limit';
+import { STORED_FORM_OPEN_PORT_DEFAULT, appServiceFailureSchema, hostPortMoveSchema } from '@ci-hub/common/schemas';
 import { zodAppUrn } from '@ci-hub/common/types';
 import { z } from 'zod';
 import isFQDN from 'validator/lib/isFQDN';
@@ -11,7 +12,9 @@ const queueAppFormSchema = z
     port: z.number().min(1024).max(65535).optional(),
     exposed: z.boolean().optional(),
     exposedLocal: z.boolean().optional(),
-    openPort: z.boolean().default(true),
+    // The default is shared with the settings dialog (`servedOpenPort`), which shows a stored form
+    // with no `openPort` key as this.
+    openPort: z.boolean().default(STORED_FORM_OPEN_PORT_DEFAULT),
     domain: z.string().optional(),
     isVisibleOnGuestDashboard: z.boolean().optional(),
     enableAuth: z.boolean().optional(),
@@ -22,9 +25,12 @@ const queueAppFormSchema = z
     skipEnv: z.boolean().default(false),
     skipPull: z.boolean().default(false),
     skipRun: z.boolean().default(false),
-    // Start only: let compose recreate just the services whose resolved definition changed. See
-    // `AppLifecycleService.restartRunningApps`.
+    // Start only: let compose recreate just the services whose resolved definition changed. Set by
+    // the Hub boot (`AppLifecycleService.restartRunningApps`) and the start after an update.
     onlyRecreateChanged: z.boolean().optional(),
+    // Start and Restart only: take the containers down if the app does not come up. Set when a person
+    // or a key asked for it (`AppLifecycleCommand.stopAppThatDidNotComeUp`), not for the Hub's own.
+    stopIfNotUp: z.boolean().optional(),
     cpuLimit: optionalCpuLimitSchema,
     memoryLimit: optionalMemoryLimitSchema,
     // Explicit fields for public domain selection — previously passed through catchall as unknown.
@@ -72,6 +78,8 @@ const updateAppCommandSchema = z.object({
   // Whether the app was running when the update was requested; a stopped one is updated and left stopped.
   // Defaults to true, the behaviour before the flag existed, for a message queued by an older Hub.
   wasRunning: z.boolean().optional().default(true),
+  // The app's status when the update was requested: where a cancelled update puts it back.
+  statusBeforeUpdate: z.string().optional(),
   requestId: z.uuid(),
 });
 
@@ -91,12 +99,17 @@ export const appEventResultSchema = z.object({
   errorCode: z.string().optional(),
   errorDetail: z.string().optional(),
   settingsPath: z.string().optional(),
+  // Which service kept the app from coming up, for the client to word; see `AppCameUpWatch`.
+  serviceFailure: appServiceFailureSchema.optional(),
   // Non-fatal caveat on an otherwise-successful command; does not flip `success`.
   // Semantics documented on appScopedEventSchema.warningCode (common/schemas/sse.ts).
   warningCode: z.string().optional(),
   // Optional human-readable detail for the caveat (e.g. the host path of a remnant the
   // uninstall couldn't remove, so the client can show a manual cleanup command).
   warningDetail: z.string().optional(),
+  // Set by a start, restart or install that had to move the app off a host port it could not have.
+  // Semantics documented on appScopedEventSchema.movedHostPort (common/schemas/sse.ts).
+  movedHostPort: hostPortMoveSchema.optional(),
   // Set by a command when it stopped because the operation was cancelled (vs. failed). The service's
   // completion handling branches on this to finalize a cancel rather than a success/error.
   cancelled: z.boolean().optional(),
@@ -104,6 +117,8 @@ export const appEventResultSchema = z.object({
   // the record); reserved so Phase 2-4 ops can report where they landed.
   cancelledStatus: z.string().optional(),
   // Set by a failed update: the previous version is back in place (and running again, if it was running).
+  // Set by a backup refused before it stopped the app, or a start or restart refused before it touched a
+  // container: the app is as it was.
   rolledBack: z.boolean().optional(),
 });
 

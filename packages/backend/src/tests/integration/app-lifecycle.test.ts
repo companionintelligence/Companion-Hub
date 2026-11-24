@@ -67,6 +67,11 @@ const DB_NAME = 'applifecycletest';
 function cleanTree(tree: Record<string, string | null>) {
   const newTree: Record<string, string | null> = {};
   for (const [key, value] of Object.entries(tree)) {
+    if (key.endsWith('/.ci-hub-fs-permissions')) {
+      // The permission probe caches its verdict per process, so only the first install in the file
+      // writes this, and keeping it would tie each snapshot to test order.
+      continue;
+    }
     if (value && (key.endsWith('config.json') || key.endsWith('app-data.json'))) {
       try {
         const json = JSON.parse(value);
@@ -134,12 +139,7 @@ describe('App lifecycle', () => {
   dockerService.composeApp.mockResolvedValue({ success: true, stdout: '', stderr: '' });
   dockerService.removeAppNetworks.mockResolvedValue(undefined);
   dockerService.pullImages.mockResolvedValue(undefined);
-  dockerService.waitForManagedAppContainersReady.mockResolvedValue({
-    ok: true,
-    appStatus: 'running',
-    summary: { total: 1, running: 1, exitZero: 0 },
-    message: 'All containers are running',
-  });
+  dockerService.waitForManagedAppContainersReady.mockResolvedValue({ ok: true, message: 'All containers came up' });
   // Added alongside UpdateAppCommand's post-update auto-rollback check (#1277). Left
   // unmocked, an unconfigured `mock<DockerService>()` call resolves `undefined`, and
   // `probeResult.healthy` throws — not a failed health check, a crash before the
@@ -862,7 +862,13 @@ describe('App lifecycle', () => {
       }
       expect((await appsRepository.getAppByUrn(appInfo.urn))?.customDomain).toBeNull();
 
-      await restartExposed(appInfo.urn);
+      // Dropping the domain restarts the app on the Hub's own account, as a revert must. A Restart
+      // sent by hand now would be refused while that restart holds the app, so wait for it instead.
+      await waitFor(async () => {
+        expect((await appsRepository.getAppByUrn(appInfo.urn))?.status).toBe('running');
+        expect((await readEnv(appInfo.urn)).get('APP_PUBLIC_URL')).toBe(`https://${platformHostname}`);
+        expect(exposureSyncService.isCloudflareSyncInFlight()).toBe(false);
+      });
 
       const revertedEnv = await readEnv(appInfo.urn);
       expect(revertedEnv.get('APP_PUBLIC_URL')).toBe(`https://${platformHostname}`);
@@ -988,13 +994,11 @@ describe('App lifecycle', () => {
       expect(report).toContainEqual({ domain: 'blocked.acme.com', targetHostname: platformHostname, state: 'blocked', autoRestart: false });
     });
 
-    it('names each app holding a domain by its own hostname', async () => {
+    it('reports a moved domain only for the app that currently owns it', async () => {
       /*
-       * A stopped app keeps the domain it had while another app is bound to it, so
-       * one domain can be reported twice. Keyed by domain alone, whichever entry
-       * Companion Portal wrote last decided the row — a stopped app's "picks it up
-       * when it starts" could hide the running app's pending restart. The hostname
-       * says which binding each entry is about.
+       * When Companion Portal moves the domain, reconciliation clears the previous
+       * app's binding and records the new owner. The report should therefore name
+       * only the target that currently owns the domain.
        */
       const previous = await installExposed('cdoldapp');
       await installExposed('cdnewapp');
@@ -1003,13 +1007,35 @@ describe('App lifecycle', () => {
 
       await syncReporting([{ id: 'cd_1', domain: 'moved.acme.com', targetHostname: oldHost }]);
       await appsRepository.updateAppById(await rowIdOf(previous.urn), { status: 'stopped' });
-      // Pointed at the other app while the first is stopped: it binds, and the stopped one keeps it.
+      // Pointed at the other app while the first is stopped: ownership moves to the new app.
       await syncReporting([{ id: 'cd_1', domain: 'moved.acme.com', targetHostname: newHost }]);
       await syncReporting([{ id: 'cd_1', domain: 'moved.acme.com', targetHostname: newHost }]);
 
       const report = cloudflareClientService.syncState.mock.calls.at(-1)?.[3];
-      expect(report).toContainEqual({ domain: 'moved.acme.com', targetHostname: oldHost, state: 'pending-start', autoRestart: false });
+      expect(report).not.toContainEqual(expect.objectContaining({ domain: 'moved.acme.com', targetHostname: oldHost }));
       expect(report).toContainEqual({ domain: 'moved.acme.com', targetHostname: newHost, state: 'pending-restart', autoRestart: false });
+    });
+
+    it('reports duplicate bindings against each app hostname while Portal resolves the conflict', async () => {
+      const first = await installExposed('cdduplicatefirst');
+      const second = await installExposed('cdduplicatesecond');
+      const domain = 'duplicate.acme.com';
+      const firstHost = 'cdduplicatefirst-test-core2-acme.ci.test';
+      const secondHost = 'cdduplicatesecond-test-core2-acme.ci.test';
+
+      // A transient Portal rebind can leave both stored rows holding the domain
+      // until a later reconciliation settles on one target. The report must keep
+      // the target hostname on each row so the conflict is visible and attributable.
+      await appsRepository.updateAppById(await rowIdOf(first.urn), { customDomain: domain, pendingRestart: true });
+      await appsRepository.updateAppById(await rowIdOf(second.urn), { customDomain: domain, pendingRestart: true });
+      await syncReporting([
+        { id: 'cd_1', domain, targetHostname: firstHost },
+        { id: 'cd_2', domain, targetHostname: secondHost },
+      ]);
+
+      const report = cloudflareClientService.syncState.mock.calls.at(-1)?.[3];
+      expect(report).toContainEqual(expect.objectContaining({ domain, targetHostname: firstHost }));
+      expect(report).toContainEqual(expect.objectContaining({ domain, targetHostname: secondHost }));
     });
 
     it('applies a binding the operator asked for, instead of waiting to be restarted by hand', async () => {

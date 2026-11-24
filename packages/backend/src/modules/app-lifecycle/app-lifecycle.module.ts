@@ -31,6 +31,7 @@ import { INFERENCE_ENV_REFRESHER } from '@/common/helpers/inference-env-refresh'
 import { DeviceKeyRefreshService } from './device-key-refresh.service';
 import { PairingAppRestoreService } from './pairing-app-restore.service';
 import { TrustedProxyRefreshService } from './trusted-proxy-refresh.service';
+import { OriginHostRefreshService } from './origin-host-refresh.service';
 
 @Module({
   imports: [
@@ -69,6 +70,7 @@ import { TrustedProxyRefreshService } from './trusted-proxy-refresh.service';
     DeviceKeyRefreshService,
     PairingAppRestoreService,
     TrustedProxyRefreshService,
+    OriginHostRefreshService,
   ],
   controllers: [AppLifecycleController],
   exports: [

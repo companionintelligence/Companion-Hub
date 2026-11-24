@@ -1,29 +1,28 @@
 import { spawn } from 'node:child_process';
-import { HUB_APPURN_LABEL, LEGACY_HUB_APPURN_LABEL, ipOnHubNetwork } from '@/common/constants';
+import { HUB_APPURN_LABEL, LEGACY_HUB_APPURN_LABEL } from '@/common/constants';
+import { ipOnAppNetwork } from '@/common/helpers/app-helpers';
 import { appUrnLabelSets, listContainersMatchingAnyLabelSets, managedAppLabelSets } from './hub-container-query';
 import { pLimit } from '@/common/helpers/file-helpers';
 import { withTimeout } from '@/common/helpers/with-timeout';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Inject, Injectable } from '@nestjs/common';
+import type { AppServiceFailure } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import type Dockerode from 'dockerode';
 import { DOCKERODE } from './constants';
-import {
-  managedAppStatusFromSummary,
-  summarizeManagedAppContainers,
-  type ManagedAppContainerAppStatus,
-  type ManagedAppContainerSummary,
-} from './managed-app-containers';
+import { type AppCameUpVerdict, type AppContainerLook, describeAppServiceFailure, logTailToKeep, reasonFromLogs } from './managed-app-containers';
 
 export type ManagedAppContainerVerification = {
   ok: boolean;
-  appStatus: ManagedAppContainerAppStatus;
-  summary: ManagedAppContainerSummary;
   message: string;
   errorDetail?: string;
+  serviceFailure?: AppServiceFailure;
 };
 
 const DOCKER_INSPECT_TIMEOUT_MS = 5_000;
+const LOGS_NOT_CAPTURED = '(failed to capture logs)';
+/** A failure's log tail is kept on its lifecycle job and sent with every read of the app. Log lines can be any length. */
+const MAX_FAILURE_LOG_CHARS = 2_000;
 const DOCKER_STATS_TIMEOUT_MS = 5_000;
 /** Container list states where docker stats() is skipped (crash-loops can hang indefinitely). */
 const SKIP_DOCKER_STATS_STATES = new Set(['restarting', 'created', 'dead']);
@@ -192,16 +191,16 @@ export class DockerReadFacade {
   }
 
   /**
-   * Every address a RUNNING container of any app named in `appNames` (any
-   * store) holds on any Docker network. What `AppContainerOriginGuard` compares
+   * Every address a RUNNING container of an app in `appUrns` (whole URNs, store
+   * included) holds on any Docker network. What `AppContainerOriginGuard` compares
    * a request's source address against: a container-to-container call arrives
    * from one of these, and nothing else on the appliance's networks does.
    * Read from the container list, which already carries per-network addresses,
    * so no inspect round-trip; a Docker failure yields an empty set (refuse).
    */
-  public async runningContainerAddressesForApps(appNames: readonly string[]): Promise<Set<string>> {
+  public async runningContainerAddressesForApps(appUrns: readonly string[]): Promise<Set<string>> {
     const addresses = new Set<string>();
-    if (appNames.length === 0) {
+    if (appUrns.length === 0) {
       return addresses;
     }
     let containers: Dockerode.ContainerInfo[];
@@ -218,7 +217,8 @@ export class DockerReadFacade {
     for (const container of containers) {
       const labels = container.Labels ?? {};
       const appUrn = labels[HUB_APPURN_LABEL] ?? labels[LEGACY_HUB_APPURN_LABEL];
-      if (!appUrn || !appNames.includes(appUrn.split(':')[0] ?? '')) {
+      // The whole URN, store included: the app name alone is any store's to choose.
+      if (!appUrn || !appUrns.includes(appUrn)) {
         continue;
       }
       for (const network of Object.values(container.NetworkSettings?.Networks ?? {})) {
@@ -231,6 +231,51 @@ export class DockerReadFacade {
     return addresses;
   }
 
+  /**
+   * The address a running container of the app's compose `service` holds on the app's own network, the
+   * one the Hub, Traefik and the VPN sidecar reach it on. Null when no such container runs or it isn't
+   * on that network (host networking, `network_mode: service:…`). Throws when Docker fails or takes
+   * longer than {@link DOCKER_INSPECT_TIMEOUT_MS}.
+   *
+   * This, not the service's name, is how the Hub reaches an app's service. The Hub is on every app's
+   * network, and Docker answers a name from whichever network claims it first, so any other app could
+   * answer for `gateway` or `api` (see "App networks" in docs/system/backend.md). The address is
+   * read from the container this app's compose project owns, on the network named for this app.
+   */
+  public async getServiceAddressOnAppNetwork(appUrn: AppUrn, service: string): Promise<string | null> {
+    const containers = await withTimeout(
+      listContainersMatchingAnyLabelSets(this.docker, appUrnLabelSets(appUrn, [`com.docker.compose.service=${service}`]), false),
+      DOCKER_INSPECT_TIMEOUT_MS,
+      `Docker container listing timed out for ${appUrn}`,
+    );
+    for (const container of containers) {
+      const address = container.State === 'running' ? ipOnAppNetwork(appUrn, container.NetworkSettings?.Networks) : undefined;
+      if (address) {
+        return address;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * The names of the containers to restart for the app's web route: those carrying it, stopped ones
+   * included, then the ones sharing their network namespace. `docker restart` gives a container a new
+   * namespace and a `network_mode: service:<routed>` sibling keeps the old one and has no network
+   * until it restarts too. `downOnly` leaves out a routed container that is running, with its siblings.
+   */
+  public async getRoutedContainerNames(appUrn: AppUrn, { downOnly = false }: { downOnly?: boolean } = {}): Promise<string[]> {
+    const containers = await withTimeout(
+      listContainersMatchingAnyLabelSets(this.docker, appUrnLabelSets(appUrn)),
+      DOCKER_INSPECT_TIMEOUT_MS,
+      `Docker container listing timed out for ${appUrn}`,
+    );
+    const routed = containers.filter((container) => container.Labels?.['traefik.enable'] === 'true' && !(downOnly && container.State === 'running'));
+    const sharing = containers.filter(
+      (container) => !routed.includes(container) && routed.some((owner) => container.HostConfig?.NetworkMode === `container:${owner.Id}`),
+    );
+    return [...routed, ...sharing].flatMap((container) => container.Names?.[0]?.replace(/^\//, '') || []);
+  }
+
   public async getAppNetworkTarget(appUrn: AppUrn): Promise<AppNetworkTarget | null> {
     const containers = await listContainersMatchingAnyLabelSets(this.docker, appUrnLabelSets(appUrn, ['traefik.enable=true']), false);
 
@@ -240,7 +285,7 @@ export class DockerReadFacade {
         limit(async () => {
           const inspect = await this.docker.getContainer(containerInfo.Id).inspect();
           const labels = inspect.Config?.Labels || {};
-          const containerIP = ipOnHubNetwork(inspect.NetworkSettings?.Networks);
+          const containerIP = ipOnAppNetwork(appUrn, inspect.NetworkSettings?.Networks);
 
           if (!containerIP) {
             return null;
@@ -273,6 +318,54 @@ export class DockerReadFacade {
     );
 
     return targets.find((target): target is AppNetworkTarget => target !== null) ?? null;
+  }
+
+  /**
+   * The text of `filePath` inside the app's running container that mounts `mountPoint`, or null when
+   * no running container of the app mounts it or the file isn't there.
+   *
+   * Read through Docker's archive API, the one `docker cp` uses, so it finds the same file whether
+   * `mountPoint` is a bind mount of the app-data folder or a named volume. Where that folder can't
+   * hold POSIX permissions, the Hub mounts `requiresPosixPermissions` binds as named volumes (see
+   * "App volumes" in docs/system/backend.md), and the Hub can't see those files on its own disk.
+   * Throws when Docker fails, when the listing or the archive read each takes longer than
+   * {@link DOCKER_INSPECT_TIMEOUT_MS}, or when Docker sends back something other than a whole file.
+   */
+  public async readRunningAppFile(appUrn: AppUrn, mountPoint: string, filePath: string): Promise<string | null> {
+    const containers = await withTimeout(
+      listContainersMatchingAnyLabelSets(this.docker, appUrnLabelSets(appUrn), false),
+      DOCKER_INSPECT_TIMEOUT_MS,
+      `Docker container listing timed out for ${appUrn}`,
+    );
+    const container = containers.find((info) => info.Mounts?.some((mount) => mount.Destination === mountPoint));
+    if (!container) {
+      return null;
+    }
+
+    const chunks: Buffer[] = [];
+    const deadline = AbortSignal.timeout(DOCKER_INSPECT_TIMEOUT_MS);
+    try {
+      const archive = await this.docker.getContainer(container.Id).getArchive({ path: filePath, abortSignal: deadline });
+      for await (const chunk of archive) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+    } catch (error) {
+      // The container was running a moment ago, so a 404 means the file isn't there (or the container just went away).
+      if ((error as { statusCode?: number } | null)?.statusCode === 404) {
+        return null;
+      }
+      // An abort surfaces as a bare "aborted" or "The operation was aborted", which doesn't say it was the deadline.
+      if (deadline.aborted) {
+        throw new Error(`Docker archive read of ${filePath} timed out for ${appUrn}`);
+      }
+      throw error;
+    }
+
+    const file = firstFileInTar(Buffer.concat(chunks));
+    if (!file) {
+      throw new Error(`Docker's archive of ${filePath} held no complete regular file`);
+    }
+    return file.toString('utf-8');
   }
 
   /**
@@ -338,46 +431,83 @@ export class DockerReadFacade {
   }
 
   /**
-   * Verify Hub-labeled containers exist and match the same running/stopped/missing
-   * rules used by app status sync (ci-hub.managed + ci-hub.appurn labels, plus the retired ci-os-hub spellings).
+   * One look at an app's Hub-labelled containers (`ci-hub.managed` + `ci-hub.appurn`, plus the retired
+   * `ci-os-hub` spellings). The list says what a container is doing now; inspecting it adds what the
+   * list leaves out, its restart count and when it last started. A container that could not be
+   * inspected, because it was just removed or Docker is slow, counts by what the list said.
    */
-  public async getManagedAppContainerVerification(appUrn: AppUrn): Promise<ManagedAppContainerVerification> {
-    const containers = await listContainersMatchingAnyLabelSets(this.docker, managedAppLabelSets(appUrn));
+  public async lookAtManagedAppContainers(appUrn: AppUrn): Promise<AppContainerLook[]> {
+    // Bounded like the inspects below: the wait for an app to come up holds the app's lock.
+    const containers = await withTimeout(
+      listContainersMatchingAnyLabelSets(this.docker, managedAppLabelSets(appUrn)),
+      DOCKER_INSPECT_TIMEOUT_MS,
+      `Docker did not list the containers of ${appUrn} in time`,
+    );
 
-    const summary = summarizeManagedAppContainers(containers);
-    const appStatus = managedAppStatusFromSummary(summary);
+    return Promise.all(
+      containers.map(async (container) => {
+        const inspect = await withTimeout(
+          this.docker.getContainer(container.Id).inspect(),
+          DOCKER_INSPECT_TIMEOUT_MS,
+          `Docker did not inspect ${container.Id} in time`,
+        ).catch(() => null);
+        const containerName = (inspect?.Name ?? container.Names?.[0] ?? container.Id).replace(/^\//, '');
+        const startedAtMs = inspect?.State?.StartedAt ? Date.parse(inspect.State.StartedAt) : Number.NaN;
+        const exitFromList = container.Status?.match(/\((-?\d+)\)/)?.[1];
 
-    if (appStatus === 'running') {
-      return {
-        ok: true,
-        appStatus,
-        summary,
-        message: 'All containers are running',
-      };
-    }
+        return {
+          id: container.Id,
+          service: container.Labels?.['com.docker.compose.service'] ?? containerName,
+          containerName,
+          state: inspect?.State?.Status ?? container.State,
+          exitCode: inspect?.State?.ExitCode ?? (exitFromList === undefined ? null : Number(exitFromList)),
+          restartCount: inspect?.RestartCount ?? null,
+          // Docker's zero time, for a container that never started, is not a start.
+          startedAtMs: startedAtMs > 0 ? startedAtMs : null,
+          health: inspect?.State?.Health?.Status ?? null,
+        };
+      }),
+    );
+  }
 
-    const diagResults = appStatus === 'missing' ? { unhealthy: [], healthy: [] } : await this.diagnoseAppContainers(appUrn);
-    const logSummary =
-      diagResults.unhealthy.length > 0
-        ? diagResults.unhealthy.map((container) => `${container.name} (${container.state}): ${container.logs}`).join('\n')
-        : undefined;
-
-    if (appStatus === 'missing') {
+  /** What to tell the person when {@link AppCameUpWatch} says an app did not come up: which service and why. */
+  public async describeAppCameUpFailure(verdict: Extract<AppCameUpVerdict, { outcome: 'failed' }>): Promise<ManagedAppContainerVerification> {
+    const [first] = verdict.containers;
+    if (!first) {
+      const serviceFailure: AppServiceFailure = { kind: 'none_running' };
       return {
         ok: false,
-        appStatus,
-        summary,
-        message: 'Install finished but no Hub-managed containers were found. The app may have failed to start.',
-        errorDetail: logSummary,
+        message: describeAppServiceFailure(serviceFailure),
+        errorDetail: verdict.containersSeen === 0 ? 'Compose finished but no Hub-managed containers were found.' : undefined,
+        serviceFailure,
       };
     }
+
+    const logs = await Promise.all(
+      verdict.containers.map((container) =>
+        withTimeout(this.tailContainerLogs(container.containerName, 20), DOCKER_INSPECT_TIMEOUT_MS, 'Docker did not return the logs in time').catch(
+          () => '',
+        ),
+      ),
+    );
+    const serviceFailure: AppServiceFailure = {
+      kind: verdict.kind,
+      service: first.service,
+      others: verdict.containers.length > 1 ? verdict.containers.length - 1 : undefined,
+      exitCode: first.exitCode ?? undefined,
+      logLine: logs[0] === LOGS_NOT_CAPTURED ? undefined : reasonFromLogs(logs[0] ?? ''),
+    };
 
     return {
       ok: false,
-      appStatus,
-      summary,
-      message: 'One or more containers exited after install.',
-      errorDetail: logSummary,
+      message: describeAppServiceFailure(serviceFailure),
+      errorDetail: verdict.containers
+        .map(
+          (container, index) =>
+            `${container.containerName} (${container.state}, exit ${container.exitCode ?? '?'}): ${logTailToKeep(logs[index] ?? '', MAX_FAILURE_LOG_CHARS)}`,
+        )
+        .join('\n'),
+      serviceFailure,
     };
   }
 
@@ -424,7 +554,9 @@ export class DockerReadFacade {
         const [containerName, status] = line.split('|');
         if (!containerName || !status) continue;
 
-        const isUnhealthy = status.includes('Restarting') || status.includes('Exited') || status.includes('Created') || status.includes('Dead');
+        // A clean exit is a finished one-shot job (migrate, setup, admin-sync), not a failure.
+        const exitedWithError = /Exited \((?!0\))/.test(status);
+        const isUnhealthy = status.includes('Restarting') || exitedWithError || status.includes('Created') || status.includes('Dead');
 
         if (isUnhealthy) {
           // Capture last 20 lines of logs
@@ -449,8 +581,9 @@ export class DockerReadFacade {
 
   /**
    * Last `lines` lines of a container's combined stdout/stderr, or a short marker when they could
-   * not be read. Never throws — every caller is a diagnostic path where a missing log tail must not
-   * become the failure being diagnosed.
+   * not be read, as for a `dead` container or a logging driver that cannot be read back: what the
+   * CLI prints then is its own error, not the container's log. Never throws, since every caller is a
+   * diagnostic path where a missing log tail must not become the failure being diagnosed.
    *
    * Shells out rather than using Dockerode's `logs()` because a non-TTY container's log stream is
    * multiplexed with 8-byte frame headers that would need demultiplexing before the text is
@@ -464,11 +597,11 @@ export class DockerReadFacade {
         const chunks: string[] = [];
         logCmd.stdout.on('data', (data: Buffer) => chunks.push(String(data)));
         logCmd.stderr.on('data', (data: Buffer) => chunks.push(String(data)));
-        logCmd.on('close', () => resolve(chunks.join('').trim()));
-        logCmd.on('error', () => resolve('(failed to capture logs)'));
+        logCmd.on('close', (code) => resolve(code === 0 ? chunks.join('').trim() : LOGS_NOT_CAPTURED));
+        logCmd.on('error', () => resolve(LOGS_NOT_CAPTURED));
       });
     } catch {
-      return '(failed to capture logs)';
+      return LOGS_NOT_CAPTURED;
     }
   }
 
@@ -665,6 +798,30 @@ function toSupervisionContainerInspection(
     labels,
     inHubComposeProject: labels['com.docker.compose.project'] === composeProject,
   };
+}
+
+/** Tar entry types that describe the next entry instead of being one: PAX extended headers and GNU long names. */
+const TAR_METADATA_TYPES = new Set(['x', 'g', 'L', 'K']);
+
+/**
+ * The data of the first entry in a tar archive when it is a regular file, else null. For one file
+ * Docker's archive API sends a ustar header block, then the data padded to 512 bytes, then zero
+ * blocks. It writes PAX format, so an extended header can come first; that entry is skipped.
+ */
+function firstFileInTar(archive: Buffer): Buffer | null {
+  let offset = 0;
+  while (offset + 512 <= archive.length && archive[offset] !== 0) {
+    const size = Number.parseInt(archive.toString('ascii', offset + 124, offset + 136), 8) || 0;
+    const type = String.fromCharCode(archive[offset + 156] ?? 0);
+    if (type === '0' || type === '\0') {
+      return offset + 512 + size <= archive.length ? archive.subarray(offset + 512, offset + 512 + size) : null;
+    }
+    if (!TAR_METADATA_TYPES.has(type)) {
+      return null;
+    }
+    offset += 512 + Math.ceil(size / 512) * 512;
+  }
+  return null;
 }
 
 /**

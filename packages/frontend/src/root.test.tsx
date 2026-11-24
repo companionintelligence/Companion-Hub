@@ -67,7 +67,7 @@ vi.mock('./api-client/client.gen', () => ({
   },
 }));
 
-const { clientLoader, ErrorBoundary, shouldRevalidate } = await import('./root');
+const { clientLoader, ErrorBoundary, shouldRevalidate, shouldStartBootstrapRevalidation, ROOT_BOOTSTRAP_RUN_LIMIT_MS } = await import('./root');
 import { cacheRegistrationStatus } from './lib/registration-cache';
 import { resetMobileClientCacheForTests } from './lib/mobile-connection';
 
@@ -139,7 +139,7 @@ describe('root clientLoader registration gating', () => {
     expect(result.headers.get('Location')).toBe('/login');
   });
 
-  it('sends an unconfigured registered Hub to first-user registration', async () => {
+  it('sends a paired Hub with no admin yet to sign-in, not to sign-up (#2061)', async () => {
     resolveRegistrationStatus.mockResolvedValue(makeStatus('locally_ready', true));
     userContext.mockResolvedValue({
       data: {
@@ -152,7 +152,42 @@ describe('root clientLoader registration gating', () => {
     const result = (await clientLoader({ request: new Request('http://localhost/') } as never)) as Response;
 
     expect(result.status).toBe(302);
-    expect(result.headers.get('Location')).toBe('/register');
+    expect(result.headers.get('Location')).toBe('/login');
+  });
+
+  // The memory-connect callback lands here when a connect failed after another person's
+  // connection was revoked for it. The dashboard can only say so if the marker survives this hop.
+  it('carries the memory-connect results it knows on to /home, and nothing else', async () => {
+    resolveRegistrationStatus.mockResolvedValue(makeStatus('locally_ready', true));
+    userContext.mockResolvedValue({ data: { isConfigured: true, isLoggedIn: true, isGuestDashboardEnabled: false } });
+
+    const removed = (await clientLoader({ request: new Request('http://localhost/?memoryConnect=previous_removed') } as never)) as Response;
+    const junk = (await clientLoader({ request: new Request('http://localhost/?memoryConnect=%3Cscript%3E') } as never)) as Response;
+    const inherited = (await clientLoader({ request: new Request('http://localhost/?memoryConnect=constructor') } as never)) as Response;
+
+    expect(removed.headers.get('Location')).toBe('/home?memoryConnect=previous_removed');
+
+    // `busy` names its app, which goes along when it looks like an app id.
+    const busy = (await clientLoader({
+      request: new Request('http://localhost/?memoryConnect=busy&app=plane%3Aci-marketplace'),
+    } as never)) as Response;
+    const busyJunk = (await clientLoader({ request: new Request('http://localhost/?memoryConnect=busy&app=%3Cscript%3E') } as never)) as Response;
+    expect(busy.headers.get('Location')).toBe('/home?memoryConnect=busy&app=plane%3Aci-marketplace');
+    expect(busyJunk.headers.get('Location')).toBe('/home?memoryConnect=busy');
+    expect(junk.headers.get('Location')).toBe('/home');
+    expect(inherited.headers.get('Location')).toBe('/home');
+  });
+
+  // A refused browser handoff lands at `/?handoff=failed`; the dashboard's toast needs it past this hop.
+  it('carries a refused browser handoff on to /home, and no other handoff value', async () => {
+    resolveRegistrationStatus.mockResolvedValue(makeStatus('locally_ready', true));
+    userContext.mockResolvedValue({ data: { isConfigured: true, isLoggedIn: true, isGuestDashboardEnabled: false } });
+
+    const failed = (await clientLoader({ request: new Request('http://localhost/?handoff=failed') } as never)) as Response;
+    const junk = (await clientLoader({ request: new Request('http://localhost/?handoff=%3Cscript%3E') } as never)) as Response;
+
+    expect(failed.headers.get('Location')).toBe('/home?handoff=failed');
+    expect(junk.headers.get('Location')).toBe('/home');
   });
 
   it('keeps a Mac / desktop client on the normal Hub path and never sends it to /connect', async () => {
@@ -372,6 +407,36 @@ describe('root shouldRevalidate', () => {
     ).toBe(false);
   });
 
+  it('still runs the root loader for a revalidation at / once a run there has marked bootstrap warm', async () => {
+    userContext.mockResolvedValue({
+      data: {
+        isConfigured: true,
+        isLoggedIn: true,
+        isGuestDashboardEnabled: false,
+      },
+    });
+
+    // This run returns its redirect to /home. When a newer revalidation cancels that redirect, the page
+    // is still at `/` with nothing to show. Only the root loader can send it on.
+    await clientLoader({ request: new Request('http://localhost/') } as never);
+
+    // The run did mark bootstrap warm: a warm navigation elsewhere skips the root loader.
+    expect(
+      shouldRevalidate({
+        currentUrl: new URL('http://localhost/store'),
+        nextUrl: new URL('http://localhost/settings'),
+        defaultShouldRevalidate: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRevalidate({
+        currentUrl: new URL('http://localhost/'),
+        nextUrl: new URL('http://localhost/'),
+        defaultShouldRevalidate: true,
+      }),
+    ).toBe(true);
+  });
+
   it('revalidates when navigating to login', async () => {
     userContext.mockResolvedValue({
       data: {
@@ -562,5 +627,17 @@ describe('root response interceptor 401 handling', () => {
     await expect(responseInterceptor(errorResponse(url))).rejects.toThrow();
 
     expect(handleSessionExpired).not.toHaveBeenCalled();
+  });
+});
+
+describe('root shouldStartBootstrapRevalidation', () => {
+  it('starts one when no loader run is in flight', () => {
+    expect(shouldStartBootstrapRevalidation(null, 10_000)).toBe(true);
+  });
+
+  it('leaves a run in flight alone until it has outlived any real run', () => {
+    expect(shouldStartBootstrapRevalidation(10_000, 10_000 + 1_500)).toBe(false);
+    expect(shouldStartBootstrapRevalidation(10_000, 10_000 + ROOT_BOOTSTRAP_RUN_LIMIT_MS - 1)).toBe(false);
+    expect(shouldStartBootstrapRevalidation(10_000, 10_000 + ROOT_BOOTSTRAP_RUN_LIMIT_MS)).toBe(true);
   });
 });

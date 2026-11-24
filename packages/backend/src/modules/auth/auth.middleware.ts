@@ -1,10 +1,10 @@
 import { timingSafeEqual } from 'node:crypto';
-import { SESSION_COOKIE_NAME } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { withTransientDbRetry } from '@/core/database/transient-db-retry';
 import { isTransientDbError } from '@/modules/api-keys/api-key.errors';
 import { ApiKeyService, isHubApiKeyShaped } from '@/modules/api-keys/api-key.service';
 import { PORTAL_SCOPE, QA_READ_SCOPE } from '@/modules/api-keys/api-key.scopes';
+import { RegistrationService } from '@/modules/registration/registration.service';
 import { Injectable, type NestMiddleware, ServiceUnavailableException } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';
 import jsonwebtoken from 'jsonwebtoken';
@@ -13,6 +13,7 @@ import { UserRepository } from '../user/user.repository';
 import { SESSION_TTL_SECONDS, SessionManager } from './session.manager';
 import { SessionUserCache } from '@/core/cache/session-user.cache';
 import { OBSERVABILITY_READ_METHODS } from './observability-read.guard';
+import { openSessionToken } from './session-token';
 
 /**
  * Constant-time secret comparison, length-safe.
@@ -41,17 +42,28 @@ function addSessionId(ids: string[], seen: Set<string>, value: unknown) {
   ids.push(value);
 }
 
+/** The live-update streams, whose `EventSource` cannot send a header. `originalUrl`, as above. */
+function isSseRoute(req: Request): boolean {
+  const path = (req.originalUrl ?? req.url ?? '').split('?')[0] ?? '';
+  return path.startsWith('/api/sse/');
+}
+
 /**
- * Session ids the client presented. Preference among *valid* ids is the newest
- * expiry (see `AuthMiddleware`): a stale `ci-hub-sid` must not hide a live
- * `X-CI-Hub-Session` from the login response body.
+ * Session ids the client presented, each opened from a signed session token (`session-token.ts`).
+ *
+ * ⚠ NOT THE COOKIE. `ci-hub-sid` reaches every port on the Hub's host — every app the operator opens
+ * there — so it is never read here, and a bare id copied out of it opens nothing. The token comes from
+ * `X-CI-Hub-Session`, which only the Hub page sets, and on a live-update stream alone from
+ * `?session_id=`, because `EventSource` cannot send a header. Preference among *valid* ids is the
+ * newest expiry (see `AuthMiddleware`).
  */
-export function sessionIdsFromRequest(req: Request): string[] {
+export function sessionIdsFromRequest(req: Request, jwtSecret: string | undefined): string[] {
   const ids: string[] = [];
   const seen = new Set<string>();
-  addSessionId(ids, seen, req.cookies?.[SESSION_COOKIE_NAME]);
-  addSessionId(ids, seen, typeof req.get === 'function' ? req.get('x-ci-hub-session') : undefined);
-  addSessionId(ids, seen, req.query?.session_id);
+  addSessionId(ids, seen, openSessionToken(typeof req.get === 'function' ? req.get('x-ci-hub-session') : undefined, jwtSecret));
+  if (isSseRoute(req)) {
+    addSessionId(ids, seen, openSessionToken(req.query?.session_id, jwtSecret));
+  }
   return ids;
 }
 
@@ -157,6 +169,8 @@ export class AuthMiddleware implements NestMiddleware {
     // ApiKeyModule, and if that ever stops resolving the Hub should fail to boot rather than start
     // answering every `qa:read` key 401 with nothing in the log to say why.
     private readonly apiKeys?: ApiKeyService,
+    // Appended and optional the same way. Without it the Portal device key authenticates nothing.
+    private readonly registration?: RegistrationService,
   ) {}
 
   /**
@@ -234,7 +248,7 @@ export class AuthMiddleware implements NestMiddleware {
   async use(req: Request, _: Response, next: NextFunction) {
     const bearerToken = req.headers.authorization;
 
-    const presentedIds = sessionIdsFromRequest(req);
+    const presentedIds = sessionIdsFromRequest(req, this.config.get('jwtSecret'));
     const preferredSessionId = pickNewestSessionId(presentedIds, this.sessionManager);
     const orderedIds = preferredSessionId ? [preferredSessionId, ...presentedIds.filter((id) => id !== preferredSessionId)] : presentedIds;
 
@@ -315,8 +329,18 @@ export class AuthMiddleware implements NestMiddleware {
       // compromised Memory container a Hub operator (2026-09-24 audit). The window closes on each
       // Hub the first time its Portal answers a check-in with the push key's fingerprint, and a
       // Portal that predates the exchange keeps the old contract until it is updated.
+      //
+      // And only while the Hub holds a registration. A registration reset forgets the delivery but
+      // keeps the key, which the next pairing sends to Portal as proof that this is the same device.
+      // Nothing calls this API with it meanwhile: Portal pushes come through the tunnel the reset
+      // stopped. The registration is read from the database, so a restart does not bring the key back.
       const ciHubApiKey = this.config.get('ciHubApiKey');
-      if (ciHubApiKey && !this.config.get('portalPushKeyDeliveredAt') && secretEquals(token, ciHubApiKey)) {
+      if (
+        ciHubApiKey &&
+        !this.config.get('portalPushKeyDeliveredAt') &&
+        secretEquals(token, ciHubApiKey) &&
+        (await this.registration?.holdsRegistration()) === true
+      ) {
         await this.attachFirstOperator(req, 'portal-device');
         return next();
       }

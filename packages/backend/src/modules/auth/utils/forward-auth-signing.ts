@@ -29,6 +29,13 @@ import crypto from 'node:crypto';
  * three original headers are unchanged, so a consumer that only knows them verifies exactly what
  * it always did. See CI-Engineering architecture/identity/hub-memory-account-link.md.
  *
+ * `X-CI-Hub-User-AID`, `X-CI-Hub-AID` and `X-CI-Hub-KEL-Digest` are reserved names. The Hub does not
+ * set them and no signature covers them. On a route that uses the `ci-hub` forward-auth middleware,
+ * with the current `authResponseHeaders` list, Traefik deletes a visitor's own copy of each, so an app
+ * behind it does not receive a value (not exercised against a running Traefik). An app must still
+ * ignore these names. A value may be introduced only from a persisted key event log, and only
+ * together with a signature over it.
+ *
  * Neither message names the app it was signed for, so a consumer can only tell its own headers
  * from another app's by the key. An app that has a key of its own therefore also gets a bound
  * assertion, `X-CI-Hub-User-Assertion: 2.<nonce>.<signature>`, signed with that key over
@@ -48,6 +55,10 @@ export const FORWARD_AUTH_USER_ISSUER_HEADER = 'X-CI-Hub-User-Issuer';
 export const FORWARD_AUTH_USER_ID_HEADER = 'X-CI-Hub-User-Id';
 export const FORWARD_AUTH_USER_ID_SIGNATURE_HEADER = 'X-CI-Hub-User-Id-Signature';
 export const FORWARD_AUTH_ASSERTION_HEADER = 'X-CI-Hub-User-Assertion';
+// The next three names are reserved: the Hub never sets them (see the note at the top of this file).
+export const FORWARD_AUTH_USER_AID_HEADER = 'X-CI-Hub-User-AID';
+export const FORWARD_AUTH_HUB_AID_HEADER = 'X-CI-Hub-AID';
+export const FORWARD_AUTH_KEL_DIGEST_HEADER = 'X-CI-Hub-KEL-Digest';
 
 /** The bound assertion's format version, the first field of its header. */
 export const FORWARD_AUTH_ASSERTION_VERSION = '2';
@@ -61,6 +72,12 @@ export interface ForwardAuthStableId {
   issuer: string;
   /** The person's `user.public_id`. */
   userId: string;
+  /** Reserved: the Hub never populates it. A value must come from a persisted key event log, never from hashing a label. */
+  userAid?: string;
+  /** Reserved: the Hub never populates it. A value must come from a persisted key event log, never from hashing a label. */
+  hubAid?: string;
+  /** Reserved: the Hub never populates it. A value must come from a persisted key event log. */
+  kelDigest?: string;
 }
 
 export interface SignedForwardAuthHeaders {
@@ -70,6 +87,9 @@ export interface SignedForwardAuthHeaders {
   [FORWARD_AUTH_USER_ISSUER_HEADER]?: string;
   [FORWARD_AUTH_USER_ID_HEADER]?: string;
   [FORWARD_AUTH_USER_ID_SIGNATURE_HEADER]?: string;
+  [FORWARD_AUTH_USER_AID_HEADER]?: string;
+  [FORWARD_AUTH_HUB_AID_HEADER]?: string;
+  [FORWARD_AUTH_KEL_DIGEST_HEADER]?: string;
 }
 
 /** Everything forward auth may answer with. Only the username is always present. */
@@ -81,6 +101,9 @@ export interface ForwardAuthIdentityHeaders {
   [FORWARD_AUTH_USER_ID_HEADER]?: string;
   [FORWARD_AUTH_USER_ID_SIGNATURE_HEADER]?: string;
   [FORWARD_AUTH_ASSERTION_HEADER]?: string;
+  [FORWARD_AUTH_USER_AID_HEADER]?: string;
+  [FORWARD_AUTH_HUB_AID_HEADER]?: string;
+  [FORWARD_AUTH_KEL_DIGEST_HEADER]?: string;
 }
 
 /** The keys forward auth may sign one app's headers with. */
@@ -147,6 +170,15 @@ export function buildSignedForwardAuthHeaders(
     headers[FORWARD_AUTH_USER_ISSUER_HEADER] = stableId.issuer;
     headers[FORWARD_AUTH_USER_ID_HEADER] = stableId.userId;
     headers[FORWARD_AUTH_USER_ID_SIGNATURE_HEADER] = signForwardAuthUserId(secret, stableId.issuer, stableId.userId, username, now);
+    if (stableId.userAid) {
+      headers[FORWARD_AUTH_USER_AID_HEADER] = stableId.userAid;
+    }
+    if (stableId.hubAid) {
+      headers[FORWARD_AUTH_HUB_AID_HEADER] = stableId.hubAid;
+    }
+    if (stableId.kelDigest) {
+      headers[FORWARD_AUTH_KEL_DIGEST_HEADER] = stableId.kelDigest;
+    }
   }
 
   return headers;
@@ -211,6 +243,15 @@ export function buildForwardAuthIdentityHeaders(
     if (stableId) {
       headers[FORWARD_AUTH_USER_ISSUER_HEADER] = stableId.issuer;
       headers[FORWARD_AUTH_USER_ID_HEADER] = stableId.userId;
+      if (stableId.userAid) {
+        headers[FORWARD_AUTH_USER_AID_HEADER] = stableId.userAid;
+      }
+      if (stableId.hubAid) {
+        headers[FORWARD_AUTH_HUB_AID_HEADER] = stableId.hubAid;
+      }
+      if (stableId.kelDigest) {
+        headers[FORWARD_AUTH_KEL_DIGEST_HEADER] = stableId.kelDigest;
+      }
     }
     const signature = signForwardAuthAssertion(
       keys.assertion.secret,
@@ -255,6 +296,9 @@ export function verifyForwardAuthHeaders(
     issuer?: string | null;
     userId?: string | null;
     userIdSignature?: string | null;
+    userAid?: string | null;
+    hubAid?: string | null;
+    kelDigest?: string | null;
   },
   opts: { now?: number; maxSkewMs?: number } = {},
 ): ForwardAuthVerifyResult {
@@ -296,5 +340,16 @@ export function verifyForwardAuthHeaders(
     return { ok: false, reason: 'bad_signature' };
   }
 
-  return { ok: true, username, stableId: { issuer, userId } };
+  const { userAid, hubAid, kelDigest } = headers;
+  return {
+    ok: true,
+    username,
+    stableId: {
+      issuer,
+      userId,
+      ...(userAid ? { userAid } : {}),
+      ...(hubAid ? { hubAid } : {}),
+      ...(kelDigest ? { kelDigest } : {}),
+    },
+  };
 }

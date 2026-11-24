@@ -1,19 +1,23 @@
 import { render, screen, userEvent } from '@/tests/test-utils';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, type ReactNode } from 'react';
-import { MemoryRouter, useLocation } from 'react-router';
+import { MemoryRouter, useLocation, useNavigate } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { isStackUpdatePending, markStackUpdatePending, subscribeStackUpdate } from '@/lib/desktop-stack-session';
 import { SSEProvider } from './sse-provider';
 
-const { mockUseSSE, mockHandleAppSseEvent, mockToastWarning, mockToastError, mockToastDismiss, mockToastSuccess } = vi.hoisted(() => ({
-  mockUseSSE: vi.fn(),
-  mockHandleAppSseEvent: vi.fn(),
-  mockToastWarning: vi.fn(),
-  mockToastError: vi.fn(),
-  mockToastDismiss: vi.fn(),
-  mockToastSuccess: vi.fn(),
-}));
+const { appNameCache } = vi.hoisted(() => ({ appNameCache: { dropped: false } }));
+
+const { mockUseSSE, mockHandleAppSseEvent, mockInvalidateAppRecords, mockToastWarning, mockToastError, mockToastDismiss, mockToastSuccess } =
+  vi.hoisted(() => ({
+    mockUseSSE: vi.fn(),
+    mockHandleAppSseEvent: vi.fn(),
+    mockInvalidateAppRecords: vi.fn(),
+    mockToastWarning: vi.fn(),
+    mockToastError: vi.fn(),
+    mockToastDismiss: vi.fn(),
+    mockToastSuccess: vi.fn(),
+  }));
 
 vi.mock('@/lib/hooks/use-sse', () => ({
   useSSE: (...args: unknown[]) => mockUseSSE(...args),
@@ -21,6 +25,10 @@ vi.mock('@/lib/hooks/use-sse', () => ({
 
 vi.mock('@/modules/app/helpers/app-sse-cache', () => ({
   handleAppSseEvent: (...args: unknown[]) => mockHandleAppSseEvent(...args),
+  invalidateAppRecords: (...args: unknown[]) => mockInvalidateAppRecords(...args),
+  // The page's name for the app, as the cache would give it, until an event has taken it out.
+  cachedAppName: (_queryClient: unknown, appUrn: string, fallback: string) =>
+    appUrn === 'uptime-kuma:ci-marketplace' && !appNameCache.dropped ? 'Uptime Kuma' : fallback,
 }));
 
 vi.mock('sonner', () => ({
@@ -35,6 +43,7 @@ vi.mock('sonner', () => ({
 describe('SSEProvider', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    appNameCache.dropped = false;
   });
 
   it('links install failure to the logs tab', async () => {
@@ -77,6 +86,92 @@ describe('SSEProvider', () => {
     expect(mockToastDismiss).toHaveBeenCalledWith('install-error-toast');
   });
 
+  it.each([
+    ['start_error', 'kvm_missing', 'This app needs hardware virtualization (KVM). It is not available on this machine.'],
+    ['install_error', 'kvm_missing', 'This app needs hardware virtualization (KVM). It is not available on this machine.'],
+    ['restart_error', 'kvm_missing', 'This app needs hardware virtualization (KVM). It is not available on this machine.'],
+    ['start_error', 'kata_runtime_missing', "This app needs the Kata container runtime. It isn't set up in Docker on this machine."],
+    ['install_error', 'kata_runtime_missing', "This app needs the Kata container runtime. It isn't set up in Docker on this machine."],
+    ['restart_error', 'kata_runtime_missing', "This app needs the Kata container runtime. It isn't set up in Docker on this machine."],
+  ])('%s with %s says what the machine lacks', (event, errorCode, message) => {
+    let onEvent: ((data: unknown) => void) | undefined;
+    mockUseSSE.mockImplementation((config: { onEvent: (data: unknown) => void }) => {
+      onEvent = config.onEvent;
+    });
+
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter>
+          <SSEProvider>
+            <div>child</div>
+          </SSEProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    act(() => {
+      onEvent?.({ event, appUrn: 'kata-test:_user', errorCode });
+    });
+
+    expect(mockToastError).toHaveBeenCalledExactlyOnceWith(message);
+  });
+
+  // CI-Hub#2376: only an install named these. A start or restart refused for them said "see logs".
+  describe.each(['install_error', 'start_error', 'restart_error'])('%s refused by a check the Hub can name', (event) => {
+    const renderProvider = () => {
+      let onEvent: ((data: unknown) => void) | undefined;
+      mockUseSSE.mockImplementation((config: { onEvent: (data: unknown) => void }) => {
+        onEvent = config.onEvent;
+      });
+      render(
+        <QueryClientProvider client={new QueryClient()}>
+          <MemoryRouter>
+            <SSEProvider>
+              <div>child</div>
+            </SSEProvider>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      return (data: Record<string, unknown>) => act(() => onEvent?.({ event, appUrn: 'comfyui:ci-marketplace', ...data }));
+    };
+
+    it('says the app needs ROCm and links to where it is set up', async () => {
+      const send = renderProvider();
+      mockToastError.mockReturnValueOnce('rocm-toast');
+
+      send({ errorCode: 'rocm_kfd_missing', settingsPath: '/settings?tab=ai&section=rocm' });
+
+      expect(mockToastError).toHaveBeenCalledTimes(1);
+      render(<MemoryRouter>{mockToastError.mock.calls[0]?.[0] as ReactNode}</MemoryRouter>);
+      const settingsLink = screen.getByRole('link', { name: 'AI Settings' });
+      expect(settingsLink).toHaveAttribute('href', '/settings?tab=ai&section=rocm');
+      expect(settingsLink.parentElement).toHaveTextContent('comfyui needs AMD ROCm.');
+      expect(screen.queryByRole('link', { name: 'see logs' })).toBeNull();
+
+      await userEvent.click(settingsLink);
+      expect(mockToastDismiss).toHaveBeenCalledWith('rocm-toast');
+    });
+
+    it('falls back to the ROCm settings section when the event names no path', () => {
+      const send = renderProvider();
+
+      send({ errorCode: 'rocm_kfd_missing' });
+
+      render(<MemoryRouter>{mockToastError.mock.calls[0]?.[0] as ReactNode}</MemoryRouter>);
+      expect(screen.getByRole('link', { name: 'AI Settings' })).toHaveAttribute('href', '/settings?tab=ai&section=rocm');
+    });
+
+    it('names a Docker network range conflict', () => {
+      const send = renderProvider();
+
+      send({ errorCode: 'network_overlap' });
+
+      expect(mockToastError).toHaveBeenCalledExactlyOnceWith(
+        'comfyui hit a Docker network range conflict. Retry install or start. Hub will pick a fresh internal network.',
+      );
+    });
+  });
+
   it('links app operation failures to the logs tab via "see logs"', async () => {
     let onEvent: ((data: unknown) => void) | undefined;
     mockUseSSE.mockImplementation((config: { onEvent: (data: unknown) => void }) => {
@@ -117,6 +212,37 @@ describe('SSEProvider', () => {
     expect(mockToastDismiss).toHaveBeenCalledWith('start-error-toast');
   });
 
+  it.each([
+    ['start_error', 'excalidraw did not start: summary-service keeps restarting (exit 126): permission denied'],
+    ['restart_error', 'excalidraw did not restart: summary-service keeps restarting (exit 126): permission denied'],
+    ['install_error', 'excalidraw did not install: summary-service keeps restarting (exit 126): permission denied'],
+  ])('names the failing service and the reason in the %s toast', (event, text) => {
+    let onEvent: ((data: unknown) => void) | undefined;
+    mockUseSSE.mockImplementation((config: { onEvent: (data: unknown) => void }) => {
+      onEvent = config.onEvent;
+    });
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter>
+          <SSEProvider>
+            <div>child</div>
+          </SSEProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    act(() => {
+      onEvent?.({
+        event,
+        appUrn: 'excalidraw:community',
+        serviceFailure: { kind: 'restarting', service: 'summary-service', exitCode: 126, logLine: 'permission denied' },
+      });
+    });
+
+    expect(mockToastError).toHaveBeenCalledTimes(1);
+    expect(mockToastError).toHaveBeenCalledWith(text, { duration: 10000 });
+  });
+
   const renderProvider = () => {
     let onEvent: ((data: unknown) => void) | undefined;
     mockUseSSE.mockImplementation((config: { onEvent: (data: unknown) => void }) => {
@@ -144,6 +270,234 @@ describe('SSEProvider', () => {
     expect(mockToastSuccess).not.toHaveBeenCalled();
     expect(mockToastWarning).toHaveBeenCalledTimes(1);
     expect(mockToastWarning).toHaveBeenCalledWith(expect.stringContaining('could not be fully removed'), expect.anything());
+  });
+
+  describe('a success that moved the app off a busy port', () => {
+    const movedHostPort = { from: 10000, to: 10001 };
+
+    it.each(['start_success', 'restart_success', 'install_success'])('%s says where the app is now, in place of the success toast', (event) => {
+      const getOnEvent = renderProvider();
+
+      act(() => {
+        getOnEvent()?.({ event, appUrn: 'excalidraw:community', movedHostPort });
+      });
+
+      expect(mockToastSuccess).not.toHaveBeenCalled();
+      expect(mockToastWarning).toHaveBeenCalledTimes(1);
+      expect(mockToastWarning).toHaveBeenCalledWith(
+        'excalidraw is now on port 10001 because another program is using port 10000. Update any bookmarks or clients that use the old port.',
+        { duration: 20000 },
+      );
+    });
+
+    it.each(['start_error', 'restart_error', 'install_error'])('%s still says where the app is now, beside the error', (event) => {
+      const getOnEvent = renderProvider();
+
+      act(() => {
+        getOnEvent()?.({ event, appUrn: 'excalidraw:community', movedHostPort });
+      });
+
+      expect(mockToastError).toHaveBeenCalledTimes(1);
+      expect(mockToastWarning).toHaveBeenCalledWith(expect.stringMatching(/^excalidraw is now on port 10001 /), expect.anything());
+    });
+
+    it.each([
+      ['start_error', 'excalidraw did not start: summary-service keeps restarting (exit 126)'],
+      ['restart_error', 'excalidraw did not restart: summary-service keeps restarting (exit 126)'],
+      ['install_error', 'excalidraw did not install: summary-service keeps restarting (exit 126)'],
+    ])('%s names the failing service and still says where the app is now', (event, text) => {
+      const getOnEvent = renderProvider();
+
+      act(() => {
+        getOnEvent()?.({
+          event,
+          appUrn: 'excalidraw:community',
+          movedHostPort,
+          serviceFailure: { kind: 'restarting', service: 'summary-service', exitCode: 126 },
+        });
+      });
+
+      expect(mockToastError).toHaveBeenCalledExactlyOnceWith(text, { duration: 10000 });
+      expect(mockToastWarning).toHaveBeenCalledWith(expect.stringMatching(/^excalidraw is now on port 10001 /), expect.anything());
+    });
+
+    it('host_port_moved says where the app is now, with no outcome of its own to report', () => {
+      const getOnEvent = renderProvider();
+
+      act(() => {
+        getOnEvent()?.({ event: 'host_port_moved', appUrn: 'excalidraw:community', movedHostPort });
+      });
+
+      expect(mockToastSuccess).not.toHaveBeenCalled();
+      expect(mockToastError).not.toHaveBeenCalled();
+      expect(mockToastWarning).toHaveBeenCalledWith(expect.stringMatching(/^excalidraw is now on port 10001 /), expect.anything());
+    });
+
+    it('names the app as its page does', () => {
+      const getOnEvent = renderProvider();
+
+      act(() => {
+        getOnEvent()?.({ event: 'start_success', appUrn: 'uptime-kuma:ci-marketplace', movedHostPort });
+      });
+
+      expect(mockToastWarning).toHaveBeenCalledWith(expect.stringMatching(/^Uptime Kuma is now on port 10001 /), expect.anything());
+    });
+
+    it('names an uninstalled app though the event takes its name out of the cache', () => {
+      mockHandleAppSseEvent.mockImplementationOnce(() => {
+        appNameCache.dropped = true;
+      });
+      const getOnEvent = renderProvider();
+
+      act(() => {
+        getOnEvent()?.({ event: 'uninstall_success', appUrn: 'uptime-kuma:ci-marketplace' });
+      });
+
+      expect(mockToastSuccess).toHaveBeenCalledWith(expect.stringMatching(/Uptime Kuma/));
+    });
+
+    it('warns when an update is in but its settings stayed as they were', () => {
+      const getOnEvent = renderProvider();
+
+      act(() => {
+        getOnEvent()?.({ event: 'update_success', appUrn: 'uptime-kuma:ci-marketplace', warningCode: 'APP_UPDATE_SETTINGS_NOT_REAPPLIED' });
+      });
+
+      expect(mockToastSuccess).not.toHaveBeenCalled();
+      expect(mockToastWarning).toHaveBeenCalledWith(expect.stringMatching(/^Uptime Kuma updated, but its saved settings/), expect.anything());
+    });
+
+    it('names the app the same way in a failed install and its port notice', () => {
+      const getOnEvent = renderProvider();
+
+      act(() => {
+        getOnEvent()?.({
+          event: 'install_error',
+          appUrn: 'uptime-kuma:ci-marketplace',
+          serviceFailure: { kind: 'exited', service: 'uptime-kuma', exitCode: 137 },
+          movedHostPort,
+        });
+      });
+
+      expect(mockToastError).toHaveBeenCalledWith(expect.stringMatching(/^Uptime Kuma /), expect.anything());
+      expect(mockToastWarning).toHaveBeenCalledWith(expect.stringMatching(/^Uptime Kuma is now on port 10001 /), expect.anything());
+    });
+
+    it.each([
+      ['start_success', 'App excalidraw started successfully'],
+      ['restart_success', 'App excalidraw restarted successfully'],
+      ['install_success', 'App excalidraw installed successfully'],
+    ])('%s with no move stays the plain success toast', (event, text) => {
+      const getOnEvent = renderProvider();
+
+      act(() => {
+        getOnEvent()?.({ event, appUrn: 'excalidraw:community' });
+      });
+
+      expect(mockToastWarning).not.toHaveBeenCalled();
+      expect(mockToastSuccess).toHaveBeenCalledWith(text);
+    });
+  });
+
+  it('warns with the cleanup command when a cancelled install could not remove its data', () => {
+    const getOnEvent = renderProvider();
+
+    act(() => {
+      getOnEvent()?.({
+        event: 'install_cancelled',
+        appUrn: 'excalidraw:community',
+        appStatus: 'missing',
+        warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT',
+        warningDetail: '/srv/app-data/community/excalidraw',
+      });
+    });
+
+    expect(mockToastSuccess).not.toHaveBeenCalled();
+    expect(mockToastWarning).toHaveBeenCalledTimes(1);
+    const [message] = mockToastWarning.mock.calls[0] as [ReactNode];
+
+    render(<MemoryRouter>{message}</MemoryRouter>);
+    expect(screen.getByText("sudo rm -rf -- '/srv/app-data/community/excalidraw'")).toBeInTheDocument();
+  });
+
+  it('warns without a command when a cancelled install has no path to give', () => {
+    const getOnEvent = renderProvider();
+
+    act(() => {
+      getOnEvent()?.({
+        event: 'install_cancelled',
+        appUrn: 'excalidraw:community',
+        appStatus: 'missing',
+        warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT',
+      });
+    });
+
+    expect(mockToastSuccess).not.toHaveBeenCalled();
+    expect(mockToastWarning).toHaveBeenCalledWith(
+      'Cancelled installing excalidraw, but some of its files, containers or volumes could not be removed and may remain.',
+      {
+        duration: 8000,
+      },
+    );
+  });
+
+  it('warns that a cancelled install left its app key valid when the key could not be revoked', () => {
+    const getOnEvent = renderProvider();
+
+    act(() => {
+      getOnEvent()?.({
+        event: 'install_cancelled',
+        appUrn: 'excalidraw:community',
+        appStatus: 'missing',
+        warningCode: 'APP_INSTALL_CANCELLED_KEY_REMAINS',
+      });
+    });
+
+    expect(mockToastSuccess).not.toHaveBeenCalled();
+    expect(mockToastWarning).toHaveBeenCalledWith('Cancelled installing excalidraw, but its app key could not be revoked and may stay valid.', {
+      duration: 8000,
+    });
+  });
+
+  it('warns with the cleanup command when a cancelled install left a disk leftover and its app key', () => {
+    const getOnEvent = renderProvider();
+
+    act(() => {
+      getOnEvent()?.({
+        event: 'install_cancelled',
+        appUrn: 'excalidraw:community',
+        appStatus: 'missing',
+        warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT_KEY_REMAINS',
+        warningDetail: '/srv/app-data/community/excalidraw',
+      });
+    });
+
+    expect(mockToastSuccess).not.toHaveBeenCalled();
+    expect(mockToastWarning).toHaveBeenCalledTimes(1);
+    const [message] = mockToastWarning.mock.calls[0] as [ReactNode];
+
+    const { container } = render(<MemoryRouter>{message}</MemoryRouter>);
+    expect(container).toHaveTextContent('its app key could not be revoked and may stay valid');
+    expect(screen.getByText("sudo rm -rf -- '/srv/app-data/community/excalidraw'")).toBeInTheDocument();
+  });
+
+  it('warns without a command when a cancelled install left a disk leftover and its app key, with no path', () => {
+    const getOnEvent = renderProvider();
+
+    act(() => {
+      getOnEvent()?.({
+        event: 'install_cancelled',
+        appUrn: 'excalidraw:community',
+        appStatus: 'missing',
+        warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT_KEY_REMAINS',
+      });
+    });
+
+    expect(mockToastSuccess).not.toHaveBeenCalled();
+    expect(mockToastWarning).toHaveBeenCalledWith(
+      'Cancelled installing excalidraw, but some of its files, containers or volumes could not be removed and may remain, and its app key could not be revoked and may stay valid.',
+      { duration: 8000 },
+    );
   });
 
   it('shows the plain success toast when uninstall_success has no warningCode', () => {
@@ -298,6 +652,17 @@ describe('SSEProvider', () => {
       expect(invalidate).not.toHaveBeenCalled();
     });
 
+    // What a restart changed was announced while no browser was connected (#2286).
+    it('refetches every app record when the Hub greets again after a restart, not on its first greeting', () => {
+      const { fire } = mountWithHandler();
+      fire({ event: 'hub_hello', version: '0.2.72' });
+      expect(mockInvalidateAppRecords).not.toHaveBeenCalled();
+
+      fire({ event: 'hub_hello', version: '0.2.72' });
+
+      expect(mockInvalidateAppRecords).toHaveBeenCalledTimes(1);
+    });
+
     it('is inert when nothing is pending', () => {
       const { fire, invalidate } = mountWithHandler();
       fire({ event: 'hub_hello', version: '0.2.72' });
@@ -308,16 +673,17 @@ describe('SSEProvider', () => {
 });
 
 describe('SSEProvider: a cancelled install of a custom app', () => {
+  // biome-ignore lint/correctness/noComponentHookFactories: this one-shot test fixture is created once per suite.
   const Where = () => <span data-testid="where">{useLocation().pathname}</span>;
 
-  const renderOnAppPage = () => {
+  const renderOnAppPage = (path = '/apps/my-tool') => {
     let onEvent: ((data: unknown) => void) | undefined;
     mockUseSSE.mockImplementation((config: { onEvent: (data: unknown) => void }) => {
       onEvent = config.onEvent;
     });
     render(
       <QueryClientProvider client={new QueryClient()}>
-        <MemoryRouter initialEntries={['/apps/my-tool']}>
+        <MemoryRouter initialEntries={[path]}>
           <SSEProvider>
             <Where />
           </SSEProvider>
@@ -337,6 +703,72 @@ describe('SSEProvider: a cancelled install of a custom app', () => {
     send({ event: 'install_cancelled', appUrn: 'my-tool:_user', appStatus: 'missing' });
 
     expect(screen.getByTestId('where')).toHaveTextContent('/store');
+  });
+
+  it.each(['/apps/my-tool', '/apps/my-tool/', '/apps/my-tool/edit'])('leaves %s when that custom app is uninstalled', (path) => {
+    const send = renderOnAppPage(path);
+
+    send({ event: 'uninstall_success', appUrn: 'my-tool:_user', appStatus: 'missing' });
+
+    expect(screen.getByTestId('where')).toHaveTextContent('/store');
+  });
+
+  it.each(['/settings', '/apps/other-tool', '/apps/my-tool-2', '/apps/ci-marketplace/uptime-kuma', '/'])(
+    'stays on %s when an unrelated custom app is removed or its install cancelled',
+    (path) => {
+      const send = renderOnAppPage(path);
+
+      send({ event: 'uninstall_success', appUrn: 'my-tool:_user', appStatus: 'missing' });
+      send({ event: 'install_cancelled', appUrn: 'my-tool:_user', appStatus: 'missing' });
+
+      expect(screen.getByTestId('where').textContent).toBe(path);
+    },
+  );
+
+  it("stays on a store app's page when the removed custom app has that store's name", () => {
+    const send = renderOnAppPage('/apps/ci-marketplace/uptime-kuma');
+
+    send({ event: 'uninstall_success', appUrn: 'ci-marketplace:_user', appStatus: 'missing' });
+
+    expect(screen.getByTestId('where').textContent).toBe('/apps/ci-marketplace/uptime-kuma');
+  });
+
+  it('follows the tab as it moves: the app page is judged when the event arrives', () => {
+    let goTo: (path: string) => void = () => undefined;
+    // biome-ignore lint/correctness/noComponentHookFactories: this one-shot test fixture is created once for this test.
+    const Nav = () => {
+      const navigate = useNavigate();
+      goTo = navigate;
+      return null;
+    };
+    let onEvent: ((data: unknown) => void) | undefined;
+    // The first render's handler, as the real useSSE keeps it.
+    mockUseSSE.mockImplementation((config: { onEvent: (data: unknown) => void }) => {
+      onEvent ??= config.onEvent;
+    });
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={['/settings']}>
+          <SSEProvider>
+            <Where />
+            <Nav />
+          </SSEProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    act(() => goTo('/apps/my-tool'));
+    act(() => onEvent?.({ event: 'uninstall_success', appUrn: 'my-tool:_user', appStatus: 'missing' }));
+
+    expect(screen.getByTestId('where')).toHaveTextContent('/store');
+  });
+
+  it('names the app as its page does when its update was cancelled, not by its id', () => {
+    const send = renderOnAppPage();
+
+    send({ event: 'update_cancelled', appUrn: 'uptime-kuma:ci-marketplace', appStatus: 'running' });
+
+    expect(mockToastSuccess).toHaveBeenCalledWith("Update of Uptime Kuma cancelled. It's back on its previous version.");
   });
 
   // A retry of a failed install that is cancelled before it is queued stays install_failed.

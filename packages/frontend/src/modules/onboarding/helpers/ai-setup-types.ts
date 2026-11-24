@@ -1,4 +1,12 @@
-import type { CloudProviderType, CuratedModel, HardwareProfile, HardwareTier, InferenceBackendType, MemoryBudget } from '@ci-hub/common/types';
+import type {
+  CloudProviderType,
+  CuratedModel,
+  HardwareProfile,
+  HardwareTier,
+  InferenceBackendType,
+  MemoryBudget,
+  ModelContextPlan,
+} from '@ci-hub/common/types';
 
 /** The Companion agent framework that powers the user's system. */
 export type AgentFramework = 'openclaw' | 'hermes';
@@ -43,14 +51,21 @@ export interface AiSetupConfig {
   skipped: boolean;
   /** Catalog ids already present on the active backend (and Ollama embeddings when chat uses vLLM). */
   installedCatalogIds: string[];
-  /** Selected catalog ids backed by Ollama (pull/pin only applies to these). */
+  /**
+   * Selected catalog ids the Hub pins: Ollama and Lemonade models. The name is historical. oMLX loads
+   * a model on its first request, so its models are downloaded ({@link downloadModelIds}) but not pinned.
+   */
   ollamaSelectedModelIds?: string[];
+  /** Selected catalog ids the Hub downloads: Ollama, Lemonade and oMLX models. */
+  downloadModelIds?: string[];
   /** Optional custom API key for host vLLM (persisted to Hub settings as inferenceVllmApiKey). */
   vllmApiKey?: string;
   /** Optional custom vLLM base URL (persisted to Hub settings as inferenceVllmUrl). */
   vllmUrl?: string;
   /** Optional custom oMLX base URL. */
   omlxUrl?: string;
+  /** oMLX's main API key, which the Hub needs to download models through oMLX (inferenceOmlxApiKey). */
+  omlxApiKey?: string;
   /** Manual decode endpoint. Overrides the selected engine's chat URL when set. */
   decodeEndpoint?: string;
   /** Manual encode endpoint. Overrides the embedding host when set. */
@@ -74,6 +89,13 @@ export interface CloudProviderInput {
   enabled: boolean;
   /** The Hub already holds a key for this provider (Settings shows it masked). Cleared and saved, it is deleted. */
   stored?: boolean;
+  /**
+   * Where the Hub sends this provider's requests, when that is not the provider's own server. Set
+   * only in Settings. A key saved there goes to this URL too, since Settings sends no URL.
+   */
+  baseUrl?: string;
+  /** Remove was pressed for a provider that has a `baseUrl` and no stored key. Saved, its settings are deleted. */
+  removed?: boolean;
 }
 
 /**
@@ -134,6 +156,8 @@ export interface InferencePreferencesResponse {
   preferredVllmApiKey?: string | null;
   preferredVllmUrl?: string | null;
   preferredOmlxUrl?: string | null;
+  /** The mask when a key is stored; the Hub never sends the key itself. */
+  preferredOmlxApiKey?: string | null;
   preferredDecodeEndpoint?: string | null;
   preferredEncodeEndpoint?: string | null;
 }
@@ -160,6 +184,8 @@ export interface HardwareProfileResponse {
   recommendedModels: CuratedModel[];
   availableModels: CuratedModel[];
   /** Catalog ids already pulled for the active chat backend (+ Ollama embeddings when backend=vllm). */
+  /** What each text model of the engine being set up gets here: window, KV cache, installed apps' floor (`ModelContextNote`). */
+  contextPlans?: Record<string, ModelContextPlan>;
   installedCatalogIds: string[];
   memoryBudget: MemoryBudget;
   backends: {

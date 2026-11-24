@@ -34,6 +34,11 @@ export interface ContainerReadOptions {
    * back, it is not run again to read it, and the result is marked lost.
    */
   repeatable?: boolean;
+  /**
+   * Variables for the command, passed as `docker exec -e NAME` with the value in the docker CLI's
+   * environment, so a secret such as a password never appears in a process's arguments.
+   */
+  env?: Record<string, string>;
 }
 
 export type ContainerReader = (command: string[], options?: ContainerReadOptions) => ContainerOutput;
@@ -62,12 +67,12 @@ export function containerReader(container: string): ContainerReader {
   return (command, options = {}) => {
     const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     if (!copyOut) {
-      const direct = execDirect(container, command, timeoutMs);
+      const direct = execDirect(container, command, timeoutMs, options.env);
       if (direct.status !== 0 || direct.stdout !== '') return direct;
       copyOut = true;
       if (options.repeatable === false) return { ...direct, lost: true };
     }
-    return execThroughCopy(container, command, timeoutMs);
+    return execThroughCopy(container, command, timeoutMs, options.env);
   };
 }
 
@@ -94,8 +99,20 @@ export function describeDockerEndpoint(): string {
   return endpoint ? `Docker context ${context} (${endpoint})` : `Docker context ${context}`;
 }
 
-function execDirect(container: string, command: string[], timeoutMs: number): ContainerOutput {
-  const result = spawnSync('docker', ['exec', container, ...command], { encoding: 'utf-8', stdio: 'pipe', timeout: timeoutMs });
+/** `-e NAME` flags for `docker exec`, and the docker CLI environment that carries their values. */
+function execEnv(env: Record<string, string> | undefined): { flags: string[]; spawnEnv: NodeJS.ProcessEnv | undefined } {
+  if (!env || Object.keys(env).length === 0) return { flags: [], spawnEnv: undefined };
+  return { flags: Object.keys(env).flatMap((name) => ['-e', name]), spawnEnv: { ...process.env, ...env } };
+}
+
+function execDirect(container: string, command: string[], timeoutMs: number, env?: Record<string, string>): ContainerOutput {
+  const { flags, spawnEnv } = execEnv(env);
+  const result = spawnSync('docker', ['exec', ...flags, container, ...command], {
+    encoding: 'utf-8',
+    stdio: 'pipe',
+    timeout: timeoutMs,
+    ...(spawnEnv ? { env: spawnEnv } : {}),
+  });
   return {
     status: result.status,
     stdout: (result.stdout ?? '').trim(),
@@ -117,12 +134,14 @@ function lostOnTimeout(result: SpawnSyncReturns<unknown>): { lost?: true } {
  * Starts `command` detached with its output sent to a new folder under /tmp in the container, copies
  * the folder out with `docker cp` once the exit status is in it, and removes it.
  */
-function execThroughCopy(container: string, command: string[], timeoutMs: number): ContainerOutput {
+function execThroughCopy(container: string, command: string[], timeoutMs: number, env?: Record<string, string>): ContainerOutput {
   const dir = `/tmp/cihub-exec-${randomBytes(8).toString('hex')}`;
-  const started = spawnSync('docker', ['exec', '-d', container, 'sh', '-c', COPY_ROUTE_SCRIPT, 'sh', dir, ...command], {
+  const { flags, spawnEnv } = execEnv(env);
+  const started = spawnSync('docker', ['exec', '-d', ...flags, container, 'sh', '-c', COPY_ROUTE_SCRIPT, 'sh', dir, ...command], {
     encoding: 'utf-8',
     stdio: 'pipe',
     timeout: timeoutMs,
+    ...(spawnEnv ? { env: spawnEnv } : {}),
   });
   // Nothing ran, and docker said why: a stopped container, or no docker at all. A start that timed
   // out may have run all the same.

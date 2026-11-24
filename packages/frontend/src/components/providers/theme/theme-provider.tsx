@@ -38,18 +38,25 @@ export function ThemeProvider({ children, defaultTheme = 'system', storageKey = 
   useEffect(() => {
     const root = window.document.documentElement;
 
-    root.classList.remove('light', 'dark');
-
-    if (theme === 'system') {
-      const systemTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-
-      root.classList.add(systemTheme);
+    const applyTheme = (resolvedTheme: 'dark' | 'light') => {
+      root.classList.remove('light', 'dark');
+      root.classList.add(resolvedTheme);
       void syncTauriWindowBackground();
+    };
+
+    if (theme !== 'system') {
+      applyTheme(theme);
       return;
     }
 
-    root.classList.add(theme);
-    void syncTauriWindowBackground();
+    // A theme picked by hand doesn't get this listener, so it stays put when the computer changes.
+    const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
+    const applySystemTheme = () => applyTheme(systemDark.matches ? 'dark' : 'light');
+
+    applySystemTheme();
+    systemDark.addEventListener('change', applySystemTheme);
+
+    return () => systemDark.removeEventListener('change', applySystemTheme);
   }, [theme]);
 
   const value = {

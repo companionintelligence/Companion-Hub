@@ -2,7 +2,7 @@ import { Button } from '@/components/ui/Button';
 import { AppStoreSearchInput } from '@/modules/app/components/app-store-search-input/app-store-search-input';
 import { getCategoryLabel } from '@/modules/app/helpers/category-label';
 import { iconForCategory } from '@/modules/app/helpers/table-helpers';
-import { buildStoreIndexPath } from '@/lib/store-browse-params';
+import { buildStoreIndexPath, isStoreIndexPath } from '@/lib/store-browse-params';
 import { useAppStoreState } from '@/stores/app-store';
 import clsx from 'clsx';
 import { ArrowLeftRight, LayoutGrid } from 'lucide-react';
@@ -11,7 +11,6 @@ import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router';
 
 const ALTERNATIVES_VIEW = '__alternatives__' as const;
-const STORE_INDEX_PATTERN = /^\/store\/?$/;
 
 export const AppStoreSidebar = () => {
   const { t } = useTranslation();
@@ -27,7 +26,7 @@ export const AppStoreSidebar = () => {
   }, [search]);
 
   const navigatePreservingBrowseContext = useCallback(() => {
-    if (!STORE_INDEX_PATTERN.test(location.pathname)) {
+    if (!isStoreIndexPath(location.pathname)) {
       navigate(buildStoreIndexPath({ q: search.trim() ? search : undefined, category, store: storeId }));
     }
   }, [navigate, location.pathname, search, category, storeId]);
@@ -68,6 +67,7 @@ export const AppStoreSidebar = () => {
               'w-full justify-start font-normal text-sm gap-3 px-4 py-2 h-auto',
               category ? 'text-muted-foreground hover:bg-muted/50' : 'bg-primary/10 text-primary font-medium hover:bg-primary/20',
             )}
+            aria-current={category ? undefined : 'true'}
             onClick={() => handleCategoryClick(undefined)}
           >
             <LayoutGrid className="h-4 w-4" />
@@ -82,6 +82,7 @@ export const AppStoreSidebar = () => {
               'w-full justify-start font-normal text-sm gap-3 px-4 py-2 h-auto',
               isAlternativesView ? 'bg-primary/10 text-primary font-medium hover:bg-primary/20' : 'text-muted-foreground hover:bg-muted/50',
             )}
+            aria-current={isAlternativesView ? 'true' : undefined}
             onClick={() => handleCategoryClick(ALTERNATIVES_VIEW)}
           >
             <ArrowLeftRight className="h-4 w-4" />
@@ -102,6 +103,7 @@ export const AppStoreSidebar = () => {
                   'w-full justify-start font-normal text-sm gap-3 px-4 py-2 h-auto',
                   isSelected ? 'bg-primary/10 text-primary font-medium hover:bg-primary/20' : 'text-muted-foreground hover:bg-muted/50',
                 )}
+                aria-current={isSelected ? 'true' : undefined}
                 onClick={() => handleCategoryClick(cat.id)}
               >
                 {Icon && <Icon className="h-4 w-4" />}

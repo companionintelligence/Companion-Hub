@@ -24,7 +24,7 @@ export const StopDialog: React.FC<IProps> = ({ info, isOpen, onClose }) => {
   const stopMutation = useMutation({
     ...stopAppMutation(),
     onError: (error: TranslatableError) => {
-      toast.error(t(error.message, error.intlParams));
+      toast.error(t(error.message, error.intlParams ?? {}));
       // A pre-flight rejection (e.g. stopping an app that was just removed) fails
       // synchronously and emits no lifecycle SSE event, and nothing polls the app
       // detail — so without this the optimistic 'stopping' status would spin
@@ -46,10 +46,10 @@ export const StopDialog: React.FC<IProps> = ({ info, isOpen, onClose }) => {
         <DialogDescription>
           <span className="text-muted-foreground">{t('COMMON_ALL_DATA_RETAINED')}</span>
         </DialogDescription>
+        {/* The primary button, as for the Hub's other confirmations that lose nothing (Backup now, Update).
+            Red is for actions that can't be undone, such as Reset and Remove. */}
         <DialogFooter>
-          <Button onClick={() => stopMutation.mutate({ path: { urn: info.urn } })} intent="danger">
-            {t('COMMON_STOP')}
-          </Button>
+          <Button onClick={() => stopMutation.mutate({ path: { urn: info.urn } })}>{t('COMMON_STOP')}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

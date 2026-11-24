@@ -5,6 +5,7 @@ import {
   fetchOmlxInstallStatus,
   fetchVllmInstallStatus,
   rescanInferenceHardware,
+  saveOmlxApiKey,
 } from '@/lib/inference/inference-api';
 import { openExternal } from '@/lib/helpers/open-external';
 import { isTauriDesktopApp } from '@/lib/hub-runtime-mode';
@@ -24,7 +25,7 @@ import {
   type VllmStatus,
   type RemoteAccessMode,
 } from '../helpers/ai-setup-types';
-import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
+import { type CuratedModel, defaultChatModelId, type InferenceBackendType } from '@ci-hub/common/types';
 import { AgentFrameworkCard } from './ai-setup/agent-apps-card';
 import { AccessMethodsCard } from './ai-setup/access-methods-card';
 import { CompanionAppsCard } from './ai-setup/companion-apps-card';
@@ -35,7 +36,9 @@ import { AdvancedDrawers } from './ai-setup/advanced-drawers';
 import { CloudProviderCard } from './ai-setup/cloud-provider-card';
 import { SystemOverview } from './ai-setup/system-overview';
 import { ResourceSummaryBar } from './ai-setup/resource-summary-bar';
-import { backendDisplayName } from '@/lib/inference/backend-names';
+import { useLiveSession } from '@/lib/inference/live-session';
+import { LiveSessionNotice } from './ai-setup/live-session-notice';
+import { LocalAiExposureNotice } from './ai-setup/local-ai-exposure-notice';
 import { OllamaSetupCard } from './ai-setup/ollama-setup-card';
 import { VllmSetupCard } from './ai-setup/vllm-setup-card';
 import { OmlxSetupCard } from './ai-setup/omlx-setup-card';
@@ -45,7 +48,9 @@ import { TailscaleSetupStep } from './tailscale-setup-step';
 import { computeSelectionBudget, inferenceMemoryMb } from '../helpers/onboarding-model-selection';
 import {
   EMBEDDING_INFERENCE_BACKEND,
+  hubDownloadSelection,
   hubLoadableSelection,
+  isHubDownloadableBackend,
   hiddenInferenceBackends,
   isHostServedBackend,
   localEngineBlocksFinish,
@@ -98,7 +103,7 @@ const primaryExposureMode = (remoteAccess: RemoteAccessMode[]): ExposureMode =>
 const BackendSetupGroup = ({ title, description, children }: { title: string; description?: string; children: React.ReactNode }) => (
   <div className="space-y-3" data-testid="selected-backend-setup">
     <div>
-      <h3 className="text-sm font-semibold">{title}</h3>
+      <h3 className="text-sm font-medium">{title}</h3>
       {description && <p className="mt-1 text-xs text-muted-foreground">{description}</p>}
     </div>
     {children}
@@ -118,6 +123,7 @@ export const AiSetupStep = ({
   onCompanionAppsChange,
 }: AiSetupStepProps) => {
   const { t } = useTranslation();
+  const liveSession = useLiveSession();
   const [loading, setLoading] = useState(true);
   const [rescanning, setRescanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -138,6 +144,7 @@ export const AiSetupStep = ({
   const [vllmApiKey, setVllmApiKey] = useState('');
   const [vllmUrl, setVllmUrl] = useState('');
   const [omlxUrl, setOmlxUrl] = useState('');
+  const [omlxApiKey, setOmlxApiKey] = useState('');
   const [decodeEndpoint, setDecodeEndpoint] = useState('');
   const [encodeEndpoint, setEncodeEndpoint] = useState('');
   const [selectedBackend, setSelectedBackend] = useState<InferenceBackendType>('ollama');
@@ -149,21 +156,32 @@ export const AiSetupStep = ({
   selectedModelIdsRef.current = selectedModelIds;
   const preferredModelIdRef = useRef(preferredModelId);
   preferredModelIdRef.current = preferredModelId;
+  // Models the person unticked since the selection was last reset. A re-check does not tick one that
+  // arrives, and a vision model among them is not saved as the vision model by default.
+  const untickedModelIdsRef = useRef(new Set<string>());
+  // Set when the person unticked the last ticked chat model and so left no Default. A profile that
+  // offers no chat model leaves none either, but that is not the person's choice: a re-check or a
+  // rescan then names the Default a first load would.
+  const defaultClearedRef = useRef(false);
 
-  // Both agent frameworks share one default, so use the highest-ranked selected or
-  // installable LLM instead of catalog order.
-  const getDefaultPreferredModelId = (data: HardwareProfileResponse, backend: InferenceBackendType, selectedIds?: string[]): string | undefined => {
+  // Both agent frameworks share one default: among the ticked chat models (or, with `selectedIds` left
+  // out, the ones the engine has), the highest on the recommended list, else the first in catalog
+  // order. The Hub hands AI apps the same model until someone saves one (`defaultChatModelId`), so a
+  // Hub that skipped this wizard runs on what it would mark. `candidatesOnly` keeps it among them.
+  const getDefaultPreferredModelId = (
+    data: HardwareProfileResponse,
+    backend: InferenceBackendType,
+    selectedIds?: string[],
+    candidatesOnly = false,
+  ): string | undefined => {
     const installed = new Set(data.installedCatalogIds ?? []);
-    const selected = selectedIds ?? data.availableModels.filter((m) => m.backend === backend && installed.has(m.id)).map((m) => m.id);
-    const fromSelected = selected.find((id) => {
-      const model = data.availableModels.find((m) => m.id === id);
-      return model && model.backend === backend && isAgentModel(model);
+    return defaultChatModelId({
+      backend,
+      availableModels: data.availableModels,
+      recommendedModels: data.recommendedModels,
+      candidateIds: selectedIds ?? data.availableModels.filter((m) => m.backend === backend && installed.has(m.id)).map((m) => m.id),
+      candidatesOnly,
     });
-    if (fromSelected) return fromSelected;
-
-    const installableAgentIds = new Set(data.availableModels.filter((m) => m.backend === backend && isAgentModel(m)).map((m) => m.id));
-    const topRecommended = data.recommendedModels.find((m) => m.backend === backend && isAgentModel(m) && installableAgentIds.has(m.id));
-    return topRecommended?.id ?? data.availableModels.find((m) => m.backend === backend && isAgentModel(m))?.id;
   };
 
   const getDefaultPreferredAuxModelId = (
@@ -180,16 +198,37 @@ export const AiSetupStep = ({
     return data.availableModels.find((m) => m.backend === backend && match(m) && selectedSet.has(m.id))?.id;
   };
 
-  // Pre-select models already present on the active backend (and Ollama embeddings when chat is vLLM).
-  const getDefaultSelectedModelIds = (data: HardwareProfileResponse, backend: InferenceBackendType): string[] => {
+  /*
+   * ⚠ ONLY WHAT THE WIZARD RECOMMENDS, NOT EVERY MODEL THE ENGINE HAS. The wizard pins what is ticked,
+   * so ticking all of Ollama pinned all of it and marked the smallest Default. Of the models already
+   * on the active backend (and Ollama's embedders when chat is vLLM or oMLX), it ticks the ones on its
+   * recommended list. The Default is always ticked, so when none of them is a chat model, the first
+   * chat model the engine has is ticked as the Default. An embedder is ticked the same way, or a Hub
+   * whose only embedder is off the list would save none. Memory would then be handed the recommended
+   * one to download in place of the one its index was built with. `defaultId` is the Default to keep
+   * ticked. Left out (or passed as `undefined`), it is the one the wizard would mark. `alreadyTicked`
+   * is what a re-check keeps: an embedder among it stands, so an off-list one that arrives is not added.
+   */
+  const getDefaultSelectedModelIds = (
+    data: HardwareProfileResponse,
+    backend: InferenceBackendType,
+    defaultId = getDefaultPreferredModelId(data, backend),
+    alreadyTicked: readonly string[] = [],
+  ): string[] => {
     const installed = new Set(data.installedCatalogIds ?? []);
-    return data.availableModels
-      .filter((m) => {
-        if (!installed.has(m.id)) return false;
-        if (m.backend === backend) return true;
-        return isHostServedBackend(backend) && m.backend === EMBEDDING_INFERENCE_BACKEND && isEmbeddingModel(m);
-      })
-      .map((m) => m.id);
+    const onEngine = data.availableModels.filter((m) => {
+      if (!installed.has(m.id)) return false;
+      if (m.backend === backend) return true;
+      return isHostServedBackend(backend) && m.backend === EMBEDDING_INFERENCE_BACKEND && isEmbeddingModel(m);
+    });
+    const recommended = new Set(data.recommendedModels.map((m) => m.id));
+    const ticked = new Set(onEngine.filter((m) => recommended.has(m.id) || m.id === defaultId).map((m) => m.id));
+    const embedderTicked = [...ticked, ...alreadyTicked].some((id) => data.availableModels.some((m) => m.id === id && isEmbeddingModel(m)));
+    const firstEmbedder = onEngine.find(isEmbeddingModel);
+    if (firstEmbedder && !embedderTicked) {
+      ticked.add(firstEmbedder.id);
+    }
+    return onEngine.filter((m) => ticked.has(m.id)).map((m) => m.id);
   };
 
   const fetchProfile = async (isRescan = false, backendOverride?: InferenceBackendType) => {
@@ -198,7 +237,13 @@ export const AiSetupStep = ({
     const requestId = ++profileRequestId.current;
     try {
       const backend = backendOverride ?? selectedBackend;
-      let data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, omlxUrl);
+      let data = await fetchInferenceOnboardingProfile(
+        backend,
+        vllmUrl,
+        backend === 'vllm' ? vllmApiKey : undefined,
+        omlxUrl,
+        backend === 'omlx' ? omlxApiKey : undefined,
+      );
       // Ignore superseded rescans so they cannot restore an earlier backend and its defaults.
       if (profileRequestId.current !== requestId) return;
       const hiddenBackends = hiddenInferenceBackends(data);
@@ -211,7 +256,13 @@ export const AiSetupStep = ({
       if (resolvedBackend !== backend) {
         // `installedCatalogIds` describes the engine the request named. The first load names
         // Ollama, so starting anywhere else needs that engine's list, or its models show as missing.
-        data = await fetchInferenceOnboardingProfile(resolvedBackend, vllmUrl, resolvedBackend === 'vllm' ? vllmApiKey : undefined, omlxUrl);
+        data = await fetchInferenceOnboardingProfile(
+          resolvedBackend,
+          vllmUrl,
+          resolvedBackend === 'vllm' ? vllmApiKey : undefined,
+          omlxUrl,
+          resolvedBackend === 'omlx' ? omlxApiKey : undefined,
+        );
         if (profileRequestId.current !== requestId) return;
       }
       setProfile(data);
@@ -225,14 +276,22 @@ export const AiSetupStep = ({
       };
       const engineKept = isRescan && resolvedBackend === backend;
       const keptSelection = engineKept ? selectedModelIdsRef.current.filter(modelStillListed) : null;
+      if (keptSelection === null) {
+        // A fresh selection: earlier unticks belong to the one it replaces.
+        untickedModelIdsRef.current = new Set();
+        defaultClearedRef.current = false;
+      }
       const defaultSelected = keptSelection ?? getDefaultSelectedModelIds(data, resolvedBackend);
       setSelectedModelIds(defaultSelected);
       const keptPreferred = preferredModelIdRef.current;
-      setPreferredModelId(
+      // As on a re-check: someone who unticked every chat model keeps no Default through a rescan, so
+      // the badge does not land on a card left unticked.
+      const nextPreferred =
         keptSelection && keptPreferred && defaultSelected.includes(keptPreferred)
           ? keptPreferred
-          : getDefaultPreferredModelId(data, resolvedBackend, defaultSelected),
-      );
+          : getDefaultPreferredModelId(data, resolvedBackend, defaultSelected, keptSelection !== null && defaultClearedRef.current);
+      if (nextPreferred) defaultClearedRef.current = false;
+      setPreferredModelId(nextPreferred);
     } catch (e) {
       // Same rule for the failure path: a newer request is already in flight and may well succeed,
       // so raising the error screen on its behalf would discard a setup that is about to be fine.
@@ -297,7 +356,7 @@ export const AiSetupStep = ({
   const checkOmlxStatus = async (): Promise<OmlxStatus> => {
     setCheckingOmlx(true);
     try {
-      const data = (await fetchOmlxInstallStatus(omlxUrl)) as OmlxStatus;
+      const data = (await fetchOmlxInstallStatus(omlxUrl, omlxApiKey)) as OmlxStatus;
       setOmlxStatus(data);
       return data;
     } catch (_e) {
@@ -312,40 +371,58 @@ export const AiSetupStep = ({
   // Re-check refreshes installed models without resetting in-progress choices. A status probe
   // alone leaves `installedCatalogIds` stale; unlike `fetchProfile`, this best-effort refresh
   // does not replace the step with an error.
-  const refreshInstalledModels = async (backend: InferenceBackendType, endpointUrlOverride?: string) => {
+  const refreshInstalledModels = async (
+    backend: InferenceBackendType,
+    endpointUrlOverride?: string,
+    apiKeyOverride?: string,
+    omlxApiKeyOverride?: string,
+  ) => {
     const requestId = ++profileRequestId.current;
     try {
       const previouslyInstalled = new Set(profile?.installedCatalogIds ?? []);
       const data = await fetchInferenceOnboardingProfile(
         backend,
         backend === 'vllm' && endpointUrlOverride ? endpointUrlOverride : vllmUrl,
-        backend === 'vllm' ? vllmApiKey : undefined,
+        backend === 'vllm' ? (apiKeyOverride ?? vllmApiKey) : undefined,
         backend === 'omlx' && endpointUrlOverride ? endpointUrlOverride : omlxUrl,
+        backend === 'omlx' ? (omlxApiKeyOverride ?? omlxApiKey) : undefined,
       );
       // Drop superseded responses so refreshes cannot restore stale hardware or backend state.
       if (profileRequestId.current !== requestId) return;
       setProfile(data);
 
       const nextInstalled = new Set(data.installedCatalogIds ?? []);
-      // Preserve earlier opt-outs while selecting newly detected models.
-      const newlySelectable = getDefaultSelectedModelIds(data, backend).filter((id) => !previouslyInstalled.has(id));
-      // Remove unavailable host-served models because selection budgeting would treat them
-      // as pending downloads and could block Continue.
+      // Remove host-served models the engine no longer serves and the Hub cannot download (vLLM),
+      // because selection budgeting would treat them as pending downloads and could block Continue.
       const isStillSelectable = (id: string) => {
         const modelBackend = data.availableModels.find((m) => m.id === id)?.backend;
-        return !isHostServedBackend(modelBackend) || nextInstalled.has(id);
+        return !isHostServedBackend(modelBackend) || isHubDownloadableBackend(modelBackend) || nextInstalled.has(id);
       };
-      const nextSelected = [...new Set([...selectedModelIdsRef.current, ...newlySelectable])].filter(isStillSelectable);
-      setSelectedModelIds(nextSelected);
+      const stillSelected = selectedModelIdsRef.current.filter(isStillSelectable);
 
       // Replace a catalog-seeded default when the backend does not serve it, but preserve an
       // installed or explicitly selected default.
       const preferred = preferredModelIdRef.current;
-      setPreferredModelId(
-        preferred && (nextInstalled.has(preferred) || nextSelected.includes(preferred))
-          ? preferred
-          : getDefaultPreferredModelId(data, backend, nextSelected),
-      );
+      const keptPreferred = preferred && (nextInstalled.has(preferred) || stillSelected.includes(preferred)) ? preferred : undefined;
+      // Preserve earlier opt-outs while selecting newly detected models, which are ticked as the first
+      // load would tick them, around the Default kept above. With that one gone, a chat model still
+      // ticked stands as the Default, so a model off the list that arrives is not ticked in its place.
+      // Only with no chat model ticked is a new one ticked as the Default. The new models are ranked
+      // among themselves, so a model the person unticked earlier does not decide which one that is.
+      const standingDefault = keptPreferred ?? getDefaultPreferredModelId(data, backend, stillSelected, true);
+      // A model the person unticked stays unticked when it arrives.
+      const newlyInstalled = {
+        ...data,
+        installedCatalogIds: [...nextInstalled].filter((id) => !previouslyInstalled.has(id) && !untickedModelIdsRef.current.has(id)),
+      };
+      const newlySelectable = getDefaultSelectedModelIds(newlyInstalled, backend, standingDefault, stillSelected);
+      const nextSelected = [...new Set([...stillSelected, ...newlySelectable])];
+      setSelectedModelIds(nextSelected);
+      // Someone who unticked every chat model left no Default. The re-check keeps it that way unless it
+      // ticked a model, so the Default never lands on a card left unticked.
+      const nextPreferred = keptPreferred ?? getDefaultPreferredModelId(data, backend, nextSelected, defaultClearedRef.current);
+      if (nextPreferred) defaultClearedRef.current = false;
+      setPreferredModelId(nextPreferred);
     } catch (e) {
       // Keep the in-progress setup after a secondary refresh fails, but retain a diagnostic.
       console.warn('Re-check could not refresh the installed model list', e);
@@ -376,7 +453,7 @@ export const AiSetupStep = ({
     const results = await installAndStartInferenceRunners([runner]);
     const result = results.find((candidate) => candidate.runner === runner);
     if (!result || result.state === 'failed' || result.state === 'skipped') {
-      throw new Error('The local runner could not be installed on this machine.');
+      throw new Error(result?.detail || 'The local runner could not be installed on this machine.');
     }
 
     const endpoint = result.endpointUrl;
@@ -384,19 +461,43 @@ export const AiSetupStep = ({
       throw new Error('The local runner did not return a reachable endpoint.');
     }
 
+    // The desktop starts vLLM with an API key of its own; the Hub saves it with the URL.
+    const apiKey = runner === 'vllm' ? (result.apiKey ?? vllmApiKey) : undefined;
     if (runner === 'vllm') {
       setVllmUrl(endpoint);
-      const status = (await fetchVllmInstallStatus(endpoint, vllmApiKey)) as VllmStatus;
+      if (result.apiKey) setVllmApiKey(result.apiKey);
+      const status = (await fetchVllmInstallStatus(endpoint, apiKey)) as VllmStatus;
       setVllmStatus(status);
       if (!status.ready) throw new Error('The local runner is still starting.');
     } else {
       setOmlxUrl(endpoint);
-      const status = (await fetchOmlxInstallStatus(endpoint)) as OmlxStatus;
+      // The key the desktop app set when it installed oMLX, or the one oMLX already had. The Hub needs
+      // it to download models through oMLX. It is stored now, as a key set from the card is: oMLX takes
+      // a first key only once, so a setup left before Continue would leave the Hub without it.
+      const apiKey = result.apiKey?.trim() || omlxApiKey;
+      if (result.apiKey?.trim()) {
+        setOmlxApiKey(result.apiKey.trim());
+        try {
+          await saveOmlxApiKey(result.apiKey.trim(), 'omlx');
+        } catch {
+          // Continue saves it with the rest.
+        }
+      }
+      const status = (await fetchOmlxInstallStatus(endpoint, apiKey)) as OmlxStatus;
       setOmlxStatus(status);
       if (!status.ready) throw new Error('The local runner is still starting.');
+      await refreshInstalledModels(runner, endpoint, undefined, apiKey);
+      return;
     }
 
-    await refreshInstalledModels(runner, endpoint);
+    await refreshInstalledModels(runner, endpoint, apiKey);
+  };
+
+  // The key the desktop app just gave oMLX. Continue saves it with the rest; it is stored now too, so a
+  // setup left before Continue still leaves the Hub able to download through oMLX.
+  const handleOmlxAdminKeySet = async (apiKey: string) => {
+    setOmlxApiKey(apiKey);
+    await saveOmlxApiKey(apiKey, 'omlx');
   };
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: only on mount
@@ -426,10 +527,18 @@ export const AiSetupStep = ({
     setSelectedBackend(backend);
     const requestId = ++profileRequestId.current;
     try {
-      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, omlxUrl);
+      const data = await fetchInferenceOnboardingProfile(
+        backend,
+        vllmUrl,
+        backend === 'vllm' ? vllmApiKey : undefined,
+        omlxUrl,
+        backend === 'omlx' ? omlxApiKey : undefined,
+      );
       // Ignore a slower response from an earlier backend choice.
       if (profileRequestId.current === requestId) {
         setProfile(data);
+        untickedModelIdsRef.current = new Set();
+        defaultClearedRef.current = false;
         const defaultSelected = getDefaultSelectedModelIds(data, backend);
         setSelectedModelIds(defaultSelected);
         setPreferredModelId(getDefaultPreferredModelId(data, backend, defaultSelected));
@@ -447,27 +556,38 @@ export const AiSetupStep = ({
   };
 
   const handleToggleModel = (modelId: string) => {
-    const model = profile?.availableModels.find((m) => m.id === modelId);
+    if (!profile) return;
+    const model = profile.availableModels.find((m) => m.id === modelId);
     if (!model) return;
-    const installed = new Set(profile?.installedCatalogIds ?? []);
-    // Host-served backends cannot hot-swap, so uninstalled models open their model page.
-    // Hub-loadable backends remain selectable.
-    if (isHostServedBackend(model?.backend) && !installed.has(modelId) && !selectedModelIds.includes(modelId)) {
+    const installed = new Set(profile.installedCatalogIds ?? []);
+    // vLLM serves only the weights on its host, so a model it does not serve opens its model page.
+    // The Hub downloads every other engine's models, oMLX's through oMLX's admin API.
+    if (
+      !isHubDownloadableBackend(model.backend) &&
+      isHostServedBackend(model.backend) &&
+      !installed.has(modelId) &&
+      !selectedModelIds.includes(modelId)
+    ) {
       openExternal(`https://huggingface.co/${model.backendModelId}`);
       return;
     }
 
     const isRemoving = selectedModelIds.includes(modelId);
     const next = isRemoving ? selectedModelIds.filter((id) => id !== modelId) : [...selectedModelIds, modelId];
+    if (isRemoving) untickedModelIdsRef.current.add(modelId);
+    else untickedModelIdsRef.current.delete(modelId);
     setSelectedModelIds(next);
-    const isAgent = profile?.availableModels.some((m) => m.id === modelId && m.backend === selectedBackend && isAgentModel(m)) ?? false;
+    const isAgent = model.backend === selectedBackend && isAgentModel(model);
     if (isRemoving && modelId === preferredModelId) {
-      // The agent's preferred model was removed — fall back to another selected agent model.
-      const fallback = profile?.availableModels.find((m) => m.backend === selectedBackend && isAgentModel(m) && next.includes(m.id))?.id;
-      setPreferredModelId(fallback);
-    } else if (!isRemoving && isAgent && !preferredModelId) {
-      // First agent model added back — make it the preferred default.
-      setPreferredModelId(modelId);
+      // The agent's preferred model was removed: the same rule picks the next among the ticked ones.
+      const nextPreferred = getDefaultPreferredModelId(profile, selectedBackend, next, true);
+      defaultClearedRef.current = nextPreferred === undefined;
+      setPreferredModelId(nextPreferred);
+    } else if (!isRemoving && isAgent && !(preferredModelId && next.includes(preferredModelId))) {
+      // A chat model ticked while the Default is unticked (none, or a card offered for download) moves
+      // the badge to what Continue saves: the highest of the ticked chat models.
+      defaultClearedRef.current = false;
+      setPreferredModelId(getDefaultPreferredModelId(profile, selectedBackend, next, true));
     }
   };
 
@@ -507,7 +627,6 @@ export const AiSetupStep = ({
       profile.availableModels.filter((m) => selectedModels.includes(m.id)),
       installedCatalogIds,
       profile.resourceEstimate.availableDiskMb,
-      backendDisplayName(selectedBackend),
     );
     if (budget.overDisk) {
       installBlocked = true;
@@ -517,20 +636,31 @@ export const AiSetupStep = ({
     const effectivePreferredModelId =
       preferredModelId && selectedModels.includes(preferredModelId)
         ? preferredModelId
-        : selectedModels.find((id) => profile.availableModels.some((m) => m.id === id && isAgentModel(m)));
-    const embeddingBackend = selectedBackend === 'omlx' || selectedBackend === 'ollama' ? selectedBackend : EMBEDDING_INFERENCE_BACKEND;
+        : getDefaultPreferredModelId(profile, selectedBackend, selectedModels, true);
+    const embeddingBackend = selectedBackend === 'ollama' ? selectedBackend : EMBEDDING_INFERENCE_BACKEND;
     const effectivePreferredEmbeddingModelId = getDefaultPreferredAuxModelId(profile, embeddingBackend, isEmbeddingModel, selectedModels);
-    const effectivePreferredVisionModelId = getDefaultPreferredAuxModelId(profile, selectedBackend, isVisionModel, selectedModels);
+    // A vision model off the recommended list is a whole chat model, so it is not ticked (and pinned)
+    // for this. With nothing ticked that sees images, the one the engine has is still saved, as it was
+    // while every installed model was ticked; otherwise apps are handed one that may not be there. One
+    // the person unticked stays out, as it did then, and so does every one when no chat model is ticked.
+    const effectivePreferredVisionModelId =
+      getDefaultPreferredAuxModelId(profile, selectedBackend, isVisionModel, selectedModels) ??
+      (effectivePreferredModelId
+        ? getDefaultPreferredAuxModelId(
+            profile,
+            selectedBackend,
+            isVisionModel,
+            installedCatalogIds.filter((id) => !untickedModelIdsRef.current.has(id)),
+          )
+        : undefined);
 
+    const backendOf = (id: string) => profile.availableModels.find((m) => m.id === id)?.backend;
     return {
       agentFrameworks,
       selectedModels,
-      // The historical field name represents every Hub-loadable model.
-      ollamaSelectedModelIds: hubLoadableSelection(
-        selectedModels,
-        (id) => profile.availableModels.find((m) => m.id === id)?.backend,
-        effectivePreferredModelId,
-      ),
+      // The historical field name is the pin list: the Hub pins Ollama and Lemonade models only.
+      ollamaSelectedModelIds: hubLoadableSelection(selectedModels, backendOf, effectivePreferredModelId),
+      downloadModelIds: hubDownloadSelection(selectedModels, backendOf),
       backend: selectedBackend,
       cloudProviders: validProviders,
       preferredModelId: effectivePreferredModelId,
@@ -560,6 +690,7 @@ export const AiSetupStep = ({
       ...(selectedBackend === 'vllm' && vllmApiKey.trim() ? { vllmApiKey: vllmApiKey.trim() } : {}),
       ...(selectedBackend === 'vllm' && vllmUrl.trim() ? { vllmUrl: vllmUrl.trim() } : {}),
       ...(selectedBackend === 'omlx' && omlxUrl.trim() ? { omlxUrl: omlxUrl.trim() } : {}),
+      ...(selectedBackend === 'omlx' && omlxApiKey.trim() ? { omlxApiKey: omlxApiKey.trim() } : {}),
       ...(decodeEndpoint.trim() ? { decodeEndpoint: decodeEndpoint.trim() } : {}),
       ...(encodeEndpoint.trim() ? { encodeEndpoint: encodeEndpoint.trim() } : {}),
     };
@@ -593,6 +724,7 @@ export const AiSetupStep = ({
     vllmApiKey,
     vllmUrl,
     omlxUrl,
+    omlxApiKey,
     decodeEndpoint,
     encodeEndpoint,
     ollamaStatus,
@@ -674,12 +806,16 @@ export const AiSetupStep = ({
   const memoryStep = isInsufficient ? 3 : 5;
   const appsStep = isInsufficient ? 4 : 6;
   const cloudStep = isInsufficient ? 5 : 7;
-  // Host-run backends leave embeddings on Ollama, so the co-install warning covers all of them.
-  const ollamaEmbeddingsWarning = isHostServedBackend(selectedBackend) && ollamaStatus !== null && !ollamaStatus.ready && !checkingOllama;
+  // Host-run backends leave embeddings on Ollama, so the co-install warning covers all of them. In a
+  // live session it would say "not reachable yet" beside the Ollama card saying it can't run at all.
+  const ollamaEmbeddingsWarning =
+    isHostServedBackend(selectedBackend) && ollamaStatus !== null && !ollamaStatus.ready && !checkingOllama && !liveSession?.ollamaBlocked;
   const showTailscaleSetup = remoteAccess.includes('tailscale');
 
   return (
     <div className={embedded ? 'space-y-5' : 'space-y-5 max-h-[66vh] overflow-y-auto pr-2'} data-testid="ai-setup-step">
+      <LiveSessionNotice />
+
       <SystemOverview
         hardware={profile.hardware}
         tier={profile.tier}
@@ -741,6 +877,9 @@ export const AiSetupStep = ({
                   onRecheck={handleOmlxRecheck}
                   endpointUrl={omlxUrl}
                   onEndpointUrlChange={setOmlxUrl}
+                  apiKey={omlxApiKey}
+                  onApiKeyChange={setOmlxApiKey}
+                  onAdminKeySet={handleOmlxAdminKeySet}
                   onAutoInstall={canAutoInstallRunners ? () => handleAutoInstallRunner('omlx') : undefined}
                 />
               </BackendSetupGroup>
@@ -754,11 +893,11 @@ export const AiSetupStep = ({
               </BackendSetupGroup>
             )}
 
-            {(selectedBackend === 'vllm' || selectedBackend === 'lemonade') && (
+            {(selectedBackend === 'vllm' || selectedBackend === 'omlx' || selectedBackend === 'lemonade') && (
               <div className="space-y-3 border-t border-border pt-5" data-testid="embeddings-inference-setup">
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="text-sm font-semibold">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}</h3>
+                    <h3 className="text-sm font-medium">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}</h3>
                     <span className="rounded-full border border-primary/30 bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary">
                       {t('ONBOARDING_BADGE_RECOMMENDED')}
                     </span>
@@ -777,6 +916,8 @@ export const AiSetupStep = ({
               </div>
             )}
 
+            <LocalAiExposureNotice />
+
             <ManualEndpointsCard
               decodeEndpoint={decodeEndpoint}
               encodeEndpoint={encodeEndpoint}
@@ -788,7 +929,6 @@ export const AiSetupStep = ({
           <ResourceSummaryBar
             selectedModels={selectedModels}
             installedCatalogIds={installedCatalogIds}
-            backend={selectedBackend}
             availableStorageMb={availableDiskMb}
             totalMemoryMb={inferenceMemory.totalMb}
             availableMemoryMb={inferenceMemory.freeMb}
@@ -796,6 +936,7 @@ export const AiSetupStep = ({
 
           <RecommendedModels
             tier={profile.tier}
+            contextPlans={profile.contextPlans}
             recommendedModels={backendRecommendedModels}
             availableModels={backendAvailableModels}
             installedCatalogIds={installedCatalogIds}

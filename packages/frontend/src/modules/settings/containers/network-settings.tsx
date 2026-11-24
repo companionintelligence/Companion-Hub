@@ -1,13 +1,15 @@
-import { appContextQueryKey } from '@/api-client/@tanstack/react-query.gen';
+import { appContextQueryKey, getHardwareOptions } from '@/api-client/@tanstack/react-query.gen';
 import { cloudflareStatusOptions, tailscaleStatusOptions, tailscaleStatusQueryKey } from '@/lib/api-routes/named-status-routes';
 import { disconnect } from '@/api-client/sdk.gen';
 import type { TailscaleStatusDto } from '@/api-client/types.gen';
+import type { HardwareProfile } from '@ci-hub/common/types';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Check, Copy, Globe, Shield } from 'lucide-react';
+import { Check, Copy, Globe, Monitor, Shield } from 'lucide-react';
+import { useLiveSession } from '@/lib/inference/live-session';
 import { useDemoMode } from '@/lib/hooks/use-demo-mode';
 import { toast } from 'sonner';
 import { type CopyOrSelectOutcome, copyOrSelect } from '@/lib/copy-to-clipboard';
@@ -20,7 +22,6 @@ import { HubPoolSection } from './hub-pool-settings';
 interface CloudflareStatus {
   tunnelEnabled: boolean;
   tunnelId: string | null;
-  message: string;
 }
 
 interface TailscaleApiStatus {
@@ -100,6 +101,7 @@ const ServePermissionRefusal = ({ remedy, deniedSince }: { remedy: string; denie
 
 const TailscaleSidecarSection = () => {
   const { t } = useTranslation();
+  const liveSession = useLiveSession();
   const queryClient = useQueryClient();
   const demoMode = useDemoMode();
 
@@ -165,6 +167,7 @@ const TailscaleSidecarSection = () => {
       <SectionHeader
         icon={Shield}
         title={t('SETTINGS_NETWORK_PRIVATE_VPN_TITLE')}
+        description={t('SETTINGS_NETWORK_PRIVATE_VPN_SUBTITLE')}
         badge={<StatusBadge connected={!!active} label={active ? t('SETTINGS_NETWORK_ACTIVE') : t('SETTINGS_NETWORK_INACTIVE')} />}
         actions={
           active ? (
@@ -196,8 +199,8 @@ const TailscaleSidecarSection = () => {
       <CardContent className="space-y-3">
         {(data?.ip || data?.hostname || data?.backendState) && (
           <DetailGrid>
-            {data?.ip && <Detail label={t('COMMON_TAILSCALE_IP')} value={data.ip} />}
-            {data?.hostname && <Detail label={t('COMMON_HOSTNAME')} value={data.hostname} />}
+            {data?.ip && <Detail label={t('COMMON_TAILSCALE_IP')} value={data.ip} mono />}
+            {data?.hostname && <Detail label={t('COMMON_HOSTNAME')} value={data.hostname} mono />}
             {data?.backendState && <Detail label={t('SETTINGS_NETWORK_TAILSCALE_STATE')} value={data.backendState} />}
           </DetailGrid>
         )}
@@ -207,7 +210,7 @@ const TailscaleSidecarSection = () => {
             on screen for the reader to infer it from. */}
         {cliUnavailable && (
           <p className="rounded-md border border-warning/30 bg-warning/10 px-2.5 py-2 text-xs text-warning">
-            {t('SETTINGS_NETWORK_TAILSCALE_NOT_INSTALLED_DESC')}
+            {liveSession?.tailscaleBlocked ? t('SETTINGS_NETWORK_TAILSCALE_LIVE_SESSION') : t('SETTINGS_NETWORK_TAILSCALE_NOT_INSTALLED_DESC')}
           </p>
         )}
 
@@ -259,6 +262,7 @@ const CloudflareSection = () => {
       <SectionHeader
         icon={Globe}
         title={t('SETTINGS_NETWORK_CLOUDFLARE_TUNNEL')}
+        description={t('SETTINGS_NETWORK_CLOUDFLARE_SUBTITLE')}
         badge={
           <StatusBadge
             connected={!!status?.tunnelEnabled}
@@ -269,13 +273,49 @@ const CloudflareSection = () => {
       <CardContent className="space-y-3">
         {status?.tunnelId && (
           <DetailGrid>
-            <Detail label={t('SETTINGS_NETWORK_TUNNEL_ID')} value={status.tunnelId} />
+            <Detail label={t('SETTINGS_NETWORK_TUNNEL_ID')} value={status.tunnelId} mono />
           </DetailGrid>
         )}
-        {/* The tunnel's own message replaces the static section description: when the
-            tunnel is fine it says so in a few words, and when it is not it says why —
-            which the removed boilerplate never did. */}
-        {status?.message && <p className="text-xs text-muted-foreground">{status.message}</p>}
+        {/* The status route's `message` is one fixed sentence whatever the state ("managed by
+            CI-Cloud"), so the card says what to do when there is no tunnel instead. */}
+        {status?.tunnelEnabled ? null : (
+          <p className="text-sm text-muted-foreground" data-testid="cloudflare-tunnel-none">
+            {t('SETTINGS_NETWORK_CLOUDFLARE_NONE')}
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+};
+
+/**
+ * On the Docker engine inside WSL, WSL forwards the Hub's ports to this PC's loopback address only,
+ * so phones and other computers on the network can't open the Hub or its apps (CI-Hub#1933).
+ * Nothing else on this tab would explain why the PC's address doesn't work from them.
+ */
+const LocalNetworkSection = () => {
+  const { t } = useTranslation();
+  const { data: containerHostKind } = useQuery({
+    ...getHardwareOptions(),
+    select: (payload) => (payload as unknown as Partial<HardwareProfile> | null)?.gpu?.containerHostKind,
+    retry: false,
+  });
+
+  if (containerHostKind !== 'wsl-engine') {
+    return null;
+  }
+
+  return (
+    <Card data-testid="local-network-card">
+      <SectionHeader
+        icon={Monitor}
+        title={t('SETTINGS_NETWORK_LOCAL_TITLE')}
+        badge={<StatusBadge connected={false} label={t('SETTINGS_NETWORK_LOCAL_THIS_PC_ONLY')} />}
+      />
+      <CardContent>
+        <p className="rounded-md border border-warning/30 bg-warning/10 px-2.5 py-2 text-xs text-warning">
+          {t('SETTINGS_NETWORK_LOCAL_WSL_ENGINE_DESC')}
+        </p>
       </CardContent>
     </Card>
   );
@@ -283,6 +323,7 @@ const CloudflareSection = () => {
 
 export const NetworkSettingsContainer = () => (
   <div className="space-y-6" data-testid="network-settings">
+    <LocalNetworkSection />
     <TailscaleSidecarSection />
     <HubPoolSection />
     <CloudflareSection />

@@ -1,13 +1,15 @@
-import { Body, Controller, Delete, Get, HttpStatus, Param, ParseIntPipe, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
+import { ApiResponse } from '@nestjs/swagger';
 import type { Request } from 'express';
-import { TranslatableError } from '@/common/error/translatable-error';
 import { LoggerService } from '@/core/logger/logger.service';
 import { hubSessionOperatorUserId } from '@/core/portal/hub-session-operator';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { AuthGuard } from '@/modules/auth/auth.guard';
+import { HubManagerGuard, resolveWhoisService } from '@/modules/auth/hub-manager.guard';
 import { ApiKeyAdminService } from './api-key-admin.service';
-import { CreateApiKeyBody, UpdateApiKeyBody } from './api-key-admin.dto';
+import { ApiKeyListDto, CreateApiKeyBody, UpdateApiKeyBody } from './api-key-admin.dto';
+import { assertMayGrantFullCapability, mayGrantFullCapability } from './may-grant-full';
 
 /**
  * Operator-facing hub-wide API-key surface, powering the Settings → Security "API keys" card.
@@ -24,10 +26,14 @@ export class ApiKeyAdminController {
     private readonly logger: LoggerService,
   ) {}
 
-  /** List all stored API keys (operator + app-managed, every scope). Never returns raw keys. */
+  /**
+   * List all stored API keys (operator + app-managed, every scope). Never returns raw keys. Each says
+   * whether it can use the MCP tools that change the whole Hub, so an owner can see which to revoke.
+   */
   @Get()
-  async listKeys() {
-    return { keys: await this.adminService.listKeys() };
+  @ApiResponse({ type: ApiKeyListDto })
+  async listKeys(): Promise<ApiKeyListDto> {
+    return { keys: await this.adminService.listKeys(this.resolveWhois()) };
   }
 
   /**
@@ -52,6 +58,7 @@ export class ApiKeyAdminController {
    * organization owner or admin; see {@link mayGrantFull}.
    */
   @Post()
+  @UseGuards(HubManagerGuard)
   async createKey(@Body() body: CreateApiKeyBody, @Req() req: Request) {
     // Asked of the MCP surface only. `capability` is what a key may do with the *tools*, and the
     // owner/admin gate exists because 'full' reaches the destructive ones; an 'inference' key
@@ -78,6 +85,7 @@ export class ApiKeyAdminController {
    * tightening one takes nobody's permission.
    */
   @Patch(':id')
+  @UseGuards(HubManagerGuard)
   async updateKey(@Param('id', ParseIntPipe) id: number, @Body() body: UpdateApiKeyBody, @Req() req: Request) {
     if (body.capability === 'full') {
       await this.assertMayGrantFull(req);
@@ -88,55 +96,26 @@ export class ApiKeyAdminController {
 
   /** Revoke a key by id (create-new → roll-out → revoke-old is the no-downtime rotation flow). */
   @Delete(':id')
+  @UseGuards(HubManagerGuard)
   revokeKey(@Param('id', ParseIntPipe) id: number) {
     return this.adminService.revokeKey(id);
   }
 
-  /**
-   * ⚠ FULL CAPABILITY IS THE ORGANIZATION'S TO GIVE. A key acts with its creator's grants, but `full`
-   * also opens the destructive MCP tools, and some act on no app a per-app grant could bound: updating
-   * the Hub, and adding, re-enabling or deleting an app store. So who may hand it out is an owner's or
-   * admin's call, as it is in the Portal. Asked of WhoIs fresh and about no app (`isOrgManager`); every
-   * way of not knowing is a no.
-   *
-   * The exempt principals (the CLI, the Portal device push) are admitted by name, as
-   * `MarketplaceWhoIsService.lifecycleActor` names them, not through `isGrantExemptPrincipal`: one
-   * added to that list later is refused here until someone decides it may hand out `full` keys. Any
-   * other principal is refused and logged the way the other gates log it, because all its caller
-   * ever sees is a 403.
-   */
-  private async mayGrantFull(req: Request): Promise<boolean> {
-    switch (req.hubPrincipal) {
-      case 'cli':
-      case 'host-local':
-      case 'portal-device':
-        return true;
-      case 'session': {
-        const userId = hubSessionOperatorUserId(req);
-
-        return userId !== undefined && (await this.resolveWhois()?.isOrgManager(userId)) === true;
-      }
-      default:
-        this.logger.warn(`whois_unrecognised_principal principal=${req.hubPrincipal ?? 'none'} action=grant_full`);
-        return false;
-    }
+  /** See {@link mayGrantFullCapability}. */
+  private mayGrantFull(req: Request): Promise<boolean> {
+    return mayGrantFullCapability(req, this.resolveWhois(), this.logger);
   }
 
-  private async assertMayGrantFull(req: Request): Promise<void> {
-    if (!(await this.mayGrantFull(req))) {
-      throw new TranslatableError('API_KEY_FULL_ROLE_REQUIRED', {}, HttpStatus.FORBIDDEN);
-    }
+  private assertMayGrantFull(req: Request): Promise<void> {
+    return assertMayGrantFullCapability(req, this.resolveWhois(), this.logger);
   }
 
   /**
    * Resolved when asked, the way the lifecycle service resolves it, so the key module keeps depending
-   * on nothing but the database and the logger. `null` — cannot resolve — is a refusal, never a pass.
+   * on nothing but the database and the logger. `null` means it can't be resolved. That refuses full
+   * capability rather than passing it. The key list then marks no creator's role.
    */
   private resolveWhois(): MarketplaceWhoIsService | null {
-    try {
-      return this.moduleRef.get(MarketplaceWhoIsService, { strict: false }) ?? null;
-    } catch {
-      return null;
-    }
+    return resolveWhoisService(this.moduleRef);
   }
 }

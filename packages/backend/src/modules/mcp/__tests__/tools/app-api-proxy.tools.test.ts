@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import type { LifecycleActorFor } from '@/core/portal/lifecycle-actor';
+import { EnvUtils } from '@/modules/env/env.utils';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
@@ -12,6 +13,16 @@ import { McpToolRegistry } from '../../mcp-tool-registry.service';
 import { AgentConfigService } from '../../agents/agent-config.service';
 import { ApiProxyService } from '../../agents/api-proxy.service';
 import { AppsService } from '@/modules/apps/apps.service';
+
+/** An app whose installed compose names its main service, which the proxy looks up the address of. */
+function proxyFiles() {
+  const files = mock<AppFilesManager>();
+  files.getDockerComposeJson.mockResolvedValue({
+    path: '/apps/x/docker-compose.json',
+    content: { schemaVersion: 2, services: [{ name: 'web', image: 'app:latest', isMain: true }] },
+  } as never);
+  return files;
+}
 
 /** A key nobody is recorded as creating: the plainest caller the proxy tool acts for. */
 const asAgent = <T>(call: () => Promise<T>) => asKey({ ownerAppUrn: null, createdByUserId: null }, call);
@@ -260,7 +271,9 @@ describe('AppApiProxyTools', () => {
         appsService,
         registry,
         agentConfigService,
-        new ApiProxyService(mock<AppFilesManager>(), mock<LoggerService>(), lifecycle),
+        new ApiProxyService(proxyFiles(), mock<LoggerService>(), lifecycle, new EnvUtils(), {
+          getServiceAddressOnAppNetwork: vi.fn().mockResolvedValue('10.128.20.5'),
+        } as never),
       );
     });
 

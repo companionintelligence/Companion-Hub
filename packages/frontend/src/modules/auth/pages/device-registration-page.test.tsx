@@ -1,9 +1,11 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@/tests/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RegistrationStatus } from '@/lib/registration-status';
+import { getRegistrationSetupCode, setRegistrationSetupCode } from '@/lib/registration-api';
 import DeviceRegistrationPage from './device-registration-page';
 
 const {
+  addHubBreadcrumb,
   captureHubWarning,
   navigate,
   setHubSentryDeviceId,
@@ -16,6 +18,7 @@ const {
   prepareFreshRegistrationDetailed,
   probeRegistrationDomain,
 } = vi.hoisted(() => ({
+  addHubBreadcrumb: vi.fn(),
   captureHubWarning: vi.fn(),
   navigate: vi.fn(),
   setHubSentryDeviceId: vi.fn(),
@@ -42,7 +45,15 @@ vi.mock('react-router', async () => {
   };
 });
 
-vi.mock('@/lib/registration-api', () => ({
+// The setup-code helpers are the real ones: they only hold the code and read the address bar.
+vi.mock('@/lib/registration-api', async (importOriginal) => ({
+  ...(({ adoptSetupCodeFromDesktop, adoptSetupCodeFromUrl, getRegistrationSetupCode, setRegistrationSetupCode, SETUP_CODE_REQUIRED }) => ({
+    adoptSetupCodeFromDesktop,
+    adoptSetupCodeFromUrl,
+    getRegistrationSetupCode,
+    setRegistrationSetupCode,
+    SETUP_CODE_REQUIRED,
+  }))(await importOriginal<typeof import('@/lib/registration-api')>()),
   fetchRegistrationStatusResult,
   fetchDeviceRegistrationInfoResult,
   fetchRegistrationStateDrift,
@@ -53,6 +64,7 @@ vi.mock('@/lib/registration-api', () => ({
 }));
 
 vi.mock('@/lib/sentry', () => ({
+  addHubBreadcrumb,
   captureHubWarning,
   setHubSentryDeviceId,
 }));
@@ -163,7 +175,7 @@ describe('DeviceRegistrationPage', () => {
     expect(deviceId).toHaveClass('truncate');
     expect(deviceId).toHaveAttribute('title', 'device-123');
     expect(setHubSentryDeviceId).toHaveBeenCalledWith('device-123');
-    expect(screen.getByLabelText('Enter Pairing Code:')).toBeInTheDocument();
+    expect(screen.getByLabelText('Enter pairing code:')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Sign in to CI Account' })).toHaveAttribute('href', 'https://portal.example.com');
     expect(screen.getByRole('link', { name: 'Create account' })).toHaveAttribute(
       'href',
@@ -225,7 +237,7 @@ describe('DeviceRegistrationPage', () => {
     render(<DeviceRegistrationPage />);
 
     expect(await screen.findByRole('heading', { name: 'Registration status temporarily unavailable' })).toBeInTheDocument();
-    expect(screen.queryByLabelText('Enter Pairing Code:')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Enter pairing code:')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Retry status check' })).toBeInTheDocument();
     expect(navigate).not.toHaveBeenCalled();
   });
@@ -279,6 +291,34 @@ describe('DeviceRegistrationPage', () => {
     });
 
     expect(screen.queryByRole('button', { name: 'Retry status check' })).not.toBeInTheDocument();
+  });
+
+  it('leaves a trail for a status check that fails rather than reporting each one, and keeps polling', async () => {
+    vi.useFakeTimers();
+    fetchRegistrationStatusResult.mockResolvedValue({ ok: false, status: 0, data: undefined });
+
+    render(<DeviceRegistrationPage />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+
+    expect(fetchRegistrationStatusResult.mock.calls.length).toBeGreaterThan(3);
+    expect(screen.getByRole('heading', { name: 'Registration status temporarily unavailable' })).toBeInTheDocument();
+    expect(addHubBreadcrumb).toHaveBeenCalledWith('Device registration status temporarily unavailable', { status: 0 });
+    expect(captureHubWarning).not.toHaveBeenCalled();
+  });
+
+  it('leaves a trail for a device lookup that fails, and still tells the person on the page', async () => {
+    fetchDeviceRegistrationInfoResult.mockResolvedValue({ ok: false, status: 503, data: undefined });
+
+    render(<DeviceRegistrationPage />);
+
+    expect(await screen.findByText('Failed to get device information')).toBeInTheDocument();
+    expect(addHubBreadcrumb).toHaveBeenCalledWith('Device registration page could not load device info', { status: 503 });
+    expect(captureHubWarning).not.toHaveBeenCalled();
   });
 
   it('starts no new status check while the last one is still waiting for the Hub', async () => {
@@ -347,7 +387,7 @@ describe('DeviceRegistrationPage', () => {
       await vi.advanceTimersByTimeAsync(0);
     });
 
-    fireEvent.change(screen.getByLabelText('Enter Pairing Code:'), { target: { value: 'ABC123' } });
+    fireEvent.change(screen.getByLabelText('Enter pairing code:'), { target: { value: 'ABC123' } });
     fireEvent.click(screen.getByRole('button', { name: 'Register' }));
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
@@ -379,7 +419,7 @@ describe('DeviceRegistrationPage', () => {
       await vi.advanceTimersByTimeAsync(0);
     });
 
-    fireEvent.change(screen.getByLabelText('Enter Pairing Code:'), { target: { value: 'ABC123' } });
+    fireEvent.change(screen.getByLabelText('Enter pairing code:'), { target: { value: 'ABC123' } });
     fireEvent.click(screen.getByRole('button', { name: 'Register' }));
     for (let interval = 0; interval < 12; interval++) {
       await act(async () => {
@@ -396,7 +436,7 @@ describe('DeviceRegistrationPage', () => {
     fetchRegistrationStatusResult.mockResolvedValueOnce(statusOk('unregistered')).mockResolvedValue(statusOk('paired'));
 
     render(<DeviceRegistrationPage />);
-    fireEvent.change(await screen.findByLabelText('Enter Pairing Code:'), { target: { value: 'ABC123' } });
+    fireEvent.change(await screen.findByLabelText('Enter pairing code:'), { target: { value: 'ABC123' } });
     fireEvent.click(screen.getByRole('button', { name: 'Register' }));
 
     expect(await screen.findByRole('heading', { name: 'Provisioning your domain' })).toBeInTheDocument();
@@ -406,13 +446,140 @@ describe('DeviceRegistrationPage', () => {
     expect(screen.queryByText(/Your pairing code worked/)).not.toBeInTheDocument();
   });
 
+  describe('setup code', () => {
+    afterEach(() => {
+      setRegistrationSetupCode(null);
+      window.history.replaceState(null, '', '/');
+    });
+
+    it('takes the code from the link `cihub setup-code` prints and drops it from the address bar', async () => {
+      window.history.replaceState(null, '', '/device-registration?setup=ABCD-EFGH&x=1');
+
+      render(<DeviceRegistrationPage />);
+      await flushAsyncWork();
+
+      expect(getRegistrationSetupCode()).toBe('ABCD-EFGH');
+      expect(window.location.search).toBe('?x=1');
+    });
+
+    it('asks for the code when the Hub withholds the Portal link, and when it refuses a pairing for want of one', async () => {
+      fetchDeviceRegistrationInfoResult.mockResolvedValue({
+        ok: true,
+        status: 200,
+        data: { device_id: 'device-123', ci_cloud_url: 'https://portal.example', registration_url: null, setup_code_required: true },
+      });
+      pairWithCode.mockResolvedValue({ ok: true, status: 200, data: { success: false, code: 'SETUP_CODE_REQUIRED', message: 'no' } });
+
+      render(<DeviceRegistrationPage />);
+      await flushAsyncWork();
+
+      const field = screen.getByLabelText(/setup code/i);
+      const pairingInput = screen.getByLabelText('Enter pairing code:');
+      fireEvent.change(pairingInput, { target: { value: 'ABC123' } });
+      // A pairing could only be refused while the Hub is asking, so neither the button nor Enter sends one.
+      expect(screen.getByRole('button', { name: 'Register' })).toBeDisabled();
+      fireEvent.keyDown(pairingInput, { key: 'Enter' });
+      await flushAsyncWork();
+      expect(pairWithCode).not.toHaveBeenCalled();
+
+      // The Hub accepts the right code: it stops asking and hands over the link.
+      fetchDeviceRegistrationInfoResult.mockResolvedValue({
+        ok: true,
+        status: 200,
+        data: {
+          device_id: 'device-123',
+          ci_cloud_url: 'https://portal.example',
+          registration_url: 'https://portal.example/device/register',
+          setup_code_required: false,
+        },
+      });
+      const calls = fetchDeviceRegistrationInfoResult.mock.calls.length;
+      fireEvent.change(field, { target: { value: 'abcd-efgh' } });
+      expect(getRegistrationSetupCode()).toBe('ABCD-EFGH');
+      // A complete code asks the Hub again for the Portal link it withheld.
+      await waitFor(() => expect(fetchDeviceRegistrationInfoResult.mock.calls.length).toBeGreaterThan(calls));
+      // The field stays and says the code was accepted, rather than vanishing.
+      await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/setup code accepted/i));
+      expect(screen.getByLabelText(/setup code/i)).toHaveValue('ABCD-EFGH');
+      expect(screen.getByRole('button', { name: 'Register' })).toBeEnabled();
+
+      // Editing it takes the acceptance back until the Hub has seen the new code.
+      fireEvent.change(field, { target: { value: 'ABCD-EF' } });
+      expect(screen.queryByText(/setup code accepted/i)).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Register' })).toBeDisabled();
+    });
+
+    it('asks for the code at its own field when a Hub that had not asked refuses a pairing for want of one', async () => {
+      pairWithCode.mockResolvedValue({ ok: true, status: 200, data: { success: false, code: 'SETUP_CODE_REQUIRED', message: 'no' } });
+
+      render(<DeviceRegistrationPage />);
+      await flushAsyncWork();
+      expect(screen.queryByLabelText(/setup code/i)).not.toBeInTheDocument();
+
+      fireEvent.change(screen.getByLabelText('Enter pairing code:'), { target: { value: 'ABC123' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+      await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/setup code first/i));
+
+      // Marked at the setup code, which is what is wrong, not at the pairing code.
+      const field = screen.getByLabelText(/setup code/i);
+      expect(field).toHaveAttribute('aria-invalid', 'true');
+      expect(field).toHaveAttribute('aria-describedby', 'setup-code-error');
+      expect(screen.getByLabelText('Enter pairing code:')).not.toHaveAttribute('aria-invalid');
+      expect(screen.getByRole('button', { name: 'Register' })).toBeDisabled();
+    });
+
+    it('stops sending a code the Hub turned down, and never sends a half-typed one', async () => {
+      // The Hub keeps asking: the code typed is wrong.
+      fetchDeviceRegistrationInfoResult.mockResolvedValue({
+        ok: true,
+        status: 200,
+        data: { device_id: 'device-123', ci_cloud_url: 'https://portal.example', registration_url: null, setup_code_required: true },
+      });
+
+      render(<DeviceRegistrationPage />);
+      await flushAsyncWork();
+      const field = screen.getByLabelText(/setup code/i);
+
+      fireEvent.change(field, { target: { value: 'WXYZ' } });
+      expect(getRegistrationSetupCode()).toBeNull();
+
+      fireEvent.change(field, { target: { value: 'WXYZ-0000' } });
+      // Turned down: forgotten, so the page's checks every few seconds don't spend the lockout.
+      await waitFor(() => expect(getRegistrationSetupCode()).toBeNull());
+      expect(screen.getByRole('alert')).toHaveTextContent(/not right/i);
+      expect(field).toHaveAttribute('aria-invalid', 'true');
+      expect(screen.getByLabelText('Enter pairing code:')).not.toHaveAttribute('aria-invalid');
+      // Still in the field, for the person to correct.
+      expect(field).toHaveValue('WXYZ-0000');
+    });
+
+    it('never shows the field when the code came with the link and the Hub accepted it', async () => {
+      window.history.replaceState(null, '', '/device-registration?setup=ABCD-EFGH');
+      fetchDeviceRegistrationInfoResult.mockResolvedValue({
+        ok: true,
+        status: 200,
+        data: {
+          device_id: 'device-123',
+          ci_cloud_url: 'https://portal.example',
+          registration_url: 'https://portal.example/x',
+          setup_code_required: false,
+        },
+      });
+
+      render(<DeviceRegistrationPage />);
+      await flushAsyncWork();
+
+      expect(screen.queryByLabelText(/setup code/i)).not.toBeInTheDocument();
+    });
+  });
+
   it('submits pairing without immediate navigation when status remains unregistered', async () => {
     render(<DeviceRegistrationPage />);
     await flushAsyncWork();
 
     expect(screen.getByRole('heading', { name: 'Step 2: Connect this device' })).toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText('Enter Pairing Code:'), { target: { value: 'ABC123' } });
+    fireEvent.change(screen.getByLabelText('Enter pairing code:'), { target: { value: 'ABC123' } });
     fireEvent.click(screen.getByRole('button', { name: 'Register' }));
 
     await waitFor(() => {
@@ -441,7 +608,7 @@ describe('DeviceRegistrationPage', () => {
     render(<DeviceRegistrationPage />);
     await flushAsyncWork();
 
-    fireEvent.change(screen.getByLabelText('Enter Pairing Code:'), { target: { value: 'ABC123' } });
+    fireEvent.change(screen.getByLabelText('Enter pairing code:'), { target: { value: 'ABC123' } });
     fireEvent.click(screen.getByRole('button', { name: 'Register' }));
 
     await waitFor(() => {
@@ -465,7 +632,7 @@ describe('DeviceRegistrationPage', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
-    fireEvent.change(screen.getByLabelText('Enter Pairing Code:'), { target: { value: 'ABC123' } });
+    fireEvent.change(screen.getByLabelText('Enter pairing code:'), { target: { value: 'ABC123' } });
     fireEvent.click(screen.getByRole('button', { name: 'Register' }));
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
@@ -482,7 +649,7 @@ describe('DeviceRegistrationPage', () => {
     expect(screen.getByText(portalTimeout)).toBeInTheDocument();
 
     // Once the person starts on a new code, the dialog asks for its choice again.
-    fireEvent.change(screen.getByLabelText('Enter Pairing Code:'), { target: { value: 'XYZ789' } });
+    fireEvent.change(screen.getByLabelText('Enter pairing code:'), { target: { value: 'XYZ789' } });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5_000);
     });
@@ -518,7 +685,7 @@ describe('DeviceRegistrationPage', () => {
       await vi.advanceTimersByTimeAsync(5_000);
     });
     expect(fetchRegistrationStateDrift).toHaveBeenCalledTimes(2);
-    fireEvent.change(screen.getByLabelText('Enter Pairing Code:'), { target: { value: 'ABC123' } });
+    fireEvent.change(screen.getByLabelText('Enter pairing code:'), { target: { value: 'ABC123' } });
     fireEvent.click(screen.getByRole('button', { name: 'Register' }));
 
     // It answers mid-attempt: the attempt reached the Portal, so it finds the device there.
@@ -639,7 +806,7 @@ describe('DeviceRegistrationPage', () => {
       pairWithCode.mockResolvedValue({ ok: true, status: 201, data: { success: false, ...data } });
 
       render(<DeviceRegistrationPage />);
-      fireEvent.change(await screen.findByLabelText('Enter Pairing Code:'), { target: { value: 'ABC123' } });
+      fireEvent.change(await screen.findByLabelText('Enter pairing code:'), { target: { value: 'ABC123' } });
       fireEvent.click(screen.getByRole('button', { name: 'Register' }));
 
       await waitFor(() => {
@@ -820,7 +987,7 @@ describe('DeviceRegistrationPage', () => {
     render(<DeviceRegistrationPage />);
 
     // The pairing form renders so the user can re-pair...
-    expect(await screen.findByLabelText('Enter Pairing Code:')).toBeInTheDocument();
+    expect(await screen.findByLabelText('Enter pairing code:')).toBeInTheDocument();
     // ...with an explanation of why remote access needs attention...
     expect(screen.getByText(/public URL is offline/i)).toBeInTheDocument();
     // ...device info is loaded so the device ID is shown (not stuck "Loading device ID...")...
@@ -875,6 +1042,14 @@ describe('DeviceRegistrationPage', () => {
       delete win.__TAURI_INTERNALS__;
     });
 
+    /** The link's code waits in a dialog: says yes to it, and to nothing else. */
+    async function pairWithLinkCode(code: string) {
+      const dialog = await screen.findByTestId('registration-link-code-dialog');
+      expect(within(dialog).getByTestId('registration-link-code')).toHaveTextContent(code);
+      expect(pairWithCode).not.toHaveBeenCalled();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Pair with this code' }));
+    }
+
     async function openScreenAgain() {
       render(<DeviceRegistrationPage />);
       expect(await screen.findByRole('heading', { name: 'Step 2: Connect this device' })).toBeInTheDocument();
@@ -884,11 +1059,32 @@ describe('DeviceRegistrationPage', () => {
       });
     }
 
+    it('never pairs because a link arrived: it asks, and Cancel pairs nothing and empties the box', async () => {
+      // Anyone can write a cihub://pair link, and an unpaired desktop Hub supplies its own setup code.
+      const first = render(<DeviceRegistrationPage />);
+      await waitFor(() => expect(shell.pairListeners.length).toBeGreaterThan(0));
+
+      act(() => openPairingLink('ABC123'));
+      const dialog = await screen.findByTestId('registration-link-code-dialog');
+      await flushAsyncWork();
+      expect(pairWithCode).not.toHaveBeenCalled();
+
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+      await waitFor(() => expect(screen.queryByTestId('registration-link-code-dialog')).not.toBeInTheDocument());
+      expect(screen.getByLabelText('Enter pairing code:')).toHaveValue('');
+      expect(pairWithCode).not.toHaveBeenCalled();
+
+      first.unmount();
+      await openScreenAgain();
+      expect(pairWithCode).not.toHaveBeenCalled();
+    });
+
     it('submits a link opened on this screen once, and leaves no copy for the next visit', async () => {
       const first = render(<DeviceRegistrationPage />);
       await waitFor(() => expect(shell.pairListeners.length).toBeGreaterThan(0));
 
       act(() => openPairingLink('ABC123'));
+      await pairWithLinkCode('ABC123');
 
       await waitFor(() => expect(pairWithCode).toHaveBeenCalledWith('ABC123', { confirmMove: false }));
       await waitFor(() => expect(shell.parkedPairingCode).toBeNull());
@@ -904,6 +1100,7 @@ describe('DeviceRegistrationPage', () => {
       await waitFor(() => expect(shell.pairListeners.length).toBeGreaterThan(0));
 
       act(() => openPairingLink('ABC123'));
+      await pairWithLinkCode('ABC123');
       await waitFor(() => expect(pairWithCode).toHaveBeenCalledWith('ABC123', { confirmMove: false }));
       // Linux and Windows hand the app every link twice.
       act(() => openPairingLink('ABC123'));
@@ -922,6 +1119,7 @@ describe('DeviceRegistrationPage', () => {
       sessionStorage.setItem(STASH_KEY, 'DEF456');
 
       const first = render(<DeviceRegistrationPage />);
+      await pairWithLinkCode('DEF456');
 
       await waitFor(() => expect(pairWithCode).toHaveBeenCalledWith('DEF456', { confirmMove: false }));
       await waitFor(() => expect(sessionStorage.getItem(STASH_KEY)).toBeNull());
@@ -942,10 +1140,11 @@ describe('DeviceRegistrationPage', () => {
       await waitFor(() => expect(shell.pairListeners.length).toBeGreaterThan(0));
 
       act(() => openPairingLink('GHI789'));
+      await pairWithLinkCode('GHI789');
 
       await waitFor(() => expect(toast.error).toHaveBeenCalledWith('That pairing code is no longer valid. Ask for a new one.'));
       // The code stays in the box, so Register can still retry it by hand.
-      expect(screen.getByLabelText('Enter Pairing Code:')).toHaveValue('GHI789');
+      expect(screen.getByLabelText('Enter pairing code:')).toHaveValue('GHI789');
 
       first.unmount();
       await openScreenAgain();

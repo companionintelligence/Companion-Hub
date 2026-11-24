@@ -5,9 +5,13 @@ import {
   dynamicComposeSchema as dynamicComposeSchemaZod,
   dynamicComposeObject,
   dynamicComposeFormSchema,
+  customAppComposeSchema,
+  customAppComposeFormSchema,
   collectServiceSecurityViolations,
+  saveViolationsFor,
   TRUSTED_APP_SECURITY_ALLOWLIST,
 } from '../dynamic-compose.js';
+import { parseInstalledComposeJson } from '../utils/convert-legacy-schema.js';
 import type { ZodAny } from 'zod';
 
 type ValidationResult<T> = { success: true; data: T } | { success: false };
@@ -348,6 +352,103 @@ schemas.forEach(({ name, serviceSchema, dynamicComposeSchema, safeParse }) => {
           expect(result.success).toBe(false);
         });
 
+        // The Hub finds an app's containers by these labels. One that names another app's URN made the
+        // Hub take this container for that app's.
+        it.each(['ci-hub.appurn', 'ci-hub.managed', 'ci-os-hub.appurn', 'CI-Hub.appurn', 'ci-hub.anything'])(
+          'should reject the reserved label %s and name it',
+          (label) => {
+            const service = { image: 'nginx:latest', name: 'web', extraLabels: { [label]: 'n8n:ci-marketplace', 'my.label': 'kept' } };
+
+            const result = serviceSchema.safeParse(service);
+            expect(result.success).toBe(false);
+            expect(result.error?.issues).toEqual([
+              expect.objectContaining({ message: 'CUSTOM_APP_ERROR_LABEL_RESERVED', path: ['extraLabels', label], params: { label } }),
+            ]);
+          },
+        );
+
+        it('should accept labels outside the Hub namespace', () => {
+          const service = {
+            image: 'nginx:latest',
+            name: 'web',
+            extraLabels: {
+              'traefik.http.routers.{{CI_HUB_APP_ID}}.middlewares': '{{CI_HUB_APP_ID}}-auth@docker',
+              'com.example.ci-hub.appurn': 'x',
+              'ci-hubx.appurn': 'y',
+            },
+          };
+
+          expect(serviceSchema.safeParse(service).success).toBe(true);
+        });
+
+        // One Traefik reads every app's labels. A router of this app's that sent its traffic to
+        // another app's service reached that app's backend with no Hub login.
+        it('should reject a Traefik label that reaches another app and name it', () => {
+          const label = 'traefik.http.routers.{{CI_HUB_APP_ID}}.service';
+          const service = { image: 'nginx:latest', name: 'web', extraLabels: { [label]: 'n8n-ci-marketplace', 'my.label': 'kept' } };
+
+          const result = serviceSchema.safeParse(service);
+          expect(result.success).toBe(false);
+          expect(result.error?.issues).toEqual([
+            expect.objectContaining({
+              message: 'CUSTOM_APP_ERROR_TRAEFIK_SERVICE_NOT_OWN',
+              path: ['extraLabels', label],
+              params: { label, target: 'n8n-ci-marketplace', placeholder: '{{CI_HUB_APP_ID}}' },
+            }),
+          ]);
+        });
+
+        it('should reject a Traefik rule for another host in an architecture override', () => {
+          const label = 'traefik.http.routers.{{CI_HUB_APP_ID}}-admin.rule';
+          const compose = {
+            schemaVersion: 2,
+            services: [{ image: 'nginx:latest', name: 'web', isMain: true }],
+            overrides: [{ architecture: 'arm64', services: [{ name: 'web', extraLabels: { [label]: 'Host(`n8n.example.com`)' } }] }],
+          };
+
+          const result = dynamicComposeSchema.safeParse(compose);
+          expect(result.error?.issues).toEqual([
+            expect.objectContaining({
+              message: 'CUSTOM_APP_ERROR_TRAEFIK_RULE_NOT_OWN_HOST',
+              path: ['overrides', 0, 'services', 0, 'extraLabels', label],
+            }),
+          ]);
+        });
+
+        it('should reject a reserved label in an architecture override', () => {
+          const compose = {
+            schemaVersion: 2,
+            services: [{ image: 'nginx:latest', name: 'web', isMain: true }],
+            overrides: [{ architecture: 'arm64', services: [{ name: 'web', extraLabels: { 'ci-hub.appurn': 'n8n:ci-marketplace' } }] }],
+          };
+
+          const result = dynamicComposeSchema.safeParse(compose);
+          expect(result.success).toBe(false);
+          expect(result.error?.issues).toContainEqual(
+            expect.objectContaining({
+              message: 'CUSTOM_APP_ERROR_LABEL_RESERVED',
+              path: ['overrides', 0, 'services', 0, 'extraLabels', 'ci-hub.appurn'],
+            }),
+          );
+        });
+
+        // The editor names the service and the override from this path. It was the compose's root.
+        it('should point a refused override at the override service', () => {
+          const compose = {
+            schemaVersion: 2,
+            services: [{ image: 'nginx:latest', name: 'web', isMain: true }],
+            overrides: [
+              { architecture: 'amd64', services: [{ name: 'web', image: 'nginx:1' }] },
+              { architecture: 'arm64', services: [{ name: 'web', privileged: true }] },
+            ],
+          };
+
+          const result = dynamicComposeSchema.safeParse(compose);
+          expect(result.error?.issues).toEqual([
+            expect.objectContaining({ message: 'CUSTOM_APP_ERROR_PRIVILEGED_NOT_ALLOWED', path: ['overrides', 1, 'services', 0, 'privileged'] }),
+          ]);
+        });
+
         it('should reject docker.sock host mounts', () => {
           const service = {
             image: 'nginx:latest',
@@ -447,6 +548,33 @@ schemas.forEach(({ name, serviceSchema, dynamicComposeSchema, safeParse }) => {
 
           const result = safeParse(serviceSchema, service);
           expect(result.success).toBe(false);
+        });
+
+        describe('Container Runtime (Kata & Confidential Containers)', () => {
+          it('should validate valid runtimes (kata, kata-qemu, kata-cc, runc)', () => {
+            for (const runtime of ['kata', 'kata-qemu', 'kata-cc', 'kata-clh', 'kata-fc', 'runc', 'crun']) {
+              const service = {
+                image: 'nginx:latest',
+                name: 'web-server',
+                runtime,
+              };
+              const result = safeParse(serviceSchema, service);
+              expect(result.success).toBe(true);
+              if (result.success) {
+                expect(result.data.runtime).toBe(runtime);
+              }
+            }
+          });
+
+          it('should reject invalid runtime names with special characters', () => {
+            const service = {
+              image: 'nginx:latest',
+              name: 'web-server',
+              runtime: 'kata; rm -rf /',
+            };
+            const result = safeParse(serviceSchema, service);
+            expect(result.success).toBe(false);
+          });
         });
       });
     });
@@ -1174,6 +1302,17 @@ describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
     }
   });
 
+  it('flags a securityOpt entry that Compose would expand into one that switches confinement off', () => {
+    // The text matches no confinement pattern; Compose turns it into one at up time.
+    for (const opt of ['${A:-apparmor=unconfined}', '${B:-systempaths=unconfined}', '${C:-label=disable}', 'seccomp=${S}', '$OPT', '$${X}']) {
+      expect(collectServiceSecurityViolations({ securityOpt: [opt] }).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_SECURITY_OPT_NOT_ALLOWED');
+    }
+    // A grant names a literal, so it never clears an expansion.
+    expect(
+      collectServiceSecurityViolations({ securityOpt: ['${A:-seccomp=unconfined}'] }, { securityOpt: ['seccomp=unconfined'] }).map((v) => v.message),
+    ).toContain('CUSTOM_APP_ERROR_SECURITY_OPT_NOT_ALLOWED');
+  });
+
   it('leaves securityOpt entries that tighten confinement alone', () => {
     // Matched on the VALUE half, so a real profile and `no-new-privileges` pass.
     expect(collectServiceSecurityViolations({ securityOpt: ['no-new-privileges:true', 'apparmor=my-profile'] })).toHaveLength(0);
@@ -1310,6 +1449,27 @@ describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
     expect(collectServiceSecurityViolations({ pid: 'host' }).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_PID_HOST_NOT_ALLOWED');
     expect(collectServiceSecurityViolations({ networkMode: 'host' }, { networkModeHost: true })).toHaveLength(0);
     expect(collectServiceSecurityViolations({ pid: 'host' }, { pidHost: true })).toHaveLength(0);
+  });
+
+  it('flags a pid Compose would expand to the host namespace, grant or not', () => {
+    for (const pid of ['${P:-host}', '$PID', 'container:${C}', ' HOST ']) {
+      expect(collectServiceSecurityViolations({ pid }).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_PID_HOST_NOT_ALLOWED');
+    }
+    expect(collectServiceSecurityViolations({ pid: '${P:-host}' }, { pidHost: true }).map((v) => v.message)).toContain(
+      'CUSTOM_APP_ERROR_PID_HOST_NOT_ALLOWED',
+    );
+    // A pid mode that stays inside the app is still left alone.
+    expect(collectServiceSecurityViolations({ pid: 'service:db' })).toHaveLength(0);
+  });
+
+  it('already refuses an expansion in the settings checked against an allow-list', () => {
+    expect(collectServiceSecurityViolations({ networkMode: '${N:-host}' }).map((v) => v.message)).toContain(
+      'CUSTOM_APP_ERROR_NETWORK_MODE_NOT_ALLOWED',
+    );
+    expect(collectServiceSecurityViolations({ capAdd: ['${C:-SYS_ADMIN}'] }).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_CAP_ADD_NOT_ALLOWED');
+    expect(collectServiceSecurityViolations({ devices: ['${D:-/dev/sda}:/dev/sda'] }).map((v) => v.message)).toContain(
+      'CUSTOM_APP_ERROR_DEVICE_NOT_ALLOWED',
+    );
   });
 
   it('flags denied host-path binds and honors per-path grants', () => {
@@ -1528,5 +1688,129 @@ describe('dynamicComposeFormSchema', () => {
       overrides: [{ architecture: 'arm64', services: [{ privileged: true }] }],
     });
     expect(result.success).toBe(false);
+  });
+});
+
+describe('customAppComposeSchema (what saving a custom app accepts)', () => {
+  const compose = (extra: Record<string, unknown>) => ({
+    schemaVersion: 2,
+    services: [{ name: 'web', image: 'nginx:alpine', internalPort: 80, isMain: true, ...extra }],
+  });
+
+  const refused: [string, Record<string, unknown>, string, (string | number)[]][] = [
+    ['an added capability', { capAdd: ['SYS_ADMIN'] }, 'CUSTOM_APP_ERROR_CAP_ADD_NOT_ALLOWED', ['capAdd', 0]],
+    ['a host device', { devices: ['/dev/mem:/dev/mem'] }, 'CUSTOM_APP_ERROR_DEVICE_NOT_ALLOWED', ['devices', 0]],
+    ['seccomp switched off', { securityOpt: ['seccomp=unconfined'] }, 'CUSTOM_APP_ERROR_SECURITY_OPT_NOT_ALLOWED', ['securityOpt', 0]],
+    ["the host's processes", { pid: 'host' }, 'CUSTOM_APP_ERROR_PID_HOST_NOT_ALLOWED', ['pid']],
+    ["another container's network", { networkMode: 'container:ci-hub' }, 'CUSTOM_APP_ERROR_NETWORK_MODE_HOST_NOT_ALLOWED', ['networkMode']],
+    ['a named network', { networkMode: 'mynet' }, 'CUSTOM_APP_ERROR_NETWORK_MODE_NOT_ALLOWED', ['networkMode']],
+  ];
+
+  it.each(refused)('refuses %s with the words Start would use, on the service that asked', (_name, extra, message, path) => {
+    const { success, error } = customAppComposeSchema.safeParse(compose(extra));
+    expect(success).toBe(false);
+    expect(error?.issues).toEqual([expect.objectContaining({ message, path: ['services', 0, ...path] })]);
+  });
+
+  it('holds the form schema to the same rule', () => {
+    const { schemaVersion: _version, ...form } = compose({ capAdd: ['SYS_ADMIN'] });
+    const { success, error } = customAppComposeFormSchema.safeParse(form);
+    expect(success).toBe(false);
+    expect(error?.issues[0]?.message).toBe('CUSTOM_APP_ERROR_CAP_ADD_NOT_ALLOWED');
+  });
+
+  it('refuses the same settings in an override, which Start applies on that architecture', () => {
+    const { success, error } = customAppComposeSchema.safeParse({
+      ...compose({}),
+      overrides: [{ architecture: 'arm64', services: [{ name: 'web', capAdd: ['SYS_ADMIN'] }] }],
+    });
+    expect(success).toBe(false);
+    expect(error?.issues).toEqual([
+      expect.objectContaining({ message: 'CUSTOM_APP_ERROR_CAP_ADD_NOT_ALLOWED', path: ['overrides', 0, 'services', 0, 'capAdd', 0] }),
+    ]);
+  });
+
+  it('reports privileged once, as the schema already did', () => {
+    const { error } = customAppComposeSchema.safeParse(compose({ privileged: true }));
+    expect(error?.issues.map((issue) => issue.message)).toEqual(['CUSTOM_APP_ERROR_PRIVILEGED_NOT_ALLOWED']);
+  });
+
+  it('reports a denied host path once', () => {
+    const { error } = customAppComposeSchema.safeParse(compose({ volumes: [{ hostPath: '/etc', containerPath: '/x' }] }));
+    expect(error?.issues).toEqual([
+      expect.objectContaining({ message: 'CUSTOM_APP_ERROR_HOST_PATH_DENIED', path: ['services', 0, 'volumes', 0, 'hostPath'] }),
+    ]);
+  });
+
+  it('reports an invalid volume name once', () => {
+    const { error } = customAppComposeSchema.safeParse(compose({ volumes: [{ volumeName: '/var/run/docker.sock', containerPath: '/x' }] }));
+    expect(error?.issues).toEqual([
+      expect.objectContaining({ message: 'CUSTOM_APP_ERROR_VOLUME_NAME_INVALID', path: ['services', 0, 'volumes', 0, 'volumeName'] }),
+    ]);
+  });
+
+  it.each([
+    ['a denied host path', { hostPath: '/etc', containerPath: '/x' }, 'CUSTOM_APP_ERROR_HOST_PATH_DENIED', 'hostPath'],
+    ['an invalid volume name', { volumeName: '/var/run/docker.sock', containerPath: '/x' }, 'CUSTOM_APP_ERROR_VOLUME_NAME_INVALID', 'volumeName'],
+  ])('reports %s in an override once', (_name, volume, message, field) => {
+    const { error } = customAppComposeSchema.safeParse({
+      ...compose({}),
+      overrides: [{ architecture: 'arm64', services: [{ name: 'web', volumes: [volume] }] }],
+    });
+    expect(error?.issues).toEqual([expect.objectContaining({ message, path: ['overrides', 0, 'services', 0, 'volumes', 0, field] })]);
+  });
+
+  it('drops only the reports the schema already made, so a new rule on the same field is still refused', () => {
+    const newRule = { path: ['volumes', 0, 'hostPath'], message: 'CUSTOM_APP_ERROR_SOME_NEW_RULE' };
+    const repeated = { path: ['volumes', 0, 'hostPath'], message: 'CUSTOM_APP_ERROR_HOST_PATH_DENIED' };
+    expect(saveViolationsFor({ volumes: [{ hostPath: '/etc' }] }, [newRule, repeated])).toEqual([newRule]);
+  });
+
+  it('keeps a new rule on privileged, and drops the repeat', () => {
+    const newRule = { path: ['privileged'], message: 'CUSTOM_APP_ERROR_SOME_NEW_RULE' };
+    const repeated = { path: ['privileged'], message: 'CUSTOM_APP_ERROR_PRIVILEGED_NOT_ALLOWED' };
+    expect(saveViolationsFor({ privileged: true }, [newRule, repeated])).toEqual([newRule]);
+  });
+
+  it('still accepts what Start accepts', () => {
+    const allowed = compose({
+      capAdd: ['NET_BIND_SERVICE', 'CHOWN'],
+      devices: ['/dev/ttyUSB0:/dev/ttyUSB0', '/dev/dri:/dev/dri'],
+      securityOpt: ['no-new-privileges:true'],
+      networkMode: 'bridge',
+    });
+    expect(customAppComposeSchema.safeParse(allowed).success).toBe(true);
+    expect(customAppComposeSchema.safeParse(compose({ networkMode: 'service:db' })).success).toBe(true);
+  });
+
+  it.each(refused)('still reads an app saved earlier with %s, so it lists and its editor opens', (_name, extra) => {
+    expect(dynamicComposeSchemaZod.safeParse(compose(extra)).success).toBe(true);
+    expect(() => parseInstalledComposeJson(compose(extra))).not.toThrow();
+  });
+});
+
+describe('an environment variable with no value', () => {
+  const service = (environment: unknown) => ({ name: 'web', image: 'nginx:alpine', internalPort: 80, isMain: true, environment });
+
+  it.each([
+    ['an empty string', { key: 'FOO', value: '' }, 'CUSTOM_APP_ERROR_ENV_VALUE_MIN_LENGTH'],
+    // What the form sends for an empty field. It matches no branch and a bare union said "Invalid input".
+    ['no value', { key: 'FOO' }, 'CUSTOM_APP_ERROR_ENV_VALUE_REQUIRED'],
+  ])('names the rule for %s', (_name, variable, message) => {
+    const { success, error } = dynamicComposeFormSchema.safeParse({ services: [service([variable])] });
+    expect(success).toBe(false);
+    expect(error?.issues[0]).toMatchObject({ message, path: ['services', 0, 'environment', 0, 'value'] });
+  });
+
+  it("gives the form's resolver, which takes a union's first branch on a tie, the same words", () => {
+    const { error } = dynamicComposeFormSchema.safeParse({ services: [service([{ key: 'FOO' }])] });
+    const issue = error?.issues[0] as unknown as { errors: { message: string }[][] };
+    expect(issue.errors[0]?.[0]?.message).toBe('CUSTOM_APP_ERROR_ENV_VALUE_REQUIRED');
+  });
+
+  it('still takes a string, a number or a boolean', () => {
+    for (const value of ['bar', 0, 5, false, true]) {
+      expect(dynamicComposeFormSchema.safeParse({ services: [service([{ key: 'FOO', value }])] }).success, String(value)).toBe(true);
+    }
   });
 });

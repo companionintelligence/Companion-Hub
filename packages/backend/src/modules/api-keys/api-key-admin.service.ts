@@ -1,8 +1,34 @@
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { type ApiKeyInfo, ApiKeyService } from './api-key.service';
+import type { HubManageVerdict } from '@/core/portal/hub-manage-verdict';
+import type { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { type OperatorMintableScope } from './api-key.scopes';
 import type { ApiKeyCapability } from './api-key.capabilities';
+import type { ApiKeyHubWideBlock } from './api-key-admin.dto';
+
+/** A key as the Settings list shows it. */
+export type ApiKeyListEntry = ApiKeyInfo & { hubWideBlocked: ApiKeyHubWideBlock | null };
+
+/**
+ * Why `key` can't use the Hub-wide MCP tools, or `null` (see `API_KEY_HUB_WIDE_BLOCKS`). Mirrors the
+ * gate those tools ask (`assertMcpKeyMayManageHub`): a managed key, or one with no recorded creator, has
+ * nobody to ask. Anyone else is asked fresh on each call. They are marked here only when the Hub's
+ * records already say no. A key without the 'mcp' scope reaches no tool, so it is never marked.
+ */
+async function hubWideBlock(key: ApiKeyInfo, verdictFor: (userId: number) => Promise<HubManageVerdict> | null): Promise<ApiKeyHubWideBlock | null> {
+  if (!key.scopes.includes('mcp')) {
+    return null;
+  }
+  if (key.managed) {
+    return 'app-key';
+  }
+  if (key.createdByUserId === null) {
+    return 'no-creator';
+  }
+
+  return (await verdictFor(key.createdByUserId)) === 'refused' ? 'creator-role' : null;
+}
 
 /**
  * Business logic behind the session-authed hub-wide API-key admin surface (moved out of the MCP
@@ -17,9 +43,30 @@ export class ApiKeyAdminService {
     private readonly logger: LoggerService,
   ) {}
 
-  /** List all stored API keys (operator + managed, every scope) — hashes/raw values never included. */
-  async listKeys(): Promise<ApiKeyInfo[]> {
-    return this.apiKeys.list();
+  /**
+   * List all stored API keys (operator + managed, every scope), never with a hash or raw value. Each
+   * says whether it can use the MCP tools that change the whole Hub ({@link hubWideBlock}).
+   *
+   * Each creator's role is read from the Hub's own records (`storedHubManageVerdictFor`), once per
+   * creator, so the list never waits on the Portal. `whois` is `null` when it can't be resolved. Then no
+   * creator's role is marked; the tool calls still decide.
+   */
+  async listKeys(whois: Pick<MarketplaceWhoIsService, 'storedHubManageVerdictFor'> | null): Promise<ApiKeyListEntry[]> {
+    const keys = await this.apiKeys.list();
+    const verdicts = new Map<number, Promise<HubManageVerdict>>();
+    const verdictFor = (userId: number): Promise<HubManageVerdict> | null => {
+      if (!whois) {
+        return null;
+      }
+      let verdict = verdicts.get(userId);
+      if (!verdict) {
+        verdict = whois.storedHubManageVerdictFor(userId);
+        verdicts.set(userId, verdict);
+      }
+      return verdict;
+    };
+
+    return Promise.all(keys.map(async (key) => ({ ...key, hubWideBlocked: await hubWideBlock(key, verdictFor) })));
   }
 
   /**

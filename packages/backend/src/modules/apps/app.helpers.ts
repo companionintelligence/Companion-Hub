@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { hubContainerName } from '@/common/constants';
+import { HUB_ENV_KEYS_INHERITED_BY_APPS, HUB_ENV_KEYS_INHERITED_BY_FIRST_PARTY_MEMORY, hubContainerName } from '@/common/constants';
 import { getAppDataHostPath } from '@/common/helpers/app-data-path.helper';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { resolveBrowserHost } from '@/common/helpers/browser-host';
@@ -10,8 +10,17 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { PortalClientService } from '@/core/portal/portal-client.service';
 import { Injectable } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
-import type { AppInfo, MemoryUrlStyle, HubIntegration } from '@ci-hub/common/schemas';
-import type { AppUrn } from '@ci-hub/common/types';
+import {
+  type AppInfo,
+  type FormField,
+  HUB_OWNED_APP_ENV_VARS,
+  hubIntegrationMayWrite,
+  isEnvVariableName,
+  type MemoryUrlStyle,
+  type HubIntegration,
+  writesAppBaseUrl,
+} from '@ci-hub/common/schemas';
+import { type AppUrn, mcpAccessGranted } from '@ci-hub/common/types';
 import { normalizeStoredHostname } from '@ci-hub/common/types';
 import { buildFqdnSubdomain, buildPublicWebIdentity, extractDeviceSlug, resolvePublicDomainRoot, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { EnvUtils } from '../env/env.utils';
@@ -31,62 +40,13 @@ import { MemoryConnectionService } from '../memory-connect/memory-connection.ser
 import { GATEWAY_API_PREFIX } from '../memory-connect/memory-exchange.client';
 import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate';
 import { ProxyTrustService } from '../network/proxy-trust.service';
+import { SubnetManagerService } from '../network/subnet-manager.service';
 import { FORWARD_AUTH_IDENTITY_SECRET_ENV, FORWARD_AUTH_SECRET_ENV, ForwardAuthSecretResolver } from '../auth/forward-auth-secret.resolver';
 import { mergeFormFieldDefaults } from '@ci-hub/common/validation';
 
 /**
- * The ONLY keys an app's env may inherit from the Hub's own `.env`.
- *
- * `generateEnvFile` starts from the Hub's `/data/.env` — the file that also
- * holds the Hub's Postgres and RabbitMQ passwords, its JWT secret, its Portal
- * device key and whatever else the operator or installer put there — and
- * writes the result to `app.env`, which is `env_file` for every service of the
- * app. It used to copy that file whole and strip a short denylist, so each new
- * Hub secret reached every installed app by default (the broker password did,
- * and with it the ability to drive the Hub's lifecycle queue). This is the
- * allowlist that replaces it: an app inherits these and nothing else. Every
- * other value the Hub wants an app to have — its identity, its keys, its
- * inference and Memory credentials — is set explicitly further down, from the
- * Hub's own state, not inherited.
- *
- * Two groups:
- *
- * - Hub identity a manifest may reference (`DOMAIN`, `ROOT_FOLDER_HOST`,
- *   `LOCAL_DOMAIN` are in the marketplace's `HUB_PROVIDED_VARS` contract;
- *   `TZ` is used by dozens of manifests) and the values this function itself
- *   reads back from the seeded map (`CI_HUB_APP_DATA_PATH`, `LOCAL_DOMAIN`).
- * - Operator pins: the Hub honours a value the operator set in its `.env` for
- *   these instead of its own default (`setUnlessOperatorSet`, the maps-key
- *   gate). They stay operator-overridable, which is the documented behaviour.
- *
- * An app-specific pass-through — the Memory `url_env`/`token_env` names a
- * manifest declares, which an operator may pin the same way — is added per app
- * by {@link appInheritableHubEnvKeys}. Add a key here only if an app must read
- * it from the Hub's `.env` specifically; if the Hub knows the value, set it.
- */
-const HUB_ENV_KEYS_INHERITED_BY_APPS: ReadonlySet<string> = new Set([
-  'DOMAIN',
-  'LOCAL_DOMAIN',
-  'ROOT_FOLDER_HOST',
-  'CI_HUB_APP_DATA_PATH',
-  'INTERNAL_IP',
-  'ARCHITECTURE',
-  'TZ',
-  'LOG_LEVEL',
-  'NODE_ENV',
-  'CI_HUB_VERSION',
-  'DEMO_MODE',
-  'CI_CLOUD_URL',
-  'PORTAL_OIDC_ENABLED',
-  'PORTAL_OIDC_ISSUER',
-  'PORTAL_OIDC_JWKS_URI',
-  'GOOGLE_MAPS_KEY',
-  'GEOCODING_API_KEY',
-]);
-
-/**
- * Secrets that must never reach an app even if someone adds them to the
- * allowlist above by mistake: the guard is a static check at module load, so a
+ * Secrets that must never reach an app even if someone adds them to
+ * HUB_ENV_KEYS_INHERITED_BY_APPS by mistake: the guard is a static check at module load, so a
  * bad edit fails the process at startup rather than shipping.
  */
 const HUB_ONLY_SECRET_ENV_VARS = [
@@ -107,18 +67,56 @@ for (const secret of HUB_ONLY_SECRET_ENV_VARS) {
 const HUB_ONLY_SECRET_ENV_VAR_SET: ReadonlySet<string> = new Set(HUB_ONLY_SECRET_ENV_VARS);
 
 /**
- * The allowlist for one app: the shared keys plus the Memory env names its manifest declares.
+ * The allowlist for one app: the shared keys, plus, for an official-store app, the Memory env names
+ * its manifest declares, so an operator can pin those in the Hub's `.env`.
  *
- * Those names come from the manifest, which any store can publish, so a Hub-only secret is never
- * passed through under one: `"token_env": "JWT_SECRET"` would otherwise hand the app that secret.
+ * Those names come from the manifest, and the Hub's `.env` holds more secrets than any list here
+ * names (`TAILSCALE_AUTHKEY`, `NODE_AUTH_TOKEN`, provider keys an operator added). So a manifest
+ * from any other store gets no pass-through at all: `"token_env": "TAILSCALE_AUTHKEY"` would
+ * otherwise hand it the value. Its Memory credentials still come from a brokered connection or the
+ * install form, as for every app. Even for the official store, a Hub-only secret is never passed
+ * through, nor a name no Hub integration may write (`hubIntegrationMayWrite`).
  */
-export function appInheritableHubEnvKeys(config: Pick<AppInfo, 'hub_integration'>): ReadonlySet<string> {
+export function appInheritableHubEnvKeys(config: Pick<AppInfo, 'hub_integration' | 'urn' | 'source'>): ReadonlySet<string> {
   const keys = new Set(HUB_ENV_KEYS_INHERITED_BY_APPS);
+  if (receivesPortalDeviceKey(config)) {
+    for (const key of HUB_ENV_KEYS_INHERITED_BY_FIRST_PARTY_MEMORY) keys.add(key);
+  }
+  if (!isOfficialStoreApp(config)) return keys;
   const memory = config.hub_integration?.memory;
   for (const name of [memory?.url_env, memory?.token_env]) {
-    if (name && !HUB_ONLY_SECRET_ENV_VAR_SET.has(name)) keys.add(name);
+    if (name && !HUB_ONLY_SECRET_ENV_VAR_SET.has(name) && hubIntegrationMayWrite(name)) keys.add(name);
   }
   return keys;
+}
+
+/**
+ * Whether a manifest may have the Hub write `name` into the app's env: a plain variable name
+ * (`isEnvVariableName`: a newline in a key writes a second line), and not a value the Hub sets for
+ * the app itself (`HUB_OWNED_APP_ENV_VARS`). The manifest schema refuses those names and an installed
+ * copy is read without them (`parseInstalledAppInfo`). This is for a manifest that reaches the env
+ * some other way.
+ */
+function manifestMayWriteEnv(name: string): boolean {
+  return isEnvVariableName(name) && !HUB_OWNED_APP_ENV_VARS.has(name);
+}
+
+/**
+ * Whether a manifest's Hub integration may have the Hub write `name`: not a value the Hub sets for
+ * the app and not `APP_BASE_URL` (`hubIntegrationMayWrite`). As with {@link manifestMayWriteEnv}, the
+ * schema refuses those names already.
+ */
+function integrationMayWriteEnv(name: string): boolean {
+  return hubIntegrationMayWrite(name);
+}
+
+/**
+ * Whether a field's manifest default may decide its value. Not for a field that writes
+ * `APP_BASE_URL`: the Hub takes the host of that URL as one of the app's own hosts
+ * (`APP_BASE_HOST`), so it comes from the operator or from the Hub, never from the manifest.
+ */
+function manifestDefaultMayDecide(field: Pick<FormField, 'type' | 'env_variable' | 'alias_env_variables'>): boolean {
+  return !writesAppBaseUrl(field);
 }
 
 /**
@@ -198,7 +196,9 @@ export function applyHubInferenceEnv(options: {
 
     const value = hubKey === 'llm_base_url' && stripV1 ? resolved.replace(/\/v1\/?$/, '') : resolved;
 
-    options.envMap.set(appEnvVar, value);
+    if (integrationMayWriteEnv(appEnvVar)) {
+      options.envMap.set(appEnvVar, value);
+    }
   }
 }
 
@@ -220,25 +220,50 @@ export function needsHubAppKey(config: Pick<AppInfo, 'hub_integration'>): boolea
  * Whether an app is first-party Companion Memory as env generation sees it, which is the app that gets
  * this Hub's Portal device key as `HUB_API_KEY`.
  *
- * `ci-memory` deployments and source builds of the same product both count. The OIDC fallback, Portal
- * bearer config, device key and maps key all follow this one test, and so does the refresh that hands
- * Memory a new key after pairing (`DeviceKeyRefreshService`).
+ * Two installs count, both by INSTALL PROVENANCE: the official store's `ci-memory` (`isMemoryProviderApp`),
+ * and a source build of the same product the operator added as a custom app (store `_user`, `source`
+ * naming the CI-Server repository). The OIDC fallback, Portal bearer config, device key and maps key all
+ * follow this one test, and so does the refresh that hands Memory a new key after pairing
+ * (`DeviceKeyRefreshService`).
+ *
+ * ⚠ NEVER BY MANIFEST FIELDS ALONE. `id` and `source` are copied from config.json, which any store
+ * publishes: a manifest that said `"id": "ci-memory"` was handed this Hub's Portal device key, the
+ * Portal maps key and the Portal sign-in config (2026-11-18). A custom app is the operator's own, so
+ * its `source` is the operator's word; a store app's is not.
  */
-export function receivesPortalDeviceKey(config: Pick<AppInfo, 'id' | 'source'>): boolean {
-  return config.id === 'ci-memory' || (typeof config.source === 'string' && config.source.includes('companionintelligence/CI-Server'));
+export function receivesPortalDeviceKey(config: Pick<AppInfo, 'urn' | 'source'>): boolean {
+  if (isMemoryProviderApp(config)) {
+    return true;
+  }
+  let store: string;
+  try {
+    store = extractAppUrn(config.urn).appStoreId;
+  } catch {
+    return false;
+  }
+  return store === CUSTOM_APP_STORE_SLUG && typeof config.source === 'string' && config.source.includes('companionintelligence/CI-Server');
 }
+
+/** The store every custom app is filed under (see `security-grants.ts`). */
+const CUSTOM_APP_STORE_SLUG = '_user';
 
 /**
  * Returns the scopes for an app's Hub-managed key.
  *
- * The `mcp` scope serves an MCP tools consumer, and the `app` scope serves a
- * provenance-gated first-party consumer. An empty array grants no trust material.
- * Both `generateEnvFile` and `HubAccessService` use this gate so the operator-facing
- * report cannot drift from the actual grant.
+ * The `mcp` scope serves an MCP tools consumer that a person let use the Hub's tools
+ * (`mcpAccess`, the app row's `mcp_access`), and the `app` scope serves a
+ * provenance-gated first-party consumer. An empty array grants no managed key and no
+ * per-app forward-auth secret. Both `generateEnvFile` and `HubAccessService` use this
+ * gate so the operator-facing report cannot drift from the actual grant. It is not the
+ * only grant: Companion Memory (`isMemoryProviderApp`) gets a forward-auth identity
+ * secret with no key scope, and `HubAccessService` counts that gate too. A new kind of
+ * trust material has to be added in both places.
  */
-export function hubTrustMaterialScopes(config: Pick<AppInfo, 'urn' | 'hub_integration'>): ApiKeyScope[] {
+export function hubTrustMaterialScopes(config: Pick<AppInfo, 'urn' | 'hub_integration'>, mcpAccess: string | null | undefined): ApiKeyScope[] {
   const scopes: ApiKeyScope[] = [];
-  if (config.hub_integration?.mcp_client) {
+  // Asking is not enough: any store can publish a manifest that sets `mcp_client`, and the key it would
+  // get reaches the apps beside it. A person answers first (`app.mcp_access`, see `mcpAccessGranted`).
+  if (config.hub_integration?.mcp_client && mcpAccessGranted(mcpAccess)) {
     scopes.push('mcp');
   }
   // The install URN's store slug provides provenance because manifest fields are forgeable.
@@ -248,12 +273,12 @@ export function hubTrustMaterialScopes(config: Pick<AppInfo, 'urn' | 'hub_integr
   return scopes;
 }
 
-function parseAppBaseUrl(url: string): URL {
+export function parseAppBaseUrl(url: string): URL {
   const withScheme = /^https?:\/\//i.test(url) ? url : `http://${url}`;
   return new URL(withScheme);
 }
 
-function deriveAppBaseWsOrigin(parsed: URL): string {
+export function deriveAppBaseWsOrigin(parsed: URL): string {
   const wsScheme = parsed.protocol === 'https:' ? 'wss' : 'ws';
   return `${wsScheme}://${parsed.host}`;
 }
@@ -393,7 +418,8 @@ export class AppHelpers {
       entries.set(INFERENCE_ERROR_ENV_KEY, aiEnv.CI_INFERENCE_ERROR);
     }
 
-    const providerSwitch = config.hub_integration?.inference_provider;
+    const configuredSwitch = config.hub_integration?.inference_provider;
+    const providerSwitch = configuredSwitch && integrationMayWriteEnv(configuredSwitch.env) ? configuredSwitch : undefined;
     if (providerSwitch) {
       const usesOpenAiCompatible = (this.config.getInferencePreferences().preferredBackend ?? 'ollama') !== 'ollama';
       entries.set(providerSwitch.env, usesOpenAiCompatible ? providerSwitch.openai_compatible : providerSwitch.ollama);
@@ -405,7 +431,11 @@ export class AppHelpers {
       ...Object.values(config.hub_integration?.inference ?? {}),
     ]);
     if (providerSwitch) ownedKeys.add(providerSwitch.env);
-    return { entries, ownedKeys: [...ownedKeys].filter((key): key is string => typeof key === 'string' && key.length > 0), aiEnv };
+    return {
+      entries,
+      ownedKeys: [...ownedKeys].filter((key): key is string => typeof key === 'string' && key.length > 0 && integrationMayWriteEnv(key)),
+      aiEnv,
+    };
   }
 
   /**
@@ -415,13 +445,58 @@ export class AppHelpers {
    * Docker lookup behind the trust list did. No service, or a bad answer,
    * simply means no hops are vouched for.
    */
-  private resolveTrustedProxyCidrs(): string[] {
+  private async resolveTrustedProxyCidrs(appUrn: AppUrn): Promise<string[]> {
     try {
       const service = this.moduleRef.get(ProxyTrustService, { strict: false });
-      const cidrs = service?.trustedProxyCidrs?.();
+      const cidrs = service?.appTrustedProxyCidrs?.(await this.resolveAppSubnet(appUrn));
       return Array.isArray(cidrs) ? cidrs.filter((cidr): cidr is string => typeof cidr === 'string' && cidr.length > 0) : [];
     } catch {
       return [];
+    }
+  }
+
+  /**
+   * A person's answer to this app's request for the Hub's MCP tools (`app.mcp_access`).
+   *
+   * An app installed before the Hub asked has none. An official-store app among them that already
+   * holds an MCP key keeps it, at that key's level, and the answer is recorded as given: Hermes and
+   * OpenClaw were installed from the Hub's own store expecting it, and taking it away unasked would
+   * stop them on their next restart. Every other unanswered app gets no MCP key until a person
+   * grants one, from the app's Hub access section.
+   */
+  private async resolveMcpAccess(appUrn: AppUrn, config: Pick<AppInfo, 'hub_integration'>, existingAppEnvMap: Map<string, string>) {
+    if (!config.hub_integration?.mcp_client) {
+      return null;
+    }
+    const stored = await this.appsRepository.getAppMcpAccess(appUrn);
+    if (stored !== null && stored !== undefined) {
+      return stored;
+    }
+    if (!isOfficialStoreApp({ urn: appUrn }) || !existingAppEnvMap.get('HUB_MCP_API_KEY')) {
+      return null;
+    }
+    const held = await this.apiKeys.findManagedByApp(appUrn);
+    if (!held?.scopes.includes('mcp')) {
+      return null;
+    }
+    await this.appsRepository.setAppMcpAccess(appUrn, held.capability);
+    this.logger.info(`[AppHelpers] ${appUrn} keeps the MCP access it had before the Hub asked, at ${held.capability}`);
+    return held.capability;
+  }
+
+  /**
+   * The app's network subnet, allocated now if it has none yet. The env is written before the compose
+   * file on install, and Traefik's address on the app's network, which the app is told to trust, comes
+   * from it. The allocator returns the same subnet to the compose step that follows. Null when it cannot
+   * be had, in which case the app trusts the edge hops alone.
+   */
+  private async resolveAppSubnet(appUrn: AppUrn): Promise<string | null> {
+    try {
+      const subnetManager = this.moduleRef.get(SubnetManagerService, { strict: false });
+      return subnetManager ? await subnetManager.allocateSubnet(appUrn) : null;
+    } catch (error) {
+      this.logger.debug(`No subnet for ${appUrn} yet: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
     }
   }
 
@@ -459,7 +534,8 @@ export class AppHelpers {
     // this function (and its tests) mutate: the Hub's .env is the seed, but only
     // the keys an app is documented to inherit survive — see
     // HUB_ENV_KEYS_INHERITED_BY_APPS for what and why.
-    const inheritable = appInheritableHubEnvKeys(config);
+    // The URN this function was called with, not the copy in config.json: provenance is the Hub's.
+    const inheritable = appInheritableHubEnvKeys({ hub_integration: config.hub_integration, urn: appUrn, source: config.source });
     let withheld = 0;
     for (const key of [...envMap.keys()]) {
       if (!inheritable.has(key)) {
@@ -580,12 +656,11 @@ export class AppHelpers {
     // so an app that reads the client address can walk X-Forwarded-For back
     // past Traefik and the tunnel to the real visitor instead of seeing
     // Traefik for everyone. Re-derived on every generation and REMOVED when
-    // nothing can be vouched for. Traefik's address in it is Docker's to
-    // reassign, so a running app keeps a stale one until it is recreated:
-    // TrustedProxyRefreshService restarts the apps that read it within a
-    // minute of Traefik moving, which bounds how long another container that
-    // is given the address it left could be believed.
-    const trustedProxies = this.resolveTrustedProxyCidrs();
+    // nothing can be vouched for. Traefik's address in it is its fixed one on
+    // this app's own network (`traefikAddressOnAppSubnet`); a running app that
+    // still has another, from before apps had networks of their own or from a
+    // subnet that has since changed, is restarted by TrustedProxyRefreshService.
+    const trustedProxies = await this.resolveTrustedProxyCidrs(appUrn);
     if (trustedProxies.length > 0) {
       envMap.set('HUB_TRUSTED_PROXY_CIDRS', trustedProxies.join(','));
     } else {
@@ -594,6 +669,49 @@ export class AppHelpers {
 
     const appEnv = await this.appFilesManager.getAppEnv(appUrn);
     const existingAppEnvMap = this.envUtils.envStringToMap(appEnv.content);
+
+    // A manifest that names a value the Hub sets for the app gets the Hub's value. The manifest
+    // schema refuses such a manifest, so this is only for one that reaches here some other way.
+    const leaveOutManifestEnv = (name: string, source: string) => {
+      if (!isEnvVariableName(name)) {
+        this.logger.warn(`[AppHelpers] ${appUrn}: ${source} names ${JSON.stringify(name)}, which is no variable name; it is left out`);
+        return;
+      }
+      this.logger.warn(`[AppHelpers] ${appUrn}: ${source} names ${name}, which the Hub sets for the app; the Hub's value is kept`);
+    };
+    const leaveOutIntegrationEnv = (name: string, source: string) => {
+      if (HUB_OWNED_APP_ENV_VARS.has(name) || !isEnvVariableName(name)) {
+        leaveOutManifestEnv(name, source);
+      } else {
+        this.logger.warn(`[AppHelpers] ${appUrn}: ${source} names ${name}, which no Hub integration may write; it is left out`);
+      }
+    };
+
+    /*
+     * The defaults the installed manifest gave its fields that write APP_BASE_URL, which the Hub no
+     * longer takes: its host would be one of the app's own hosts (APP_BASE_HOST). An env build from
+     * before that rule wrote such a default into app.env, and a form saved by the install dialog holds
+     * it too. A value that is still that default is the manifest's, so it is dropped and the Hub
+     * gives the app its own address. A value the person entered is kept.
+     */
+    const leftOutBaseUrlDefaults = (await this.appFilesManager.getInstalledBaseUrlDefaults(appUrn)) ?? new Map<string, string>();
+    const isLeftOutBaseUrlDefault = (envVar: string, value: unknown): boolean => {
+      const leftOutDefault = leftOutBaseUrlDefaults.get(envVar);
+      return (
+        leftOutDefault !== undefined &&
+        value !== undefined &&
+        value !== null &&
+        String(value).replace(/\/+$/, '') === leftOutDefault.replace(/\/+$/, '')
+      );
+    };
+    const sayDefaultDropped = (envVar: string) => {
+      this.logger.warn(
+        `[AppHelpers] ${appUrn}: ${envVar} held the default its installed manifest gave it, which the Hub no longer takes; the app gets the Hub's address`,
+      );
+    };
+    const sayEnteredValueKept = (envVar: string) => {
+      this.logger.info(`[AppHelpers] ${appUrn}: ${envVar} keeps the value the person entered, not the default its installed manifest gave it`);
+    };
 
     if (config.generate_vapid_keys) {
       if (existingAppEnvMap.has('VAPID_PUBLIC_KEY') && existingAppEnvMap.has('VAPID_PRIVATE_KEY')) {
@@ -611,8 +729,20 @@ export class AppHelpers {
         continue;
       }
 
-      const formValue = mergedForm[field.env_variable];
       const envVar = field.env_variable;
+      if (!manifestMayWriteEnv(envVar)) {
+        leaveOutManifestEnv(envVar, 'a form field');
+        continue;
+      }
+      let formValue = manifestDefaultMayDecide(field) ? mergedForm[envVar] : form[envVar];
+      if (leftOutBaseUrlDefaults.has(envVar) && field.type !== 'random') {
+        if (isLeftOutBaseUrlDefault(envVar, formValue)) {
+          sayDefaultDropped(envVar);
+          formValue = undefined;
+        } else if (formValue !== undefined && formValue !== null && formValue !== '') {
+          sayEnteredValueKept(envVar);
+        }
+      }
 
       if (field.type === 'random') {
         if (existingAppEnvMap.has(envVar)) {
@@ -621,7 +751,7 @@ export class AppHelpers {
         }
 
         const length = field.min ?? 32;
-        const randomString = this.envUtils.createRandomString(field.env_variable, length, field.encoding);
+        const randomString = this.envUtils.createRandomString(appUrn, field.env_variable, length, field.encoding);
         envMap.set(envVar, randomString);
         continue;
       }
@@ -633,7 +763,7 @@ export class AppHelpers {
         continue;
       }
 
-      if (field.default !== undefined) {
+      if (field.default !== undefined && manifestDefaultMayDecide(field)) {
         envMap.set(envVar, String(field.default));
         continue;
       }
@@ -661,9 +791,11 @@ export class AppHelpers {
     // Open action use the same browser-reachable host.
     const browserHost = resolveBrowserHost(internalIp);
 
-    // 3. `APP_INTERNAL_AUTHORITY`: host and port for URLs and CSRF origin checks.
-    if (config.port || form.port) {
-      envMap.set('APP_INTERNAL_AUTHORITY', `${browserHost}:${form.port ? form.port : config.port}`);
+    // 3. `APP_INTERNAL_AUTHORITY`: host and port for URLs and CSRF origin checks. The values below
+    // that derive from it read this one, not the env's, which a form field may have written.
+    const internalAuthority = config.port || form.port ? `${browserHost}:${form.port ? form.port : config.port}` : undefined;
+    if (internalAuthority) {
+      envMap.set('APP_INTERNAL_AUTHORITY', internalAuthority);
     }
 
     // --- Exposure state variables ---
@@ -762,21 +894,14 @@ export class AppHelpers {
     if (isExposed) {
       envMap.set('APP_DOMAIN', publicHostname);
       envMap.set('APP_EXPOSED_DOMAIN', publicHostname);
-    } else {
-      const internalAuthority = envMap.get('APP_INTERNAL_AUTHORITY');
-      if (internalAuthority) {
-        envMap.set('APP_DOMAIN', internalAuthority);
-      }
+    } else if (internalAuthority) {
+      envMap.set('APP_DOMAIN', internalAuthority);
     }
 
     // `APP_URL` is the full browser access URL.
-    if (isExposed) {
-      envMap.set('APP_URL', publicUrl);
-    } else {
-      const internalAuthority = envMap.get('APP_INTERNAL_AUTHORITY');
-      if (internalAuthority) {
-        envMap.set('APP_URL', `http://${internalAuthority}`);
-      }
+    const hubAppUrl = isExposed ? publicUrl : internalAuthority ? `http://${internalAuthority}` : undefined;
+    if (hubAppUrl) {
+      envMap.set('APP_URL', hubAppUrl);
     }
 
     const configDomain = domain;
@@ -802,7 +927,7 @@ export class AppHelpers {
      */
     const suggestedPublicUrl = isExposed && syncedCustomDomain ? publicUrl : platformPublicUrl;
 
-    const defaultAppBaseUrl = (suggestedPublicUrl ?? envMap.get('APP_URL') ?? '').replace(/\/+$/, '');
+    const defaultAppBaseUrl = (suggestedPublicUrl ?? hubAppUrl ?? '').replace(/\/+$/, '');
 
     /*
      * Preserve an existing base URL when an operator pinned it. A value equal to
@@ -866,19 +991,34 @@ export class AppHelpers {
       }
 
       const envVar = field.env_variable;
+      if (!manifestMayWriteEnv(envVar)) {
+        leaveOutManifestEnv(envVar, 'a form field');
+        continue;
+      }
       const formValue = form[envVar];
-      const hasValidFormValue = formValue !== undefined && formValue !== '' && formValue !== null;
+      const formHoldsDefault = isLeftOutBaseUrlDefault(envVar, formValue);
+      const envHoldsDefault = isLeftOutBaseUrlDefault(envVar, existingAppEnvMap.get(envVar));
+      const hasValidFormValue = formValue !== undefined && formValue !== '' && formValue !== null && !formHoldsDefault;
+      const carriesValue = existingAppEnvMap.has(envVar) && !envHoldsDefault;
 
       let resolvedBaseUrl: string | undefined;
 
       if (hasValidFormValue) {
         resolvedBaseUrl = followExposedIdentity(String(formValue).replace(/\/+$/, ''));
-      } else if (existingAppEnvMap.has(envVar)) {
+      } else if (carriesValue) {
         resolvedBaseUrl = followExposedIdentity(String(existingAppEnvMap.get(envVar)).replace(/\/+$/, ''));
-      } else if (field.default !== undefined && String(field.default).trim() !== '') {
+      } else if (field.default !== undefined && String(field.default).trim() !== '' && manifestDefaultMayDecide(field)) {
         resolvedBaseUrl = String(field.default).replace(/\/+$/, '');
       } else if (defaultAppBaseUrl) {
         resolvedBaseUrl = defaultAppBaseUrl;
+      }
+
+      if (leftOutBaseUrlDefaults.has(envVar)) {
+        if (!hasValidFormValue && !carriesValue && (formHoldsDefault || envHoldsDefault)) {
+          sayDefaultDropped(envVar);
+        } else if (resolvedBaseUrl && resolvedBaseUrl !== defaultAppBaseUrl) {
+          sayEnteredValueKept(envVar);
+        }
       }
 
       if (!resolvedBaseUrl) {
@@ -892,7 +1032,11 @@ export class AppHelpers {
 
       const aliasValue = field.trailing_slash ? `${resolvedBaseUrl}/` : resolvedBaseUrl;
       for (const alias of field.alias_env_variables ?? []) {
-        envMap.set(alias, aliasValue);
+        if (manifestMayWriteEnv(alias)) {
+          envMap.set(alias, aliasValue);
+        } else {
+          leaveOutManifestEnv(alias, `the aliases of form field ${envVar}`);
+        }
       }
     }
 
@@ -911,7 +1055,12 @@ export class AppHelpers {
       }
     }
 
-    if (appName === 'cloudflared') {
+    // The tunnel token lets whoever holds it serve every public hostname of this Hub, so it goes
+    // only to the official store's cloudflared. The app's name alone is no provenance: any store
+    // can publish an app called `cloudflared`, and it installs as `cloudflared:<that store>`.
+    if (appName === 'cloudflared' && !isOfficialStoreApp({ urn: appUrn })) {
+      this.logger.warn(`[AppHelpers] ${appUrn} is named cloudflared but is not from the official store; it gets no tunnel token`);
+    } else if (appName === 'cloudflared') {
       const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
       if (org?.tunnelToken && org.tunnelId) {
         envMap.set('TUNNEL_TOKEN', org.tunnelToken);
@@ -929,7 +1078,8 @@ export class AppHelpers {
     // The install URN gates the callback grant because manifest fields are
     // forgeable but store slugs are not. Third-party-store apps receive no
     // callback credential regardless of their manifest.
-    const scopes = hubTrustMaterialScopes(config);
+    const mcpAccess = await this.resolveMcpAccess(appUrn, config, existingAppEnvMap);
+    const scopes = hubTrustMaterialScopes(config, mcpAccess);
     const isMcpClient = scopes.includes('mcp');
     const isFirstPartyConsumer = scopes.includes('app');
     if (scopes.length > 0) {
@@ -950,6 +1100,7 @@ export class AppHelpers {
         appName: config.name ?? appUrn,
         existingRawKey: existingManagedKey,
         scopes,
+        ...(mcpAccessGranted(mcpAccess) ? { mcpCapability: mcpAccess } : {}),
       });
 
       if (isMcpClient) {
@@ -975,6 +1126,10 @@ export class AppHelpers {
         envMap.set('HUB_APP_KEY', managedKey);
         envMap.set('CI_APP_URN', appUrn);
       }
+    } else {
+      // Nothing to hold, so nothing may stay behind: an app whose MCP access was refused or never
+      // granted kept the key it had until now, and with it its reach over the apps beside it.
+      await this.apiKeys.revokeManagedByApp(appUrn);
     }
 
     // --- Standardized AI environment variables (opt-in) ---
@@ -1006,7 +1161,11 @@ export class AppHelpers {
     // declare the issuer variable plus an optional discovery path. Limiting writes
     // to opted-in apps protects third-party identity-provider variables with the
     // same name.
-    const oidcIntegration = config.hub_integration?.oidc;
+    const oidcIntegration =
+      config.hub_integration?.oidc && integrationMayWriteEnv(config.hub_integration.oidc.issuer_env) ? config.hub_integration.oidc : undefined;
+    if (config.hub_integration?.oidc && !oidcIntegration) {
+      leaveOutIntegrationEnv(config.hub_integration.oidc.issuer_env, 'hub_integration.oidc.issuer_env');
+    }
     if (oidcIntegration) {
       if (normalizedCloudUrl) {
         const suffix = oidcIntegration.issuer_path?.trim().replace(/^\/+/, '').replace(/\/+$/, '');
@@ -1123,7 +1282,13 @@ export class AppHelpers {
     // credentials take precedence; operator-entered values apply only when no
     // brokered connection exists.
     const memoryIntegration = config.hub_integration?.memory;
-    if (memoryIntegration?.url_env && memoryIntegration?.token_env) {
+    const refusedMemoryEnv = [memoryIntegration?.url_env, memoryIntegration?.token_env].filter(
+      (name): name is string => name !== undefined && !integrationMayWriteEnv(name),
+    );
+    for (const name of refusedMemoryEnv) {
+      leaveOutIntegrationEnv(name, 'hub_integration.memory');
+    }
+    if (memoryIntegration?.url_env && memoryIntegration?.token_env && refusedMemoryEnv.length === 0) {
       // The app URN lets its wrapper query the per-app Companion Memory connect
       // state endpoint (`/api/memory-connect/apps/:urn/state`) to decide whether
       // to show the connect interstitial.
@@ -1243,6 +1408,15 @@ export class AppHelpers {
     const hubContainer = hubContainerName();
     const hubPort = process.env.API_PORT || '3000';
     envMap.set('HUB_INFERENCE_URL', `http://${hubContainer}:${hubPort}/api/inference/v1`);
+
+    // Every writer above checks its names. This is the one place they all meet, so a key that is no
+    // variable name is dropped here too: written as-is, a newline in it would start a line of its own.
+    for (const key of [...envMap.keys()]) {
+      if (!isEnvVariableName(key)) {
+        envMap.delete(key);
+        this.logger.warn(`[AppHelpers] ${appUrn}: left ${JSON.stringify(key)} out of app.env, as it is no variable name`);
+      }
+    }
 
     await this.appFilesManager.writeAppEnv(appUrn, this.envUtils.envMapToString(envMap));
 

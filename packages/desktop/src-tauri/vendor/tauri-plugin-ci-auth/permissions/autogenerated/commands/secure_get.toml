@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-secure-get"
+description = "Enables the secure_get command without any pre-configured scope."
+commands.allow = ["secure_get"]
+
+[[permission]]
+identifier = "deny-secure-get"
+description = "Denies the secure_get command without any pre-configured scope."
+commands.deny = ["secure_get"]

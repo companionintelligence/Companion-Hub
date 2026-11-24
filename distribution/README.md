@@ -33,7 +33,7 @@ Replace the old version string everywhere it appears, or run:
 ./distribution/scripts/publish-package-managers.sh "companion-hub vX.Y.Z"
 ```
 
-The update script downloads release assets, computes SHA256 hashes, and refreshes `homebrew/companion-hub.rb`, `scoop/companion-hub.json`, and the `publish/` copies. The publish script pushes to [homebrew-tap](https://github.com/companionintelligence/homebrew-tap) and [scoop-bucket](https://github.com/companionintelligence/scoop-bucket).
+The update script reads the release's `manifest.json` from `https://dl.ci.computer/vX.Y.Z/` for each installer's URL and SHA256, checks that each URL answers `200` without credentials and has the size the manifest records, and refreshes `homebrew/companion-hub.rb`, `scoop/companion-hub.json`, and the `publish/` copies. It stops before it writes anything if an installer is missing, is not at the URL the templates build, or is not downloadable. Run it after the release is uploaded: in Desktop Release, `publish-package-managers` waits for `upload-r2`. The publish script pushes to [homebrew-tap](https://github.com/companionintelligence/homebrew-tap) and [scoop-bucket](https://github.com/companionintelligence/scoop-bucket).
 
 Production desktop releases run this automatically via `.github/workflows/publish-package-managers.yml`.
 
@@ -50,6 +50,17 @@ Use a **machine/bot account** or dedicated fine-grained PAT with **Contents: Rea
 
 The publish script verifies push access before cloning and uses the PAT directly in git remote URLs (the default `GITHUB_TOKEN` only has access to CI-Hub itself).
 
+#### What the publisher writes
+
+The publisher is additive. `publish-package-managers.sh` copies the files under `distribution/publish/<repo>/` into a clone of the target repo and commits what changed (`sync-published-files.sh`). It never deletes anything and never touches a file that is not in that directory. If the Hub's own cask or manifest is missing from `distribution/publish/`, it stops before touching either repo.
+
+`homebrew-tap` and `scoop-bucket` are shared. Other apps publish their own entries there (Companion Capture and Agent Sync today), and the repos can carry files the Hub does not own, such as attribution files and an extended README. A mirror that deletes what it does not know would remove them, and an earlier version of the publisher (`rsync -a --delete`) did remove the attribution files and reset both READMEs. Two consequences:
+
+- A target repo's `README.md` is written only when it has none yet, so an extended README in the tap or the bucket stays as it is.
+- To retire a file the Hub used to publish, delete it in the target repo by hand.
+
+`scripts/__tests__/publish-package-managers.test.ts` runs the real publisher against local bare repos and fails if another app's file, or an extended README, does not survive a publish.
+
 ### 2. SHA256 hashes (manual fallback)
 
 **Every manifest requires real SHA256 hashes before submission.** Placeholders are marked as:
@@ -63,14 +74,14 @@ The publish script verifies push access before cloning and uses the PAT directly
 
 ```bash
 # For a file URL, e.g. the macOS Intel DMG:
-curl -sL https://github.com/companionintelligence/CI-Hub/releases/download/v0.2.4/Companion.Hub_0.2.4_x64.dmg | sha256sum
+curl -sL https://github.com/companionintelligence/Companion-Hub/releases/download/v0.2.4/Companion.Hub_0.2.4_x64.dmg | sha256sum
 
 # Or download first, then hash:
-curl -LO https://github.com/companionintelligence/CI-Hub/releases/download/v0.2.4/Companion.Hub_0.2.4_x64.dmg
+curl -LO https://github.com/companionintelligence/Companion-Hub/releases/download/v0.2.4/Companion.Hub_0.2.4_x64.dmg
 sha256sum Companion.Hub_0.2.4_x64.dmg
 
 # For Nix (requires base64-encoded sha256):
-nix-prefetch-url https://github.com/companionintelligence/CI-Hub/releases/download/v0.2.4/Companion.Hub_0.2.4_amd64.AppImage
+nix-prefetch-url https://github.com/companionintelligence/Companion-Hub/releases/download/v0.2.4/Companion.Hub_0.2.4_amd64.AppImage
 ```
 
 #### Assets requiring SHA256
@@ -144,23 +155,59 @@ Companion Hub now ships best-effort uninstall cleanup hooks/scripts for maintain
 - Linux: Debian `postrm`, AUR `post_remove`, and Snap `hooks/remove`
 - Shared script artifacts: `distribution/scripts/uninstall-cleanup.sh` and `distribution/scripts/uninstall-cleanup.ps1`
 
-Linux desktop `.deb` bundles receive the `postrm` maintainer script in a post-build repack step via `packages/desktop/scripts/patch-deb-maintainer-scripts.sh`.
+Linux desktop `.deb` bundles receive the `postrm` maintainer script in a post-build repack step via `packages/desktop/scripts/patch-deb-maintainer-scripts.sh`. The repack writes every entry as `root:root` (`dpkg-deb --root-owner-group`) and fails the build if one is not. Without it, 0.3.5 and 0.3.6 installed every file owned by uid 1001, the build runner's user. dpkg leaves the owner of a folder that already exists as it is, so on an upgrade from those releases `preinst` (before unpacking) and `postinst` hand the package's folders back to root.
 
 Both Windows packaged installers run the bundled cleanup script before removing the app. The script is shipped into the bundle as a Tauri resource (`resources/uninstall-cleanup.ps1`), sourced directly from `distribution/scripts/uninstall-cleanup.ps1`.
 
 - **NSIS `-setup.exe`** — `packages/desktop/src-tauri/windows/installer-hooks.nsh` defines an `NSIS_HOOK_PREUNINSTALL` macro (wired through `bundle.windows.nsis.installerHooks`) that runs the script before `$INSTDIR` is removed.
 - **WiX `.msi`** — `packages/desktop/src-tauri/windows/cleanup-on-uninstall.wxs` adds a custom action (wired through `bundle.windows.wix.fragmentPaths` + `componentGroupRefs`) sequenced `Before="RemoveFiles"` and conditioned on `(REMOVE="ALL") AND (NOT UPGRADINGPRODUCTCODE)`.
 
-Unlike Scoop, both only run on a real uninstall — in-place updates reuse the install (NSIS, and the hook also skips cleanup when the uninstaller is launched with `/UPDATE`) or set `UPGRADINGPRODUCTCODE` during the major-upgrade removal pass (MSI), so they perform the **full purge** (volumes and images included) only on a genuine removal. WinGet inherits whichever of the two its manifest installs. Running a newer interactive `-setup.exe` and keeping its default "Uninstall before installing" choice is a genuine removal and purges too.
+The NSIS hook closes the app first if it is running, with the same prompt Tauri's template shows. The template's own check only comes after the hook, and an open app put back part of what the cleanup had just deleted.
 
-**Uninstall is a full purge, not a `remove`.** Cleanup deletes Hub-related state in user
-config/cache/data directories **and the Hub Docker data volumes** (`ci_hub_pgdata`,
-`ci_hub_app_data`, `hub_tailscale_state`) — i.e. the database and all app data. This is
-intentional ([#566](https://github.com/companionintelligence/CI-Hub/issues/566)); there is
+Unlike Scoop, both only run on a real uninstall. In-place updates reuse the install (NSIS, and the hook also skips cleanup when the uninstaller is launched with `/UPDATE`) or set `UPGRADINGPRODUCTCODE` during the major-upgrade removal pass (MSI). WinGet inherits whichever of the two its manifest installs. Running a newer interactive `-setup.exe` and choosing "Uninstall before installing" runs the installed version's uninstaller, confirm page included.
+
+**On Windows the uninstall keeps the Hub's data unless you ask for it to go.** The NSIS
+uninstaller's confirm page has Tauri's "Delete the application data" box, unticked by default,
+and the hook passes it on to `uninstall-cleanup.ps1` as `-DeleteAppData`.
+
+- Unticked: the uninstall removes the program, the Hub's and every app's containers and
+  networks, their images, the `Companion Hub\bin` entry on the user PATH and the
+  `CompanionHub-WSL-Docker.vbs` logon script that keeps the Docker Engine's WSL2 distro
+  running. It keeps `%APPDATA%\companion-hub` (the `.env` with the Hub's identity, `state\`,
+  app data, backups, media, settings), the tunnel token beside it, the desktop app's own
+  `computer.ci.app.hub` folders, and every Docker volume: `ci_hub_pgdata`,
+  `hub_tailscale_state`, and each app's named and anonymous volumes. A reinstall comes back
+  paired, with its apps and their data. The apps' containers are gone, so the apps show as
+  stopped until you start them, unless the reinstall is a newer version: the Hub restarts
+  running apps when it boots on a new version. Anonymous volumes can't be attached to the new
+  containers, so they stay behind unused.
+- Ticked: all of that goes too.
+
+A silent (`/S`) or passive (`/P`) uninstall skips the confirm page, so it keeps the data; that
+covers Chocolatey and WinGet. The `.msi` has no such box and runs the script without
+`-DeleteAppData`, so it keeps the data as well. To delete it afterwards, run
+`uninstall-cleanup.ps1 -DeleteAppData` from this repository; the installed copy goes with the
+program.
+
+**On Linux the uninstall is a full purge, not a `remove`.** Cleanup deletes Hub-related state
+in user config/cache/data directories **and the Hub Docker data volumes** (`ci_hub_pgdata`,
+`ci_hub_app_data`, `hub_tailscale_state`), that is the database and all app data. This is
+intentional ([#566](https://github.com/companionintelligence/Companion-Hub/issues/566)); there is
 no `remove`-vs-`purge` distinction and no confirmation prompt. Users must back up before
 uninstalling.
 
-**The Cloudflare tunnel token is removed too.** The desktop keeps it in a folder named
+On Windows, `uninstall-cleanup.ps1` also removes every network labelled with the Hub's compose
+project (`ci-hub_edge` and `ci-hub_internal` included), and every app network once the `ci-hub`
+container that joins them is gone. With `-DeleteAppData` it removes every volume labelled with
+the Hub's compose project too, removes containers with `docker rm -f -v`, and then removes any
+anonymous volume they mounted that is still there: when Compose recreates a container it mounts
+the old anonymous volume by name, and `rm -v` keeps those. Run it with `-DryRun` to list what
+it would remove without removing anything.
+It must work under Windows PowerShell 5.1, which the installers use: keep double quotes out
+of any `--format` template it passes to docker, because 5.1 drops them, and name a label
+with a Go raw string in backticks instead.
+
+**The Cloudflare tunnel token is removed too** (on Windows only with `-DeleteAppData`). The desktop keeps it in a folder named
 `tunnel` *beside* its data folder (`~/.local/share/tunnel`, `%APPDATA%\tunnel`,
 `~/Library/Application Support/tunnel`; compose mounts `${ROOT_FOLDER_HOST}/../tunnel`), so
 deleting the named Hub folders alone left it behind and a reinstall reconnected the old
@@ -172,11 +219,12 @@ every other file alone. The Homebrew cask's `zap` trashes those same files by na
 removes the folder only when empty. Plain `brew uninstall` (without `--zap`) and dragging
 the app to the Trash run no cleanup at all.
 
-**Installed marketplace apps are torn down too** ([#745](https://github.com/companionintelligence/CI-Hub/issues/745)).
+**Installed marketplace apps are torn down too** ([#745](https://github.com/companionintelligence/Companion-Hub/issues/745)).
 Each app Hub installs runs as its own Compose project (`<app>_<store>`) rather than as part
 of the Hub stack, so the uninstallers discover them via the `ci-os-hub.managed=true` label
 that Hub stamps on every managed app container (store-agnostic) and remove each app's
-containers, networks, and volumes. Without this, app containers such as
+containers, networks, and volumes (on Windows the volumes only with `-DeleteAppData`).
+Without this, app containers such as
 `ci-hermes_ci-marketplace-…` keep running after Hub is gone.
 
 **Docker images are removed too**, for both the Hub stack and every managed app. Image IDs
@@ -211,10 +259,12 @@ All installers should register the `cihub://` URL scheme. The app bundle ID is `
 All release assets are downloaded from:
 
 ```
-https://github.com/companionintelligence/CI-Hub/releases/download/v{version}/
+https://github.com/companionintelligence/Companion-Hub/releases/download/v{version}/
 ```
 
-See the [releases page](https://github.com/companionintelligence/CI-Hub/releases) for the full list of artifacts per release.
+See the [releases page](https://github.com/companionintelligence/Companion-Hub/releases) for the full list of artifacts per release.
+
+Homebrew and Scoop are the exception. They install from `https://dl.ci.computer/v{version}/`, the CDN behind the download page and the desktop updater, so they do not depend on this repository's visibility.
 
 ---
 

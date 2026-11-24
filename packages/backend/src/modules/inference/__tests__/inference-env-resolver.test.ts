@@ -1,6 +1,7 @@
 import { Test, type TestingModule } from '@nestjs/testing';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
+import axios from 'axios';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { InferenceEnvResolver } from '../inference-env-resolver';
@@ -274,21 +275,30 @@ describe('InferenceEnvResolver', () => {
       CI_CLOUD_OPENAI_BASE_URL: 'https://api.openai.com/v1',
       CI_CLOUD_OPENAI_MODEL: 'gpt-4o',
     });
-    const env = await service.resolve();
 
-    expect(env).toMatchObject({
-      CI_LLM_BASE_URL: 'https://api.openai.com/v1',
-      CI_LLM_API_KEY: 'sk-test',
-      CI_CHAT_MODEL: 'gpt-4o',
-      CI_INFERENCE_BACKEND: 'cloud',
-    });
-    expect(env.cloudProviderEnv).toEqual({
-      CI_CLOUD_OPENAI_API_KEY: 'sk-test',
-      CI_CLOUD_OPENAI_BASE_URL: 'https://api.openai.com/v1',
-      CI_CLOUD_OPENAI_MODEL: 'gpt-4o',
-    });
-    expect(env.CI_EMBEDDING_MODEL).toBeUndefined();
-    expect(env.OLLAMA_HOST).toBeUndefined();
+    // Fail-closed by default when CI_HUB_ALLOW_CLOUD_FALLBACK is not 'true'
+    expect(await service.resolve()).toEqual({});
+
+    process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+    try {
+      const env = await service.resolve();
+
+      expect(env).toMatchObject({
+        CI_LLM_BASE_URL: 'https://api.openai.com/v1',
+        CI_LLM_API_KEY: 'sk-test',
+        CI_CHAT_MODEL: 'gpt-4o',
+        CI_INFERENCE_BACKEND: 'cloud',
+      });
+      expect(env.cloudProviderEnv).toEqual({
+        CI_CLOUD_OPENAI_API_KEY: 'sk-test',
+        CI_CLOUD_OPENAI_BASE_URL: 'https://api.openai.com/v1',
+        CI_CLOUD_OPENAI_MODEL: 'gpt-4o',
+      });
+      expect(env.CI_EMBEDDING_MODEL).toBeUndefined();
+      expect(env.OLLAMA_HOST).toBeUndefined();
+    } finally {
+      delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+    }
   });
 
   it('keeps the local backend as primary and attaches every cloud provider', async () => {
@@ -307,16 +317,21 @@ describe('InferenceEnvResolver', () => {
       ANTHROPIC_API_KEY: 'sk-ant',
     });
 
-    const env = await service.resolve();
+    process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+    try {
+      const env = await service.resolve();
 
-    expect(env.CI_INFERENCE_BACKEND).toBe('ollama');
-    expect(env.CI_LLM_API_KEY).toBe('ollama');
-    expect(env.cloudProviderEnv).toEqual({
-      CI_CLOUD_ANTHROPIC_API_KEY: 'sk-ant',
-      CI_CLOUD_ANTHROPIC_BASE_URL: 'https://api.anthropic.com/v1',
-      CI_CLOUD_ANTHROPIC_MODEL: 'claude-opus-4',
-      ANTHROPIC_API_KEY: 'sk-ant',
-    });
+      expect(env.CI_INFERENCE_BACKEND).toBe('ollama');
+      expect(env.CI_LLM_API_KEY).toBe('ollama');
+      expect(env.cloudProviderEnv).toEqual({
+        CI_CLOUD_ANTHROPIC_API_KEY: 'sk-ant',
+        CI_CLOUD_ANTHROPIC_BASE_URL: 'https://api.anthropic.com/v1',
+        CI_CLOUD_ANTHROPIC_MODEL: 'claude-opus-4',
+        ANTHROPIC_API_KEY: 'sk-ant',
+      });
+    } finally {
+      delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+    }
   });
 
   it('prefers an installed recommended model over an unpulled higher-ranked one', async () => {
@@ -374,7 +389,13 @@ describe('InferenceEnvResolver', () => {
     expect(env.CI_CHAT_MODEL).toBe('preferred:latest');
   });
 
-  it('passes the host key to apps using oMLX', async () => {
+  it('passes OMLX_API_KEY, never the saved main key, to apps using oMLX', async () => {
+    const savedOmlxKey = process.env.OMLX_API_KEY;
+    process.env.OMLX_API_KEY = 'managed-omlx-key';
+    onTestFinished(() => {
+      if (savedOmlxKey === undefined) delete process.env.OMLX_API_KEY;
+      else process.env.OMLX_API_KEY = savedOmlxKey;
+    });
     const omlxModel = makeLlm('qwen-omlx', 'mlx-community/Qwen3-8B-4bit', false, 'omlx');
     config.getInferencePreferences.mockReturnValue({
       preferredBackend: 'omlx',
@@ -383,14 +404,15 @@ describe('InferenceEnvResolver', () => {
       preferredVisionModel: null,
     });
     omlxBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
-    omlxBackend.getApiKey.mockReturnValue('managed-omlx-key');
-    omlxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [omlxModel.backendModelId] });
+    omlxBackend.getApiKey.mockReturnValue('saved-main-key');
+    omlxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['Qwen3-8B-4bit'] });
     modelRegistry.getRecommendedModelsForHardware.mockReturnValue([omlxModel]);
     modelRegistry.getRecommendedVisionModel.mockReturnValue(undefined);
 
     const env = await service.resolve();
 
     expect(env.CI_LLM_API_KEY).toBe('managed-omlx-key');
+    expect(JSON.stringify(env)).not.toContain('saved-main-key');
 
     // Through this Hub's proxy the same app gets the placeholder: the proxy authenticates apps by
     // origin, so OMLX_API_KEY would only be copied into the container.
@@ -398,6 +420,74 @@ describe('InferenceEnvResolver', () => {
     const pooled = await service.resolve();
     expect(pooled.CI_LLM_BASE_URL).toMatch(/\/api\/inference\/pool\/v1$/);
     expect(pooled.CI_LLM_API_KEY).toBe('omlx');
+  });
+
+  // oMLX does not list the catalog's `mlx-community/<name>` (0.7.3.dev1, measured on /v1/models): a model directory is
+  // listed by its own name, the Hugging Face cache by `<org>--<name>`, the one name the cache answers to.
+  describe('chat model on oMLX', () => {
+    // Sized so the smaller one is a utility model beside the bigger chat model (`pickUtilityModel`).
+    const sized = (model: CuratedModel, recommendedVramMb: number, parameterScale: number): CuratedModel =>
+      ({ ...model, parameterScale, requirements: { ...model.requirements, recommendedVramMb } }) as CuratedModel;
+    const qwen = sized(makeLlm('qwen-omlx', 'mlx-community/Qwen3-8B-4bit', false, 'omlx'), 5000, 8);
+    const llama = sized(makeLlm('llama-omlx', 'mlx-community/Llama-3.2-3B-Instruct-4bit', false, 'omlx'), 2000, 3);
+
+    beforeEach(() => {
+      config.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'omlx',
+        preferredModel: 'qwen-omlx',
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+      });
+      omlxBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
+      modelRegistry.getCuratedModel.mockImplementation((id) => [qwen, llama].find((model) => model.id === id));
+      modelRegistry.getCatalog.mockReturnValue([llama, qwen]);
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([llama, qwen]);
+      modelRegistry.getRecommendedVisionModel.mockReturnValue(undefined);
+    });
+
+    it.each([
+      ['a model directory', 'Qwen3-8B-4bit'],
+      ['the Hugging Face cache', 'mlx-community--Qwen3-8B-4bit'],
+    ])("hands the operator's model out by the name oMLX lists it under, from %s", async (_layout, listed) => {
+      // Listed first, which is what a handout that did not recognise the model would fall back to.
+      omlxBackend.healthCheck.mockResolvedValue({
+        running: true,
+        healthy: true,
+        modelsLoaded: ['LiquidAI--LFM2.5-1.2B-Instruct-MLX-bf16', listed],
+      });
+
+      const env = await service.resolve();
+
+      expect(env.CI_CHAT_MODEL).toBe(listed);
+    });
+
+    it('names the utility model by the name oMLX lists it under too', async () => {
+      // One model from the Hugging Face cache and one from a model directory.
+      omlxBackend.healthCheck.mockResolvedValue({
+        running: true,
+        healthy: true,
+        modelsLoaded: ['mlx-community--Qwen3-8B-4bit', 'Llama-3.2-3B-Instruct-4bit'],
+      });
+
+      const env = await service.resolve();
+
+      expect(env.CI_CHAT_MODEL).toBe('mlx-community--Qwen3-8B-4bit');
+      expect(env.CI_UTILITY_MODEL).toBe('Llama-3.2-3B-Instruct-4bit');
+    });
+
+    it('falls back to the first model oMLX lists when it lists none of the catalog rows, not to a lookalike of the preferred one', async () => {
+      // Another build, and another publisher's of the same name, listed behind a model the catalog does not know:
+      // either would come out in its place if the handout took it for the preferred model.
+      omlxBackend.healthCheck.mockResolvedValue({
+        running: true,
+        healthy: true,
+        modelsLoaded: ['LiquidAI--LFM2.5-1.2B-Instruct-MLX-bf16', 'Qwen3-8B-8bit', 'lmstudio-community--Qwen3-8B-4bit'],
+      });
+
+      const env = await service.resolve();
+
+      expect(env.CI_CHAT_MODEL).toBe('LiquidAI--LFM2.5-1.2B-Instruct-MLX-bf16');
+    });
   });
 
   it('falls back to Ollama when the stored preference names a backend that does not exist', async () => {
@@ -571,6 +661,48 @@ describe('InferenceEnvResolver', () => {
       expect(env.CI_EMBEDDING_BASE_URL).toBeUndefined();
       expect(env.CI_EMBEDDING_MODEL).toBeUndefined();
     });
+
+    // vLLM serves a model at the one window it was started with (`--max-model-len`) and refuses a
+    // request above it with a 400. The handout was sized from memory alone and promised more.
+    it('hands an app no more than the max_model_len vLLM serves the model at', async () => {
+      const realVllm = new VllmBackend(mock<LoggerService>(), config);
+      const get = vi.spyOn(axios, 'get').mockResolvedValue({
+        data: { object: 'list', data: [{ id: 'Qwen/Qwen3-8B', owned_by: 'vllm', max_model_len: 8192 }] },
+      });
+      vllmBackend.servedContextLength.mockImplementation((id) => realVllm.servedContextLength(id));
+
+      try {
+        const env = await service.resolve();
+
+        // Sized from the 24576 MB budget alone this would be 65536.
+        expect(env.CI_LLM_NUM_CTX).toBe('8192');
+        expect(vllmBackend.servedContextLength).toHaveBeenCalledWith('Qwen/Qwen3-8B');
+        expect(get).toHaveBeenCalledWith(expect.stringContaining('/v1/models'), expect.any(Object));
+      } finally {
+        get.mockRestore();
+      }
+    });
+
+    // An operator's own `vllm serve` of a model the catalog has no row for: the app is handed that model,
+    // so the window to respect is the one vLLM serves it at, not the catalog row's.
+    it('caps an app at the window vLLM serves the model it is handed, when that is not the catalog model', async () => {
+      vllmBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['meta-llama/Llama-3.1-8B-Instruct'] });
+      const realVllm = new VllmBackend(mock<LoggerService>(), config);
+      const get = vi.spyOn(axios, 'get').mockResolvedValue({
+        data: { object: 'list', data: [{ id: 'meta-llama/Llama-3.1-8B-Instruct', owned_by: 'vllm', max_model_len: 8192 }] },
+      });
+      vllmBackend.servedContextLength.mockImplementation((id) => realVllm.servedContextLength(id));
+
+      try {
+        const env = await service.resolve();
+
+        expect(env.CI_CHAT_MODEL).toBe('meta-llama/Llama-3.1-8B-Instruct');
+        expect(env.CI_LLM_NUM_CTX).toBe('8192');
+        expect(vllmBackend.servedContextLength).toHaveBeenCalledWith('meta-llama/Llama-3.1-8B-Instruct');
+      } finally {
+        get.mockRestore();
+      }
+    });
   });
 
   describe('Lemonade backend embeddings: host and model always name the same engine', () => {
@@ -615,10 +747,12 @@ describe('InferenceEnvResolver', () => {
     it('hands out a smaller installed model for background calls when it fits beside the chat model, else the chat model', async () => {
       const chat = {
         ...makeLlm('qwen3-8-27b-lemonade', 'Qwen3.8-27B-GGUF', false, 'lemonade'),
+        parameterScale: 27,
         requirements: { minVramMb: 18000, recommendedVramMb: 18000, minRamMb: 0, diskMb: 0 },
       } as CuratedModel;
       const small = {
         ...makeLlm('gemma-4-e4b-lemonade', 'Gemma-4-E4B-it-GGUF', false, 'lemonade'),
+        parameterScale: 4,
         requirements: { minVramMb: 3500, recommendedVramMb: 3500, minRamMb: 0, diskMb: 0 },
       } as CuratedModel;
       modelRegistry.getRecommendedModelsForHardware.mockReturnValue([chat, small]);
@@ -785,12 +919,17 @@ describe('InferenceEnvResolver', () => {
       cloudFallback.getEnabledProviders.mockReturnValue([provider]);
       cloudFallback.toAppEnv.mockReturnValue({ CI_CLOUD_OPENAI_API_KEY: 'sk-test' });
 
-      const env = await service.resolve();
+      process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+      try {
+        const env = await service.resolve();
 
-      expect(env.CI_INFERENCE_BACKEND).toBe('ollama');
-      expect(env.CI_LLM_BASE_URL).toBe(`${OLLAMA_BASE_URL}/v1`);
-      // Cloud stays attached as a secondary; it just stops being primary.
-      expect(env.cloudProviderEnv).toEqual({ CI_CLOUD_OPENAI_API_KEY: 'sk-test' });
+        expect(env.CI_INFERENCE_BACKEND).toBe('ollama');
+        expect(env.CI_LLM_BASE_URL).toBe(`${OLLAMA_BASE_URL}/v1`);
+        // Cloud stays attached as a secondary; it just stops being primary.
+        expect(env.cloudProviderEnv).toEqual({ CI_CLOUD_OPENAI_API_KEY: 'sk-test' });
+      } finally {
+        delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+      }
     });
 
     it('still routes the fallback backend through the pool when peers are connected', async () => {
@@ -813,10 +952,15 @@ describe('InferenceEnvResolver', () => {
       };
       cloudFallback.getEnabledProviders.mockReturnValue([provider]);
 
-      const env = await service.resolve();
+      process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+      try {
+        const env = await service.resolve();
 
-      expect(env.CI_INFERENCE_BACKEND).toBe('cloud');
-      expect(env.CI_LLM_BASE_URL).toBe('https://api.openai.com/v1');
+        expect(env.CI_INFERENCE_BACKEND).toBe('cloud');
+        expect(env.CI_LLM_BASE_URL).toBe('https://api.openai.com/v1');
+      } finally {
+        delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+      }
     });
   });
 
@@ -958,6 +1102,21 @@ describe('InferenceEnvResolver', () => {
 
       expect(env.CI_LLM_NUM_CTX).toBe('16384');
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('hermes-agent: the context cap (16384) is below its 64000-token floor'));
+    });
+
+    it("sizes the window against the chat model's own ceiling, asked of its own engine", async () => {
+      setCap(null);
+      const memoryManager = {
+        modelCeilingMb: vi.fn().mockResolvedValue(1_000),
+        footprintSighting: vi.fn().mockResolvedValue(null),
+      };
+      Object.assign(service, { memoryManager });
+
+      const env = await service.resolve({ appSlug: 'openclaw' });
+
+      expect(memoryManager.modelCeilingMb).toHaveBeenCalledWith(baseProfile, 'ollama', 'qwen3-coder:30b');
+      // 1 GB holds no 30B window: the handout falls to the floor, where the node's 24 GB gave 65536.
+      expect(env.CI_LLM_NUM_CTX).toBe('4096');
     });
 
     it('sizes exactly as before when no cap is set — the default is the old behaviour', async () => {
@@ -1110,6 +1269,126 @@ describe('InferenceEnvResolver', () => {
 
         expect(env.CI_LLM_NUM_CTX).toBe('32768');
       });
+    });
+  });
+
+  /*
+   * Until someone chooses a model, apps run on the model the setup wizard marks Default: of the models
+   * the engine has, the highest on the wizard's recommended list, else the first in catalog order. A
+   * Hub restored after pairing skips the wizard. Before #2113 the Default was the first in catalog
+   * order, which made Qwen 3.5 0.8B the Default over the recommended Qwen 3.5 4B.
+   */
+  describe('with no model chosen', () => {
+    const minimax = makeCapableLlm('minimax-m2-community-230b', 'gabegoodhart/minimax-m2:230b', { tools: true, contextWindow: 196608 });
+    const qwen = makeCapableLlm('qwen3-6-35b', 'qwen3.6:35b', { tools: true, contextWindow: 262144 });
+    const gemmaE2b = makeCapableLlm('gemma4-e2b', 'gemma4:e2b', { tools: true, contextWindow: 131072 });
+    const gemmaE4b = makeCapableLlm('gemma4-e4b', 'gemma4:e4b', { tools: true, contextWindow: 131072 });
+    const unifiedAmd: HardwareProfile = {
+      gpu: { available: true, vendor: 'amd', model: 'Radeon 8060S', vramMb: 0, unifiedMemory: true, driverVersion: '', runtimeAvailable: true },
+      npu: { available: false, model: '' },
+      ram: { totalMb: 125747, availableMb: 110000 },
+      cpu: { arch: 'x86_64', cores: 32, model: 'AMD Ryzen AI Max+ 395' },
+      effectiveInferenceMemoryMb: 88000,
+      tier: 'high',
+    };
+
+    beforeEach(() => {
+      hardwareInspector.getProfile.mockResolvedValue(unifiedAmd);
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([minimax, qwen]);
+      // Catalog order, which is the order the wizard falls back to among what the engine has.
+      modelRegistry.getModelsForHardware.mockReturnValue([gemmaE2b, gemmaE4b, qwen, minimax]);
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['qwen3.6:35b', 'gemma4:e4b'] });
+    });
+
+    it("hands out the installed model highest on the wizard's list, not the first in catalog order", async () => {
+      const env = await service.resolve({ appSlug: 'ci-memory' });
+
+      expect(env.CI_CHAT_MODEL).toBe('qwen3.6:35b');
+      expect(modelRegistry.getModelsForHardware).toHaveBeenCalledWith('high', unifiedAmd, { includeRemoteHostBackends: true });
+      expect(logger.info).toHaveBeenCalledWith(
+        "[InferenceEnvResolver] ci-memory: no chat model chosen yet; handing out the setup wizard's default qwen3.6:35b",
+      );
+    });
+
+    it('hands out MiniMax M2 on 128 GB once the engine has it, ahead of a Gemma 4 E4B the list leaves out', async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gabegoodhart/minimax-m2:230b', 'gemma4:e4b'] });
+
+      const env = await service.resolve({ appSlug: 'ci-memory' });
+
+      expect(env.CI_CHAT_MODEL).toBe('gabegoodhart/minimax-m2:230b');
+    });
+
+    it('hands out the first installed model in catalog order when the engine has none of the recommended ones', async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma4:e4b', 'gemma4:e2b'] });
+
+      const env = await service.resolve({ appSlug: 'ci-memory' });
+
+      expect(env.CI_CHAT_MODEL).toBe('gemma4:e2b');
+    });
+
+    it('passes over a default the app cannot use for the next model in the same order', async () => {
+      const qwenNoTools = makeCapableLlm('qwen3-6-35b', 'qwen3.6:35b', { tools: false, contextWindow: 262144 });
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([minimax, qwenNoTools]);
+      modelRegistry.getModelsForHardware.mockReturnValue([gemmaE2b, gemmaE4b, qwenNoTools, minimax]);
+
+      const env = await service.resolve({ appSlug: 'openclaw' });
+
+      expect(env.CI_CHAT_MODEL).toBe('gemma4:e4b');
+    });
+
+    it('ranks by the list the wizard shows, read at the onboarding tier, on a card the container runtime cannot reach yet', async () => {
+      const laptop: HardwareProfile = {
+        gpu: {
+          available: true,
+          vendor: 'nvidia',
+          model: 'RTX 3080 Mobile',
+          vramMb: 8192,
+          unifiedMemory: false,
+          driverVersion: '580',
+          runtimeAvailable: false,
+        },
+        npu: { available: false, model: '' },
+        ram: { totalMb: 63180, availableMb: 33000 },
+        cpu: { arch: 'x86_64', cores: 16, model: 'Intel Core i7-10875H' },
+        effectiveInferenceMemoryMb: 7680,
+        tier: 'cpu-only',
+      };
+      const qwen08b = makeCapableLlm('qwen3-5-0-8b', 'qwen3.5:0.8b', { tools: true, contextWindow: 262144 });
+      const qwen4b = makeCapableLlm('qwen3-5-4b', 'qwen3.5:4b', { tools: true, contextWindow: 262144 });
+      const qwen8b = makeCapableLlm('qwen3-8b', 'qwen3:8b', { tools: true, contextWindow: 40960 });
+      hardwareInspector.getProfile.mockResolvedValue(laptop);
+      hardwareInspector.computeTier.mockReturnValue('medium');
+      modelRegistry.getRecommendedModelsForHardware.mockImplementation((tier) => (tier === 'medium' ? [qwen4b, qwen8b] : [qwen8b, qwen4b]));
+      modelRegistry.getModelsForHardware.mockReturnValue([qwen08b, qwen4b, qwen8b]);
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['qwen3.5:0.8b', 'qwen3.5:4b', 'qwen3:8b'] });
+
+      const env = await service.resolve({ appSlug: 'ci-memory' });
+
+      expect(env.CI_CHAT_MODEL).toBe('qwen3.5:4b');
+      expect(modelRegistry.getRecommendedModelsForHardware).toHaveBeenCalledWith('medium', laptop);
+    });
+
+    it('keeps the recommendation list when the engine has none of the models the wizard could mark', async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gabegoodhart/minimax-m2:230b'] });
+      modelRegistry.getModelsForHardware.mockReturnValue([gemmaE2b, gemmaE4b]);
+
+      const env = await service.resolve({ appSlug: 'ci-memory' });
+
+      expect(env.CI_CHAT_MODEL).toBe('gabegoodhart/minimax-m2:230b');
+    });
+
+    it('hands out the model someone chose', async () => {
+      config.getInferencePreferences.mockReturnValue({
+        preferredBackend: null,
+        preferredModel: 'qwen3-6-35b',
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+      });
+      modelRegistry.getCuratedModel.mockImplementation((id) => (id === 'qwen3-6-35b' ? qwen : undefined));
+
+      const env = await service.resolve({ appSlug: 'ci-memory' });
+
+      expect(env.CI_CHAT_MODEL).toBe('qwen3.6:35b');
     });
   });
 

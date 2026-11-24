@@ -1,6 +1,7 @@
 import { createZodDto } from '@/common/zod-dto';
 import { MAX_INFERENCE_MAX_NUM_CTX, MIN_INFERENCE_MAX_NUM_CTX } from '@/common/helpers/inference-context-cap';
 import { MAX_INFERENCE_OLLAMA_SLOTS, MIN_INFERENCE_OLLAMA_SLOTS } from '@/common/helpers/inference-ollama-slots';
+import { MAX_INFERENCE_OLLAMA_KEEP_ALIVE_SECONDS, MIN_INFERENCE_OLLAMA_KEEP_ALIVE_SECONDS } from '@/common/helpers/inference-ollama-keep-alive';
 import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
 import { z } from 'zod';
 
@@ -33,6 +34,9 @@ export const inferencePreferencesSchema = z.object({
   // Base URL of the operator's oMLX server (e.g. http://host.docker.internal:8000).
   // `null` clears the stored preference and falls back to OMLX_URL or the host default.
   omlxUrl: z.string().trim().url().nullable().optional(),
+  // oMLX's main API key. The Hub needs it for oMLX's admin API, which downloads models; the desktop
+  // app saves the key it set when it installed oMLX. `null` or an empty string clears it.
+  omlxApiKey: z.string().trim().nullable().optional(),
   // Manual path. Either may be set alone. Origins, not `/v1` suffixes: the resolver appends `/v1`
   // for decode. Encode is stored as typed and handed to apps as the embeddings host.
   decodeEndpoint: z.string().trim().url().nullable().optional(),
@@ -45,9 +49,37 @@ export const inferencePreferencesSchema = z.object({
   // so the pool can tell a full engine from a half-empty one. `null` clears it, which ranks this
   // node by queue depth alone again.
   ollamaSlots: z.number().int().min(MIN_INFERENCE_OLLAMA_SLOTS).max(MAX_INFERENCE_OLLAMA_SLOTS).nullable().optional(),
+  // How long this node's Ollama keeps an idle model, in seconds. Set it to the daemon's
+  // `OLLAMA_KEEP_ALIVE` (-1 for forever) so an unpinned model goes back to that. `null` clears it.
+  // An unpin then names Ollama's built-in 5 minutes.
+  ollamaKeepAlive: z.number().int().min(MIN_INFERENCE_OLLAMA_KEEP_ALIVE_SECONDS).max(MAX_INFERENCE_OLLAMA_KEEP_ALIVE_SECONDS).nullable().optional(),
+  // The KV cache this node's Ollama runs — set it to the daemon's `OLLAMA_KV_CACHE_TYPE` so windows are
+  // sized for it (an 8-bit cache holds about twice the context). `null` clears it: sized as 16-bit again.
+  ollamaKvCacheType: z.enum(['f16', 'q8_0', 'q4_0']).nullable().optional(),
 });
 
 export class UpdateInferencePreferencesBody extends createZodDto(inferencePreferencesSchema) {}
+
+/**
+ * What the Hub shows in place of a stored key: `GET /api/inference/preferences` sends it for the vLLM
+ * and oMLX keys, and Settings > AI shows it for a cloud provider key. A save that sends it back keeps
+ * the stored key.
+ */
+export const MASKED_API_KEY = '••••••••';
+
+/** Whether a key in a save is that placeholder, which the UI sends back for an untouched field. */
+export function isMaskedApiKey(value: string | null | undefined): boolean {
+  return typeof value === 'string' && value.trim().startsWith('••');
+}
+
+/** Inference preferences as the API reports them: each stored engine key becomes {@link MASKED_API_KEY}. */
+export function maskInferencePreferences<T extends { preferredVllmApiKey?: string | null; preferredOmlxApiKey?: string | null }>(preferences: T): T {
+  return {
+    ...preferences,
+    ...(preferences.preferredVllmApiKey ? { preferredVllmApiKey: MASKED_API_KEY } : {}),
+    ...(preferences.preferredOmlxApiKey ? { preferredOmlxApiKey: MASKED_API_KEY } : {}),
+  };
+}
 
 const runtimeModelsQuerySchema = z.object({
   backend: inferenceBackendSchema,
@@ -86,6 +118,19 @@ const manualEndpointStatusQuerySchema = z.object({
 
 export class ManualEndpointStatusQueryDto extends createZodDto(manualEndpointStatusQuerySchema) {}
 
+/**
+ * A model to load or unload: a catalog id, or the name an engine holds a file under. `backend` names
+ * the engine for a file the catalog does not know; a catalog id is routed without it.
+ */
+const modelOnBackendSchema = z.object({
+  modelId: z.string(),
+  backend: inferenceBackendSchema.optional(),
+});
+
+export class LoadModelBody extends createZodDto(modelOnBackendSchema) {}
+
+export class UnloadModelBody extends createZodDto(modelOnBackendSchema) {}
+
 export const rocmInstallPhaseSchema = z.enum(['idle', 'downloading', 'installing', 'reboot_required', 'failed', 'completed']);
 
 const updateRocmInstallStateSchema = z.object({
@@ -94,3 +139,11 @@ const updateRocmInstallStateSchema = z.object({
 });
 
 export class UpdateRocmInstallStateBody extends createZodDto(updateRocmInstallStateSchema) {}
+
+const cloudFallbackPolicySchema = z.object({
+  allowCloudFallback: z.boolean(),
+  hasCloudFallback: z.boolean(),
+  envFlag: z.string(),
+});
+
+export class CloudFallbackPolicyDto extends createZodDto(cloudFallbackPolicySchema) {}

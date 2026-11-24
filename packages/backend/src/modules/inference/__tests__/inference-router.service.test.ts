@@ -2,13 +2,14 @@ import { Test, type TestingModule } from '@nestjs/testing';
 import { InferenceRouterService } from '../inference-router.service';
 import { HardwareInspectorService } from '../hardware-inspector.service';
 import { ModelRegistryService } from '../model-registry.service';
-import { MemoryManagerService } from '../memory-manager.service';
+import { MemoryManagerService, modelMemoryCeilingMb } from '../memory-manager.service';
 import { ModelPullerService } from '../model-puller.service';
 import { CloudFallbackService } from '../cloud-fallback.service';
 import { InferenceBackendRegistry } from '../backends/backend-registry';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
+import { LocalAiBackend } from '../backends/localai.backend';
 import { OmlxBackend } from '../backends/omlx.backend';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -18,9 +19,15 @@ import { PassThrough } from 'node:stream';
 import axios from 'axios';
 import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
 import type { HardwareProfile, TrackedModel, CuratedModel, CloudProviderConfig } from '@ci-hub/common/types';
-import { firstByteBudgetMs } from '@/modules/hub-pool/hub-pool-budget';
+import { firstByteBudgetMs, lastLocalBudgetMs } from '@/modules/hub-pool/hub-pool-budget';
 import { InferenceRouteError } from '../inference-error-reply';
 import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from '@/modules/hub-pool/hub-pool-load.service';
+
+// These scenarios pin the floor and eviction arithmetic to the context ladder, which a Lemonade model
+// with no measured cost used to fall back to. The header-derived cost (`catalog/kv-geometry.generated.ts`)
+// makes most of them fit trivially, so it is off here unless a test puts a row in.
+const ggufTable = vi.hoisted(() => ({}) as Record<string, unknown>);
+vi.mock('../catalog/kv-geometry.generated', () => ({ GGUF_KV_GEOMETRY: ggufTable }));
 
 vi.mock('axios');
 
@@ -42,6 +49,7 @@ const NO_PREFERENCES: ReturnType<ConfigurationService['getInferencePreferences']
   preferredEncodeEndpoint: null,
   maxNumCtx: null,
   ollamaSlots: null,
+  ollamaKeepAlive: null,
 };
 
 describe('InferenceRouterService', () => {
@@ -56,6 +64,7 @@ describe('InferenceRouterService', () => {
   let vllmBackend: MockProxy<VllmBackend>;
   let lemonadeBackend: MockProxy<LemonadeBackend>;
   let omlxBackend: MockProxy<OmlxBackend>;
+  let localaiBackend: MockProxy<LocalAiBackend>;
   let configuration: MockProxy<ConfigurationService>;
   /** Real: what the pool records as generating is exactly what a load must not evict. */
   let poolLoad: HubPoolLoadService;
@@ -81,6 +90,7 @@ describe('InferenceRouterService', () => {
     vllmBackend = mock<VllmBackend>();
     lemonadeBackend = mock<LemonadeBackend>();
     omlxBackend = mock<OmlxBackend>();
+    localaiBackend = mock<LocalAiBackend>();
     configuration = mock<ConfigurationService>();
     poolLoad = new HubPoolLoadService();
     // No operator preference by default, so every existing case resolves exactly as before.
@@ -91,6 +101,8 @@ describe('InferenceRouterService', () => {
     // 512 MB display reserve.
     memoryManager.loadHeadroomMb.mockResolvedValue(24_064);
     memoryManager.footprintSighting.mockResolvedValue(null);
+    // Nothing resident, so a model's own ceiling is the node's.
+    memoryManager.modelCeilingMb.mockImplementation(async (profile) => modelMemoryCeilingMb(profile));
     modelRegistry.getTrackedModels.mockReturnValue([]);
     modelRegistry.getCatalog.mockReturnValue([]);
     modelRegistry.getPinnedModels.mockReturnValue([]);
@@ -106,6 +118,8 @@ describe('InferenceRouterService', () => {
     lemonadeBackend.getBaseUrl.mockReturnValue('http://ci-hub-lemonade:13305');
     omlxBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
     omlxBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
+    localaiBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+    localaiBackend.getBaseUrl.mockReturnValue('http://localhost:8080');
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -120,6 +134,7 @@ describe('InferenceRouterService', () => {
         { provide: VllmBackend, useValue: vllmBackend },
         { provide: LemonadeBackend, useValue: lemonadeBackend },
         { provide: OmlxBackend, useValue: omlxBackend },
+        { provide: LocalAiBackend, useValue: localaiBackend },
         { provide: ConfigurationService, useValue: configuration },
         { provide: HubPoolLoadService, useValue: poolLoad },
         InferenceBackendRegistry,
@@ -168,6 +183,7 @@ describe('InferenceRouterService', () => {
       expect(models.length).toBeGreaterThanOrEqual(3);
       expect(models.find((m) => m.id === 'phi-4-mini')?.state).toBe('pinned');
       expect(models.find((m) => m.id === 'phi-4-mini')?.local).toBe(true);
+      expect(models.find((m) => m.id === 'phi-4-mini')?.backend_model_id).toBe('phi4-mini');
       expect(models.find((m) => m.id === 'gpt-4o')?.local).toBe(false);
     });
 
@@ -245,7 +261,7 @@ describe('InferenceRouterService', () => {
       const status = await service.getStatus();
 
       expect(status.backends).toHaveLength(INFERENCE_BACKEND_TYPES.length);
-      for (const backend of [ollamaBackend, vllmBackend, lemonadeBackend, omlxBackend]) {
+      for (const backend of [ollamaBackend, vllmBackend, lemonadeBackend, omlxBackend, localaiBackend]) {
         expect(backend.healthCheck).toHaveBeenCalledTimes(1);
       }
     });
@@ -254,7 +270,7 @@ describe('InferenceRouterService', () => {
       const STALL_MS = 40;
       let inFlight = 0;
       let peakInFlight = 0;
-      for (const backend of [ollamaBackend, vllmBackend, lemonadeBackend, omlxBackend]) {
+      for (const backend of [ollamaBackend, vllmBackend, lemonadeBackend, omlxBackend, localaiBackend]) {
         backend.healthCheck.mockImplementation(async () => {
           inFlight += 1;
           peakInFlight = Math.max(peakInFlight, inFlight);
@@ -293,7 +309,7 @@ describe('InferenceRouterService', () => {
 
       await service.routeChatCompletion({ model: 'auto', messages: [] }).catch(() => undefined);
 
-      for (const backend of [ollamaBackend, vllmBackend, lemonadeBackend, omlxBackend]) {
+      for (const backend of [ollamaBackend, vllmBackend, lemonadeBackend, omlxBackend, localaiBackend]) {
         expect(backend.healthCheck.mock.calls.length).toBeLessThanOrEqual(1);
       }
     });
@@ -382,6 +398,45 @@ describe('InferenceRouterService', () => {
 
       expect(await service.resolveAutoModel()).toBe('pinned-llm');
       expect(ollamaBackend.healthCheck).not.toHaveBeenCalled();
+    });
+
+    // oMLX does not list the catalog's `mlx-community/<name>` (0.7.3.dev1, measured on /v1/models): a model directory is
+    // listed by its own name, the Hugging Face cache by `<org>--<name>`.
+    describe('on oMLX', () => {
+      const curatedQwen = {
+        catalogId: 'qwen3-8b-mlx',
+        backend: 'omlx',
+        backendModelId: 'mlx-community/Qwen3-8B-4bit',
+        modality: 'llm',
+      } as unknown as CuratedModel;
+
+      beforeEach(() => {
+        configuration.getInferencePreferences.mockReturnValue({ ...NO_PREFERENCES, preferredBackend: 'omlx', preferredModel: 'qwen3-8b-mlx' });
+        modelRegistry.getCuratedModel.mockImplementation((id) => (id === 'qwen3-8b-mlx' ? curatedQwen : undefined));
+      });
+
+      it.each([
+        ['a model directory', 'Qwen3-8B-4bit'],
+        ['the Hugging Face cache', 'mlx-community--Qwen3-8B-4bit'],
+      ])('returns the preferred model by the name oMLX lists it under, from %s', async (_layout, listed) => {
+        omlxBackend.healthCheck.mockResolvedValue({
+          running: true,
+          healthy: true,
+          modelsLoaded: ['LiquidAI--LFM2.5-1.2B-Instruct-MLX-bf16', listed],
+        });
+
+        expect(await service.resolveAutoModel()).toBe(listed);
+      });
+
+      it("falls through to the first chat model when oMLX lists no spelling of the preferred one, however alike another build or another publisher's is", async () => {
+        omlxBackend.healthCheck.mockResolvedValue({
+          running: true,
+          healthy: true,
+          modelsLoaded: ['LiquidAI--LFM2.5-1.2B-Instruct-MLX-bf16', 'Qwen3-8B-8bit', 'lmstudio-community--Qwen3-8B-4bit'],
+        });
+
+        expect(await service.resolveAutoModel()).toBe('LiquidAI--LFM2.5-1.2B-Instruct-MLX-bf16');
+      });
     });
   });
 
@@ -490,6 +545,37 @@ describe('InferenceRouterService', () => {
         backendModelId: 'nomic-embed-text',
       });
     });
+
+    // An app handed oMLX's name for a model sends that (`Qwen3-8B-4bit`, or `mlx-community--Qwen3-8B-4bit` from the
+    // Hugging Face cache), where the registry holds the catalog's `mlx-community/Qwen3-8B-4bit`.
+    describe('a tracked oMLX model, by the name oMLX lists it under', () => {
+      const omlxTracked = {
+        catalogId: 'qwen3-8b-mlx',
+        backendModelId: 'mlx-community/Qwen3-8B-4bit',
+        backend: 'omlx',
+        state: 'loaded',
+      } as TrackedModel;
+
+      beforeEach(() => {
+        modelRegistry.getTrackedModel.mockReturnValue(undefined);
+        modelRegistry.getTrackedModels.mockReturnValue([omlxTracked]);
+      });
+
+      it.each(['Qwen3-8B-4bit', 'mlx-community--Qwen3-8B-4bit', 'qwen3-8b-4bit'])('finds it as %s', async (sent) => {
+        await expect(service.prepareTrackedModel(sent)).resolves.toEqual({ backend: 'omlx', backendModelId: 'mlx-community/Qwen3-8B-4bit' });
+      });
+
+      it("does not find it as another build of the name, or another publisher's", async () => {
+        await expect(service.prepareTrackedModel('Qwen3-8B-8bit')).resolves.toBeNull();
+        await expect(service.prepareTrackedModel('lmstudio-community--Qwen3-8B-4bit')).resolves.toBeNull();
+      });
+
+      it("folds nothing for another engine's row", async () => {
+        modelRegistry.getTrackedModels.mockReturnValue([{ ...omlxTracked, backend: 'vllm' } as TrackedModel]);
+
+        await expect(service.prepareTrackedModel('Qwen3-8B-4bit')).resolves.toBeNull();
+      });
+    });
   });
 
   // ─── loadTrackedModel ──────────────────────────────────
@@ -532,7 +618,7 @@ describe('InferenceRouterService', () => {
       expect(modelPuller.unloadModel).not.toHaveBeenCalled();
       // The first re-measure still showed the old model; the second, after a settle wait, did not.
       expect(memoryManager.canFitModel).toHaveBeenCalledTimes(3);
-      expect(modelPuller.loadModel).toHaveBeenCalledWith(lemonadeModel.id, { contextLength: 16_384 });
+      expect(modelPuller.loadModel).toHaveBeenCalledWith(lemonadeModel.id, { contextLength: 16_384, kvCacheType: 'f16' });
     });
 
     it("tells the plan what the pool has in flight on each engine, turns and embedding batches, from the pool's own record", async () => {
@@ -811,6 +897,46 @@ describe('InferenceRouterService', () => {
       expect(modelPuller.loadModel).toHaveBeenCalled();
     });
 
+    // oMLX does not list the catalog's `mlx-community/<name>` (0.7.3.dev1, measured on /v1/models): a model directory is
+    // listed by its own name, the Hugging Face cache by `<org>--<name>`. Matched exactly, a model oMLX served read as
+    // not downloaded here, and a Hub load of it was refused.
+    describe('an oMLX target', () => {
+      const omlxModel = {
+        id: 'qwen3-8b-mlx',
+        backend: 'omlx',
+        backendModelId: 'mlx-community/Qwen3-8B-4bit',
+        runtime: { memoryFootprintMb: 4_600, contextWindow: 40_960 },
+      } as CuratedModel;
+
+      beforeEach(() => {
+        modelRegistry.getTrackedModel.mockReturnValue(undefined);
+        modelRegistry.getCuratedModel.mockImplementation((id) => (id === omlxModel.id ? omlxModel : undefined));
+        omlxBackend.isModelLoaded.mockResolvedValue(false);
+        memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 24_000, requiredMb: 4_600 });
+      });
+
+      it.each([
+        ['a model directory', 'Qwen3-8B-4bit'],
+        ['the Hugging Face cache', 'mlx-community--Qwen3-8B-4bit'],
+      ])('loads an untracked model oMLX lists from %s', async (_layout, listed) => {
+        omlxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [listed] });
+
+        await expect(service.loadTrackedModel(omlxModel.id, { origin: 'request', numCtx: null })).resolves.toEqual({ loaded: true });
+        expect(modelPuller.loadModel).toHaveBeenCalled();
+      });
+
+      it('refuses a model oMLX does not list before planning or unloading anything', async () => {
+        omlxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['Qwen3-8B-8bit'] });
+
+        await expect(service.loadTrackedModel(omlxModel.id, { origin: 'request', numCtx: null })).resolves.toEqual({
+          loaded: false,
+          reason: `${omlxModel.id} is not downloaded on this node; pull it first`,
+        });
+        expect(memoryManager.planEviction).not.toHaveBeenCalled();
+        expect(modelPuller.loadModel).not.toHaveBeenCalled();
+      });
+    });
+
     it("answers a failed load as a refusal with the engine's reason, not a throw", async () => {
       memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 24_000, requiredMb: 22_096 });
       modelPuller.loadModel.mockRejectedValueOnce(new Error('model "Qwen3.8-27B-GGUF" not found'));
@@ -986,7 +1112,7 @@ describe('InferenceRouterService', () => {
       // 24064 (the card less its display reserve) - 18000 = 6064 MB free for context → the 16k rung,
       // charged at the ladder's 0.25 MB/token.
       expect(memoryManager.canFitModel).toHaveBeenCalledWith(defaultProfile, 18_000 + 16_384 * 0.25);
-      expect(modelPuller.loadModel).toHaveBeenCalledWith(lemonadeModel.id, { contextLength: 16_384 });
+      expect(modelPuller.loadModel).toHaveBeenCalledWith(lemonadeModel.id, { contextLength: 16_384, kvCacheType: 'f16' });
     });
 
     it("uses the engine's measured per-token cost when it has one", async () => {
@@ -1022,7 +1148,7 @@ describe('InferenceRouterService', () => {
 
       await service.loadTrackedModel(lemonadeModel.id, { origin: 'operator' });
 
-      expect(modelPuller.loadModel).toHaveBeenCalledWith(lemonadeModel.id, { contextLength: 8192 });
+      expect(modelPuller.loadModel).toHaveBeenCalledWith(lemonadeModel.id, { contextLength: 8192, kvCacheType: 'f16' });
     });
 
     it('sends no window for an embedding model', async () => {
@@ -1045,7 +1171,7 @@ describe('InferenceRouterService', () => {
 
       expect(memoryManager.canFitModel).toHaveBeenCalledWith(defaultProfile, 18_000 + 8_192 * 0.25);
       expect(memoryManager.planEviction).not.toHaveBeenCalled();
-      expect(modelPuller.loadModel).toHaveBeenCalledWith(lemonadeModel.id, { contextLength: 8_192 });
+      expect(modelPuller.loadModel).toHaveBeenCalledWith(lemonadeModel.id, { contextLength: 8_192, kvCacheType: 'f16' });
     });
 
     it('sizes an eviction for the largest window an empty card holds when not even 4096 fits now', async () => {
@@ -1063,7 +1189,7 @@ describe('InferenceRouterService', () => {
         { backend: 'lemonade', backendModelId: 'Qwen3.8-27B-GGUF' },
         { scope: 'operator', inUse: expect.any(Function) },
       );
-      expect(modelPuller.loadModel).toHaveBeenCalledWith(lemonadeModel.id, { contextLength: 16_384 });
+      expect(modelPuller.loadModel).toHaveBeenCalledWith(lemonadeModel.id, { contextLength: 16_384, kvCacheType: 'f16' });
     });
 
     it('steps an operator load down to the window its measurement scales to, rather than loading the sighted window over budget', async () => {
@@ -1146,6 +1272,67 @@ describe('InferenceRouterService', () => {
       expect(modelRegistry.trackModel).toHaveBeenCalledWith(lemonadeModel.id, 'loaded');
       expect(memoryManager.canFitModel).not.toHaveBeenCalled();
       expect(modelPuller.loadModel).not.toHaveBeenCalled();
+    });
+  });
+
+  // oMLX answers the catalog's `mlx-community/<name>` with a 404 when it serves the model from the Hugging Face cache,
+  // where `mlx-community--<name>` is the only name (0.7.3.dev1, measured). Both model directory layouts accept it.
+  describe('naming a tracked model to oMLX', () => {
+    const tracked = { catalogId: 'qwen3-8b-mlx', backendModelId: 'mlx-community/Qwen3-8B-4bit', backend: 'omlx', state: 'loaded' } as TrackedModel;
+    const OMLX_CHAT_URL = 'http://host.docker.internal:8000/v1/chat/completions';
+
+    beforeEach(() => {
+      modelRegistry.getTrackedModel.mockReturnValue(tracked);
+      modelRegistry.getTrackedModels.mockReturnValue([tracked]);
+      vi.mocked(axios.post).mockResolvedValueOnce({ data: { id: 'chatcmpl-1', choices: [] }, headers: {} });
+    });
+
+    it('sends the name oMLX lists the model under', async () => {
+      omlxBackend.engineModelId.mockReturnValue('mlx-community--Qwen3-8B-4bit');
+
+      const res = await service.routeChatCompletion({ model: 'qwen3-8b-mlx', messages: [] });
+
+      expect(res.backend).toBe('omlx');
+      expect(axios.post).toHaveBeenCalledWith(OMLX_CHAT_URL, expect.objectContaining({ model: 'mlx-community--Qwen3-8B-4bit' }), expect.anything());
+      expect(omlxBackend.engineModelId).toHaveBeenCalledWith('mlx-community/Qwen3-8B-4bit');
+    });
+
+    it('sends the catalog id while oMLX has not been seen listing the model', async () => {
+      omlxBackend.engineModelId.mockImplementation((id) => id);
+
+      await service.routeChatCompletion({ model: 'qwen3-8b-mlx', messages: [] });
+
+      expect(axios.post).toHaveBeenCalledWith(OMLX_CHAT_URL, expect.objectContaining({ model: 'mlx-community/Qwen3-8B-4bit' }), expect.anything());
+    });
+
+    it('still records the use against the tracked model, by the catalog id the registry holds', async () => {
+      omlxBackend.engineModelId.mockReturnValue('mlx-community--Qwen3-8B-4bit');
+
+      await service.routeChatCompletion({ model: 'qwen3-8b-mlx', messages: [] });
+
+      expect(modelRegistry.recordUsage).toHaveBeenCalledWith('qwen3-8b-mlx');
+    });
+
+    it("sends another engine's model as the registry holds it, though that engine could name it otherwise", async () => {
+      const lemonadeTracked = {
+        catalogId: 'qwen3-8-27b-lemonade',
+        backendModelId: 'Qwen3.8-27B-GGUF',
+        backend: 'lemonade',
+        state: 'loaded',
+      } as TrackedModel;
+      modelRegistry.getTrackedModel.mockReturnValue(lemonadeTracked);
+      modelRegistry.getTrackedModels.mockReturnValue([lemonadeTracked]);
+      lemonadeBackend.engineModelId.mockReturnValue('user.Qwen3.8-27B-GGUF');
+
+      const res = await service.routeChatCompletion({ model: 'qwen3-8-27b-lemonade', messages: [] });
+
+      expect(res.backend).toBe('lemonade');
+      expect(axios.post).toHaveBeenCalledWith(
+        'http://ci-hub-lemonade:13305/v1/chat/completions',
+        expect.objectContaining({ model: 'Qwen3.8-27B-GGUF' }),
+        expect.anything(),
+      );
+      expect(lemonadeBackend.engineModelId).not.toHaveBeenCalled();
     });
   });
 
@@ -1335,26 +1522,30 @@ describe('InferenceRouterService', () => {
       return { signal: () => signal };
     }
 
-    it('gives a streamed 19 KB prompt the pool floor of 300 s to first byte, where it used to get 120 s', async () => {
+    // This node's engine is the only candidate on the peerless routes, so it gets the pool's
+    // last-candidate budget, not the one a node with a peer behind it gets (#2310).
+    it('gives a streamed 19 KB prompt the pool floor of 300 s, as the only candidate, to first byte', async () => {
+      const budget = lastLocalBudgetMs(300_000);
+      expect(budget).toBeGreaterThan(300_000);
       const engine = engineThatNeverAnswers();
       const outcome = service.routeChatCompletion(streamedTurn(19_000)).catch((e: unknown) => e);
       await vi.advanceTimersByTimeAsync(0);
       expect(axios.post).toHaveBeenCalledWith(expect.any(String), expect.anything(), expect.objectContaining({ responseType: 'stream', timeout: 0 }));
 
-      await vi.advanceTimersByTimeAsync(121_000);
+      await vi.advanceTimersByTimeAsync(301_000);
       expect(engine.signal()?.aborted).toBe(false);
-      await vi.advanceTimersByTimeAsync(300_000 - 121_000 - 1);
+      await vi.advanceTimersByTimeAsync(budget - 301_000 - 1);
       expect(engine.signal()?.aborted).toBe(false);
       await vi.advanceTimersByTimeAsync(1);
       expect(engine.signal()?.aborted).toBe(true);
 
       const err = await outcome;
-      expect((err as Error).message).toMatch(/no response headers within 300000ms/);
+      expect((err as Error).message).toMatch(new RegExp(`no response headers within ${budget}ms`));
     });
 
-    it("scales a big prompt's budget exactly as the pool does", async () => {
+    it("scales a big prompt's budget exactly as the pool does for its last candidate", async () => {
       const body = streamedTurn(160_000);
-      const budget = firstByteBudgetMs(Buffer.byteLength(JSON.stringify(body)));
+      const budget = lastLocalBudgetMs(firstByteBudgetMs(Buffer.byteLength(JSON.stringify(body))));
       expect(budget).toBeGreaterThanOrEqual(800_000);
       const engine = engineThatNeverAnswers();
       const outcome = service.routeChatCompletion(body).catch((e: unknown) => e);
@@ -1392,10 +1583,14 @@ describe('InferenceRouterService', () => {
       expect(vi.getTimerCount()).toBe(0);
     });
 
-    it('gives a non-streamed request the pool completion budget, at least 300 s for the whole generation', async () => {
+    it('gives a non-streamed request the pool completion budget for its last candidate, at least 300 s for the whole generation', async () => {
       vi.mocked(axios.post).mockResolvedValueOnce({ data: { object: 'chat.completion' }, headers: {} });
       await service.routeChatCompletion({ ...streamedTurn(19_000), stream: false });
-      expect(axios.post).toHaveBeenCalledWith(expect.any(String), expect.anything(), expect.objectContaining({ timeout: 300_000 }));
+      expect(axios.post).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.anything(),
+        expect.objectContaining({ timeout: lastLocalBudgetMs(300_000) }),
+      );
     });
   });
 
@@ -1444,6 +1639,113 @@ describe('InferenceRouterService', () => {
       const sttConfig = await transcribe();
       expect(sttConfig?.headers?.Authorization).toBeUndefined();
     });
+
+    it('routes TTS to LocalAI when Lemonade is unhealthy but LocalAI is healthy', async () => {
+      lemonadeBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      localaiBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['tts-1'] });
+      localaiBackend.getBaseUrl.mockReturnValue('http://ci-hub-localai:8080');
+      vi.mocked(axios.post).mockResolvedValueOnce({ data: new ArrayBuffer(8), headers: {} });
+
+      const result = await service.routeTts({ model: 'tts-1', input: 'hello from localai' });
+      expect(result.backend).toBe('localai');
+      expect(axios.post).toHaveBeenCalledWith('http://ci-hub-localai:8080/v1/audio/speech', expect.anything(), expect.anything());
+    });
+
+    it('routes STT to LocalAI when Lemonade is unhealthy but LocalAI is healthy', async () => {
+      lemonadeBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      localaiBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['whisper-1'] });
+      localaiBackend.getBaseUrl.mockReturnValue('http://ci-hub-localai:8080');
+      vi.mocked(axios.post).mockResolvedValueOnce({ data: { text: 'transcribed audio' }, headers: {} });
+
+      const result = await service.routeStt(new FormData());
+      expect(result.backend).toBe('localai');
+      expect(axios.post).toHaveBeenCalledWith('http://ci-hub-localai:8080/v1/audio/transcriptions', expect.any(FormData), expect.anything());
+    });
+  });
+
+  // ─── Image generation and media pool routing ────────────
+  describe('Image generation and media pool routing', () => {
+    it('routes image generation to LocalAI and tracks media in HubPoolLoadService', async () => {
+      localaiBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['stablediffusion'] });
+      localaiBackend.getBaseUrl.mockReturnValue('http://ci-hub-localai:8080');
+      vi.mocked(axios.post).mockResolvedValueOnce({ data: { created: 1234, data: [{ url: 'http://ci-hub-localai:8080/image.png' }] }, headers: {} });
+
+      const acquireSpy = vi.spyOn(poolLoad, 'acquireMedia');
+      const releaseSpy = vi.spyOn(poolLoad, 'releaseMedia');
+
+      const result = await service.routeImageGen({ prompt: 'a cute cat', model: 'stablediffusion' });
+      expect(result.backend).toBe('localai');
+      expect(result.data).toEqual({ created: 1234, data: [{ url: 'http://ci-hub-localai:8080/image.png' }] });
+      expect(axios.post).toHaveBeenCalledWith(
+        'http://ci-hub-localai:8080/v1/images/generations',
+        expect.objectContaining({ prompt: 'a cute cat' }),
+        expect.anything(),
+      );
+
+      expect(acquireSpy).toHaveBeenCalledWith({ kind: 'image', model: 'stablediffusion' });
+      expect(releaseSpy).toHaveBeenCalledWith({ kind: 'image', model: 'stablediffusion' });
+      expect(poolLoad.activeMediaWork()).toBe(0);
+    });
+
+    it('releases media work even if LocalAI image generation fails', async () => {
+      localaiBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['stablediffusion'] });
+      localaiBackend.getBaseUrl.mockReturnValue('http://ci-hub-localai:8080');
+      vi.mocked(axios.post).mockRejectedValueOnce(new Error('GPU OOM'));
+
+      const acquireSpy = vi.spyOn(poolLoad, 'acquireMedia');
+      const releaseSpy = vi.spyOn(poolLoad, 'releaseMedia');
+
+      await expect(service.routeImageGen({ prompt: 'heavy render', model: 'stablediffusion' })).rejects.toThrow(
+        'No image generation backend available',
+      );
+      expect(acquireSpy).toHaveBeenCalled();
+      expect(releaseSpy).toHaveBeenCalled();
+      expect(poolLoad.activeMediaWork()).toBe(0);
+    });
+
+    it('fails closed by default when LocalAI is unhealthy even if a cloud provider is configured', async () => {
+      localaiBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      cloudFallback.getEnabledProviders.mockReturnValue([{ provider: 'openai', apiKey: 'sk-test' } as any]);
+
+      await expect(service.routeImageGen({ prompt: 'cloud render' })).rejects.toThrow('No image generation backend available');
+      expect(cloudFallback.proxyImageGeneration).not.toHaveBeenCalled();
+    });
+
+    it('falls back to cloud provider when LocalAI is unhealthy and CI_HUB_ALLOW_CLOUD_FALLBACK=true', async () => {
+      process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+      try {
+        localaiBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+        cloudFallback.getEnabledProviders.mockReturnValue([{ provider: 'openai', apiKey: 'sk-test' } as any]);
+        cloudFallback.proxyImageGeneration.mockResolvedValueOnce({ data: { data: [{ url: 'cloud.png' }] }, headers: {} });
+
+        const result = await service.routeImageGen({ prompt: 'cloud render' });
+        expect(result.backend).toBe('cloud:openai');
+        expect(result.data).toEqual({ data: [{ url: 'cloud.png' }] });
+        expect(cloudFallback.proxyImageGeneration).toHaveBeenCalled();
+      } finally {
+        delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+      }
+    });
+
+    it('throws when no image generation backend is available', async () => {
+      localaiBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      cloudFallback.getEnabledProviders.mockReturnValue([]);
+
+      await expect(service.routeImageGen({ prompt: 'render' })).rejects.toThrow('No image generation backend available');
+    });
+
+    it('tracks external media workloads via acquireMediaWork and releaseMediaWork', () => {
+      expect(service.activeMediaWork()).toBe(0);
+      expect(poolLoad.localInFlight()).toBe(0);
+
+      service.acquireMediaWork({ kind: 'comfyui' });
+      expect(service.activeMediaWork()).toBe(1);
+      expect(poolLoad.localInFlight()).toBe(1);
+
+      service.releaseMediaWork({ kind: 'comfyui' });
+      expect(service.activeMediaWork()).toBe(0);
+      expect(poolLoad.localInFlight()).toBe(0);
+    });
   });
 
   // ─── Tool-calling error preservation ─────────────────
@@ -1471,6 +1773,237 @@ describe('InferenceRouterService', () => {
       await expect(service.routeChatCompletion(bodyWithTools)).rejects.toThrow('Request failed with status code 400');
       // Must NOT have retried a second time with tools stripped
       expect(axios.post).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ─── Unpin ────────────────────────────────────────────────────────
+  // A pin loads the model at Ollama's keep_alive -1. Clearing the registry alone left it in memory
+  // with Forever, through the AI tab's "Unpin every model?" save as much as a single unpin.
+
+  describe('unpinTrackedModel', () => {
+    const smollm = {
+      id: 'gemma3-270m',
+      backend: 'ollama',
+      backendModelId: 'gemma3:270m',
+      modality: 'llm',
+      runtime: { memoryFootprintMb: 300, contextWindow: 32768 },
+    } as CuratedModel;
+    const tracked = (state: TrackedModel['state']) =>
+      ({ catalogId: smollm.id, backend: 'ollama', backendModelId: smollm.backendModelId, state, pinned: state === 'pinned' }) as TrackedModel;
+
+    beforeEach(() => {
+      modelRegistry.getCuratedModel.mockImplementation((id) => (id === smollm.id ? smollm : undefined));
+      modelRegistry.getTrackedModel.mockReturnValue(tracked('pinned'));
+      modelRegistry.isPinned.mockReturnValue(true);
+      ollamaBackend.setResidentKeepAlive.mockResolvedValue('set');
+    });
+
+    it("clears the pin and hands the model back to Ollama's default keep_alive, without unloading it", async () => {
+      await expect(service.unpinTrackedModel(smollm.id)).resolves.toEqual({ engine: 'set' });
+
+      expect(modelRegistry.unpinModel).toHaveBeenCalledWith(smollm.id);
+      expect(ollamaBackend.setResidentKeepAlive).toHaveBeenCalledWith('gemma3:270m', 'default', { embedding: false, defaultSeconds: null });
+      expect(ollamaBackend.unloadModel).not.toHaveBeenCalled();
+      expect(modelPuller.unloadModel).not.toHaveBeenCalled();
+    });
+
+    // The fleet runs Ollama at OLLAMA_KEEP_ALIVE=24h and states it to the Hub (`cihub fleet backends
+    // --ollama-keep-alive 24h` writes inferenceOllamaKeepAlive 86400). Ollama's API cannot say it.
+    it("hands an unpinned model back at this node's stated Ollama keep-alive when there is one", async () => {
+      configuration.getInferencePreferences.mockReturnValue({ ...NO_PREFERENCES, ollamaKeepAlive: 86_400 });
+
+      await service.unpinTrackedModel(smollm.id);
+
+      expect(ollamaBackend.setResidentKeepAlive).toHaveBeenCalledWith('gemma3:270m', 'default', { embedding: false, defaultSeconds: 86_400 });
+    });
+
+    it('tells Ollama an embedder is one, so the request goes through /api/embed', async () => {
+      const embedder = { ...smollm, id: 'nomic-embed-text', backendModelId: 'nomic-embed-text', modality: 'embedding' } as CuratedModel;
+      modelRegistry.getCuratedModel.mockReturnValue(embedder);
+      modelRegistry.getTrackedModel.mockReturnValue(undefined);
+
+      await service.unpinTrackedModel(embedder.id);
+
+      expect(ollamaBackend.setResidentKeepAlive).toHaveBeenCalledWith('nomic-embed-text', 'default', { embedding: true, defaultSeconds: null });
+    });
+
+    it('leaves the engine alone for a model that was not pinned', async () => {
+      modelRegistry.isPinned.mockReturnValue(false);
+
+      await expect(service.unpinTrackedModel(smollm.id)).resolves.toEqual({ engine: 'none' });
+
+      expect(modelRegistry.unpinModel).toHaveBeenCalledWith(smollm.id);
+      expect(ollamaBackend.setResidentKeepAlive).not.toHaveBeenCalled();
+    });
+
+    it('still unpins when Ollama cannot be told and says so in the log', async () => {
+      ollamaBackend.setResidentKeepAlive.mockRejectedValue(new Error('connect ECONNREFUSED'));
+
+      await expect(service.unpinTrackedModel(smollm.id)).resolves.toEqual({ engine: 'unreachable' });
+
+      expect(modelRegistry.unpinModel).toHaveBeenCalledWith(smollm.id);
+      expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('ECONNREFUSED'));
+    });
+
+    // Before, a pin of a model already in memory loaded nothing and told Ollama nothing: one an app had
+    // loaded through Ollama itself, or one unpinned a minute earlier, kept its 5-minute expiry pinned.
+    it('a pin of a model already in memory tells Ollama to hold it', async () => {
+      modelRegistry.getTrackedModel.mockReturnValue(tracked('loaded'));
+      memoryManager.canPinModel.mockResolvedValue({ canPin: true });
+
+      await expect(service.pinTrackedModel(smollm.id, { origin: 'operator' })).resolves.toEqual({ pinned: true });
+
+      expect(modelPuller.loadModel).not.toHaveBeenCalled();
+      expect(ollamaBackend.setResidentKeepAlive).toHaveBeenCalledWith('gemma3:270m', 'pinned', { embedding: false, defaultSeconds: null });
+      expect(modelRegistry.pinModel).toHaveBeenCalledWith(smollm.id);
+    });
+
+    // An unpinned model expires on Ollama's keep_alive while the registry still says `loaded`.
+    it('a pin the registry calls loaded but Ollama no longer holds loads the model before it pins it', async () => {
+      modelRegistry.getTrackedModel.mockReturnValue(tracked('loaded'));
+      memoryManager.canPinModel.mockResolvedValue({ canPin: true });
+      memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 24_000, requiredMb: 1_000 });
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [smollm.backendModelId] });
+      ollamaBackend.isModelLoaded.mockResolvedValue(false);
+      ollamaBackend.setResidentKeepAlive.mockResolvedValue('not-resident');
+
+      await expect(service.pinTrackedModel(smollm.id, { origin: 'operator' })).resolves.toEqual({ pinned: true });
+
+      expect(modelPuller.loadModel).toHaveBeenCalledTimes(1);
+      expect(modelPuller.loadModel.mock.invocationCallOrder[0]).toBeLessThan(modelRegistry.pinModel.mock.invocationCallOrder[0] ?? 0);
+    });
+
+    it('a pin whose model is gone and cannot be loaded again is refused, not pinned', async () => {
+      modelRegistry.getTrackedModel.mockReturnValue(tracked('loaded'));
+      memoryManager.canPinModel.mockResolvedValue({ canPin: true });
+      memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 24_000, requiredMb: 1_000 });
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [smollm.backendModelId] });
+      ollamaBackend.isModelLoaded.mockResolvedValue(false);
+      ollamaBackend.setResidentKeepAlive.mockResolvedValue('not-resident');
+      modelPuller.loadModel.mockRejectedValueOnce(new Error('model requires more system memory'));
+
+      const outcome = await service.pinTrackedModel(smollm.id, { origin: 'operator' });
+
+      expect(outcome.pinned).toBe(false);
+      expect(modelRegistry.pinModel).not.toHaveBeenCalled();
+    });
+
+    // With the card's memory unknown, a pin is refused before anything loads for it.
+    it('refuses a pin the budget calls final without measuring or loading anything', async () => {
+      modelRegistry.getTrackedModel.mockReturnValue(tracked('pulled'));
+      memoryManager.canPinModel.mockResolvedValue({
+        canPin: false,
+        final: true,
+        reason: "The Hub can't read this graphics card's memory (VRAM Unknown)",
+      });
+
+      const outcome = await service.pinTrackedModel(smollm.id, { origin: 'operator' });
+
+      expect(outcome).toEqual({ pinned: false, reason: "The Hub can't read this graphics card's memory (VRAM Unknown)" });
+      expect(memoryManager.footprintSighting).not.toHaveBeenCalled();
+      expect(modelPuller.loadModel).not.toHaveBeenCalled();
+      expect(modelRegistry.pinModel).not.toHaveBeenCalled();
+    });
+
+    it('waits for a pin of the same model queued ahead of it, so that pin is not written back after the unpin', async () => {
+      modelRegistry.getTrackedModel.mockReturnValue(tracked('pulled'));
+      memoryManager.canPinModel.mockResolvedValue({ canPin: true });
+      memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 24_000, requiredMb: 1_000 });
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [smollm.backendModelId] });
+      ollamaBackend.isModelLoaded.mockResolvedValue(false);
+      let finishLoad!: () => void;
+      modelPuller.loadModel.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            finishLoad = resolve;
+          }),
+      );
+
+      const pin = service.pinTrackedModel(smollm.id, { origin: 'operator' });
+      await vi.waitFor(() => expect(modelPuller.loadModel).toHaveBeenCalledTimes(1));
+      const unpin = service.unpinTrackedModel(smollm.id);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(modelRegistry.unpinModel).not.toHaveBeenCalled();
+
+      finishLoad();
+      await expect(pin).resolves.toEqual({ pinned: true });
+      await expect(unpin).resolves.toEqual({ engine: 'set' });
+      expect(modelRegistry.pinModel.mock.invocationCallOrder[0]).toBeLessThan(modelRegistry.unpinModel.mock.invocationCallOrder[0] ?? 0);
+    });
+
+    it('has nothing to set on an engine without a per-request keep_alive', () => {
+      expect(typeof OllamaBackend.prototype.setResidentKeepAlive).toBe('function');
+      for (const engine of [LemonadeBackend, VllmBackend, OmlxBackend, LocalAiBackend]) {
+        expect((engine.prototype as unknown as Record<string, unknown>).setResidentKeepAlive).toBeUndefined();
+      }
+    });
+  });
+
+  describe('CI_HUB_ALLOW_CLOUD_FALLBACK fail-closed routing', () => {
+    const originalFlag = process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+    const openaiProvider: CloudProviderConfig = {
+      provider: 'openai',
+      apiKey: 'sk-test',
+      enabled: true,
+      baseUrl: 'https://api.openai.com/v1',
+      defaultModel: 'gpt-4o',
+    };
+
+    beforeEach(() => {
+      delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+      ollamaBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      cloudFallback.getEnabledProviders.mockReturnValue([openaiProvider]);
+    });
+
+    afterEach(() => {
+      if (originalFlag === undefined) {
+        delete process.env.CI_HUB_ALLOW_CLOUD_FALLBACK;
+      } else {
+        process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = originalFlag;
+      }
+    });
+
+    it('refuses cloud fallback on model="auto" unless CI_HUB_ALLOW_CLOUD_FALLBACK=true', async () => {
+      await expect(service.routeChatCompletion({ model: 'auto', messages: [{ role: 'user', content: 'hi' }] })).rejects.toThrow();
+      expect(cloudFallback.proxyChatCompletion).not.toHaveBeenCalled();
+
+      process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'false';
+      await expect(service.routeChatCompletion({ model: 'auto', messages: [{ role: 'user', content: 'hi' }] })).rejects.toThrow();
+      expect(cloudFallback.proxyChatCompletion).not.toHaveBeenCalled();
+
+      process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+      cloudFallback.proxyChatCompletion.mockResolvedValueOnce({
+        data: { id: 'chatcmpl-1', choices: [{ message: { role: 'assistant', content: 'ok' } }] },
+        headers: {},
+      });
+
+      const result = await service.routeChatCompletion({
+        model: 'auto',
+        messages: [{ role: 'user', content: 'hi' }],
+      });
+      expect(result.backend).toBe('cloud:openai');
+      expect(cloudFallback.proxyChatCompletion).toHaveBeenCalledTimes(1);
+    });
+
+    it('refuses cloud fallback on TTS, STT, and embeddings unless CI_HUB_ALLOW_CLOUD_FALLBACK=true', async () => {
+      await expect(service.routeTts({ input: 'hello', voice: 'alloy' })).rejects.toThrow('No TTS backend available');
+      expect(cloudFallback.proxyTts).not.toHaveBeenCalled();
+
+      const form = new FormData();
+      await expect(service.routeStt(form)).rejects.toThrow('No STT backend available');
+      expect(cloudFallback.proxyStt).not.toHaveBeenCalled();
+
+      await expect(service.routeEmbeddings({ input: 'hello', model: 'nomic-embed-text' })).rejects.toThrow('No embeddings backend available');
+
+      process.env.CI_HUB_ALLOW_CLOUD_FALLBACK = 'true';
+      cloudFallback.proxyTts.mockResolvedValueOnce(Buffer.from('audio'));
+      expect((await service.routeTts({ input: 'hello', voice: 'alloy' })).backend).toBe('cloud:openai');
+
+      cloudFallback.proxyStt.mockResolvedValueOnce({ text: 'hello' });
+      expect((await service.routeStt(form)).backend).toBe('cloud:openai');
+
+      vi.mocked(axios.post).mockResolvedValueOnce({ data: { data: [{ embedding: [0.1, 0.2] }] } });
+      expect((await service.routeEmbeddings({ input: 'hello', model: 'text-embedding-3-small' })).backend).toBe('cloud:openai');
     });
   });
 });

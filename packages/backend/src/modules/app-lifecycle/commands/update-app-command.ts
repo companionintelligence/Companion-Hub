@@ -1,20 +1,59 @@
+import { DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES } from '@/common/constants';
+import type { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
-import { mergeArchitectureOverrides } from '@/common/helpers/compose-helpers';
 import { LoggerService } from '@/core/logger/logger.service';
+import { SSEService } from '@/core/sse/sse.service';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { BackupManager } from '@/modules/backups/backup.manager';
+import { removeAppDataDirWithRootFallback } from '@/modules/docker/app-data-removal';
 import { DockerService } from '@/modules/docker/docker.service';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
 import type Dockerode from 'dockerode';
-import { AppLifecycleCommand } from './command';
-import { parseComposeJson } from '@ci-hub/common/schemas';
+import type { OperationPhase } from '../app-operation-registry';
+import { AppLifecycleCommand, type CommandExecutionContext } from './command';
+import { installedComposeImages, pullAppImagesRecorded, recordComposeUpPulls } from './pull-app-images';
+import { type AppSecurityGrants, type UpdatePhase, parseInstalledComposeJson } from '@ci-hub/common/schemas';
+import { securityGrantsFor } from '@/modules/apps/security-grants';
+
+/**
+ * Kept free at the end of an update's time (`CommandExecutionContext.deadline`) for undoing it:
+ * taking the new version down, putting the previous files and data back and starting it again.
+ */
+const UPDATE_ROLLBACK_RESERVE_MS = 10 * 60_000;
+/** An update with less than this left for its own work when a worker takes it is not started. */
+const UPDATE_MIN_WORK_MS = 5 * 60_000;
+/**
+ * Allowed for a worker to take an update off the queue when judging a lowered budget. Without it a
+ * budget of exactly the work time plus the reserve passed that check and then always failed the next
+ * one, by the seconds the update had spent queued, with a message about waiting for a worker.
+ */
+const UPDATE_PICKUP_SLACK_MS = 60_000;
+
+/**
+ * What a cancel may still do in each step (see `OperationPhase`): up to and during the health wait
+ * it stops the update at the next safe point and rolls it back; once the update is finishing or
+ * already rolling back, it is refused.
+ */
+const REGISTRY_PHASE: Record<UpdatePhase, OperationPhase> = {
+  preparing: 'preparing',
+  pulling: 'pulling',
+  backing_up: 'preparing',
+  replacing: 'composing',
+  starting: 'composing',
+  verifying: 'verifying',
+  finalizing: 'finalizing',
+  rolling_back: 'finalizing',
+};
+
+/** The person cancelled the update; it stops where it is and puts the previous version back. */
+class UpdateCancelledError extends Error {}
 
 export class UpdateAppCommand extends AppLifecycleCommand {
   /**
@@ -32,8 +71,31 @@ export class UpdateAppCommand extends AppLifecycleCommand {
     super(moduleRef, docker);
   }
 
-  public async execute(appUrn: AppUrn, form: AppEventFormInput) {
+  /**
+   * The update's one time limit (`CommandExecutionContext.deadline`), kept for the rollback: its
+   * restore and the root helpers under it must end before the reply is due like everything else.
+   */
+  private deadline: AppCommandDeadline | undefined;
+
+  /** What the update leaves for after its reply (see `afterReply`). */
+  private afterReplyWork: (() => Promise<void>) | undefined;
+
+  /**
+   * Empty the snapshot the update no longer needs, once its reply has been sent. It is a delete that
+   * need not finish before the reply, so it gets the helper's own 30 minutes rather than whatever the
+   * update had left: a snapshot left on disk because a long rollback used up the deadline is never
+   * removed by anything else.
+   */
+  public async afterReply(): Promise<void> {
+    const work = this.afterReplyWork;
+    this.afterReplyWork = undefined;
+    await work?.();
+  }
+
+  public async execute(appUrn: AppUrn, form: AppEventFormInput, ctx?: CommandExecutionContext) {
     const logger = this.moduleRef.get(LoggerService, { strict: false });
+    const sseService = this.moduleRef.get(SSEService, { strict: false });
+    this.deadline = ctx?.deadline;
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
     const dockerService = this.moduleRef.get(DockerService, { strict: false });
     const marketplaceService = this.moduleRef.get(MarketplaceService, { strict: false });
@@ -43,7 +105,7 @@ export class UpdateAppCommand extends AppLifecycleCommand {
     let composeToInstall: Awaited<ReturnType<MarketplaceService['getDockerComposeJson']>>;
     try {
       composeToInstall = await marketplaceService.getDockerComposeJson(appUrn);
-      parseComposeJson(composeToInstall.content);
+      parseInstalledComposeJson(composeToInstall.content, securityGrantsFor(appUrn));
     } catch (err) {
       logger.error(`Error parsing docker-compose.yml for app ${appUrn} from marketplace repository. Are you running the latest version of CI Hub?`);
       // Nothing has been touched: the running app is exactly as it was.
@@ -61,7 +123,50 @@ export class UpdateAppCommand extends AppLifecycleCommand {
     let tookDown = false;
     let startedNewVersion = false;
 
+    // Each step is reported to the operation registry, which decides what a cancel may still do, and
+    // to the app page, which shows it. Before, the page said "Preparing..." for the whole update.
+    const report = (phase: UpdatePhase) => {
+      ctx?.setPhase(REGISTRY_PHASE[phase]);
+      sseService?.emit('app', { event: 'status_change', appUrn, appStatus: 'updating', updatePhase: phase });
+    };
+
+    // ⚠ ONE DEADLINE FOR THE WHOLE UPDATE. The service waits for the reply for a fixed time from when
+    // it queued the update (`AppCommandDeadline.untilReply`). The update's own work, the pull, the
+    // backup and the health wait included, ends `UPDATE_ROLLBACK_RESERVE_MS` before that deadline, so
+    // a rollback still fits. The rollback's restore gets what is left of it.
+    const workEndsAt = ctx?.deadline ? ctx.deadline.endsAt - UPDATE_ROLLBACK_RESERVE_MS : undefined;
+    const workLeftMs = () => ctx?.deadline?.remainingBeforeMs(UPDATE_ROLLBACK_RESERVE_MS) ?? Number.POSITIVE_INFINITY;
+
+    // A safe point: no step is half-done here, so a cancel or a used-up budget stops the update and
+    // the catch below undoes what it changed. A cancel between two safe points waits for the next one.
+    const checkpoint = (where: string) => {
+      if (ctx?.signal.aborted) {
+        throw new UpdateCancelledError(`The update of ${appUrn} was cancelled ${where}`);
+      }
+      if (workLeftMs() <= 0) {
+        throw new Error(`The update of ${appUrn} ran out of time ${where}; the Hub gives an update until its reply is due, less time to undo it`);
+      }
+    };
+
     try {
+      // Checked before the first step is shown: an update a worker takes this late may be one the
+      // service has already settled, and telling the page it is updating would leave it spinning.
+      // A budget lowered below what any update needs is a setting to change, not a queue to wait out.
+      if (ctx?.deadline && ctx.deadline.budgetMs - UPDATE_ROLLBACK_RESERVE_MS < UPDATE_MIN_WORK_MS + UPDATE_PICKUP_SLACK_MS) {
+        throw new Error(
+          `The update of ${appUrn} was not started: CI_HUB_PRIVILEGED_HELPER_BUDGET_SECONDS gives an app command ${Math.round(ctx.deadline.budgetMs / 1000)} s. ` +
+            `An update needs at least ${(UPDATE_MIN_WORK_MS + UPDATE_ROLLBACK_RESERVE_MS + UPDATE_PICKUP_SLACK_MS) / 60_000} minutes: ` +
+            `${UPDATE_MIN_WORK_MS / 60_000} to do its work, ${UPDATE_ROLLBACK_RESERVE_MS / 60_000} to undo it ` +
+            `and ${UPDATE_PICKUP_SLACK_MS / 60_000} for a worker to take it. Nothing was changed; raise that setting or remove it.`,
+        );
+      }
+      if (workLeftMs() < UPDATE_MIN_WORK_MS) {
+        throw new Error(
+          `The update of ${appUrn} was not started: it waited for a free worker until too little of its time was left. Nothing was changed; try the update again.`,
+        );
+      }
+      report('preparing');
+
       await this.assertMarketplaceEntitlement(appUrn, 'update');
 
       // ⚠ PULL BEFORE TOUCHING THE RUNNING APP. The pull is the step that most often fails (no
@@ -69,12 +174,31 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       // old version was stopped and torn down turned every such failure into downtime with the new
       // files already on disk. Nothing is stopped, removed or replaced until the images are here.
       logger.info(`Pulling images for ${appUrn} before stopping the current version`);
-      await dockerService.pullImages(this.imagesToPull(composeToInstall.content), { forcePull: true });
+      report('pulling');
+      const imagesToPull = this.imagesToPull(composeToInstall.content, securityGrantsFor(appUrn));
+      await pullAppImagesRecorded(
+        { docker: dockerService, files: appFilesManager, logger },
+        appUrn,
+        imagesToPull,
+        () =>
+          dockerService.pullImages(imagesToPull, {
+            forcePull: true,
+            signal: ctx?.signal,
+            timeoutMs: Math.min(workLeftMs(), DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES * 60_000),
+          }),
+        { forced: true },
+      );
+      checkpoint('after downloading the new images');
 
       if (this.performBackup) {
+        // Before the stop: data the Hub cannot read needs the root helper, and a backup that cannot be
+        // made must not cost the app its uptime first.
+        await backupManager.assertBackupPossible(appUrn);
         stoppedForBackup = true;
+        report('backing_up');
         await dockerService.composeApp(appUrn, 'stop');
-        const backupRes = await backupManager.backupApp(appUrn);
+        // The backup's root helpers get the update's work time, not a fresh budget of their own.
+        const backupRes = await backupManager.backupApp(appUrn, ctx?.deadline?.withReserve(UPDATE_ROLLBACK_RESERVE_MS));
         backupFile = backupRes?.filename;
         await this.applyBackupRetention(appUrn);
       }
@@ -82,7 +206,11 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       // The data is already in the backup when there is one; copying it again here is a second full
       // copy of the app's data folder that nothing reads. The installed files are always snapshotted:
       // they are what a rollback puts back.
-      snapshotResult = await dockerService.createPreUpdateVolumeSnapshot(appUrn, { includeData: !backupFile });
+      // A copy of the data as root is part of the update's work, so it gets the work time like the backup.
+      snapshotResult = await dockerService.createPreUpdateVolumeSnapshot(appUrn, {
+        includeData: !backupFile,
+        deadline: ctx?.deadline?.withReserve(UPDATE_ROLLBACK_RESERVE_MS),
+      });
 
       // An update that cannot be undone is not started. Nothing has been changed yet, so refusing here
       // costs nothing; going on would put a failed or partial snapshot in charge of the rollback.
@@ -90,12 +218,19 @@ export class UpdateAppCommand extends AppLifecycleCommand {
         throw new Error(`Could not snapshot ${appUrn} before updating it (${snapshotResult?.error ?? 'unknown error'}); the update was not started`);
       }
       previousEnv = (await appFilesManager.getAppEnv(appUrn))?.content;
+      checkpoint('before replacing the app files');
 
       logger.info(`Updating app ${appUrn}`);
+      // A stopped app is updated and left stopped, so its page must not say it is being started.
+      report(this.wasRunning ? 'starting' : 'replacing');
       // From here on the previous files and app.env are being replaced.
       replacingFiles = true;
-      // The previous version's compose file and env, which the `down` below runs against.
-      await this.ensureAppDir(appUrn, form);
+      // Volume folders only for an app that was running: its store data is already copied. One that was
+      // not may be an install that failed before the copy, and a folder made here for a file a volume
+      // mounts (`data/config.yml`) would stop the retry's copyDataDir. A stopped app gets them at its
+      // next start (#2198).
+      await this.ensureAppDir(appUrn, form, { createVolumeDirs: this.wasRunning, applyDataMoves: false });
+      // Written once here so a write that fails (a read-only app.env) fails while the old version still runs.
       await appHelpers.generateEnvFile(appUrn, form);
       // With no app.env before the update, the one just made from the previous config is what the
       // previous files go back with if the update fails before the new version is started.
@@ -113,28 +248,62 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       }
       await marketplaceService.copyAppFromRepoToInstalled(appUrn);
 
-      // ⚠ THE NEW VERSION'S ENV COMES FROM ITS OWN CONFIG, MADE ONCE IT IS INSTALLED AND BEFORE IT STARTS.
-      // The env above is the previous config's, so a field this version adds (a random database
-      // password) was "" on its first boot, and its database initialised without that user. Values
-      // already in app.env are kept. A required field with no value is left unset, because the
-      // settings cannot show it until the update is done, and the next start asks for it.
+      await this.ensureAppDir(appUrn, form, { createVolumeDirs: this.wasRunning, applyDataMoves: false });
+      // ⚠ AND AGAIN ONCE THE NEW FILES ARE IN. app.env is built from the installed config.json (its
+      // version, port and form defaults), so the write above gave the new version the previous version's
+      // environment. The start that follows a successful update rewrites app.env from the new files,
+      // so compose then saw a changed container and recreated it seconds into its first start, which
+      // cut Uptime Kuma 2's data conversion off half-way.
+      //
+      // A required field this version adds is left unset rather than failing the update: the settings
+      // form shows the installed version's fields, so it cannot be filled in until the update is done,
+      // and the next start still asks for it.
       await appHelpers.generateEnvFile(appUrn, form, { allowMissingRequired: true });
-
-      await this.ensureAppDir(appUrn, form);
 
       // An app that was stopped when the update began is updated and left stopped. Starting it here,
       // as every update did, switched on something its owner had switched off.
       if (this.wasRunning) {
+        // The last safe point before the new version runs: stopping here leaves the data as it was.
+        checkpoint('before starting the new version');
         await dockerService.composeApp(appUrn, 'pull');
         startedNewVersion = true;
+        // The new version's data layout, if it changed one (`data_moves`). The app is down, and from
+        // here a failure rolls the data back from the backup or snapshot, the moves with it. A stopped
+        // app gets them at its next start (prepareAppComposeDir).
+        await appFilesManager.applyDataMoves(appUrn);
         await dockerService.composeApp(appUrn, 'up --detach --force-recreate --remove-orphans');
+        checkpoint('after starting the new version');
 
-        const probeResult = await dockerService.verifyContainerHealthProbe(appUrn, { maxAttempts: 5, delayMs: 2000 });
+        // An app whose health check still says `starting` is waited for, up to the start period it
+        // declares: rolling back an app that is still coming up undid good updates of slow starters.
+        // The wait ends with the update's own time. A cancel ends it at once.
+        report('verifying');
+        const probeResult = await dockerService.verifyContainerHealthProbe(appUrn, {
+          maxAttempts: 5,
+          delayMs: 2000,
+          waitWhileStarting: true,
+          waitUntil: workEndsAt,
+          signal: ctx?.signal,
+        });
+        if (probeResult.cancelled) {
+          throw new UpdateCancelledError(`The update of ${appUrn} was cancelled while it waited for the new version's health check`);
+        }
         if (!probeResult.healthy) {
           logger.error(`Post-update health check failed for app ${appUrn}: ${probeResult.message}. Initiating auto-rollback...`);
           throw new Error(`Update failed health probe: ${probeResult.message}`);
         }
+        logger.info(`Post-update health check passed for app ${appUrn}: ${probeResult.message}`);
       }
+
+      // The registry accepts a cancel until `finalizing`, so one that arrived since the last safe point
+      // still counts. A stopped app has no safe point after its files were replaced, and a cancel can
+      // land just as the health check passes.
+      if (ctx?.signal.aborted) {
+        throw new UpdateCancelledError(`The update of ${appUrn} was cancelled before it was finished`);
+      }
+
+      // Past this point the update is done and is no longer cancelled.
+      report('finalizing');
 
       // The update just replaced the app's config.json, which is where the wake endpoint
       // and port come from. Without re-registering, the Hub would keep POSTing to the URL
@@ -144,26 +313,47 @@ export class UpdateAppCommand extends AppLifecycleCommand {
         const agentNotifyService = this.moduleRef.get(AgentNotifyService, { strict: false });
         const target = await agentNotifyService?.resolveWebhookTarget(appUrn);
         if (target) {
-          agentNotifyService.registerWebhook(appUrn, target.url, target.token);
+          agentNotifyService.registerWebhook(appUrn, target.url, target.token, target.service);
         }
       } catch (hookErr) {
         logger.warn(`Failed to refresh the agent webhook for ${appUrn}: ${hookErr}`);
       }
 
-      await this.discardSnapshot(snapshotResult);
+      this.discardSnapshotAfterReply(snapshotResult);
 
       return { success: true, message: `App ${appUrn} updated successfully` };
     } catch (err) {
+      // An aborted pull throws its own error, so the signal decides whether this was a cancel.
+      const cancelled = err instanceof UpdateCancelledError || ctx?.signal.aborted === true;
+      if (stoppedForBackup || replacingFiles) {
+        report('rolling_back');
+      }
+
       // Once the new version has been started it may have migrated the data, so putting the old files
       // back is not enough: the data comes back too. Before that, the old data was never touched.
       const rolledBack = startedNewVersion
         ? await this.rollBackStartedVersion(appUrn, { backupFile, snapshotResult })
-        : await this.restorePreviousVersion(appUrn, { stoppedForBackup, replacingFiles, tookDown, snapshotResult, previousEnv });
+        : await this.restorePreviousVersion(appUrn, form, { stoppedForBackup, replacingFiles, tookDown, snapshotResult, previousEnv });
 
       // The snapshot is the last copy of the previous version when a rollback has not worked. It goes
       // only once the previous version is demonstrably back.
       if (rolledBack) {
-        await this.discardSnapshot(snapshotResult);
+        this.discardSnapshotAfterReply(snapshotResult);
+      }
+
+      if (cancelled) {
+        // Settled by the worker (`finalizeCancelledUpdate`), which knows the status the app had before.
+        logger.info(
+          `${err instanceof Error ? err.message : `The update of ${appUrn} was cancelled`}; ${rolledBack ? 'the previous version is back' : 'the previous version could NOT be put back'}`,
+        );
+        return {
+          success: false,
+          cancelled: true,
+          rolledBack,
+          message: rolledBack
+            ? `Update of ${appUrn} cancelled; the previous version is back`
+            : `Update of ${appUrn} cancelled, but the previous version could not be put back. See the Hub logs.`,
+        };
       }
 
       return { ...(await this.handleAppError(err, appUrn, 'update_error')), rolledBack };
@@ -174,12 +364,8 @@ export class UpdateAppCommand extends AppLifecycleCommand {
    * The images the new version needs, as `compose pull` would resolve them: with the per-architecture
    * overrides applied, so the pull asks for the image this machine will actually run.
    */
-  private imagesToPull(composeContent: unknown): string[] {
-    const configService = this.moduleRef.get(ConfigurationService, { strict: false });
-    const { services, overrides } = parseComposeJson(composeContent);
-    const merged = mergeArchitectureOverrides(services, overrides, configService?.get('architecture'));
-
-    return [...new Set(merged.map((service) => service.image?.trim()).filter((image): image is string => Boolean(image)))];
+  private imagesToPull(composeContent: unknown, grants?: AppSecurityGrants): string[] {
+    return installedComposeImages(composeContent, this.moduleRef.get(ConfigurationService, { strict: false })?.get('architecture'), grants);
   }
 
   /**
@@ -208,7 +394,9 @@ export class UpdateAppCommand extends AppLifecycleCommand {
 
       if (state.backupFile) {
         try {
-          await backupManager.restoreApp(appUrn, state.backupFile);
+          // Until the reply is due, not a fresh budget: a restore that outlasted it went on writing data
+          // after the page had already shown the update as failed.
+          await backupManager.restoreApp(appUrn, state.backupFile, this.deadline);
           restored = true;
           logger.info(`Restored ${appUrn} app files and data from backup ${state.backupFile}`);
         } catch (restoreErr) {
@@ -220,7 +408,8 @@ export class UpdateAppCommand extends AppLifecycleCommand {
         logger.warn(`No backup or volume snapshot available to roll back ${appUrn}; recreating the current containers instead`);
       }
 
-      await dockerService.composeApp(appUrn, 'pull');
+      // The files of the previous version are back by now. A tag of theirs that moved since brings in a new image here.
+      await recordComposeUpPulls(this.moduleRef, appUrn, () => dockerService.composeApp(appUrn, 'pull'), { forced: true });
       await dockerService.composeApp(appUrn, 'up --detach --force-recreate --remove-orphans');
       logger.info(`Auto-rollback recovery step completed for ${appUrn} (data and files ${restored ? 'restored' : 'NOT restored'})`);
 
@@ -246,15 +435,33 @@ export class UpdateAppCommand extends AppLifecycleCommand {
 
       // `removeDirectory` and `copyDirectory` report failure (ENOSPC, EACCES) by returning false, not by throwing.
       if (filesystem && snapshot.snapshotPath && (await filesystem.pathExists(snapshot.snapshotPath))) {
-        const removed = await filesystem.removeDirectory(appDataDir);
-        const copied = await filesystem.copyDirectory(snapshot.snapshotPath, appDataDir);
-        ok = ok && removed !== false && copied !== false;
+        if (snapshot.dataSnapshotCopiedAsRoot) {
+          // The copy keeps the owners of the original (a database's files), so the Hub could neither
+          // read it nor write it back; the helper empties the data folder and copies the snapshot over it.
+          const dockerService = this.moduleRef.get(DockerService, { strict: false });
+          // Until the reply is due, like the restore from a backup: not 30 minutes of its own.
+          ok = ok && (await dockerService.restoreAppDataDirAsRoot(appUrn, snapshot.snapshotId, this.deadline));
+        } else {
+          // The Hub could read the data, so it copied it, but what the app's container wrote as another
+          // user (Uptime Kuma runs as root) it cannot delete: those go through the root helper. A copy
+          // over data that is still there would mix the two versions, so it waits for the delete.
+          const dockerService = this.moduleRef.get(DockerService, { strict: false });
+          const removed = await removeAppDataDirWithRootFallback({ filesystem, docker: dockerService, logger }, appUrn, appDataDir, this.deadline);
+          const copied = removed && (await filesystem.copyDirectory(snapshot.snapshotPath, appDataDir));
+          ok = ok && removed && copied !== false;
+        }
       }
 
       if (filesystem && snapshot.appFilesSnapshotPath && (await filesystem.pathExists(snapshot.appFilesSnapshotPath))) {
         const removed = await filesystem.removeDirectory(appInstalledDir);
         const copied = await filesystem.copyDirectory(snapshot.appFilesSnapshotPath, appInstalledDir);
         ok = ok && removed !== false && copied !== false;
+      }
+
+      // With the previous files back, any bind-mount folder the snapshot did not hold is made by the
+      // Hub, as install does, rather than by Docker as root when the previous version starts.
+      if (ok) {
+        await appFilesManager.createVolumeHostDirs(appUrn);
       }
 
       if (ok) {
@@ -287,6 +494,7 @@ export class UpdateAppCommand extends AppLifecycleCommand {
    */
   private async restorePreviousVersion(
     appUrn: AppUrn,
+    form: AppEventFormInput,
     state: {
       stoppedForBackup: boolean;
       replacingFiles: boolean;
@@ -332,6 +540,18 @@ export class UpdateAppCommand extends AppLifecycleCommand {
 
       if (state.previousEnv) {
         await appFilesManager.writeAppEnv(appUrn, state.previousEnv);
+      } else {
+        // There was no app.env to put back, and the one on disk may already be the new version's.
+        // Built again from the restored files, it is the previous version's.
+        //
+        // Best effort: a rebuild that fails here most often fails for the reason the update did (an
+        // app.env that cannot be written), so nothing was written and app.env is as it was. Failing the
+        // rollback over it would leave an app the backup stopped down, and a running one reported stopped.
+        try {
+          await this.moduleRef.get(AppHelpers, { strict: false }).generateEnvFile(appUrn, form);
+        } catch (envErr) {
+          logger.warn(`Could not build app.env for the previous version of ${appUrn} again: ${envErr}`);
+        }
       }
 
       if (this.wasRunning && (state.tookDown || state.stoppedForBackup)) {
@@ -368,6 +588,17 @@ export class UpdateAppCommand extends AppLifecycleCommand {
     }
   }
 
+  /** Leave {@link discardSnapshot} for after the reply (see `afterReply`). */
+  private discardSnapshotAfterReply(snapshotResult: Awaited<ReturnType<DockerService['createPreUpdateVolumeSnapshot']>> | undefined): void {
+    if (snapshotResult?.snapshotBaseDir) {
+      // Said now, so a Hub stopped before the removal ran leaves a line naming the folder it left behind.
+      this.moduleRef
+        .get(LoggerService, { strict: false })
+        ?.info(`The pre-update snapshot ${snapshotResult.snapshotBaseDir} is no longer needed; it is removed once the reply is out`);
+    }
+    this.afterReplyWork = () => this.discardSnapshot(snapshotResult);
+  }
+
   /** The snapshot exists to undo a failed update; once there is nothing to undo it is a full copy of the app's files taking disk for good. */
   private async discardSnapshot(snapshotResult: Awaited<ReturnType<DockerService['createPreUpdateVolumeSnapshot']>> | undefined): Promise<void> {
     if (!snapshotResult?.snapshotBaseDir) {
@@ -378,7 +609,19 @@ export class UpdateAppCommand extends AppLifecycleCommand {
     const filesystem = this.moduleRef.get(FilesystemService, { strict: false });
 
     try {
-      await filesystem?.removeDirectory(snapshotResult.snapshotBaseDir);
+      if (snapshotResult.dataSnapshotCopiedAsRoot) {
+        // Its data copy belongs to other users and the Hub cannot delete it: a helper empties it first.
+        const dockerService = this.moduleRef.get(DockerService, { strict: false });
+        if (!(await dockerService.removeSnapshotDirAsRoot(snapshotResult.appUrn, snapshotResult.snapshotId))) {
+          logger.warn(`Could not empty the pre-update snapshot ${snapshotResult.snapshotBaseDir} as root; it is left on disk`);
+          return;
+        }
+      }
+      if ((await filesystem?.removeDirectory(snapshotResult.snapshotBaseDir)) === false) {
+        logger.warn(`Could not remove the pre-update snapshot ${snapshotResult.snapshotBaseDir}; it is left on disk`);
+        return;
+      }
+      logger.info(`Removed the pre-update snapshot ${snapshotResult.snapshotBaseDir}`);
     } catch (err) {
       logger.warn(`Could not remove the pre-update snapshot ${snapshotResult.snapshotBaseDir}: ${err}`);
     }

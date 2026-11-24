@@ -98,7 +98,7 @@ export function PoolHubSummary({ name, address, wrapAddress, os, online, tier, e
         {/* The status shares a row with the name only, so the address under it keeps the whole width of the card. */}
         <span className="flex min-w-0 flex-col gap-0.5">
           <span className="flex items-center justify-between gap-2">
-            <span className="min-w-0 truncate text-sm font-semibold leading-5 text-foreground">{name}</span>
+            <span className="min-w-0 truncate text-sm font-medium leading-5 text-foreground">{name}</span>
             {trailing}
           </span>
           {address ? (
@@ -209,7 +209,7 @@ export function PoolStatusPill({
   return (
     <span
       className={cn(
-        'inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-semibold leading-4',
+        'inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium leading-4',
         PILL_TONE[tone],
       )}
     >

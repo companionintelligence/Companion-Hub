@@ -182,6 +182,55 @@ describe('McpSettingsContainer', () => {
     expect(screen.queryByTestId('mcp-installed-error')).toBeNull();
   });
 
+  // CI-Hub#2380: with MCP_ENABLED=false the Hub answers the status with `enabled: false`. The body here
+  // leaves out `server` on purpose: once `enabled` is false this screen reads nothing else.
+  it('shows Disabled and the setup hint when MCP is off', async () => {
+    mockApiFetch.mockImplementation((url: string) => {
+      if (url === '/api/mcp-admin/status') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ enabled: false, endpoint: '/api/mcp', toolCount: 0, activeSessions: 0, activeKeyCount: 0 }),
+        });
+      }
+      if (url === '/api/mcp-admin/tools') return Promise.resolve({ ok: true, json: async () => ({ tools: [] }) });
+      return mockGet(url);
+    });
+
+    renderContainer();
+
+    expect(await screen.findByText('MCP_SETTINGS_STATUS_DISABLED_HINT')).toBeTruthy();
+    expect(screen.getByText('MCP_SETTINGS_STATUS_DISABLED')).toBeTruthy();
+    expect(screen.queryByText('MCP_SETTINGS_LOAD_ERROR')).toBeNull();
+    expect(screen.queryByTestId('mcp-tool-catalog')).toBeNull();
+    expect(mockApiFetch).not.toHaveBeenCalledWith('/api/apps/installed');
+  });
+
+  it('shows Disabled when an older Hub answers the status with 404', async () => {
+    mockApiFetch.mockImplementation((url: string) => {
+      if (url.startsWith('/api/mcp-admin/')) return Promise.resolve({ ok: false, status: 404, json: async () => ({}) });
+      return mockGet(url);
+    });
+
+    renderContainer();
+
+    expect(await screen.findByText('MCP_SETTINGS_STATUS_DISABLED_HINT')).toBeTruthy();
+    expect(screen.getByText('MCP_SETTINGS_STATUS_DISABLED')).toBeTruthy();
+    expect(screen.queryByText('MCP_SETTINGS_LOAD_ERROR')).toBeNull();
+    expect(screen.queryByTestId('mcp-tool-catalog')).toBeNull();
+  });
+
+  it('still shows the load error when the status fails for another reason', async () => {
+    mockApiFetch.mockImplementation((url: string) => {
+      if (url === '/api/mcp-admin/status') return Promise.resolve({ ok: false, status: 500, json: async () => ({}) });
+      return mockGet(url);
+    });
+
+    renderContainer();
+
+    expect(await screen.findByText('MCP_SETTINGS_LOAD_ERROR')).toBeTruthy();
+    expect(screen.queryByText('MCP_SETTINGS_STATUS_DISABLED')).toBeNull();
+  });
+
   it('links to hub-wide key management on the Security tab instead of listing keys', async () => {
     renderContainer();
     await waitFor(() => expect(screen.getByTestId('mcp-settings')).toBeTruthy());
@@ -231,6 +280,48 @@ describe('McpSettingsContainer', () => {
     const destructiveRow = screen.getByText('hub_uninstall_app').closest('li') as HTMLElement;
     expect(within(destructiveRow).getByText('MCP_SETTINGS_TOOL_DESTRUCTIVE_BADGE')).toBeTruthy();
     expect(within(destructiveRow).queryByText('MCP_SETTINGS_TOOL_WRITE_BADGE')).toBeNull();
+  });
+
+  it('shows only the tools an access filter names, with each level counted on its button', async () => {
+    const user = userEvent.setup();
+    renderContainer();
+    await waitFor(() => expect(screen.getByTestId('mcp-settings')).toBeTruthy());
+
+    expect(screen.getByTestId('mcp-tool-filter-all').textContent).toContain('3');
+    expect(screen.getByTestId('mcp-tool-filter-destructive').textContent).toContain('1');
+
+    await user.click(screen.getByTestId('mcp-tool-filter-destructive'));
+    expect(screen.getByTestId('mcp-tool-filter-destructive').getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByText('hub_uninstall_app')).toBeTruthy();
+    expect(screen.queryByText('hub_start_app')).toBeNull();
+    expect(screen.queryByText('hub_list_installed_apps')).toBeNull();
+
+    await user.click(screen.getByTestId('mcp-tool-filter-read'));
+    expect(screen.getByText('hub_list_installed_apps')).toBeTruthy();
+    expect(screen.queryByText('hub_uninstall_app')).toBeNull();
+  });
+
+  it('opens a long catalog with its groups closed, and opens every group a search matches', async () => {
+    const many = Array.from({ length: 13 }, (_, index) => ({
+      name: `hub_tool_${index}`,
+      description: `Tool ${index}`,
+      inputSchema: { type: 'object' },
+      destructive: false,
+      access: 'read',
+      category: index < 7 ? 'Alpha' : 'Beta',
+    }));
+    mockApiFetch.mockImplementation((url: string) =>
+      url === '/api/mcp-admin/tools' ? Promise.resolve({ ok: true, json: async () => ({ tools: many }) }) : mockGet(url),
+    );
+    renderContainer();
+    await waitFor(() => expect(screen.getByTestId('mcp-settings')).toBeTruthy());
+
+    const groups = () => [...screen.getByTestId('mcp-tool-groups').querySelectorAll('details')];
+    expect(groups().map((group) => group.open)).toEqual([false, false]);
+
+    fireEvent.change(screen.getByTestId('mcp-tool-search'), { target: { value: 'hub_tool_1' } });
+    expect(groups()).toHaveLength(2);
+    expect(groups().every((group) => group.open)).toBe(true);
   });
 
   it('runs a tool and shows the result', async () => {

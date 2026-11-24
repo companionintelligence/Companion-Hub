@@ -38,13 +38,13 @@ export function PoolSetupStepper({ step }: { step: SetupStep }) {
               className={cn(
                 'flex items-center gap-2 text-xs',
                 index < STEPS.length - 1 && 'flex-1',
-                state === 'current' ? 'font-semibold text-foreground' : 'text-muted-foreground',
+                state === 'current' ? 'font-medium text-foreground' : 'text-muted-foreground',
               )}
             >
               <span
                 aria-hidden="true"
                 className={cn(
-                  'flex size-6 shrink-0 items-center justify-center rounded-full border text-[11px] font-semibold',
+                  'flex size-6 shrink-0 items-center justify-center rounded-full border text-[11px] font-medium',
                   state === 'current' && 'border-primary bg-primary text-primary-foreground',
                   state === 'complete' && 'border-success/40 bg-success/15 text-success',
                 )}
@@ -65,7 +65,7 @@ export function PoolSetupStepper({ step }: { step: SetupStep }) {
       <div aria-hidden="true" className="space-y-2 sm:hidden" data-testid="pool-setup-stepper-compact">
         <p className="text-xs text-muted-foreground">
           {t('HUB_POOL_SETUP_STEP_PROGRESS', { current: activeIndex + 1, total: STEPS.length })}
-          {current ? <span className="font-semibold text-foreground"> · {t(current.labelKey)}</span> : null}
+          {current ? <span className="font-medium text-foreground"> · {t(current.labelKey)}</span> : null}
         </p>
         <div className="h-1 overflow-hidden rounded-full bg-muted">
           <div

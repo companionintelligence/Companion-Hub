@@ -1,6 +1,13 @@
 import type { InferenceBackendType } from '@ci-hub/common/types';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
-import type { HubPoolDirectionalState, HubPoolDisabledBy, HubPoolPin, HubPoolPreferences, PoolContainerRollup } from '@/common/helpers/hub-pool';
+import {
+  inventoryListsModel,
+  type HubPoolDirectionalState,
+  type HubPoolDisabledBy,
+  type HubPoolPin,
+  type HubPoolPreferences,
+  type PoolContainerRollup,
+} from '@/common/helpers/hub-pool';
 import type { PoolPeerProbeFailure } from './hub-pool-probe-failure';
 
 /** One backend's live model availability on a node, as reported by `GET /inference/pool/capabilities`. */
@@ -462,6 +469,8 @@ export interface PoolStatusLocalNode {
   tailscaleConnected: boolean;
   /** Requests this node's own engines are serving — its apps' and its peers' alike. */
   inFlightRequests: number;
+  /** Active media generation workloads (e.g. ComfyUI or diffusion) on this node's GPU. */
+  mediaInFlight?: number;
   hardwareTier: string | null;
   backends: PoolPeerBackendCapability[];
   /** Why the local inventory is empty, when it is — a down backend must read differently from a node with no models. */
@@ -561,7 +570,7 @@ export function resolveStatusPins(
 ): PoolStatusPin[] {
   const hasModel = (backends: readonly PoolPeerBackendCapability[], model: string | undefined) =>
     // A default-scope pin names no model, so there is nothing to check: any healthy backend will do.
-    backends.some((backend) => backend.healthy && (model === undefined || backend.modelsLoaded.includes(model)));
+    backends.some((backend) => backend.healthy && (model === undefined || inventoryListsModel(backend.modelsLoaded, model)));
 
   return pins.map((pin) => {
     if (pin.targetKind === 'local') {

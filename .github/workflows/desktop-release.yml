@@ -20,11 +20,12 @@ on:
           - dev
           - production
       platforms:
-        description: 'Platforms to build'
+        description: 'Platforms to build. Default linux-windows skips macOS. Choose all or macos-only to build macOS. Unchecking prerelease (a real release) also builds macOS.'
         required: false
-        default: 'all'
+        default: 'linux-windows'
         type: choice
         options:
+          - linux-windows
           - all
           - macos-only
 concurrency:
@@ -41,7 +42,16 @@ jobs:
       # this the bundles pinned a tag no workflow ever pushed and could not start (#920).
       # build-container publishes a versioned tag for production only.
       tag: ${{ inputs.tag }}
-    secrets: inherit
+    # Name the secrets the called workflow reads. This workflow also holds the signing secrets,
+    # and build-container.yml needs none of them.
+    secrets:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      PORTAL_REGISTRY_PASSWORD: ${{ secrets.PORTAL_REGISTRY_PASSWORD }}
+      PORTAL_REGISTRY_USERNAME: ${{ secrets.PORTAL_REGISTRY_USERNAME }}
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+      SENTRY_FRONTEND_DSN: ${{ secrets.SENTRY_FRONTEND_DSN }}
 
   build:
     needs: build-container
@@ -97,7 +107,10 @@ jobs:
       # AZURE_SUBSCRIPTION_ID, AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT,
       # AZURE_CERTIFICATE_PROFILE. OIDC subject: environment:production.
       WINDOWS_SIGNING_CONFIGURED: ${{ secrets.AZURE_TENANT_ID != '' && secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_SUBSCRIPTION_ID != '' && secrets.AZURE_SIGNING_ENDPOINT != '' && secrets.AZURE_SIGNING_ACCOUNT != '' && secrets.AZURE_CERTIFICATE_PROFILE != '' && 'true' || '' }}
-      BUILD_ENABLED: ${{ (inputs.platforms == 'all' || startsWith(matrix.label, 'macOS')) && 'true' || '' }}
+      # macOS legs build only for platforms=all or macos-only, or on a real release (prerelease
+      # unchecked). Other legs build for platforms=all or linux-windows. The gate stays in steps:
+      # a job-level if cannot read matrix, so a disabled leg still starts a runner and skips all steps.
+      BUILD_ENABLED: ${{ (inputs.platforms == 'all' || (startsWith(matrix.label, 'macOS') && (inputs.platforms == 'macos-only' || !inputs.prerelease)) || (!startsWith(matrix.label, 'macOS') && inputs.platforms == 'linux-windows')) && 'true' || '' }}
     steps:
       - name: Checkout
         if: env.BUILD_ENABLED
@@ -171,6 +184,9 @@ jobs:
           {
             echo "CI_HUB_ENVIRONMENT=${{ inputs.environment }}"
             echo "CI_HUB_BUILD_VERSION=${{ inputs.tag }}"
+            # The app refuses an update manifest dated before this (updater.rs, check_manifest_date).
+            # sign-manifest dates the manifest after every build, so this release's own is later.
+            echo "CI_HUB_BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } >> "$GITHUB_ENV"
           echo "Cloud target: ${{ inputs.environment }} (CI_CLOUD_URL will be baked from GITHUB_ENV)"
       - name: Build standalone Companion Hub CLI
@@ -210,6 +226,25 @@ jobs:
           sed -i'' -e 's/^version = ".*"/version = "'"$SEMVER"'"/' src-tauri/Cargo.toml
           echo "tauri.conf.json: $(node -e "console.log(JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json','utf8')).version)")"
           echo "Cargo.toml: $(grep '^version' src-tauri/Cargo.toml | head -1)"
+      # ── Update signing key ──────────────────────────────────────────
+      # The app installs updates only from a manifest signed by a key it pins
+      # (update_signature.rs). A build with no key for its environment could never
+      # update again, so fail here, before the long compile, not in sign-manifest.
+      - name: Require an update signing key in the app
+        if: env.BUILD_ENABLED
+        shell: bash
+        run: |
+          node --input-type=module -e "
+            import fs from 'node:fs';
+            import { listedKeys } from './.github/scripts/sign-desktop-manifest.mjs';
+            const list = process.argv[1] === 'production' ? 'PRODUCTION_UPDATE_KEYS' : 'DEV_UPDATE_KEYS';
+            const source = fs.readFileSync('packages/desktop/src-tauri/src/update_signature.rs', 'utf8');
+            if (listedKeys(source, list).length === 0) {
+              console.error('::error::' + list + ' in update_signature.rs is empty: this build would refuse every update. See docs/DESKTOP-RELEASE-SIGNING.md.');
+              process.exit(1);
+            }
+          " "${{ inputs.environment }}"
+
       # ── macOS Code Signing ──────────────────────────────────────────
       # A green macOS release must mean a Developer ID signed AND notarized DMG.
       # Fail fast (before building) if either the signing or notarization secrets
@@ -630,6 +665,7 @@ jobs:
             | **macOS (Intel)** | `.dmg` | Older Intel-based Macs |
             | **Linux (x64)** | `.deb` or `.rpm` | Ubuntu/Debian or Fedora/RHEL |
             | **Linux (ARM64)** | `.deb` or `.rpm` | Raspberry Pi, ARM servers |
+            | **Command line only** | `cihub-<os>-<arch>` | The `cihub` tool on its own, for servers and machines without the desktop app. `scripts/install.sh` and `cihub fleet install` download these; most people want an installer above |
             ### Requirements
             - Docker must be installed and running
             - Windows: Windows 10+ with WebView2 (ships with Windows 11)
@@ -637,8 +673,48 @@ jobs:
             - Linux: WebKitGTK 4.1
             ${{ inputs.environment != 'production' && format('### Dev CDN — https://dl-dev.ci.computer/{0}/', inputs.tag) || '' }}
 
-  upload-r2:
+  # The desktop app installs only what a manifest signed by a key it pins names
+  # (packages/desktop/src-tauri/src/update_signature.rs). This job builds and signs that manifest.
+  # It has the signing key and no R2 token; upload-r2 has the token and no key, so neither one can
+  # put an installer on desktops alone. It runs in its own GitHub Environment
+  # (<environment>-update-signing), which holds only the signing key, so its protection rules
+  # gate signing apart from the upload.
+  sign-manifest:
     needs: release
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}-update-signing
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: artifacts
+          merge-multiple: false
+
+      - name: Build and sign the update manifest
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          DOWNLOAD_BASE_URL: ${{ inputs.environment == 'production' && 'https://dl.ci.computer' || 'https://dl-dev.ci.computer' }}
+          DESKTOP_UPDATE_SIGNING_KEY: ${{ secrets.DESKTOP_UPDATE_SIGNING_KEY }}
+        run: |
+          mkdir -p update-manifest
+          node .github/scripts/build-desktop-manifest.mjs artifacts update-manifest/manifest.json
+          node .github/scripts/sign-desktop-manifest.mjs update-manifest/manifest.json "${{ inputs.environment }}"
+
+      - name: Upload the signed manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-update-manifest
+          path: update-manifest/
+          if-no-files-found: error
+
+  upload-r2:
+    needs: [release, sign-manifest]
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     steps:
@@ -652,9 +728,13 @@ jobs:
           path: artifacts
           merge-multiple: false
 
-      - name: Install wrangler
-        run: npm install -g wrangler
+      - name: Download the signed manifest
+        uses: actions/download-artifact@v8
+        with:
+          name: desktop-update-manifest
+          path: update-manifest
 
+      # The script uploads with the AWS CLI that ubuntu-latest ships, through R2's S3 endpoint.
       - name: Upload artifacts to R2
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_R2_DL_API_TOKEN }}
@@ -662,6 +742,7 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag }}
           R2_BUCKET: ${{ inputs.environment == 'production' && 'dl-prod' || 'dl-dev' }}
           DOWNLOAD_BASE_URL: ${{ inputs.environment == 'production' && 'https://dl.ci.computer' || 'https://dl-dev.ci.computer' }}
+          MANIFEST_DIR: update-manifest
         run: ./.github/scripts/upload-desktop-r2.sh
 
   finalize-release-page:
@@ -680,10 +761,57 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag }}
         run: ./.github/scripts/finalize-desktop-release.sh
 
+  # Homebrew and Scoop install from dl.ci.computer and take their URLs and hashes from the release's manifest.json,
+  # so this waits for upload-r2 to put it there.
   publish-package-managers:
     if: inputs.environment == 'production' && !inputs.prerelease
-    needs: [release]
+    needs: [release, upload-r2]
     uses: ./.github/workflows/publish-package-managers.yml
-    secrets: inherit
+    secrets:
+      CI_PACKAGE_MANAGERS_TOKEN: ${{ secrets.CI_PACKAGE_MANAGERS_TOKEN }}
     with:
       tag: ${{ inputs.tag }}
+
+  # Asks every place a Hub release ships to which version it has (scripts/release-check.mjs) and writes
+  # the table to the run page. Production releases only, since a dev or prerelease run doesn't move the
+  # Latest release, the feed or the package managers. A place that is behind only warns: the download
+  # page, the CI-OS pin and the phone stores are updated outside this workflow and lag by design. The table
+  # says which. A crash of the script itself (exit 3) fails the job. The CI-OS row shows SKIP here because
+  # the workflow token can't read that private repository; run the script locally to see it.
+  release-check:
+    name: Check every platform
+    needs: [release, upload-r2, finalize-release-page, publish-package-managers]
+    if: always() && inputs.environment == 'production' && !inputs.prerelease && needs.release.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Ask every platform which version it has
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set +e
+          node scripts/release-check.mjs --version "${TAG}" --format markdown > "${RUNNER_TEMP}/check.md"
+          status=$?
+          set -e
+          cat "${RUNNER_TEMP}/check.md"
+          {
+            echo "## Where ${TAG} is"
+            echo
+            cat "${RUNNER_TEMP}/check.md"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${status}" == "1" ]]; then
+            echo "::warning::Some places don't have ${TAG} yet. The table on the run page lists them."
+          elif [[ "${status}" != "0" ]]; then
+            exit "${status}"
+          fi

@@ -189,12 +189,53 @@ describe('renderHubStatusMarkdown', () => {
         disk: null,
         dockerVersion: null,
         containerCount: null,
-        gpu: { vendor: 'NVIDIA', model: 'RTX 3070', vramMb: 8192, driverWorking: false },
+        gpu: { vendor: 'NVIDIA', model: 'RTX 3070', vramMb: 8192, driverWorking: false, visibleToHubContainer: false },
         hardwareTier: 'cpu-only',
       },
     });
 
     expect(out).toMatch(/driver not responding/);
     expect(out).toContain('1d 1h');
+  });
+
+  it('does not call the driver dead when the host drives a GPU the Hub container cannot see', () => {
+    // The normal Linux AMD layout: no device passthrough into the Hub container, Ollama on the
+    // host using the card. The report once read the container's view alone and printed
+    // "driver not responding" next to a tier of `high` computed from the host's proof.
+    const out = render({
+      system: {
+        platform: 'linux',
+        uptimeSeconds: 90_000,
+        cpu: null,
+        memory: null,
+        disk: null,
+        dockerVersion: null,
+        containerCount: null,
+        gpu: { vendor: 'amd', model: 'Radeon RX 7900 XTX', vramMb: 24_560, driverWorking: true, visibleToHubContainer: false },
+        hardwareTier: 'high',
+      },
+    });
+
+    expect(out).not.toMatch(/driver not responding/);
+    expect(out).toContain('Radeon RX 7900 XTX');
+    expect(out).toContain('not visible inside the Hub container');
+  });
+
+  it('adds nothing to the GPU line when the Hub container reaches the card itself', () => {
+    const out = render({
+      system: {
+        platform: 'linux',
+        uptimeSeconds: 90_000,
+        cpu: null,
+        memory: null,
+        disk: null,
+        dockerVersion: null,
+        containerCount: null,
+        gpu: { vendor: 'nvidia', model: 'RTX 3080', vramMb: 10_240, driverWorking: true, visibleToHubContainer: true },
+        hardwareTier: 'medium',
+      },
+    });
+
+    expect(out).toContain('| GPU | nvidia RTX 3080, 10.0 GiB VRAM |');
   });
 });

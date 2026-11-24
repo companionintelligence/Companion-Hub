@@ -1,15 +1,16 @@
-import { Checkbox } from '@/components/ui/Checkbox/Checkbox';
+import { Switch } from '@/components/ui/Switch';
 import './elements.css';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/Table';
 import type { dynamicComposeSchema } from '@ci-hub/common/schemas';
 import type { z } from 'zod';
-import { X } from 'lucide-react';
+import { Plus, Trash2 } from 'lucide-react';
 import clsx from 'clsx';
 import { Controller, useFieldArray, type Control, type FieldErrors, type UseFormRegister } from 'react-hook-form';
 import { HintMarker } from '@/components/ui/field-hint/field-hint';
 import { useTranslation } from 'react-i18next';
+import { plainPortAsNumber } from './plain-port-as-number';
 
 type Props = {
   control: Control<z.infer<typeof dynamicComposeSchema>>;
@@ -32,7 +33,8 @@ export const PortsConfig = ({ errors, serviceIndex, control, register }: Props) 
           <div>
             {t('MULTI_SERVICE_PORTS_TITLE')} <HintMarker anchorClass="my-ports" hint={t('MULTI_SERVICE_PORTS_TITLE_TOOLTIP')} />
           </div>
-          <Button type="button" onClick={() => append({ containerPort: 9091, hostPort: 9091 })} size="sm">
+          <Button type="button" onClick={() => append({ containerPort: 9091, hostPort: 9091 })} size="sm" variant="outline" className="gap-1.5">
+            <Plus className="size-4" aria-hidden="true" />
             {t('MULTI_SERVICE_PORTS_ADD_PORT')}
           </Button>
         </div>
@@ -52,7 +54,7 @@ export const PortsConfig = ({ errors, serviceIndex, control, register }: Props) 
               <TableRow key={field.id}>
                 <TableCell scope="row" className="w-30">
                   <Input
-                    {...register(`services.${serviceIndex}.addPorts.${index}.hostPort`)}
+                    {...register(`services.${serviceIndex}.addPorts.${index}.hostPort`, { setValueAs: plainPortAsNumber })}
                     error={t(errors?.services?.[serviceIndex]?.addPorts?.[index]?.hostPort?.message as string)}
                     placeholder="9091"
                     className="table-row-input"
@@ -60,7 +62,7 @@ export const PortsConfig = ({ errors, serviceIndex, control, register }: Props) 
                 </TableCell>
                 <TableCell className="w-30">
                   <Input
-                    {...register(`services.${serviceIndex}.addPorts.${index}.containerPort`)}
+                    {...register(`services.${serviceIndex}.addPorts.${index}.containerPort`, { setValueAs: plainPortAsNumber })}
                     error={t(errors?.services?.[serviceIndex]?.addPorts?.[index]?.containerPort?.message as string)}
                     placeholder="9091"
                     className="table-row-input"
@@ -72,7 +74,7 @@ export const PortsConfig = ({ errors, serviceIndex, control, register }: Props) 
                     name={`services.${serviceIndex}.addPorts.${index}.tcp`}
                     defaultValue={true}
                     render={({ field: { onChange, value, ref, ...rest } }) => (
-                      <Checkbox ref={ref} checked={value} onCheckedChange={onChange} {...rest} className="mb-0" />
+                      <Switch ref={ref} aria-label={t('MULTI_SERVICE_PORTS_TCP')} checked={value} onCheckedChange={onChange} {...rest} />
                     )}
                   />
                 </TableCell>
@@ -82,7 +84,7 @@ export const PortsConfig = ({ errors, serviceIndex, control, register }: Props) 
                     name={`services.${serviceIndex}.addPorts.${index}.udp`}
                     defaultValue={true}
                     render={({ field: { onChange, value, ref, ...rest } }) => (
-                      <Checkbox ref={ref} checked={value} onCheckedChange={onChange} {...rest} className="mb-0" />
+                      <Switch ref={ref} aria-label={t('MULTI_SERVICE_PORTS_UDP')} checked={value} onCheckedChange={onChange} {...rest} />
                     )}
                   />
                 </TableCell>
@@ -94,8 +96,8 @@ export const PortsConfig = ({ errors, serviceIndex, control, register }: Props) 
                   />
                 </TableCell>
                 <TableCell className="w-1">
-                  <Button type="button" size="sm" onClick={() => remove(index)} className="btn-action">
-                    <X size={16} />
+                  <Button type="button" variant="ghost" size="icon" aria-label={t('COMMON_REMOVE')} onClick={() => remove(index)}>
+                    <Trash2 className="size-4 text-destructive" aria-hidden="true" />
                   </Button>
                 </TableCell>
               </TableRow>

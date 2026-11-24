@@ -112,6 +112,30 @@ pub(crate) fn restrict_private_state_file(_path: &Path) -> Option<u32> {
     None
 }
 
+/// Writes a file that holds credentials, such as the Hub env files (JWT_SECRET, POSTGRES_PASSWORD,
+/// RABBITMQ_PASSWORD). A new one is created at [`PRIVATE_STATE_FILE_MODE`]. An existing one is
+/// restricted first, because `std::fs::write` keeps the mode a file already has: both env files
+/// were 0o664 under a desktop user's umask.
+pub(crate) fn write_private_file(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    let _ = restrict_private_state_file(path);
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(PRIVATE_STATE_FILE_MODE)
+            .open(path)?;
+        file.write_all(contents.as_ref())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, contents)
+    }
+}
+
 fn restrict_private_state_files(data_dir: &Path) {
     for (subdir, file) in HUB_STATE_FILES_NEED_WRITE {
         let path = data_dir.join(subdir).join(file);
@@ -752,6 +776,10 @@ fn ensure_runtime_directory(path: &Path) -> Result<TraefikRuntimePreflight, Stri
     Ok(result)
 }
 
+/// Writes `contents` to `path` when the file is missing, empty or a directory. A file with anything
+/// in it is left alone: the Hub writes both Traefik files from its own assets on every boot, and it
+/// can run another release than this build after its own update. Replacing its copy recreated the
+/// stack at every launch, and the Hub then wrote its own again (Companion-Hub#1931).
 fn ensure_seeded_text_file(path: &Path, contents: &str) -> Result<TraefikRuntimePreflight, String> {
     let mut result = TraefikRuntimePreflight::default();
 
@@ -773,7 +801,7 @@ fn ensure_seeded_text_file(path: &Path, contents: &str) -> Result<TraefikRuntime
         } else {
             let existing = std::fs::read(path)
                 .map_err(|error| format!("Failed to read {}: {}", path.display(), error))?;
-            if existing == contents.as_bytes() {
+            if !existing.trim_ascii().is_empty() {
                 return Ok(result);
             }
         }

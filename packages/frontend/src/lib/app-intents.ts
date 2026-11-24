@@ -16,11 +16,19 @@
  * Everything is inert off mobile (`isTauriMobileSync()` stays false).
  */
 import { clearHubConnection, getHubBaseUrlSync, isTauriMobileSync, setHubConnection } from '@/lib/mobile-connection';
+import { isAppUrnLike } from '@/lib/return-to-hub-app';
 
 const STORE_FILE = 'app-intents.json';
 const KNOWN_HUBS_KEY = 'knownHubs';
 
-export type IntentAction = { kind: 'home' } | { kind: 'connect' } | { kind: 'switch' } | { kind: 'settings' } | { kind: 'open'; hub: string };
+export type IntentAction =
+  | { kind: 'home' }
+  | { kind: 'connect' }
+  | { kind: 'switch' }
+  | { kind: 'settings' }
+  | { kind: 'open'; hub: string }
+  // An installed app's page: the "Back to the Hub app" link a browser flow ends on (return-to-hub-app.ts).
+  | { kind: 'app'; urn: string };
 
 export interface KnownHub {
   id: string;
@@ -62,6 +70,11 @@ export function parseIntentAction(raw: string | null | undefined): IntentAction 
     case 'open': {
       const hub = (new URLSearchParams(query).get('hub') ?? '').trim();
       return { kind: 'open', hub };
+    }
+    case 'app': {
+      // Only an app id goes on to become a route; anything else a link carries is dropped.
+      const urn = (new URLSearchParams(query).get('urn') ?? '').trim();
+      return isAppUrnLike(urn) ? { kind: 'app', urn } : { kind: 'home' };
     }
     default:
       return null;
@@ -142,6 +155,13 @@ export async function resolveIntentNavigation(action: IntentAction, knownHubs: K
       // render instead of the `/connect` loader redirecting back home.
       await clearHubConnection();
       return { path: '/connect', reload: true };
+    }
+    case 'app': {
+      // `<name>:<store>` is `/apps/<store>/<name>`; parseIntentAction already checked the shape.
+      const separator = action.urn.indexOf(':');
+      const name = action.urn.slice(0, separator);
+      const store = action.urn.slice(separator + 1);
+      return { path: `/apps/${encodeURIComponent(store)}/${encodeURIComponent(name)}`, reload: false };
     }
   }
 }

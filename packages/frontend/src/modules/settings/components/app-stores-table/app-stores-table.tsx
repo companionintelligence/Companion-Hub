@@ -1,4 +1,5 @@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/Table';
+import { CI_MARKETPLACE_STORE_ID } from '@/lib/portal-store';
 import type { AppStore } from '@/types/app.types';
 import { AddAppStoreDialog } from '../add-app-store-dialog/add-app-store-dialog';
 import { DeleteAppStoreDialog } from '../delete-app-store-dialog/delete-app-store-dialog';
@@ -38,14 +39,14 @@ export const AppStoresTable = ({ appStores }: Props) => {
           {appStores.map((appStore) => (
             <TableRow key={appStore.slug}>
               <TableCell>
-                {appStore.name === 'CI Marketplace' ? (
+                {appStore.slug === CI_MARKETPLACE_STORE_ID ? (
                   <a
                     href={appStore.url.replace(/\/api\/?$/, '')}
                     target="_blank"
                     rel="noopener noreferrer nofollow"
                     className="text-primary underline hover:no-underline"
                   >
-                    CI Portal
+                    {appStore.name}
                   </a>
                 ) : (
                   appStore.name

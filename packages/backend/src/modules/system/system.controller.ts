@@ -1,10 +1,13 @@
 import { LoggerService } from '@/core/logger/logger.service';
+import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
+import { HUB_RUNTIME_URN } from '@/modules/apps/constants';
 import { DockerService } from '@/modules/docker/docker.service';
-import { ApiResponse } from '@nestjs/swagger';
-import { Controller, Get, Res, UseGuards } from '@nestjs/common';
-import type { Response } from 'express';
+import { ApiQuery, ApiResponse } from '@nestjs/swagger';
+import { Controller, Get, Query, Req, Res, UseGuards } from '@nestjs/common';
+import type { Request, Response } from 'express';
 import { pipeline } from 'node:stream/promises';
 import { AuthGuard } from '../auth/auth.guard';
+import { HubManagerGuard } from '../auth/hub-manager.guard';
 import { LoadDto, SystemResourcesDto, HostTelemetryHistoryDto, HostEventLogDto } from './dto/system.dto';
 import { ResourceAllocatorService } from './resource-allocator.service';
 import { SystemService } from './system.service';
@@ -26,6 +29,7 @@ export class SystemController {
     private readonly resourceAllocator: ResourceAllocatorService,
     private readonly hostTelemetry: HostTelemetryService,
     private readonly logger: LoggerService,
+    private readonly whois: MarketplaceWhoIsService,
   ) {}
 
   @UseGuards(AuthGuard)
@@ -46,10 +50,28 @@ export class SystemController {
 
   @UseGuards(AuthGuard)
   @Get('/telemetry')
+  @ApiQuery({
+    name: 'minutes',
+    required: false,
+    type: Number,
+    description: 'Host CPU and memory over this many minutes, averaged to at most 360 points. Without it, the newest 288 raw samples.',
+  })
   @ApiResponse({ type: HostTelemetryHistoryDto })
-  async hostTelemetryHistory() {
+  async hostTelemetryHistory(@Req() req: Request, @Query('minutes') minutes?: string) {
+    if (minutes !== undefined && minutes !== '') {
+      const window = await this.hostTelemetry.getWindow(Number(minutes));
+      return HostTelemetryHistoryDto.parse(
+        { samples: window.points, minutes: window.minutes, bucketSeconds: window.bucketSeconds },
+        { reportOnly: true },
+      );
+    }
+    // Raw rows carry every app's CPU and memory. Filter them by the same view check as
+    // `GET /apps/resource-monitor`, so this route can't show a member an app Home hides.
     const samples = await this.hostTelemetry.getRecentSamples();
-    return HostTelemetryHistoryDto.parse({ samples }, { reportOnly: true });
+    const urns = [...new Set(samples.flatMap((sample) => (sample.apps ?? []).map((app) => app.appUrn)))];
+    const visible = new Set(await this.whois.filterSessionByView(req, urns, (urn) => (urn === HUB_RUNTIME_URN ? undefined : urn), 'hub'));
+    const filtered = samples.map((sample) => (sample.apps ? { ...sample, apps: sample.apps.filter((app) => visible.has(app.appUrn)) } : sample));
+    return HostTelemetryHistoryDto.parse({ samples: filtered }, { reportOnly: true });
   }
 
   @UseGuards(AuthGuard)
@@ -60,7 +82,7 @@ export class SystemController {
     return HostEventLogDto.parse({ events }, { reportOnly: true });
   }
 
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Get('/logs/download')
   @ApiResponse({ status: 200, description: 'Hub logs download' })
   async downloadHubLogs(@Res() res: Response) {
@@ -120,19 +142,6 @@ export class SystemController {
     } finally {
       cleanup();
     }
-  }
-
-  @UseGuards(AuthGuard)
-  @Get('/certificate')
-  async downloadLocalCertificate(@Res() res: Response) {
-    const cert = await this.systemService.getLocalCertificate();
-
-    res.set({
-      'Content-Type': 'application/x-pem-file',
-      'Content-Disposition': 'attachment; filename=cert.pem',
-    });
-
-    return res.send(cert);
   }
 
   @UseGuards(AuthGuard)

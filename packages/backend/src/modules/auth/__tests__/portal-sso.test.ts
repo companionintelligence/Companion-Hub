@@ -8,8 +8,12 @@ import {
   buildPortalSsoErrorRedirectUrl,
   exchangePortalAuthorizationCode,
   fetchPortalSessionEmail,
+  fetchPortalUserinfo,
   buildPortalDesktopHandoffHtml,
+  desktopSignInWaitProof,
+  isDesktopSignInWaitProof,
   isDirectLoopbackRequest,
+  isRequestFromThisHost,
   resolvePortalDesktopHandoffState,
   shouldHandoffPortalLoginToDesktop,
   resolvePortalCallbackUrl,
@@ -17,6 +21,8 @@ import {
   resolveSameOriginRedirectUrl,
   resolveTrustedReturnOrigin,
   toDesktopRedirectPath,
+  portalBindingCookie,
+  portalBindingMatches,
 } from '../portal-sso';
 import { HUB_FAVICON_LINK_TAG, HUB_FAVICON_PATH } from '../hub-favicon';
 import { EVERY_ADDRESS_FAILED, axiosEveryAddressFailed } from '@/tests/utils/network-failures';
@@ -36,6 +42,11 @@ vi.mock('axios', () => ({
     get: vi.fn(),
   },
 }));
+
+// The Hub as it runs on an appliance: in a container whose default gateway is 172.18.0.1.
+vi.mock('@/common/helpers/this-host-address', async (importOriginal) =>
+  (await import('@/tests/utils/appliance-host-address')).onAppliance(await importOriginal()),
+);
 
 /** The page needs three links now; only the deep link varies across these tests. */
 function handoffHtml(deepLink: string, overrides: { continueHref?: string; statusHref?: string } = {}) {
@@ -321,6 +332,110 @@ describe('portal-sso helpers', () => {
     expect(isDirectLoopbackRequest(req)).toBe(expected);
   });
 
+  it.each([
+    ['the setup service on the host, relayed from the gateway', true, { host: '127.0.0.1:5002' }, '172.18.0.1'],
+    ['the same on a dual-stack socket', true, { host: '127.0.0.1:5002' }, '::ffff:172.18.0.1'],
+    ['a request inside the Hub container on loopback', true, { host: 'localhost:5002' }, '127.0.0.1'],
+    ['a LAN machine naming a loopback host', false, { host: '127.0.0.1:5002' }, '192.168.1.50'],
+    ['a container calling the Hub on a shared network', false, { host: '127.0.0.1:5002' }, '172.18.0.7'],
+    ['the gateway naming another host', false, { host: '192.168.1.10:5002' }, '172.18.0.1'],
+    ['the gateway carrying a public forwarded hop', false, { host: '127.0.0.1:5002', 'x-forwarded-for': '203.0.113.9' }, '172.18.0.1'],
+    ['the gateway carrying a tunnel marker', false, { host: '127.0.0.1:5002', 'cf-ray': '8c1f2e3d4a5b6c7d-AMS' }, '172.18.0.1'],
+    [
+      "the Hub's own page in a browser on the host",
+      true,
+      { host: '127.0.0.1:5002', origin: 'http://127.0.0.1:5002', 'sec-fetch-site': 'same-origin' },
+      '172.18.0.1',
+    ],
+    [
+      'a form on another site, in a browser on the host',
+      false,
+      { host: '127.0.0.1:5002', origin: 'https://other.example', 'sec-fetch-site': 'cross-site' },
+      '172.18.0.1',
+    ],
+    [
+      'a form on another site, from a browser that sends no fetch metadata',
+      false,
+      { host: '127.0.0.1:5002', origin: 'https://other.example' },
+      '172.18.0.1',
+    ],
+    ["an app's page on another loopback port", false, { host: '127.0.0.1:5002', 'sec-fetch-site': 'same-site' }, '172.18.0.1'],
+    // A link opened from a mail or chat app reads the same as a typed address. No browser route asks this.
+    ['a link opened from another app, in a browser on the host', false, { host: '127.0.0.1:5002', 'sec-fetch-site': 'none' }, '172.18.0.1'],
+    ['a link followed from another site', false, { host: '127.0.0.1:5002', 'sec-fetch-site': 'cross-site' }, '127.0.0.1'],
+    [
+      'an image on another site, from a browser that sends no fetch metadata',
+      false,
+      { host: '127.0.0.1:5002', referer: 'https://other.example/page' },
+      '172.18.0.1',
+    ],
+    [
+      "the Hub's own page, from a browser that sends no fetch metadata",
+      true,
+      { host: '127.0.0.1:5002', origin: 'http://127.0.0.1:5002', referer: 'http://127.0.0.1:5002/device-registration' },
+      '172.18.0.1',
+    ],
+    ['a sandboxed page, which sends Origin: null', false, { host: '127.0.0.1:5002', origin: 'null' }, '172.18.0.1'],
+  ])('isRequestFromThisHost: %s -> %s', (_caller, expected, headers: Record<string, string>, ip) => {
+    const req = {
+      headers,
+      ip,
+      protocol: 'http',
+      socket: { remoteAddress: ip },
+      get: (name: string) => (name.toLowerCase() === 'host' ? headers.host : undefined),
+    } as unknown as Request;
+
+    expect(isRequestFromThisHost(req)).toBe(expected);
+  });
+
+  it('isRequestFromThisHost reads the socket, not the address HUB_TRUST_PROXY resolved from a header', () => {
+    const headers = { host: '127.0.0.1:5002', 'x-forwarded-for': '127.0.0.1' };
+    const req = {
+      headers,
+      ip: '127.0.0.1',
+      protocol: 'http',
+      socket: { remoteAddress: '192.168.1.50' },
+      get: (name: string) => (name.toLowerCase() === 'host' ? headers.host : undefined),
+    } as unknown as Request;
+
+    expect(isDirectLoopbackRequest(req)).toBe(true);
+    expect(isRequestFromThisHost(req)).toBe(false);
+  });
+
+  it('derives the desktop proof the way the desktop shell does', () => {
+    // The same key, nonce and proof are asserted in desktop_sign_in_wait.rs, so the two halves cannot drift.
+    expect(desktopSignInWaitProof('3f'.repeat(32), '00112233445566778899aabbccddeeff'.repeat(2))).toBe(
+      '7a460e26999017e65eaa1c282c52201b9b79bb408fdbd2e0893b1af334e84bc2',
+    );
+  });
+
+  describe('isDesktopSignInWaitProof', () => {
+    const KEY = '3f'.repeat(32);
+    const NONCE = 'ab'.repeat(32);
+    const proof = desktopSignInWaitProof(KEY, NONCE);
+
+    it.each([
+      ['the proof for this nonce', true, proof],
+      ['the proof for another nonce', false, desktopSignInWaitProof(KEY, 'cd'.repeat(32))],
+      ['a proof made with another key', false, desktopSignInWaitProof('a'.repeat(64), NONCE)],
+      ['the key itself', false, KEY],
+      ['a proof of the wrong length', false, proof.slice(0, 10)],
+      ['a proof with stray whitespace', false, ` ${proof}\n`],
+      ['a repeated proof header', false, [proof]],
+      ['no proof', false, undefined],
+    ])('%s -> %s', (_case, expected, presented: unknown) => {
+      expect(isDesktopSignInWaitProof(presented, NONCE, KEY)).toBe(expected);
+    });
+
+    it('refuses every proof while the Hub has no key', () => {
+      expect(isDesktopSignInWaitProof(desktopSignInWaitProof('', NONCE), NONCE, null)).toBe(false);
+    });
+
+    it('refuses a wrong-length proof without throwing', () => {
+      expect(() => isDesktopSignInWaitProof('ab', NONCE, KEY)).not.toThrow();
+    });
+  });
+
   it('exchanges authorization codes for user email via Portal OAuth endpoints', async () => {
     vi.mocked(axios.post).mockResolvedValue({
       status: 200,
@@ -414,6 +529,68 @@ describe('portal-sso helpers', () => {
     });
   });
 
+  describe('fetchPortalUserinfo', () => {
+    const input = { publicPortalBaseUrl: 'https://hub.ci.computer', accessToken: 'access-token' };
+
+    it('returns the email, subject and issuer Portal gives for a verified address', async () => {
+      vi.mocked(axios.get).mockResolvedValue({
+        status: 200,
+        data: { sub: 'portal-sub', iss: 'https://hub.ci.computer', email: 'operator@example.com', email_verified: true },
+      });
+
+      await expect(fetchPortalUserinfo(input)).resolves.toEqual({
+        ok: true,
+        email: 'operator@example.com',
+        subject: 'portal-sub',
+        issuer: 'https://hub.ci.computer',
+        status: 200,
+      });
+      expect(axios.get).toHaveBeenCalledWith(
+        'https://hub.ci.computer/api/auth/oauth2/userinfo',
+        expect.objectContaining({ headers: expect.objectContaining({ authorization: 'Bearer access-token' }), timeout: 15_000 }),
+      );
+    });
+
+    it('leaves subject and issuer null when Portal names neither', async () => {
+      vi.mocked(axios.get).mockResolvedValue({ status: 200, data: { email: 'operator@example.com', email_verified: true } });
+
+      await expect(fetchPortalUserinfo(input)).resolves.toEqual({
+        ok: true,
+        email: 'operator@example.com',
+        subject: null,
+        issuer: null,
+        status: 200,
+      });
+    });
+
+    it.each([
+      ['unverified', false],
+      ['absent', undefined],
+    ])('refuses a userinfo whose email_verified is %s', async (_label, emailVerified) => {
+      vi.mocked(axios.get).mockResolvedValue({ status: 200, data: { email: 'operator@example.com', email_verified: emailVerified } });
+
+      await expect(fetchPortalUserinfo(input)).resolves.toEqual({ ok: false, reason: 'email_unverified', status: 200 });
+    });
+
+    it('refuses a userinfo with no email address', async () => {
+      vi.mocked(axios.get).mockResolvedValue({ status: 200, data: { sub: 'portal-sub', email_verified: true } });
+
+      await expect(fetchPortalUserinfo(input)).resolves.toEqual({ ok: false, reason: 'missing_email', status: 200 });
+    });
+
+    it('reports a userinfo that Portal refused with its status', async () => {
+      vi.mocked(axios.get).mockResolvedValue({ status: 401, data: { error: 'invalid_token' } });
+
+      await expect(fetchPortalUserinfo(input)).resolves.toEqual({ ok: false, reason: 'userinfo_failed', status: 401 });
+    });
+
+    it('says why the request got no answer when no address of the Portal accepted it', async () => {
+      vi.mocked(axios.get).mockRejectedValue(axiosEveryAddressFailed());
+
+      await expect(fetchPortalUserinfo(input)).resolves.toEqual({ ok: false, reason: 'network_error', detail: EVERY_ADDRESS_FAILED });
+    });
+  });
+
   describe('resolveTrustedReturnOrigin', () => {
     const trusted = { domain: 'companionintelligence.com', localDomain: 'companionintelligence.com' };
 
@@ -462,5 +639,42 @@ describe('portal-sso helpers', () => {
         cookieHeader: 'ci.session=abc',
       }),
     ).resolves.toBe('portal@example.com');
+  });
+
+  describe('portalBindingMatches', () => {
+    it('accepts an exact match', () => {
+      expect(portalBindingMatches('abc123', 'abc123')).toBe(true);
+    });
+
+    it('rejects a different value', () => {
+      expect(portalBindingMatches('abc123', 'abc124')).toBe(false);
+    });
+
+    it('rejects values of different length', () => {
+      expect(portalBindingMatches('abc', 'abcdef')).toBe(false);
+    });
+
+    it('fails closed when either side is missing', () => {
+      expect(portalBindingMatches(undefined, 'abc123')).toBe(false);
+      expect(portalBindingMatches('abc123', undefined)).toBe(false);
+      expect(portalBindingMatches('', '')).toBe(false);
+      expect(portalBindingMatches(null, null)).toBe(false);
+    });
+
+    it('refuses a presented value that cookie-parser decoded into an object', () => {
+      // A `j:`-prefixed cookie arrives as parsed JSON, which Buffer.from would throw on.
+      expect(portalBindingMatches('abc123', { length: 6 })).toBe(false);
+      expect(portalBindingMatches('abc123', ['a', 'b', 'c', '1', '2', '3'])).toBe(false);
+    });
+  });
+
+  describe('portalBindingCookie', () => {
+    it('is a __Host- cookie, Secure with Path=/, over https', () => {
+      expect(portalBindingCookie('s-1', true)).toEqual({ name: '__Host-ci_hub_portal_sso_s-1', path: '/', secure: true });
+    });
+
+    it('is the plain cookie on the callback path over http', () => {
+      expect(portalBindingCookie('s-1', false)).toEqual({ name: 'ci_hub_portal_sso_s-1', path: '/api/auth/portal/callback', secure: false });
+    });
   });
 });

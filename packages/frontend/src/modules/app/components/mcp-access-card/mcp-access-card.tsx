@@ -1,6 +1,7 @@
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card/Card';
 import { apiFetch } from '@/lib/api-fetch';
+import { asLegacyTranslate } from '@/lib/i18n/legacy-translate';
 import type { AppDetails, AppInfo } from '@/types/app.types';
 import { Copy, Plug, RefreshCw, Terminal, Wrench } from 'lucide-react';
 import clsx from 'clsx';
@@ -105,7 +106,7 @@ export function McpAccessCard({ app, info, mcpRuntime: initialRuntime }: Props) 
 
   const tools = mcp.manifest?.tools ?? [];
   const installed = Boolean(app);
-  const badge = bridgeStatusBadge(runtime, installed, t);
+  const badge = bridgeStatusBadge(runtime, installed, asLegacyTranslate(t));
 
   const copyToClipboard = async (value: string) => {
     try {
@@ -119,7 +120,7 @@ export function McpAccessCard({ app, info, mcpRuntime: initialRuntime }: Props) 
   return (
     <Card className="border-border/60 bg-card/80 shadow-sm">
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
-        <CardTitle className="flex items-center gap-2 text-base font-semibold">
+        <CardTitle className="flex items-center gap-2 text-base font-medium">
           <Plug className="h-4 w-4 text-violet-500" />
           {t('APP_MCP_CARD_TITLE')}
         </CardTitle>
@@ -134,7 +135,7 @@ export function McpAccessCard({ app, info, mcpRuntime: initialRuntime }: Props) 
           >
             {badge.label}
           </span>
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-border/70 bg-muted/30 px-2.5 py-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-border/70 bg-muted/30 px-2.5 py-1 text-xs font-medium   text-muted-foreground">
             <Terminal className="h-3 w-3" />
             {mcp.transport}
           </span>
@@ -208,7 +209,7 @@ export function McpAccessCard({ app, info, mcpRuntime: initialRuntime }: Props) 
           </div>
         )}
 
-        {mcp.requires?.notes ? <p className="text-xs italic text-muted-foreground">{mcp.requires.notes}</p> : null}
+        {mcp.requires?.notes ? <p className="text-xs  text-muted-foreground">{mcp.requires.notes}</p> : null}
       </CardContent>
     </Card>
   );

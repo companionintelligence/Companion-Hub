@@ -1,7 +1,9 @@
-import { BadRequestException, Body, Controller, Get, Param, Post, Query, Req, Res, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, HttpException, HttpStatus, Param, Post, Query, Req, Res, UseGuards } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import type { AppUrn } from '@ci-hub/common/types';
+import { castAppUrn } from '@/common/helpers/app-helpers';
 import { LoggerService } from '@/core/logger/logger.service';
+import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AuthGuard } from '../auth/auth.guard';
 import {
@@ -15,7 +17,7 @@ import { FORWARD_AUTH_SECRET_ENV } from '../auth/forward-auth-secret.resolver';
 import { EnvUtils } from '../env/env.utils';
 import { UserRepository } from '../user/user.repository';
 import { ManagedAppKeyGuard } from './managed-app-key.guard';
-import { MemoryConnectService } from './memory-connect.service';
+import { MemoryConnectService, MemoryConsentUnreachableException } from './memory-connect.service';
 
 /**
  * Endpoints backing the memory-connect flow.
@@ -29,7 +31,8 @@ import { MemoryConnectService } from './memory-connect.service';
  *   POST /api/memory-connect/apps/:urn/skip   → wrapper: mark skipped
  *   POST /api/memory-connect/apps/:urn/disconnect → browser: revoke + clear + restart
  *
- * Browser routes are session-guarded (the user is signed into the Hub). The
+ * Browser routes are session-guarded (the user is signed into the Hub). `start`, `callback`
+ * and `disconnect` restart the app, so they also take its `restart` grant. The
  * wrapper-facing state/skip routes are authorized by {@link ManagedAppKeyGuard}
  * (the app presents its own managed key, bound to its URN) — that is the real
  * boundary. {@link InternalNetworkGuard} is layered on as best-effort defense in
@@ -37,6 +40,21 @@ import { MemoryConnectService } from './memory-connect.service';
  * reachable through the public tunnel and `req.ip` reflects the proxy unless
  * `HUB_TRUST_PROXY` is configured (see main.ts).
  */
+/** The Hub page that carries on a Connect Memory navigation with the page's own session token. */
+export const MEMORY_CONNECT_PAGE_PATH = '/memory-connect/continue';
+
+/** The Hub page for one step, with the navigation's own parameters (relative: same origin as the request). */
+function memoryConnectPageUrl(step: 'start' | 'callback', params: Record<string, string | undefined>): string {
+  const query = new URLSearchParams({ step });
+  for (const [key, value] of Object.entries(params)) {
+    if (typeof value === 'string' && value) {
+      query.set(key, value);
+    }
+  }
+
+  return `${MEMORY_CONNECT_PAGE_PATH}?${query.toString()}`;
+}
+
 @Controller('memory-connect')
 export class MemoryConnectController {
   constructor(
@@ -45,23 +63,50 @@ export class MemoryConnectController {
     private readonly users: UserRepository,
     private readonly appFiles: AppFilesManager,
     private readonly envUtils: EnvUtils,
+    private readonly whois: MarketplaceWhoIsService,
   ) {}
 
+  /**
+   * The link an app's launcher and the Hub UI open. It decides nothing: it hands the navigation to the
+   * Hub page at {@link MEMORY_CONNECT_PAGE_PATH}, which asks `POST /start` with the page's session token.
+   *
+   * ⚠ A NAVIGATION CARRIES NO HEADER, AND THE HUB'S COOKIE IS NO CREDENTIAL (`auth/session-token.ts`).
+   * These routes used to act on the `ci-hub-sid` the navigation brought along, and that cookie goes to
+   * every port on the Hub's host, where any app could replay it.
+   */
   @Get('start')
-  async start(
-    @Query('app') app: string | undefined,
-    @Query('next') next: string | undefined,
-    @Req() req: Request,
+  startNavigation(@Query('app') app: string | undefined, @Query('next') next: string | undefined, @Res() res: Response): void {
+    res.redirect(memoryConnectPageUrl('start', { app, next }));
+  }
+
+  /** Where ci-memory's consent returns. Handed to the Hub page like {@link startNavigation}. */
+  @Get('callback')
+  callbackNavigation(
+    @Query('code') code: string | undefined,
+    @Query('state') state: string | undefined,
+    @Query('error') error: string | undefined,
     @Res() res: Response,
-  ): Promise<void> {
-    // These are top-level browser navigations, so an unauthenticated session
-    // must bounce to the login page — not receive a raw 401 JSON body.
-    if (this.redirectIfUnauthenticated(req, res)) {
-      return;
-    }
+  ): void {
+    res.redirect(memoryConnectPageUrl('callback', { code, state, error }));
+  }
+
+  /** Asked by the Hub page with its session token: answers where the browser goes next (`{ url }`). */
+  @UseGuards(AuthGuard)
+  @Post('start')
+  async start(@Body() body: { app?: unknown; next?: unknown }, @Req() req: Request): Promise<{ url: string }> {
+    const app = typeof body?.app === 'string' && body.app ? body.app : undefined;
+    const next = typeof body?.next === 'string' && body.next ? body.next : undefined;
 
     if (!app) {
       throw new BadRequestException('app is required');
+    }
+
+    // Connecting restarts the app, so it takes the grant the restart route asks for. Refused like
+    // the route's other refusals: the browser lands on the Hub with a marker, never on a raw 403.
+    if (!(await this.mayRestart(req, this.parseAppUrn(app)))) {
+      this.logger.warn(`[MemoryConnect] connect refused for ${app}: no restart grant`);
+
+      return { url: '/?memoryConnect=denied' };
     }
 
     // `next` is validated server-side in startConnect (origin-allowlisted against
@@ -69,39 +114,39 @@ export class MemoryConnectController {
     // Bind the flow to the initiating user so the callback must be the same user.
     // The request origin keeps the whole ceremony on the origin the user arrived
     // on — a LAN user must not be relocated to the public origin mid-flow, where
-    // their Hub session cookie does not exist.
+    // their Hub session does not exist.
     try {
-      const consentUrl = await this.service.startConnect(app as AppUrn, next, this.currentUserId(req), this.requestOrigin(req));
-      res.redirect(consentUrl);
+      return { url: await this.service.startConnect(app as AppUrn, next, this.currentUserId(req), this.requestOrigin(req)) };
     } catch (err) {
       // A connect that can't start (ci-memory not installed / not reachable yet /
-      // no Hub origin) must not dump a raw 400 JSON body into a top-level browser
-      // navigation. The readiness gating normally keeps the launcher link hidden
-      // until ci-memory is running, so this only covers the race where it goes down
-      // between the status poll and the click — land the user back on the Hub with
-      // an error marker (mirrors the callback's ?memoryConnect=error handling).
+      // no Hub origin) lands the user back on the Hub with a marker. The readiness gating
+      // normally keeps the launcher link hidden until ci-memory is running, so this only covers
+      // the race where it goes down between the status poll and the click.
+      // A consent page this browser can't open says so, rather than "not ready yet".
+      if (err instanceof MemoryConsentUnreachableException) {
+        this.logger.warn(`[MemoryConnect] connect could not start for ${app}: ${err.message}`);
+
+        return { url: '/?memoryConnect=local_only' };
+      }
+
       if (err instanceof BadRequestException) {
         this.logger.warn(`[MemoryConnect] connect could not start for ${app}: ${err.message}`);
-        res.redirect('/?memoryConnect=unavailable');
 
-        return;
+        return { url: '/?memoryConnect=unavailable' };
       }
 
       throw err;
     }
   }
 
-  @Get('callback')
-  async callback(
-    @Query('code') code: string | undefined,
-    @Query('state') state: string | undefined,
-    @Query('error') error: string | undefined,
-    @Req() req: Request,
-    @Res() res: Response,
-  ): Promise<void> {
-    if (this.redirectIfUnauthenticated(req, res)) {
-      return;
-    }
+  /** Asked by the Hub page with its session token once consent returns: answers where to go next. */
+  @UseGuards(AuthGuard)
+  @Post('callback')
+  async callback(@Body() body: { code?: unknown; state?: unknown; error?: unknown }, @Req() req: Request): Promise<{ url: string }> {
+    const text = (value: unknown) => (typeof value === 'string' && value ? value : undefined);
+    const code = text(body?.code);
+    const state = text(body?.state);
+    const error = text(body?.error);
 
     // The user denied consent on ci-memory (or an upstream error). Nothing was
     // minted; return them to the app they started from (where the interstitial
@@ -114,9 +159,8 @@ export class MemoryConnectController {
     // CI-Engineering#75 set out to remove.
     if (error || !code || !state) {
       this.logger.warn(`[MemoryConnect] callback without a usable code (error=${error ?? 'none'})`);
-      res.redirect(this.service.abandonConnect(state, this.currentUserId(req), error));
 
-      return;
+      return { url: this.service.abandonConnect(state, this.currentUserId(req), error) };
     }
 
     try {
@@ -127,12 +171,15 @@ export class MemoryConnectController {
       // aborted navigation) resolves to the interstitial too, without a second
       // exchange. The current user must match the one who started the flow
       // (login-CSRF guard).
-      const { next } = await this.service.handleCallback(code, state, this.currentUserId(req));
-      res.redirect(next);
+      // The grant `/start` checked is asked again, since this is what restarts the app.
+      const { next } = await this.service.handleCallback(code, state, this.currentUserId(req), (appUrn) => this.mayRestart(req, appUrn));
+
+      return { url: next };
     } catch (err) {
       // Only an unknown/expired state reaches here (no app to return to).
       this.logger.error('[MemoryConnect] callback failed', err);
-      res.redirect('/?memoryConnect=error');
+
+      return { url: '/?memoryConnect=error' };
     }
   }
 
@@ -188,31 +235,41 @@ export class MemoryConnectController {
   @UseGuards(AuthGuard)
   @Post('apps/:urn/disconnect')
   async disconnect(@Param('urn') urn: string, @Req() req: Request, @Body() _body: unknown) {
-    await this.service.disconnect(this.decodeUrn(urn), this.currentUserId(req));
+    const appUrn = this.decodeUrn(urn);
+    // Disconnecting restarts the app too. Who may disconnect whose connection is decided after this.
+    await this.whois.assertSessionAction(req, this.parseAppUrn(appUrn), 'restart');
+    await this.service.disconnect(appUrn, this.currentUserId(req));
 
     return { ok: true };
   }
 
-  /**
-   * For the browser-facing GET routes: if there is no authenticated Hub session,
-   * redirect to the login page and return true (handled). The session is
-   * populated by the auth middleware the same way AuthGuard consumes it; unlike
-   * AuthGuard (which 401s with JSON), a top-level navigation must land on a page.
-   */
-  private redirectIfUnauthenticated(req: Request, res: Response): boolean {
-    if ((req as Request & { user?: unknown }).user) {
-      return false;
+  /** A malformed id is the caller's mistake (400), not a server error. */
+  private parseAppUrn(raw: string): AppUrn {
+    try {
+      return castAppUrn(raw);
+    } catch {
+      throw new BadRequestException('app is not a valid app id');
     }
+  }
 
-    this.logger.warn('[MemoryConnect] unauthenticated browser navigation → redirecting to /login');
-    res.redirect('/login');
+  /** Whether this person holds the app's `restart` grant. Only a refusal is false; anything else throws. */
+  private async mayRestart(req: Request, appUrn: AppUrn): Promise<boolean> {
+    try {
+      await this.whois.assertSessionAction(req, appUrn, 'restart');
 
-    return true;
+      return true;
+    } catch (err) {
+      if (err instanceof HttpException && err.getStatus() === HttpStatus.FORBIDDEN) {
+        return false;
+      }
+
+      throw err;
+    }
   }
 
   /**
    * The authenticated Hub user's id as a string. Only called after
-   * {@link redirectIfUnauthenticated} has confirmed `req.user` is present, so the
+   * `AuthGuard` has admitted the request, so the
    * flow's `state` can be bound to (and re-verified against) this user.
    */
   private currentUserId(req: Request): string {

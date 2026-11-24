@@ -1,5 +1,5 @@
 name: companion-hub
-version: "0.2.4"
+version: "0.3.10"
 summary: AI-powered companion intelligence hub
 description: |
   Companion Hub is a desktop application that serves as an AI-powered companion
@@ -7,6 +7,8 @@ description: |
   for the Companion Intelligence platform. It manages Docker Compose stacks,
   coordinates local AI services, and provides a unified interface for the
   companion intelligence ecosystem.
+# The license is unchanged from the previous version. It does not match the
+# CI-Commercial-1.0 license that the AUR and Scoop packages declare. Owner decision.
 license: AGPL-3.0-only
 # classic confinement is required because the app manages Docker Compose stacks
 # and needs access to system Docker sockets and arbitrary filesystem paths
@@ -20,26 +22,21 @@ architectures:
 
 parts:
   companion-hub:
-    plugin: dump
-    source: https://github.com/companionintelligence/CI-Hub/releases/download/v0.2.4/Companion.Hub_0.2.4_amd64.AppImage
+    plugin: nil
+    # 0.3.10 ships a .deb and no AppImage, so the snap unpacks the .deb instead.
+    source: https://github.com/companionintelligence/Companion-Hub/releases/download/v0.3.10/Companion.Hub_0.3.10_amd64.deb
     source-type: file
     stage-packages:
       - libgtk-3-0
       - libwebkit2gtk-4.1-0
       - libayatana-appindicator3-1
-    override-pull: |
-      craftctl default
-      chmod +x Companion.Hub_0.2.4_amd64.AppImage
-      ./Companion.Hub_0.2.4_amd64.AppImage --appimage-extract
-      rm -rf $CRAFT_PART_SRC/../install
-      mv squashfs-root $CRAFT_PART_SRC/../install
     override-build: |
-      cp -r $CRAFT_PART_SRC/../install/. $CRAFT_PART_INSTALL/
+      dpkg-deb -x "$CRAFT_PART_SRC/Companion.Hub_0.3.10_amd64.deb" "$CRAFT_PART_INSTALL"
 
 apps:
   companion-hub:
-    command: AppRun
-    desktop: companion-hub.desktop
+    command: usr/bin/companion-hub
+    desktop: usr/share/applications/companion-hub.desktop
     environment:
       TMPDIR: $XDG_RUNTIME_DIR
       PATH: $SNAP/usr/bin:$PATH

@@ -16,15 +16,16 @@
  */
 import { HttpStatus, RequestMethod, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import type { ExecutionContext } from '@nestjs/common';
-import { GUARDS_METADATA, METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
+import { GUARDS_METADATA, INTERCEPTORS_METADATA, METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
 import { createHash } from 'node:crypto';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiKeyStoreUnavailableError } from '@/modules/api-keys/api-key.errors';
 import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { HubPoolOllamaCompatController } from '@/modules/hub-pool/hub-pool-ollama-compat.controller';
 import { HubPoolController } from '@/modules/hub-pool/hub-pool.controller';
 import { InferenceController } from '@/modules/inference/inference.controller';
-import { InferenceAccessGuard, type InferenceAuthenticatedRequest } from '../inference-access.guard';
+import { TunnelErrorStatusInterceptor } from '@/modules/inference/tunnel-error-status.interceptor';
+import { InferenceAccessGuard, type InferenceAuthenticatedRequest, inferenceTailnetAuth } from '../inference-access.guard';
 
 const INFERENCE_KEY = 'a'.repeat(64);
 const MCP_KEY = 'b'.repeat(64);
@@ -222,6 +223,112 @@ describe('InferenceAccessGuard', () => {
     });
   });
 
+  /**
+   * Finding 2 of the 2026-10-23 fleet pass: a tailnet caller with no credential was answered 200 on every
+   * Hub, because the tailnet is inside the appliance by design (`isPrivateOrLocalIp`, and the test
+   * "a tailnet peer behind the Docker bridge" above). `HUB_INFERENCE_TAILNET_AUTH=require-key` is the
+   * opt-in for a fleet whose tailnet carries devices that should not spend its GPUs for free.
+   */
+  describe('HUB_INFERENCE_TAILNET_AUTH', () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('reads the setting: trust unless it says require-key, whatever its case or padding', () => {
+      expect(inferenceTailnetAuth({})).toBe('trust');
+      expect(inferenceTailnetAuth({ HUB_INFERENCE_TAILNET_AUTH: '' })).toBe('trust');
+      expect(inferenceTailnetAuth({ HUB_INFERENCE_TAILNET_AUTH: 'trust' })).toBe('trust');
+      expect(inferenceTailnetAuth({ HUB_INFERENCE_TAILNET_AUTH: 'yes please' })).toBe('trust');
+      expect(inferenceTailnetAuth({ HUB_INFERENCE_TAILNET_AUTH: 'require-key' })).toBe('require-key');
+      expect(inferenceTailnetAuth({ HUB_INFERENCE_TAILNET_AUTH: '  Require-Key ' })).toBe('require-key');
+    });
+
+    it('unset (the default) admits a tailnet caller by origin and never asks the key store', async () => {
+      for (const req of [request('100.101.102.103'), request('172.18.0.2', { 'x-forwarded-for': '100.101.102.103' })]) {
+        await expect(guard.canActivate(contextFor(req, fakeResponse()))).resolves.toBe(true);
+      }
+      expect(repo.findByHash).not.toHaveBeenCalled();
+    });
+
+    describe('require-key', () => {
+      beforeEach(() => {
+        vi.stubEnv('HUB_INFERENCE_TAILNET_AUTH', 'require-key');
+      });
+
+      it.each([
+        ['the tailnet address is the caller', () => request('100.101.102.103')],
+        ['the caller is a tailnet client behind the Docker bridge', () => request('172.18.0.2', { 'x-forwarded-for': '100.101.102.103' })],
+        ['the caller is a tailnet client over IPv6', () => request('172.18.0.2', { 'x-forwarded-for': 'fd7a:115c:a1e0::7' })],
+      ])('refuses a keyless caller when %s, 401 in the OpenAI shape, naming the tailnet', async (_label, make) => {
+        const { error, res } = await refusalOf(make());
+
+        expect(error).toBeInstanceOf(UnauthorizedException);
+        expect(res.statusCode).toBe(HttpStatus.UNAUTHORIZED);
+        expect(res.headers['WWW-Authenticate']).toBe('Bearer realm="ci-hub-inference"');
+        expect(res.body).toEqual({
+          error: {
+            message: expect.stringContaining('from callers on the tailnet'),
+            type: 'authentication_error',
+            code: 'missing_api_key',
+          },
+        });
+        expect((res.body as { error: { message: string } }).error.message).toContain('cihub api-key create --scope inference');
+        expect(repo.findByHash).not.toHaveBeenCalled();
+      });
+
+      it('admits a tailnet caller with a valid inference key, which the handler can then read, after one lookup', async () => {
+        const req = request('100.101.102.103', bearer(INFERENCE_KEY));
+        const res = fakeResponse();
+
+        await expect(guard.canActivate(contextFor(req, res))).resolves.toBe(true);
+
+        expect(repo.findByHash).toHaveBeenCalledTimes(1);
+        expect(req.inferenceApiKey).toMatchObject({ id: 1, name: 'laptop-zed' });
+        expect(res.headersSent).toBe(false);
+      });
+
+      it('refuses a tailnet caller whose key is an mcp key, a key this Hub never minted, or a placeholder', async () => {
+        const mcp = await refusalOf(request('100.101.102.103', bearer(MCP_KEY)));
+        expect((mcp.res.body as { error: { code: string } }).error.code).toBe('invalid_api_key');
+        const unknown = await refusalOf(request('100.101.102.103', bearer(UNKNOWN_KEY)));
+        expect((unknown.res.body as { error: { code: string } }).error.code).toBe('invalid_api_key');
+        repo.findByHash.mockClear();
+        const placeholder = await refusalOf(request('100.101.102.103', bearer('ollama')));
+        expect((placeholder.res.body as { error: { code: string } }).error.code).toBe('invalid_api_key');
+        expect(repo.findByHash).not.toHaveBeenCalled();
+      });
+
+      it('leaves the appliance itself alone: a container, loopback and an app subnet are still admitted with no lookup', async () => {
+        for (const req of [
+          request('172.18.0.5', { host: 'ci-hub:3000', ...bearer('ollama') }),
+          request('127.0.0.1'),
+          request('::1'),
+          request('10.128.12.5', { host: 'ci-hub:5002' }),
+          request('172.18.0.2', { 'x-forwarded-for': '172.18.0.2, 10.128.1.9' }),
+        ]) {
+          await expect(guard.canActivate(contextFor(req, fakeResponse()))).resolves.toBe(true);
+        }
+        expect(repo.findByHash).not.toHaveBeenCalled();
+      });
+
+      it('logs the reason as origin=tailnet-address, and never the token', async () => {
+        await refusalOf(request('100.101.102.103'));
+        await refusalOf(request('100.101.102.103', bearer(UNKNOWN_KEY)));
+
+        const logged = JSON.stringify(logger.warn.mock.calls);
+        expect(logged).toContain('origin=tailnet-address');
+        expect(logged).not.toContain(UNKNOWN_KEY);
+      });
+
+      it('changes nothing for a tunnel or public caller: the old refusals and their messages stand', async () => {
+        const tunnel = await refusalOf(request('172.18.0.2', { 'cf-ray': '8f1a-LHR' }));
+        expect((tunnel.res.body as { error: { message: string } }).error.message).toContain('from outside the appliance network');
+        const admitted = request('203.0.113.10', bearer(INFERENCE_KEY));
+        await expect(guard.canActivate(contextFor(admitted, fakeResponse()))).resolves.toBe(true);
+      });
+    });
+  });
+
   describe('what never costs a lookup', () => {
     it.each([
       ['a header that is not `Bearer <token>`', { authorization: `Basic ${INFERENCE_KEY}` }],
@@ -325,66 +432,70 @@ describe('the inference route table', () => {
     }
 
     expect(routes).toEqual({
-      // ── InferenceController: the six v1 routes are the editor / SDK surface ──
+      // ── InferenceController: the v1 routes are the editor / SDK surface ──
       'InferenceController.v1ChatCompletions': 'POST v1/chat/completions → InferenceAccessGuard',
       'InferenceController.v1Completions': 'POST v1/completions → InferenceAccessGuard',
       'InferenceController.v1Embeddings': 'POST v1/embeddings → InferenceAccessGuard',
       'InferenceController.v1Models': 'GET v1/models → InferenceAccessGuard',
       'InferenceController.v1AudioSpeech': 'POST v1/audio/speech → InferenceAccessGuard',
       'InferenceController.v1AudioTranscriptions': 'POST v1/audio/transcriptions → InferenceAccessGuard',
+      'InferenceController.v1ImagesGenerations': 'POST v1/images/generations → InferenceAccessGuard',
+      'InferenceController.mediaAcquire': 'POST media/acquire → InferenceAccessGuard',
+      'InferenceController.mediaRelease': 'POST media/release → InferenceAccessGuard',
       'InferenceController.health': 'GET health → (none)',
       'InferenceController.getPreferences': 'GET preferences → AuthGuard',
-      'InferenceController.updatePreferences': 'PATCH preferences → AuthGuard',
+      'InferenceController.updatePreferences': 'PATCH preferences → AuthGuard, HubManagerGuard',
       'InferenceController.getResidentModels': 'GET models/resident → AuthGuard',
       'InferenceController.getRuntimeModels': 'GET models/runtime → AuthGuard',
       'InferenceController.getStatus': 'GET status → AuthGuard',
       'InferenceController.getSupervision': 'GET supervision → AuthGuard',
       'InferenceController.getHardware': 'GET hardware → AuthGuard',
-      'InferenceController.rescanHardware': 'POST hardware/rescan → AuthGuard',
+      'InferenceController.rescanHardware': 'POST hardware/rescan → AuthGuard, HubManagerGuard',
       'InferenceController.getRocmStatus': 'GET rocm/status → AuthGuard',
-      'InferenceController.updateRocmInstallState': 'POST rocm/install-state → AuthGuard',
+      'InferenceController.updateRocmInstallState': 'POST rocm/install-state → AuthGuard, HubManagerGuard',
       'InferenceController.getMemory': 'GET memory → AuthGuard',
       'InferenceController.getCatalog': 'GET models/catalog → AuthGuard',
       'InferenceController.getTrackedModels': 'GET models/tracked → AuthGuard',
-      'InferenceController.startPullModel': 'POST models/pull/start → AuthGuard, DemoModeGuard',
-      'InferenceController.pullModel': 'POST models/pull → AuthGuard, DemoModeGuard',
-      'InferenceController.loadModel': 'POST models/load → AuthGuard',
-      'InferenceController.unloadModel': 'POST models/unload → AuthGuard',
-      'InferenceController.pinModel': 'POST models/pin → AuthGuard',
-      'InferenceController.unpinModel': 'POST models/unpin → AuthGuard',
+      'InferenceController.startPullModel': 'POST models/pull/start → AuthGuard, HubManagerGuard, DemoModeGuard',
+      'InferenceController.pullModel': 'POST models/pull → AuthGuard, HubManagerGuard, DemoModeGuard',
+      'InferenceController.loadModel': 'POST models/load → AuthGuard, HubManagerGuard',
+      'InferenceController.unloadModel': 'POST models/unload → AuthGuard, HubManagerGuard',
+      'InferenceController.pinModel': 'POST models/pin → AuthGuard, HubManagerGuard',
+      'InferenceController.unpinModel': 'POST models/unpin → AuthGuard, HubManagerGuard',
       'InferenceController.getCloudProviders': 'GET cloud-providers → AuthGuard',
-      'InferenceController.setCloudProvider': 'POST cloud-providers → AuthGuard',
-      'InferenceController.removeCloudProvider': 'DELETE cloud-providers/:provider → AuthGuard',
+      'InferenceController.getCloudPolicy': 'GET cloud-policy → AuthGuard',
+      'InferenceController.setCloudProvider': 'POST cloud-providers → AuthGuard, HubManagerGuard',
+      'InferenceController.removeCloudProvider': 'DELETE cloud-providers/:provider → AuthGuard, HubManagerGuard',
       'InferenceController.getOnboardingProfile': 'GET onboarding-profile → AuthGuard',
       'InferenceController.getOllamaStatus': 'GET ollama/status → AuthGuard',
       'InferenceController.getLemonadeStatus': 'GET lemonade/status → AuthGuard',
       'InferenceController.getVllmStatus': 'GET vllm/status → AuthGuard',
       'InferenceController.getOmlxStatus': 'GET omlx/status → AuthGuard',
       'InferenceController.getManualEndpointStatus': 'GET manual-endpoint/status → AuthGuard',
-      'InferenceController.installOllama': 'POST ollama/install → AuthGuard',
+      'InferenceController.installOllama': 'POST ollama/install → AuthGuard, HubManagerGuard',
       'InferenceController.getAppCredentials': 'GET apps/:slug/credentials → AppContainerOriginGuard',
       'InferenceController.getAppCredentialsEnv': 'GET apps/:slug/credentials.env|apps/:slug/bootstrap.env → AppContainerOriginGuard',
       // ── HubPoolController: app-facing proxy on the same guard; peers, pairing and operators untouched ──
       'HubPoolController.identify': 'GET identify → (none)',
       'HubPoolController.poolStatus': 'GET status → ObservabilityReadGuard',
       'HubPoolController.getPoolSettings': 'GET settings → AuthGuard',
-      'HubPoolController.updatePoolSettings': 'PATCH settings → AuthGuard',
+      'HubPoolController.updatePoolSettings': 'PATCH settings → AuthGuard, HubManagerGuard',
       'HubPoolController.getPoolRoutingLog': 'GET routing-log → ObservabilityReadGuard',
-      'HubPoolController.upsertPoolPin': 'POST pins → AuthGuard',
-      'HubPoolController.deletePoolPin': 'DELETE pins → AuthGuard',
+      'HubPoolController.upsertPoolPin': 'POST pins → AuthGuard, HubManagerGuard',
+      'HubPoolController.deletePoolPin': 'DELETE pins → AuthGuard, HubManagerGuard',
       'HubPoolController.listPeers': 'GET peers → AuthGuard',
       'HubPoolController.listDiscoverable': 'GET peers/discoverable → AuthGuard',
-      'HubPoolController.probePeerAddress': 'POST peers/probe → AuthGuard',
-      'HubPoolController.pairPeer': 'POST peers/pair → AuthGuard',
-      'HubPoolController.mintPairingPin': 'POST pairing-pin → AuthGuard',
-      'HubPoolController.cancelPairingPin': 'DELETE pairing-pin → AuthGuard',
-      'HubPoolController.upgradePeer': 'POST peers/:id/upgrade → AuthGuard',
-      'HubPoolController.rotateIdentity': 'POST identity/rotate → AuthGuard',
-      'HubPoolController.approvePeer': 'POST peers/:id/approve → AuthGuard',
-      'HubPoolController.rejectPeer': 'POST peers/:id/reject → AuthGuard',
-      'HubPoolController.enablePeer': 'POST peers/:id/enable → AuthGuard',
-      'HubPoolController.disablePeer': 'POST peers/:id/disable → AuthGuard',
-      'HubPoolController.removePeer': 'DELETE peers/:id → AuthGuard',
+      'HubPoolController.probePeerAddress': 'POST peers/probe → AuthGuard, HubManagerGuard',
+      'HubPoolController.pairPeer': 'POST peers/pair → AuthGuard, HubManagerGuard',
+      'HubPoolController.mintPairingPin': 'POST pairing-pin → AuthGuard, HubManagerGuard',
+      'HubPoolController.cancelPairingPin': 'DELETE pairing-pin → AuthGuard, HubManagerGuard',
+      'HubPoolController.upgradePeer': 'POST peers/:id/upgrade → AuthGuard, HubManagerGuard',
+      'HubPoolController.rotateIdentity': 'POST identity/rotate → AuthGuard, HubManagerGuard',
+      'HubPoolController.approvePeer': 'POST peers/:id/approve → AuthGuard, HubManagerGuard',
+      'HubPoolController.rejectPeer': 'POST peers/:id/reject → AuthGuard, HubManagerGuard',
+      'HubPoolController.enablePeer': 'POST peers/:id/enable → AuthGuard, HubManagerGuard',
+      'HubPoolController.disablePeer': 'POST peers/:id/disable → AuthGuard, HubManagerGuard',
+      'HubPoolController.removePeer': 'DELETE peers/:id → AuthGuard, HubManagerGuard',
       'HubPoolController.handlePairingRequest': 'POST pair/request → (none)',
       'HubPoolController.handlePairingConfirm': 'POST pair/confirm → PoolPeerGuard',
       'HubPoolController.handlePairingUpgrade': 'POST pair/upgrade → PoolPeerGuard',
@@ -417,5 +528,26 @@ describe('the inference route table', () => {
       'HubPoolOllamaCompatController.version': 'GET version → InferenceAccessGuard',
       'HubPoolOllamaCompatController.tags': 'GET tags → InferenceAccessGuard',
     });
+  });
+
+  // Cloudflare replaces a 502, 503 or 504 body, so a route that relays engine or pool errors needs the status rule (#2274).
+  it('sends every guarded route that relays engine or pool errors through TunnelErrorStatusInterceptor', () => {
+    const withoutTheRule: string[] = [];
+    for (const controller of [InferenceController, HubPoolController, HubPoolOllamaCompatController]) {
+      for (const name of Object.getOwnPropertyNames(controller.prototype)) {
+        const handler = (controller.prototype as unknown as Record<string, unknown>)[name];
+        if (typeof handler !== 'function') {
+          continue;
+        }
+        const guards = (Reflect.getMetadata(GUARDS_METADATA, handler) ?? []) as unknown[];
+        const interceptors = (Reflect.getMetadata(INTERCEPTORS_METADATA, handler) ?? []) as unknown[];
+        if (guards.includes(InferenceAccessGuard) && !interceptors.includes(TunnelErrorStatusInterceptor)) {
+          withoutTheRule.push(`${controller.name}.${name}`);
+        }
+      }
+    }
+
+    // Neither calls an engine, so neither has an upstream error to relay.
+    expect(withoutTheRule).toEqual(['InferenceController.mediaAcquire', 'InferenceController.mediaRelease']);
   });
 });

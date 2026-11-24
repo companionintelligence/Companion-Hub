@@ -17,9 +17,9 @@ const PORTAL_SUBJECT_TTL_MS = 60_000;
  * path, which Hub person a Portal subject is.
  *
  * Forward auth runs on every request an app serves, so nothing here may read a row per request:
- * a person's `public_id` never changes and a row's id is never reused, so it is read once; the
- * directory is one row for the life of the database; the Bearer path's person comes through the
- * same short-lived session-user cache the cookie path uses.
+ * a person's `public_id` never changes and a row's id is reused only after a factory reset, which
+ * calls {@link forget}, so it is read once; the directory is one row until a factory reset too; the
+ * Bearer path's person comes through the same short-lived session-user cache the cookie path uses.
  *
  * A failed read never fails the request. It signs the username alone, exactly what forward auth
  * signed before stable ids existed, and an app that keys on the id falls back to the username for
@@ -30,6 +30,8 @@ export class ForwardAuthIdentityResolver {
   private readonly publicIds = new Map<number, string>();
   private readonly portalSubjects = new Map<string, { userId: number; expiresAt: number }>();
   private issuer?: Promise<string>;
+  /** Bumped by {@link forget}, so a read that began before it does not cache a forgotten person. */
+  private generation = 0;
 
   constructor(
     @Inject(DATABASE) private readonly db: Database,
@@ -39,11 +41,32 @@ export class ForwardAuthIdentityResolver {
     private readonly logger: LoggerService,
   ) {}
 
-  /** The stable id to sign beside `userId`'s username, or null when it cannot be read. */
+  /**
+   * Forget every person and the directory read so far, for a factory reset that emptied `user` and
+   * `user_directory`. `RESTART IDENTITY` hands the next account the id of an old one, so a cached
+   * public id would be signed for the wrong person, under the directory the reset replaced.
+   */
+  public forget(): void {
+    this.generation++;
+    this.publicIds.clear();
+    this.portalSubjects.clear();
+    this.issuer = undefined;
+  }
+
+  /**
+   * The stable id to sign beside `userId`'s username, or null when it cannot be read.
+   *
+   * It is the issuer and the id, nothing derived from them. A hash of those two public labels is
+   * no key and names no one, yet a `did:keri:` string made of it reads as proof of a key, so the
+   * AID fields of {@link ForwardAuthStableId} stay unset until a persisted key event log supplies them.
+   */
   public async stableIdFor(userId: number): Promise<ForwardAuthStableId | null> {
     try {
       const [issuer, publicId] = await Promise.all([this.getIssuer(), this.getPublicId(userId)]);
-      return publicId ? { issuer, userId: publicId } : null;
+      if (!publicId) {
+        return null;
+      }
+      return { issuer, userId: publicId };
     } catch (error) {
       this.logger.warn(`Forward auth could not read the stable id of user ${userId}; signing the username alone: ${describe(error)}`);
       return null;
@@ -82,12 +105,32 @@ export class ForwardAuthIdentityResolver {
     }
   }
 
+  /**
+   * This Hub's own stable issuer, `urn:ci-hub:<directory id>`: the name forward auth signs people
+   * under. Additive: it is what a DID sign-in names as its audience, so a token minted for another
+   * Hub or for Portal never verifies here.
+   *
+   * It is not read-only. The first call inserts the `user_directory` row when a restore or a factory
+   * reset left none, exactly as the first forward-auth call does; DID sign-in's challenge route is
+   * anonymous, so an anonymous request can be the one that creates it. And the value is the Hub's
+   * per-install directory id, which that route then hands to every anonymous caller.
+   */
+  public hubIssuer(): Promise<string> {
+    return this.getIssuer();
+  }
+
   private getIssuer(): Promise<string> {
-    this.issuer ??= this.readIssuer().catch((error: unknown) => {
-      // Not remembered, so the next request can recover.
-      this.issuer = undefined;
-      throw error;
-    });
+    if (!this.issuer) {
+      const reading: Promise<string> = this.readIssuer().catch((error: unknown) => {
+        // Not remembered, so the next request can recover. A read from before a {@link forget} that
+        // fails late leaves alone the one that replaced it.
+        if (this.issuer === reading) {
+          this.issuer = undefined;
+        }
+        throw error;
+      });
+      this.issuer = reading;
+    }
     return this.issuer;
   }
 
@@ -108,8 +151,9 @@ export class ForwardAuthIdentityResolver {
       return cached;
     }
 
+    const generation = this.generation;
     const publicId = await this.userRepository.getPublicId(userId);
-    if (publicId) {
+    if (publicId && generation === this.generation) {
       this.publicIds.set(userId, publicId);
     }
     return publicId;
@@ -122,6 +166,7 @@ export class ForwardAuthIdentityResolver {
       return cached.userId;
     }
 
+    const generation = this.generation;
     const link = await this.federatedIdentities.findByIssuerSubject(portalIssuer, subject);
     if (!link) {
       // Not remembered: the subject can be admitted at any moment.
@@ -129,7 +174,9 @@ export class ForwardAuthIdentityResolver {
       return null;
     }
 
-    this.portalSubjects.set(key, { userId: link.userId, expiresAt: Date.now() + PORTAL_SUBJECT_TTL_MS });
+    if (generation === this.generation) {
+      this.portalSubjects.set(key, { userId: link.userId, expiresAt: Date.now() + PORTAL_SUBJECT_TTL_MS });
+    }
     return link.userId;
   }
 }

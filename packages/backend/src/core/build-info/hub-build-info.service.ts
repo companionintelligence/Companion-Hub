@@ -1,9 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import { LoggerService } from '@/core/logger/logger.service';
-import { hubContainerName } from '@/common/constants';
+import { selfContainerCandidates } from '@/common/constants';
 import { type HubBuildInfo, resolveHubBuildInfo, summarizeHubBuild } from './hub-build-info';
 
 /**
@@ -15,15 +14,6 @@ const DIGEST_LOOKUP_TIMEOUT_MS = 2_000;
 
 /** `sha256:` followed by 64 hex. Anything else is not a digest and is discarded rather than echoed. */
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/i;
-
-/**
- * Where to look for this Hub's own container. Mirrors `selfContainerCandidates()` in
- * system-update.service.ts: the hostname is the container ID unless compose sets `hostname:`, and
- * the names cover the rest, legacy topology included.
- */
-function selfContainerCandidates(): string[] {
-  return [...new Set([os.hostname(), hubContainerName(), 'ci-hub', 'ci-os-hub'].filter(Boolean))];
-}
 
 /** Hub container probe — `/.dockerenv` plus Podman's containerenv, same test the self-updater uses. */
 function inContainer(): boolean {

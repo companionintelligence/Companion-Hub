@@ -67,6 +67,8 @@ export const OLLAMA_RUNTIME_KEYS = [
   'OLLAMA_CONTEXT_LENGTH',
   'OLLAMA_IGPU_ENABLE',
   'OLLAMA_MAX_LOADED_MODELS',
+  'OLLAMA_KV_CACHE_TYPE',
+  'OLLAMA_FLASH_ATTENTION',
 ] as const;
 export type OllamaRuntimeKey = (typeof OLLAMA_RUNTIME_KEYS)[number];
 
@@ -84,6 +86,13 @@ export interface OllamaRuntimeSettings {
   contextLength?: number;
   igpu?: boolean;
   maxLoaded?: number;
+  /**
+   * `OLLAMA_KV_CACHE_TYPE`, from `--ollama-kv-cache`. A quantized type also writes
+   * `OLLAMA_FLASH_ATTENTION=1`: Ollama quantizes the cache only with flash attention on, and leaves it at
+   * 16-bit — silently — where it is off. Server-wide: every model on the node runs it. The Hub sizes for
+   * it only once told (`cihub pool kv-cache <type>`); until then it sizes for 16-bit, the safe direction.
+   */
+  kvCache?: 'f16' | 'q8_0' | 'q4_0';
 }
 
 /** The word that leaves a key out. Accepted by every runtime flag. */
@@ -111,6 +120,7 @@ export function parseOllamaRuntimeValue(flag: '--ollama-context', raw: string): 
 export function parseOllamaRuntimeValue(flag: '--ollama-keep-alive', raw: string): string | undefined;
 export function parseOllamaRuntimeValue(flag: '--ollama-igpu', raw: string): boolean | undefined;
 export function parseOllamaRuntimeValue(flag: '--ollama-max-loaded', raw: string): number | undefined;
+export function parseOllamaRuntimeValue(flag: '--ollama-kv-cache', raw: string): 'f16' | 'q8_0' | 'q4_0' | undefined;
 export function parseOllamaRuntimeValue(flag: string, raw: string): number | string | boolean | undefined {
   const value = raw.trim();
   if (value === RUNTIME_UNSET) return undefined;
@@ -133,6 +143,9 @@ export function parseOllamaRuntimeValue(flag: string, raw: string): number | str
       // Ollama reads 0 as "3 × GPU count" — not a cap, and not what an operator typing 0 means; the
       // way to hand the key back to Ollama is `unset`. 16 is past any node's memory for real models.
       return parseBoundedInt(flag, value, 1, 16);
+    case '--ollama-kv-cache':
+      if (value === 'f16' || value === 'q8_0' || value === 'q4_0') return value;
+      throw new OllamaRuntimeFlagError(`${flag} must be f16, q8_0 or q4_0, or '${RUNTIME_UNSET}' (got '${raw}').`);
     default:
       throw new OllamaRuntimeFlagError(`Unknown Ollama runtime flag '${flag}'.`);
   }
@@ -146,6 +159,10 @@ export function ollamaRuntimeEnvironment(settings: OllamaRuntimeSettings): Array
   if (settings.contextLength !== undefined) env.push(['OLLAMA_CONTEXT_LENGTH', String(settings.contextLength)]);
   if (settings.igpu !== undefined) env.push(['OLLAMA_IGPU_ENABLE', settings.igpu ? '1' : '0']);
   if (settings.maxLoaded !== undefined) env.push(['OLLAMA_MAX_LOADED_MODELS', String(settings.maxLoaded)]);
+  if (settings.kvCache !== undefined) {
+    env.push(['OLLAMA_KV_CACHE_TYPE', settings.kvCache]);
+    if (settings.kvCache !== 'f16') env.push(['OLLAMA_FLASH_ATTENTION', '1']);
+  }
   return env;
 }
 
@@ -447,9 +464,9 @@ export type HubContextCap = number | null;
  */
 export interface HubInferenceSetting {
   /** The key on `GET`/`PATCH /api/inference/preferences`: read for the current value, and written as `null` to clear. */
-  preferenceKey: 'maxNumCtx' | 'ollamaSlots';
+  preferenceKey: 'maxNumCtx' | 'ollamaSlots' | 'ollamaKeepAlive';
   /** The key on `PATCH /api/user-settings`, which sets a number but cannot remove one. */
-  settingKey: 'inferenceMaxNumCtx' | 'inferenceOllamaSlots';
+  settingKey: 'inferenceMaxNumCtx' | 'inferenceOllamaSlots' | 'inferenceOllamaKeepAlive';
   /** What the report calls it. */
   label: string;
   /** What the Hub accepts, for the hint on a 400. */
@@ -475,6 +492,40 @@ export const HUB_OLLAMA_SLOTS_SETTING: HubInferenceSetting = {
   range: '1 to 64',
   heredoc: 'CIHUB_HUB_OLLAMA_SLOTS_EOF',
 };
+
+/**
+ * `--ollama-keep-alive`'s Hub half: how long the daemon keeps an idle model, in seconds (-1 for
+ * forever). Ollama's API does not expose `OLLAMA_KEEP_ALIVE`. The Hub hands an unpinned model
+ * back to it by naming one: without this it names Ollama's built-in 5 minutes, which on a node that
+ * runs 24h unloads an unpinned model a day early. The flag's duration is sent as seconds
+ * ({@link ollamaKeepAliveSeconds}), the unit Ollama's `keep_alive` takes as a number.
+ */
+export const HUB_OLLAMA_KEEP_ALIVE_SETTING: HubInferenceSetting = {
+  preferenceKey: 'ollamaKeepAlive',
+  settingKey: 'inferenceOllamaKeepAlive',
+  label: 'keep-alive',
+  range: '-1 to 31536000 seconds',
+  heredoc: 'CIHUB_HUB_OLLAMA_KEEP_ALIVE_EOF',
+};
+
+const GO_DURATION_UNIT_SECONDS: Record<string, number> = { ns: 1e-9, us: 1e-6, µs: 1e-6, ms: 1e-3, s: 1, m: 60, h: 3600 };
+
+/**
+ * A `--ollama-keep-alive` value as whole seconds, for the Hub: `24h` is 86400, `1h30m` 5400, a bare
+ * number is already seconds (as Ollama reads it) and `-1` stays -1, forever. A fraction of a second
+ * rounds up, so a keep-alive the daemon runs is never told to the Hub as 0, which unloads. Takes
+ * what {@link parseOllamaRuntimeValue} accepted; anything else throws.
+ */
+export function ollamaKeepAliveSeconds(keepAlive: string): number {
+  if (keepAlive === '-1') return -1;
+  if (/^\d+$/.test(keepAlive)) return Number(keepAlive);
+  const parts = [...keepAlive.matchAll(/(\d+(?:\.\d+)?)(ns|us|µs|ms|s|m|h)/g)];
+  if (parts.length === 0 || parts.map((p) => p[0]).join('') !== keepAlive) {
+    throw new OllamaRuntimeFlagError(`--ollama-keep-alive '${keepAlive}' is not a duration such as 24h, 30m or -1.`);
+  }
+  const seconds = parts.reduce((total, [, value, unit]) => total + Number(value) * (GO_DURATION_UNIT_SECONDS[unit as string] ?? 0), 0);
+  return Math.ceil(seconds);
+}
 
 export const HUB_CONTEXT_CAP_MARKERS = {
   key: 'hub-context-cap-key:',
@@ -529,8 +580,10 @@ export function hubContextCapShell(
           `  echo "${m.write} skipped"`,
           'else',
           // The stored preference, or Ollama — the Hub-managed default an absent preference already resolves to.
+          // The case list is the Hub's live backends (INFERENCE_BACKEND_TYPES; the test pins it): the Hub's
+          // PATCH refuses any other value, and a live one left out here is reset to Ollama as a side effect.
           `  cihub_cap_backend="$(sed -n 's/.*"preferredBackend"[[:space:]]*:[[:space:]]*"\\([a-z]*\\)".*/\\1/p' "$cihub_cap_body" | head -1)"`,
-          '  case "$cihub_cap_backend" in ollama|vllm|lemonade|mtplx|dspark|lucebox|llamacpp|lmstudio) ;; *) cihub_cap_backend=ollama ;; esac',
+          '  case "$cihub_cap_backend" in ollama|vllm|lemonade|omlx|localai) ;; *) cihub_cap_backend=ollama ;; esac',
           `  echo "${m.backend} $cihub_cap_backend"`,
           `  cihub_cap_code="$(cihub_cap_curl -X PATCH -d "{\\"backend\\":\\"$cihub_cap_backend\\",\\"${preferenceKey}\\":null}" "$cihub_cap_url/inference/preferences")"`,
           '  [ -n "$cihub_cap_code" ] || cihub_cap_code=000',
@@ -562,7 +615,8 @@ export function hubContextCapShell(
     // The key as the body carries it: digits, `none` for null, `absent` when the key is not there (a build predating the setting).
     'cihub_cap_read() {',
     `  if grep -q '"${preferenceKey}"' "$cihub_cap_body" 2>/dev/null; then`,
-    `    cihub_cap_v="$(sed -n 's/.*"${preferenceKey}"[[:space:]]*:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p' "$cihub_cap_body" | head -1)"`,
+    // An optional minus: the keep-alive's -1 is forever.
+    `    cihub_cap_v="$(sed -n 's/.*"${preferenceKey}"[[:space:]]*:[[:space:]]*\\(-\\{0,1\\}[0-9][0-9]*\\).*/\\1/p' "$cihub_cap_body" | head -1)"`,
     '    if [ -n "$cihub_cap_v" ]; then echo "$cihub_cap_v"; else echo none; fi',
     '  else',
     '    echo absent',
@@ -603,7 +657,7 @@ export interface HubContextCapOutcome {
 function parseCapMarker(raw: string | undefined): HubContextCap | undefined {
   if (raw === undefined) return undefined;
   if (raw === 'none') return null;
-  return /^\d+$/.test(raw) ? Number(raw) : undefined;
+  return /^-?\d+$/.test(raw) ? Number(raw) : undefined;
 }
 
 /**

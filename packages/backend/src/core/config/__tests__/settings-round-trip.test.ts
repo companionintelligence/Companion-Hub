@@ -2,8 +2,8 @@ import { isDeepStrictEqual } from 'node:util';
 import fs from 'node:fs';
 import path from 'node:path';
 import { InternalServerErrorException } from '@nestjs/common';
-import { describe, expect, it, vi } from 'vitest';
-import { type PersistedSettings, parsePersistedSettings, settingsFileSchema } from '@/app.dto';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { type PersistedSettings, UserSettingsBody, parsePersistedSettings, settingsFileSchema } from '@/app.dto';
 import { DATA_DIR } from '@/common/constants';
 import { SystemUpdateService } from '@/modules/system-update/system-update.service';
 import { ConfigurationService } from '../configuration.service';
@@ -36,7 +36,6 @@ const SETTINGS_PATH = path.join(DATA_DIR, 'state', 'settings.json');
  */
 const ONE_OF_EVERY_KEY: Required<PersistedSettings> = {
   advancedSettings: true,
-  allowAutoThemes: false,
   allowErrorMonitoring: false,
   appDataPath: '/srv/ci-hub',
   appsRepoUrl: 'https://github.com/companionintelligence/ci-hub-appstore.git',
@@ -61,7 +60,6 @@ const ONE_OF_EVERY_KEY: Required<PersistedSettings> = {
   sslPort: 8443,
   timeZone: 'Europe/Berlin',
   experimental_insecureCookie: true,
-  themeBase: 'slate',
   themeColor: 'red',
   ciHubApiKey: 'portal-device-key',
   ciHubMoveKey: 'portal-move-key',
@@ -82,12 +80,16 @@ const ONE_OF_EVERY_KEY: Required<PersistedSettings> = {
   inferenceVllmApiKey: 'vllm-key',
   inferenceVllmUrl: 'http://vllm:8000',
   inferenceOmlxUrl: 'http://omlx:8000',
+  inferenceOmlxApiKey: 'omlx-key',
   inferenceDecodeEndpoint: 'http://decode.example:8000/v1',
   inferenceEncodeEndpoint: 'http://encode.example:11434',
   // The handout context cap (core-2, 2026-09-20). Non-default: the default is no cap.
   inferenceMaxNumCtx: 16384,
   // The node's Ollama slot count (fleet-qa B5, 2026-09-21). Non-default: the default is not stated.
   inferenceOllamaSlots: 4,
+  inferenceOllamaKvCacheType: 'q8_0',
+  // The node's Ollama keep-alive in seconds (the fleet's 24h). Non-default: the default is not stated.
+  inferenceOllamaKeepAlive: 86400,
   hubPoolEnabled: false,
   hubPoolOutboundEnabled: false,
   hubPoolInboundEnabled: false,
@@ -197,12 +199,12 @@ const WRITERS: Array<{ name: string; write: (w: Writers) => Promise<unknown>; wr
   },
   {
     name: 'the Portal pairing callback',
-    write: (w) => w.configuration.setUserSettings({ ciHubApiKey: 'rotated-portal-key' }),
+    write: (w) => w.configuration.setFileOnlySettings({ ciHubApiKey: 'rotated-portal-key' }),
     writes: { ciHubApiKey: 'rotated-portal-key' },
   },
   {
     name: 'the Portal pairing, keeping the move key it returned',
-    write: (w) => w.configuration.setUserSettings({ ciHubMoveKey: 'rotated-move-key' }),
+    write: (w) => w.configuration.setFileOnlySettings({ ciHubMoveKey: 'rotated-move-key' }),
     writes: { ciHubMoveKey: 'rotated-move-key' },
   },
   { name: 'the auto-update switch', write: (w) => w.systemUpdate.setAutoUpdatesEnabled(true), writes: { autoUpdates: true } },
@@ -240,6 +242,31 @@ describe('settings.json round trip', () => {
     await writers.configuration.setUserSettings({ allowErrorMonitoring: false });
 
     expect(writers.systemUpdate.getAutoUpdatesEnabled()).toBe(false);
+  });
+
+  it('MUST remove the Default app CPU limit, and nothing else, when the Settings page sends the field empty', async () => {
+    await fs.promises.writeFile(SETTINGS_PATH, JSON.stringify(ONE_OF_EVERY_KEY, null, 2));
+    const writers = makeWriters();
+
+    await writers.configuration.setUserSettings(UserSettingsBody.schema.parse({ defaultAppCpuLimit: '' }));
+
+    const written = JSON.parse(await fs.promises.readFile(SETTINGS_PATH, 'utf8')) as Record<string, unknown>;
+    const { defaultAppCpuLimit: _cleared, ...rest } = ONE_OF_EVERY_KEY;
+    expect(written).toEqual(rest);
+  });
+
+  it('MUST keep a stored Listen IP, and every other key, through a Settings save that leaves it out', async () => {
+    // The Settings page no longer shows or sends Listen IP; a value saved by an older build stays put.
+    const stored = { ...ONE_OF_EVERY_KEY, listenIp: '192.168.1.50' };
+    await fs.promises.writeFile(SETTINGS_PATH, JSON.stringify(stored, null, 2));
+    const writers = makeWriters();
+
+    await writers.configuration.setUserSettings(
+      UserSettingsBody.schema.parse({ internalIp: '10.0.0.2', logLevel: 'info', timeZone: 'Europe/Berlin' }),
+    );
+
+    const written = JSON.parse(await fs.promises.readFile(SETTINGS_PATH, 'utf8')) as Record<string, unknown>;
+    expect(written).toEqual({ ...stored, logLevel: 'info' });
   });
 
   it('MUST NOT erase the Portal credential, or log its text, when the auto-update switch meets a file it cannot parse', async () => {
@@ -301,24 +328,29 @@ describe('settings.json access outside the shared merge', () => {
     'modules/system/factory-reset.service.ts': 'writes {}',
   };
 
-  async function sourceFiles(): Promise<Array<{ file: string; code: string }>> {
+  let sourceFiles: Array<{ file: string; code: string }> = [];
+
+  beforeAll(async () => {
     const realFs = await vi.importActual<typeof import('node:fs')>('node:fs');
     const entries = realFs.readdirSync(SRC, { recursive: true, encoding: 'utf8' });
-    return entries
+    sourceFiles = entries
       .map((entry) => entry.split(path.sep).join('/'))
       .filter((file) => file.endsWith('.ts') && !file.endsWith('.test.ts') && !file.includes('__tests__/') && !file.startsWith('tests/'))
       .map((file) => ({ file, code: realFs.readFileSync(path.join(SRC, file), 'utf8') }));
-  }
+    // It reads every backend source file, once for both tests. That takes well under a second on an idle
+    // machine, but this file took up to 8 s while the backend and frontend suites ran alongside, and each
+    // test used to do the read itself inside the 5 s test default.
+  }, 30_000);
 
-  it('MUST NOT open settings.json from a file that has not been checked against the schema', async () => {
-    const opening = (await sourceFiles()).filter(({ code }) => /['"]settings\.json['"]/.test(code)).map(({ file }) => file);
+  it('MUST NOT open settings.json from a file that has not been checked against the schema', () => {
+    const opening = sourceFiles.filter(({ code }) => /['"]settings\.json['"]/.test(code)).map(({ file }) => file);
 
     // Exact, not a subset: a scan that silently matched nothing would otherwise pass forever.
     expect(opening.sort()).toEqual(Object.keys(MAY_OPEN).sort());
   });
 
-  it('MUST NOT write settings.json anywhere but the shared merge', async () => {
-    const writing = (await sourceFiles()).filter(({ code }) => /\bwriteSettingsJsonFile\(/.test(code)).map(({ file }) => file);
+  it('MUST NOT write settings.json anywhere but the shared merge', () => {
+    const writing = sourceFiles.filter(({ code }) => /\bwriteSettingsJsonFile\(/.test(code)).map(({ file }) => file);
 
     expect(writing.sort()).toEqual(Object.keys(MAY_WRITE).sort());
   });

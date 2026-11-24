@@ -5,7 +5,8 @@ import { Injectable, type OnApplicationBootstrap, type OnApplicationShutdown, In
 import axios from 'axios';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { DatabaseService } from '@/core/database/database.service';
-import { whoisCache } from '@/core/database/drizzle/schema';
+import { withTransientDbRetry } from '@/core/database/transient-db-retry';
+import { entitlementCache, whoisCache } from '@/core/database/drizzle/schema';
 import { scrubString } from '@/core/error-reporting/sentry-scrubber';
 import { LoggerService } from '@/core/logger/logger.service';
 import { APP_DATA_DIR, DATA_DIR, TUNNEL_DIR, tunnelUserClearedMarkerPath } from '@/common/constants';
@@ -58,7 +59,7 @@ import {
   isCheckInForCurrentRegistration,
   isDeviceNotActiveResponse,
 } from './check-in-response';
-import { resolveDeviceId, clearRegisteredDeviceId, persistRegisteredDeviceId } from './device-id.resolver';
+import { resolveDeviceId, clearRegisteredDeviceId, persistRegisteredDeviceId, readRegisteredDeviceId } from './device-id.resolver';
 import { ALLOW_FOREIGN_DEVICE_ID_ENV, checkDeviceIdHostBinding, type DeviceIdHostBinding } from './device-id-host-check';
 import {
   hasTunnelLeftoverMarker,
@@ -73,9 +74,23 @@ import { ModuleRef } from '@nestjs/core';
 import { AuthService } from '@/modules/auth/auth.service';
 import { PortalPushKeyService } from './portal-push-key.service';
 import { describePublicReachability, probePublicHostname } from './public-reachability';
+import { SetupCodeService } from './setup-code.service';
 
-const PERIODIC_VALIDATION_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const CLOUD_VALIDATION_THROTTLE_MS = 30 * 1000;
+/**
+ * How often the check-in timer ticks. The Portal trusts a Hub's last check-in for an hour
+ * (CI-Portal#953). A tick that comes just inside the skip window below sends nothing and the next one
+ * does, so the longest gap between check-ins is just under 30 minutes.
+ */
+export const PERIODIC_VALIDATION_INTERVAL_MS = 15 * 60 * 1000;
+/**
+ * A periodic tick sends nothing when a check-in ran this recently. Status reads check in too: the
+ * status report every 15 minutes (`write_status_report`), the status page and the registration
+ * guard. Without this the timer added a second, unaligned stream of check-ins on top of them. The
+ * window stops one status-read throttle short of the interval, so a report that lands just after a
+ * tick that did check in is throttled instead of sending a second one.
+ */
+const PERIODIC_VALIDATION_SKIP_WITHIN_MS = PERIODIC_VALIDATION_INTERVAL_MS - CLOUD_VALIDATION_THROTTLE_MS;
 const BOOTSTRAP_VALIDATION_TIMEOUT_MS = 10 * 1000;
 const PHASE_READ_CACHE_TTL_MS = 30 * 1000;
 /** Per step of each registration-time probe, which retries every second for a minute. */
@@ -232,6 +247,11 @@ function classifyPortalTransportFailure(error: unknown): 'never_reached' | 'no_a
 const PORTAL_NO_ANSWER_PAIRING_MESSAGE =
   'CI Portal did not answer in time. It may still be provisioning this Hub, or this machine may not be reaching it. Get a new pairing code before trying again.';
 
+const PAIRING_OVERTAKEN_MESSAGE = "This Hub's registration was reset while it was pairing, so the pairing was stopped. Pair it again to connect it.";
+
+/** The device key and move key Portal issues with a pairing. The redirected callback carries no move key. */
+type IssuedKeys = { apiKey?: string; moveKey?: string };
+
 function describePortalPairingResponse(data: unknown): string {
   if (!data || typeof data !== 'object') {
     return scrubString(String(data));
@@ -306,6 +326,20 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    * earlier registration is not acted on. See `isCheckInForCurrentRegistration`.
    */
   private registrationGeneration = 0;
+  /**
+   * Aborted when a registration reset starts and replaced once it has finished, so a pairing that
+   * starts while the reset runs is stopped as well. A pairing keeps the signal it started with
+   * and checks it after each step, so a reset that lands while a pairing is still setting up wins:
+   * the pairing writes nothing more of its registration and removes what its step under way left
+   * (`undoOvertakenPairing`). It keeps only the keys Portal issued it (`pairingOvertaken`).
+   */
+  private pairingAbort = new AbortController();
+  /**
+   * Moves on whenever keys Portal issued are saved and when a reset also removes the device key (the
+   * factory reset). A pairing a reset stopped saves the keys Portal issued it only while this is what
+   * it was when that pairing asked for them. See `pairingOvertaken`.
+   */
+  private deviceKeyEpoch = 0;
   private phaseReadCachedAt = 0;
   private phaseRefreshInFlight: Promise<void> | null = null;
   /** What the last check-in came back with; read by `GET /registration/phase` without sending one. */
@@ -344,9 +378,9 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    * service's tests build this class without it.
    */
   /**
-   * The WhoIs cache has no organization column. A reset, or a pair into a
-   * different organization, has to empty it or the next request treats the
-   * previous tenant's grants as current.
+   * The WhoIs and entitlement caches have no organization column. A reset, or a
+   * pair into a different organization, has to empty them or the next request
+   * treats the previous tenant's grants and purchases as current.
    */
   private async forgetCachedGrants(): Promise<void> {
     let database: DatabaseService | undefined;
@@ -362,6 +396,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
     try {
       await database.db.delete(whoisCache);
+      await database.db.delete(entitlementCache);
       this.logger.info('Cleared cached app grants');
     } catch (error) {
       this.logger.warn(`Could not clear cached app grants: ${error instanceof Error ? error.message : String(error)}`);
@@ -432,6 +467,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     // restores its token here first.
     await this.syncTunnelWithRegistration();
 
+    // An unpaired Hub asks for its setup code before it pairs; a registered one has none.
+    await this.refreshPhaseFromSources().catch(() => undefined);
+    this.syncSetupCode();
+
     // Restore the Traefik route so Cloudflare Tunnel requests for the public
     // hostname reach Companion Hub.
     await this.ensureHubRouteFromRegistration();
@@ -450,14 +489,15 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
 
     if (isOperational(this._currentPhase)) {
+      // The shared check-in. A status read that comes in while this one is slow joins it instead of
+      // sending a second. The time it finished is recorded for the throttle.
       await Promise.race([
-        this.validateRegistrationWithCloud(),
+        this.runSharedCloudValidation(),
         new Promise<void>((resolve) => {
           setTimeout(resolve, BOOTSTRAP_VALIDATION_TIMEOUT_MS);
         }),
-      ]).catch((e) => this.logger.error('Initial registration validation failed', e));
+      ]);
 
-      this.lastCloudValidationAt = Date.now();
       this.startPeriodicValidation();
     } else {
       this.pollRegistration();
@@ -550,6 +590,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
     this._currentPhase = to;
     this._degradedReasons = to === 'degraded' ? reasons : [];
+    this.syncSetupCode();
 
     this.logger.info(`Provisioning phase: ${from} → ${to}${reasons.length ? ` (${reasons.join(', ')})` : ''}`);
 
@@ -660,12 +701,25 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       return this.cloudValidationInFlight;
     }
 
-    const now = Date.now();
-    if (this.lastCloudValidationAt > 0 && now - this.lastCloudValidationAt < CLOUD_VALIDATION_THROTTLE_MS) {
+    if (this.checkedInWithin(CLOUD_VALIDATION_THROTTLE_MS)) {
       return null;
     }
 
-    this.cloudValidationInFlight = this.validateRegistrationWithCloud()
+    return this.runSharedCloudValidation();
+  }
+
+  /**
+   * Whether the last check-in finished less than `ms` ago. A wall clock stepped back past it (NTP
+   * correcting a fast clock) counts as long ago, or every check-in would wait for the clock to catch up.
+   */
+  private checkedInWithin(ms: number): boolean {
+    const elapsed = Date.now() - this.lastCloudValidationAt;
+    return this.lastCloudValidationAt > 0 && elapsed >= 0 && elapsed < ms;
+  }
+
+  /** The check-in in flight, or a new one. Callers share it. It records when the last one ran. */
+  private runSharedCloudValidation(): Promise<CheckInOutcome> {
+    this.cloudValidationInFlight ??= this.validateRegistrationWithCloud()
       .catch((e): CheckInOutcome => {
         this.logger.error('Registration validation check failed', e);
         return 'failed';
@@ -1001,8 +1055,22 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
 
     this.periodicValidationInterval = setInterval(() => {
-      this.validateRegistrationWithCloud().catch((e) => this.logger.error('Registration validation check failed', e));
+      this.runPeriodicValidation();
     }, PERIODIC_VALIDATION_INTERVAL_MS);
+  }
+
+  /**
+   * The timer's check-in, unless another ran in the last 14½ minutes. On a Hub whose status report
+   * runs, that one is the check-in and the timer sends nothing; the timer keeps the cadence when the
+   * report stops (its queue is down, say). It doesn't need `CI_CLOUD_URL` to run: the check-in also
+   * restarts a tunnel whose boot-time read failed.
+   */
+  private runPeriodicValidation(): void {
+    if (this.checkedInWithin(PERIODIC_VALIDATION_SKIP_WITHIN_MS)) {
+      return;
+    }
+
+    void this.runSharedCloudValidation();
   }
 
   /**
@@ -1042,7 +1110,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       const deviceId = await this.getDeviceId();
 
       // Best-effort: piggyback what this node knows about itself on the check-in this method
-      // already sends every hour, rather than adding a second round trip to Portal. See
+      // already sends at least every 15 minutes, rather than adding a second round trip to Portal. See
       // `check-in-payload.ts` for the rules that govern the body, and `CheckIn.ts` on the Portal
       // side for the field-absent-vs-blank contract they follow.
       const diagnostics = await this.collectCheckInDiagnostics();
@@ -1351,8 +1419,11 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    * The reset clears in-memory state, database rows, the tunnel token, and the
    * resolved environment. It never changes the Portal: the device stays in the
    * person's account until an owner or admin deletes it there.
+   *
+   * @param options.removesDeviceKey The caller removes the device key after this, as the factory reset
+   *   does. A pairing this stops then keeps none of the keys Portal issued it.
    */
-  public async resetRegistration(options?: { reason?: 'manual' | 'portal_rejected' }): Promise<void> {
+  public async resetRegistration(options?: { reason?: 'manual' | 'portal_rejected'; removesDeviceKey?: boolean }): Promise<void> {
     // A person resets a registration, or Portal's coded `DEVICE_NOT_ACTIVE` does. A check-in Portal
     // merely rejects degrades the Hub instead; see `validateRegistrationWithCloud`.
     const reason = options?.reason ?? 'manual';
@@ -1363,12 +1434,34 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
 
     this.registrationGeneration++;
+    const overtaken = new Error('The registration was reset while this pairing was in progress');
+    // In the same turn as the phase change below, so a pairing never sees one without the other.
+    this.pairingAbort.abort(overtaken);
+    if (options?.removesDeviceKey) {
+      this.deviceKeyEpoch++;
+    }
 
+    try {
+      await this.clearLocalRegistration();
+    } finally {
+      // Replaced only now, so a pairing that began while this reset ran took an aborted signal and
+      // stops. With a fresh one it went on, and the steps of the reset after it removed its token, marker
+      // and cloudflared. Aborting again also stops one that took the signal a concurrent reset made.
+      this.pairingAbort.abort(overtaken);
+      this.pairingAbort = new AbortController();
+    }
+
+    this.logger.info('Device registration reset complete');
+
+    // Resume polling for the next registration.
+    this.pollRegistration();
+  }
+
+  /** What `resetRegistration` removes on this Hub. */
+  private async clearLocalRegistration(): Promise<void> {
     // Use `setPhase` for consistent logging. Reset to `unregistered` is always legal.
     await this.setPhase('unregistered');
     this.portalRejectedSince = null;
-    // The next Portal this Hub pairs with must receive a push key of its own.
-    await this.portalPushKey()?.forget();
 
     // Stop validation before removing its registration state.
     if (this.periodicValidationInterval) {
@@ -1378,25 +1471,26 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
     // Remove all durable device-registration rows.
     await this.deviceRegistrationRepository.deleteAll();
+    // The next Portal this Hub pairs with must receive a push key of its own. Forgotten only once the
+    // row is gone, because `AuthMiddleware` takes the device key while a registered row exists and no
+    // push key is delivered. `setPhase` above leaves the row as it is when the phase was already
+    // `unregistered`, which it is in a process that has not restored its phase yet.
+    await this.portalPushKey()?.forget();
     // Grants are cached without an organization id. Once this device has none,
     // WhoIs stops asking Portal and would keep serving those rows for a day.
     await this.forgetCachedGrants();
 
     // Remove the tunnel token from disk.
-    const tokenPath = path.join(TUNNEL_DIR, 'token');
     try {
-      await fs.promises.unlink(tokenPath);
+      await fs.promises.unlink(tunnelTokenPath());
     } catch {
       // A missing token already satisfies the reset.
     }
 
     // Deleting the token does not disconnect a running `cloudflared`, which keeps
     // serving this Hub's hostname until its container stops. A failed stop is
-    // retried by the registration check that starts below.
-    if (!(await this.cloudflareClientService.stopTunnel())) {
-      this.tunnelStopPending = true;
-      this.tunnelCheckPending = true;
-    }
+    // retried by the registration check that `resetRegistration` starts next.
+    await this.stopTunnelOrRetryLater();
     await this.unmarkTunnelRegistered();
 
     // Remove the resolved environment so the next startup regenerates it.
@@ -1408,11 +1502,6 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
 
     await clearRehydrationState();
-
-    this.logger.info('Device registration reset complete');
-
-    // Resume polling for the next registration.
-    this.pollRegistration();
   }
 
   /**
@@ -1664,6 +1753,55 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
   }
 
+  /**
+   * What a pairing that a registration reset overtook answers its caller.
+   *
+   * `issued` are the device key and move key Portal issued this pairing, when it stopped before saving
+   * them. Portal replaced the ones this Hub held when it issued these, so only these prove this Hub to
+   * Portal now: in a later pairing that moves or restores it without an owner regenerating its code.
+   * A reset keeps the device key, so they are saved, as if the pairing had finished just before the
+   * reset. Not when another pairing saved its keys, or a factory reset ran, after this one asked Portal
+   * for them (`keyEpoch`).
+   */
+  private async pairingOvertaken(issued?: { keys: IssuedKeys; keyEpoch: number }): Promise<{ success: false; message: string }> {
+    this.logger.warn('Stopped a pairing: the registration was reset while it was in progress');
+
+    if (issued && (issued.keys.apiKey || issued.keys.moveKey)) {
+      if (issued.keyEpoch === this.deviceKeyEpoch) {
+        // No await between this check and the call, which takes its turn at settings.json at once. A
+        // factory reset that comes after it empties the file after this write.
+        await this.saveIssuedKeys(issued.keys).catch((error: unknown) => {
+          this.logger.warn(`Could not keep the keys Portal issued to the stopped pairing: ${describeRegistrationError(error)}`);
+        });
+      } else {
+        this.logger.info('Not keeping the keys Portal issued to the stopped pairing: newer keys were saved, or a factory reset ran, since it asked');
+      }
+    }
+
+    return { success: false, message: PAIRING_OVERTAKEN_MESSAGE };
+  }
+
+  /**
+   * Saves the device key Portal issued and the move key it issued with it in one write. A reset that
+   * stopped a pairing between two writes would leave the new device key beside a stale move key.
+   *
+   * The move key is kept in settings.json with the device key and nowhere else: `AppHelpers` hands
+   * first-party Memory the device key, never this, so a key leaked from an app cannot move this Hub.
+   */
+  private async saveIssuedKeys(keys: IssuedKeys): Promise<void> {
+    if (!keys.apiKey && !keys.moveKey) {
+      return;
+    }
+    this.deviceKeyEpoch++;
+    if (keys.apiKey) {
+      this.logger.info('Saving CI Hub API Key from registration callback');
+    }
+    await this.config.setFileOnlySettings({
+      ...(keys.apiKey ? { ciHubApiKey: keys.apiKey } : {}),
+      ...(keys.moveKey ? { ciHubMoveKey: keys.moveKey } : {}),
+    });
+  }
+
   /** Persists restore intent beyond `sessionStorage` before the device pairs again. */
   public async markRestoreIntent(): Promise<{ success: boolean; message: string }> {
     await this.refreshPhaseFromSources();
@@ -1694,12 +1832,14 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
 
     await this.resetRegistration();
-    const clearedAppEnvFiles = await clearRegistrationKeysFromAppData(APP_DATA_DIR);
-    await clearRegistrationRecoveryArtifacts();
-    // A fresh setup pairs as a new device; the identity it registered under before goes with the
-    // registration, and the resolver derives one from the host again.
+    // A fresh setup pairs as a new device, so the ID the Hub registered under goes with it, and the
+    // next pairing takes DEVICE_ID or the host's ID. A registration reset keeps the record; this is
+    // the one place that removes it. Unguarded, so that Start fresh fails rather than pair the old ID.
     clearRegisteredDeviceId(DATA_DIR);
     this.deviceIdPromise = undefined;
+    this.deviceIdHostBinding = undefined;
+    const clearedAppEnvFiles = await clearRegistrationKeysFromAppData(APP_DATA_DIR);
+    await clearRegistrationRecoveryArtifacts();
     try {
       await removeTunnelLeftoverMarker();
     } catch (error) {
@@ -1778,7 +1918,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   // Cache device-ID resolution because app lifecycle commands, bootstrap, and
-  // hourly validation all use the same environment, `dmidecode`,
+  // periodic check-ins all use the same environment, `dmidecode`,
   // `systeminformation`, sysfs, machine ID, and generated UUID chain. Resolve and
   // log those probes once per process.
   private deviceIdPromise?: Promise<string>;
@@ -1804,18 +1944,21 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   private deviceIdHostBinding?: DeviceIdHostBinding;
 
   /**
-   * Whether `DEVICE_ID` was generated on this machine. Memoized like {@link getDeviceId}: the
-   * environment and the host's machine ID cannot change under a running process.
+   * Whether the device ID this Hub pairs under (its registration record, else `DEVICE_ID`) was
+   * generated on this machine. Memoized like {@link getDeviceId}: the environment and the host's
+   * machine ID cannot change under a running process. The record changes only when Start fresh
+   * removes it or a registration writes it, and each of those forgets the verdict.
    */
   public getDeviceIdHostBinding(): DeviceIdHostBinding {
     this.deviceIdHostBinding ??= checkDeviceIdHostBinding({
       envDeviceId: process.env.DEVICE_ID,
+      registeredDeviceId: readRegisteredDeviceId(DATA_DIR),
       allowForeign: process.env[ALLOW_FOREIGN_DEVICE_ID_ENV],
     });
     return this.deviceIdHostBinding;
   }
 
-  /** The refusal message when this Hub must not pair under its `DEVICE_ID`, or `null` when it may. */
+  /** The refusal message when this Hub must not pair under the device ID it would send, or `null` when it may. */
   private foreignDeviceIdRefusal(): string | null {
     const binding = this.getDeviceIdHostBinding();
     if (binding.status !== 'foreign') {
@@ -1849,6 +1992,84 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     return isOperational(this._currentPhase);
   }
 
+  /**
+   * Keep `state/setup-code` in step with the phase: a code while the Hub is unpaired, none once it
+   * is registered (`SetupCodeService`). Fire and forget; neither step throws. Looked up lazily, like
+   * the push-key service, so the harnesses that build this class need not wire it.
+   */
+  private syncSetupCode(): void {
+    let setupCode: SetupCodeService | undefined;
+    try {
+      setupCode = this.moduleRef?.get(SetupCodeService, { strict: false });
+    } catch {
+      return;
+    }
+    if (!setupCode) {
+      return;
+    }
+    void (isOperational(this._currentPhase) ? setupCode.retire() : setupCode.ensure());
+  }
+
+  /**
+   * Whether this Hub holds a registration: the `device_registration` row a pairing wrote, or a pairing
+   * this process is still setting up (`paired` and `provisioning` come before the row exists).
+   * `AuthMiddleware` accepts the Portal device key only while this is true.
+   *
+   * Read from the row, not the in-memory phase, which starts every boot at `unregistered` until
+   * `syncPhaseFromDb` has run. Unlike `isRegistered` it changes nothing, because it is asked on a
+   * request. A row whose phase says `unregistered` is a reset that has not finished deleting it.
+   * A phase this Hub does not know is read as `unregistered`, as `syncPhaseFromDb` reads it.
+   * A database blip is retried; a database that still cannot answer counts as no registration.
+   */
+  public async holdsRegistration(): Promise<boolean> {
+    try {
+      return await this.readHoldsRegistration();
+    } catch (error) {
+      this.logger.warn(`Could not read the registration, so the Portal device key is refused: ${describeRegistrationError(error)}`);
+      return false;
+    }
+  }
+
+  /** {@link holdsRegistration}, throwing when the database still can't answer. */
+  private async readHoldsRegistration(): Promise<boolean> {
+    if (isActiveRegistrationPhase(this._currentPhase)) {
+      return true;
+    }
+
+    const row = await withTransientDbRetry(() => this.deviceRegistrationRepository.getFirstDeviceRegistration());
+    if (!row) {
+      return false;
+    }
+    const phase = row.provisioningPhase ?? 'locally_ready';
+    return phase !== 'unregistered' && PROVISIONING_PHASES.includes(phase as ProvisioningPhase);
+  }
+
+  /**
+   * Whether a pairing now would replace a registration, so its caller must be someone who may pair
+   * this Hub again (the `mayPairAgain` of `pairDevice` and the registration callback): an operational
+   * phase, or a registration {@link holdsRegistration} finds. The row counts as well as the phase. A
+   * Hub without its tunnel token reads `unregistered` in memory until boot restores the phase from
+   * the row. It stays there if that read failed.
+   *
+   * Read after {@link isRegisteredAndServing}, which refreshes the phase. Unlike `holdsRegistration`,
+   * a registration that can't be read counts as one, so a database outage doesn't let anyone pair a
+   * registered Hub.
+   */
+  public async pairingReplacesRegistration(): Promise<boolean> {
+    if (isOperational(this._currentPhase)) {
+      return true;
+    }
+
+    try {
+      return await this.readHoldsRegistration();
+    } catch (error) {
+      this.logger.warn(
+        `Could not read the registration, so pairing again takes someone who may manage this Hub: ${describeRegistrationError(error)}`,
+      );
+      return true;
+    }
+  }
+
   private async verifyLicense() {
     // Reserve the bootstrap step until license verification is implemented.
     return;
@@ -1863,6 +2084,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
           clearInterval(this.checkInterval);
           this.checkInterval = null;
         }
+        // Registered while this loop waited (restored from the database by a status read, say).
+        this.startPeriodicValidation();
         return;
       }
 
@@ -1888,8 +2111,12 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     // Check immediately before starting the interval.
     await check();
 
-    // Continue polling only while registration remains incomplete.
+    // Continue polling only while registration remains incomplete. A reset of a Hub that is already
+    // polling starts this again. The interval it replaces would otherwise run on with no handle left.
     if (!isOperational(this._currentPhase)) {
+      if (this.checkInterval) {
+        clearInterval(this.checkInterval);
+      }
       this.checkInterval = setInterval(check, 30000);
     }
   }
@@ -1902,6 +2129,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    * persist complete credentials.
    */
   private async checkRegistrationWithCloud(): Promise<boolean> {
+    const pairing = this.pairingAbort.signal;
     const { ciCloudUrl } = this.config.getConfig();
 
     // Preserve backward compatibility by allowing local access without a
@@ -1934,19 +2162,28 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       }
 
       if (!isOperational(this._currentPhase)) {
+        // Read before a reset deleted the row: setting it up would bring the registration back.
+        if (pairing.aborted) {
+          return false;
+        }
         this.logger.info('checkRegistrationWithCloud: found complete local registration, setting up infrastructure');
         const config = this.config.getConfig();
-        await this.setupOrganizationInfrastructure(org.id, {
-          organization_name: org.name,
-          tunnel_id: org.tunnelId,
-          tunnel_token: org.tunnelToken,
-          subdomain: org.hubSubdomain,
-          slug: org.slug,
-          domain: config.domain,
-        });
+        await this.setupOrganizationInfrastructure(
+          org.id,
+          {
+            organization_name: org.name,
+            tunnel_id: org.tunnelId,
+            tunnel_token: org.tunnelToken,
+            subdomain: org.hubSubdomain,
+            slug: org.slug,
+            domain: config.domain,
+          },
+          pairing,
+        );
       }
 
-      return true;
+      // A reset stopped that setup. Saying "registered" would clear the polling the reset restarted.
+      return !pairing.aborted;
     } catch (error) {
       this.logger.error('Error checking local registration state:', error);
       return false;
@@ -1956,18 +2193,99 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   /**
    * Configures the organization's Cloudflare tunnel, DNS, and public subdomain.
    *
+   * A registration reset that aborts `pairing` stops it at its next step and removes what that step
+   * left on this Hub. It returns normally then; a caller that goes on afterwards checks `pairing`.
+   *
    * @param organizationId Organization ID from Companion Portal.
    * @param activationResult Organization and tunnel details returned by activation.
+   * @param pairing The signal the pairing took when it started.
    */
   private async setupOrganizationInfrastructure(
     organizationId: string,
     activationResult: { organization_name: string; tunnel_id: string; tunnel_token: string; slug: string; subdomain: string; domain?: string },
+    pairing: AbortSignal = this.pairingAbort.signal,
+  ): Promise<void> {
+    try {
+      await this.provisionOrganizationInfrastructure(organizationId, activationResult, pairing);
+    } catch (error) {
+      // Whatever stopped it, a pairing the reset overtook is over.
+      if (!pairing.aborted) {
+        throw error;
+      }
+      await this.undoOvertakenPairing(organizationId);
+    }
+
+    // Pairing by code or by Portal callback stops the registration loop before it starts the
+    // check-in timer. Nothing else would start it until the next boot.
+    if (!pairing.aborted && isOperational(this._currentPhase)) {
+      this.startPeriodicValidation();
+    }
+  }
+
+  /**
+   * Removes what a pairing that a registration reset overtook left on this Hub.
+   *
+   * The reset removed what the pairing had written before it. The step under way at that moment can
+   * still finish afterwards. The row or `registration.json` can land after the reset deleted it.
+   * `initializeTunnel` can write the token and start `cloudflared`. Each is removed again here, as the
+   * reset removes it. A newer pairing moves the phase off `unregistered` before it writes any of these,
+   * so from then on they are its own and stay, as `stopUnregisteredTunnel` decides.
+   */
+  private async undoOvertakenPairing(organizationId: string): Promise<void> {
+    this.logger.warn('A registration reset stopped a pairing that was still setting up; removing what that pairing left');
+
+    if (this._currentPhase !== 'unregistered') {
+      return;
+    }
+    try {
+      await this.deviceRegistrationRepository.deleteDeviceRegistration(organizationId);
+    } catch (error) {
+      this.logger.warn(`Could not remove the overtaken pairing's registration row: ${describeRegistrationError(error)}`);
+    }
+
+    if (this._currentPhase !== 'unregistered') {
+      return;
+    }
+    try {
+      await fs.promises.unlink(tunnelTokenPath());
+    } catch {
+      // Either the step never wrote one or the reset already removed it.
+    }
+
+    if (this._currentPhase !== 'unregistered') {
+      return;
+    }
+    await this.stopTunnelOrRetryLater();
+
+    if (this._currentPhase !== 'unregistered') {
+      return;
+    }
+    await this.unmarkTunnelRegistered();
+  }
+
+  /** Stops `cloudflared`. A failed stop is retried by the registration check. */
+  private async stopTunnelOrRetryLater(): Promise<void> {
+    if (!(await this.cloudflareClientService.stopTunnel())) {
+      this.tunnelStopPending = true;
+      this.tunnelCheckPending = true;
+    }
+  }
+
+  /**
+   * The setup itself. `pairing` is checked after every await, before anything is written.
+   */
+  private async provisionOrganizationInfrastructure(
+    organizationId: string,
+    activationResult: { organization_name: string; tunnel_id: string; tunnel_token: string; slug: string; subdomain: string; domain?: string },
+    pairing: AbortSignal,
   ): Promise<void> {
     // Read before any phase change below. A re-pair is a registered Hub that pairing is meant to
     // fix: degraded for a reason only pairing clears, or with a key Portal is rejecting right now
-    // (`pairDevice` admits an authenticated caller before the rejection is confirmed).
+    // (`pairDevice` admits a caller who may pair the Hub again before the rejection is confirmed).
     const rePairing =
       isOperational(this._currentPhase) && (requiresPortalRePairing(this._currentPhase, this._degradedReasons) || this.portalRejectedSince !== null);
+
+    pairing.throwIfAborted();
 
     // A new registration from here on: a check-in still in flight for the old key must not act on
     // Portal's answer about it. See `isCheckInForCurrentRegistration`.
@@ -1975,6 +2293,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
     // Update an existing row in place so provisioning retries remain idempotent.
     const existingOrg = await this.deviceRegistrationRepository.getDeviceRegistrationById(organizationId);
+    pairing.throwIfAborted();
     if (existingOrg) {
       this.logger.debug(`Organization infrastructure already exists for ${organizationId}`);
 
@@ -1995,14 +2314,17 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
       if (Object.keys(updates).length > 0) {
         await this.deviceRegistrationRepository.updateDeviceRegistration(organizationId, updates);
+        pairing.throwIfAborted();
       }
       await this.markRegistrationSaved(updates.tunnelId ?? existingOrg.tunnelId);
+      pairing.throwIfAborted();
 
       if (activationResult?.tunnel_id && activationResult?.tunnel_token) {
         await this.cloudflareClientService.initializeTunnel(organizationId, {
           tunnelId: activationResult.tunnel_id,
           token: activationResult.tunnel_token,
         });
+        pairing.throwIfAborted();
       }
 
       // Restore the Traefik route for the Hub's public hostname.
@@ -2010,6 +2332,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       const domainForRoute = this.config.getConfig().domain;
       if (hubSub && domainForRoute && domainForRoute !== 'example.com') {
         await this.traefikConfigService.writeHubRoute(hubSub, domainForRoute);
+        pairing.throwIfAborted();
       }
 
       // An idempotent retry must leave existing infrastructure operational. A re-pair
@@ -2020,6 +2343,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         this.consecutiveValidationFailures = 0;
         this.portalRejectedSince = null;
         await this.setPhase('locally_ready', [], organizationId);
+        pairing.throwIfAborted();
         // This path skips the registration loop below, and nothing else probes until the next
         // accepted check-in, up to 15 minutes away. A re-pair into the same organization keeps a
         // hostname that usually answers already.
@@ -2037,10 +2361,12 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       // This branch runs only when the new organization is not the row we
       // already hold. The cache cannot tell those organizations apart.
       await this.forgetCachedGrants();
+      pairing.throwIfAborted();
     }
 
     // Provisioning begins only after the device reaches the paired phase.
     await this.setPhase('provisioning', [], organizationId);
+    pairing.throwIfAborted();
 
     try {
       const { userSettings } = this.config.getConfig();
@@ -2092,6 +2418,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       // Cloudflare-forwarded redirect can reach the Hub.
       if (subdomain && correctDomain && correctDomain !== 'example.com') {
         await this.traefikConfigService.writeHubRoute(subdomain, correctDomain);
+        pairing.throwIfAborted();
       }
 
       // Configure the tunnel with credentials from Companion Portal.
@@ -2103,6 +2430,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
           tunnelId,
           token: tunnelToken,
         });
+        pairing.throwIfAborted();
       }
 
       if (tunnelCredentials) {
@@ -2130,9 +2458,11 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       // with the old organization, and boot recovery would then write the old tunnel
       // token back over the one this pairing just installed.
       if (replacesRegistration && (await this.deviceRegistrationRepository.hasAnyDeviceRegistration())) {
+        pairing.throwIfAborted();
         this.logger.info(`Replacing the previous organization's registration with ${organizationId}`);
         await this.deviceRegistrationRepository.deleteAll();
       }
+      pairing.throwIfAborted();
 
       // Store `hubSubdomain` as the canonical Hub routing prefix assigned by
       // Companion Portal. Do not derive it from `DOMAIN` or `userSettings.domain`,
@@ -2146,10 +2476,13 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         tunnelToken: tunnelToken,
         provisioningPhase: 'locally_ready',
       });
+      pairing.throwIfAborted();
       await this.markRegistrationSaved(tunnelId);
+      pairing.throwIfAborted();
 
       // The persisted organization makes the Hub locally operational.
       await this.setPhase('locally_ready', [], organizationId);
+      pairing.throwIfAborted();
 
       this.logger.info(`Successfully setup organization infrastructure: ${domain} (tunnel: ${tunnelId})`);
 
@@ -2158,6 +2491,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       // `device_registration.hubSubdomain` defines the Hub route identity.
       if (correctDomain && correctDomain !== 'example.com') {
         await this.config.setDomain(correctDomain);
+        pairing.throwIfAborted();
       }
 
       // Companion Portal's `/devices/register` owns the initial Hub DNS and tunnel
@@ -2181,6 +2515,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
            * a Hub paired again under a just-deleted, re-created hostname sees for that long.
            */
           const probe = await probePublicHostname(domain, { timeoutMs: REGISTRATION_PROBE_TIMEOUT_MS });
+          pairing.throwIfAborted();
           if (probe.reachable) {
             this.logger.info(`Hub is reachable at https://${domain} (${describePublicReachability(probe)})`);
             tunnelReachable = true;
@@ -2190,6 +2525,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
             this.logger.debug(`Waiting for DNS/SSL propagation... ${describePublicReachability(probe)}`);
           }
           await new Promise((resolve) => setTimeout(resolve, 1000));
+          pairing.throwIfAborted();
           if (i > 0 && i % 10 === 0) this.logger.info(`Still waiting for DNS resolution... attempt ${i}`);
         }
         if (!tunnelReachable) {
@@ -2207,6 +2543,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         }
       }
     } catch (error) {
+      // After a reset this is no failure to report. `provisioning` now may also be a newer pairing's.
+      pairing.throwIfAborted();
       this.logger.error(`Error setting up organization infrastructure: ${error}`);
       // A provisioning failure leaves existing phases unchanged but degrades an
       // active provisioning attempt.
@@ -2241,7 +2579,12 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   public async pairDevice(
     pairingCode: string,
     options: {
-      callerAuthenticated?: boolean;
+      /**
+       * Whether the caller may pair this Hub again while it holds a registration: someone who may
+       * manage the Hub, or a request from its own machine (`RegistrationController`, which asks the
+       * same of a registration callback). Asked only when the Hub holds one. Absent means no.
+       */
+      mayPairAgain?: () => Promise<boolean>;
       /**
        * The person's yes to `DEVICE_MOVE_CONFIRMATION_REQUIRED`: this Hub is in another organization,
        * and pairing here moves it, taking it from that organization. The Portal only acts on it with
@@ -2250,6 +2593,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       confirmMove?: boolean;
     } = {},
   ): Promise<PairDeviceResult> {
+    const pairing = this.pairingAbort.signal;
     const { ciCloudUrl, ciHubApiKey, ciHubMoveKey } = this.config.getConfig();
 
     if (!ciCloudUrl) {
@@ -2277,30 +2621,43 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
     /*
      * `POST /registration/pair` is unauthenticated, because a Hub being set up has nobody to log
-     * in as. A registered Hub does, and re-pairing one replaces its organization, device key and
-     * tunnel with whatever the pairing code names. Letting through anyone who can reach this port
-     * (the LAN, or the public hostname while the old tunnel still serves) would let them move the
-     * Hub into an organization of their choosing, and this Hub attaches its own device key to the
-     * request as proof of possession, so Portal would accept it. Before this route admitted
-     * degraded Hubs it refused every registered one, so asking for the caller `reset` requires
-     * costs nobody a working path: a Hub session, or the host-local device key or CLI token that
-     * `cihub register` sends.
+     * in as. A Hub that holds a registration does. Pairing it again replaces its organization,
+     * device key and tunnel with whatever the pairing code names. This Hub attaches its own device
+     * key to the request as proof of possession, so Portal's checks can't tell who is asking. The
+     * caller has to pass the rule a registration callback does (`mayPairAgain`): someone who may
+     * manage the Hub, or a request from its own machine, which is where `cihub register` runs.
+     * The registration row counts as well as the phase, as it does for the callback.
      *
      * That caller may also re-pair a Hub whose key Portal is rejecting right now but has not yet
      * rejected for `PORTAL_REJECTION_CONFIRM_MS`. Otherwise an owner who updates a Hub and runs
      * `cihub register --code` straight away, the remedy in `docs/portal-check-in.md`, is refused for
      * ten minutes after every restart, because the confirmation window restarts with the process.
+     * All of this is decided before Portal is called.
      */
-    if (serving && !(options.callerAuthenticated && this.portalRejectedSince !== null)) {
+    if (serving && this.portalRejectedSince === null) {
       return { success: false, message: 'Device is already registered.' };
     }
 
-    if (isOperational(this._currentPhase) && !options.callerAuthenticated) {
-      return {
-        success: false,
-        message: 'This Hub is already registered. Sign in to pair it again, or run `cihub register --code <code>` on the Hub itself.',
-      };
+    if ((await this.pairingReplacesRegistration()) && !(await options.mayPairAgain?.())) {
+      return serving
+        ? { success: false, message: 'Device is already registered.' }
+        : {
+            success: false,
+            message:
+              'This Hub is already registered. Sign in as an owner or admin to pair it again, or run `cihub register --code <code>` on the Hub itself.',
+          };
     }
+
+    // Before Portal claims the code and provisions anything for this pairing.
+    if (pairing.aborted) {
+      return this.pairingOvertaken();
+    }
+
+    // A check-in already in flight was sent for the registration this pairing replaces. Its
+    // DEVICE_NOT_ACTIVE answer must not reset the Hub and stop this pairing with it.
+    this.registrationGeneration++;
+    // Keys another pairing saves after this are newer than the ones Portal issues this one.
+    const keyEpoch = this.deviceKeyEpoch;
 
     try {
       const pairUrl = `${this.config.getOutboundCiCloudUrl()}/api/devices/pair`;
@@ -2381,19 +2738,24 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       }
 
       // Reuse the callback path so pairing and redirected registration persist the
-      // same fields and phase transitions.
-      return await this.completeRegistrationFromCallback({
-        deviceId: data.device_id || deviceId,
-        organizationId: data.organization_id,
-        organizationName: data.organization_name || 'Organization',
-        slug: data.slug,
-        subdomain: data.subdomain,
-        tunnelId: data.tunnel_id,
-        tunnelToken: data.tunnel_token,
-        apiKey: data.api_key,
-        moveKey: data.move_key,
-        domain: data.domain,
-      });
+      // same fields and phase transitions. A reset during the request above stops it there, after
+      // Portal's refusals, which issued nothing and say more than "reset".
+      return await this.completeRegistrationFromCallback(
+        {
+          deviceId: data.device_id || deviceId,
+          organizationId: data.organization_id,
+          organizationName: data.organization_name || 'Organization',
+          slug: data.slug,
+          subdomain: data.subdomain,
+          tunnelId: data.tunnel_id,
+          tunnelToken: data.tunnel_token,
+          apiKey: data.api_key,
+          moveKey: data.move_key,
+          domain: data.domain,
+        },
+        pairing,
+        keyEpoch,
+      );
     } catch (error) {
       const transportFailure = classifyPortalTransportFailure(error);
       // A request that failed below HTTP is described by why it failed: its message is empty when
@@ -2439,6 +2801,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     customDeviceId?: string,
     customDescription?: string,
   ): Promise<{ success: boolean; message: string }> {
+    const pairing = this.pairingAbort.signal;
     const { ciCloudUrl, ciHubApiKey } = this.config.getConfig();
 
     if (!ciCloudUrl) {
@@ -2473,7 +2836,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     try {
       // Prefer an explicit device ID and otherwise use the hardware-derived value.
       const deviceId = customDeviceId?.trim() || (await this.getDeviceId());
-      // Only the environment's ID is judged. An ID the operator typed into the form is their decision.
+      // Only the Hub's own ID (its registration record, else DEVICE_ID) is judged. An ID the operator typed into the form is their decision.
       const foreignDeviceId = customDeviceId?.trim() ? null : this.foreignDeviceIdRefusal();
       if (foreignDeviceId) {
         return { success: false, message: foreignDeviceId };
@@ -2493,6 +2856,9 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       }
 
       this.logger.debug(`Registering device at ${registerUrl}`);
+      pairing.throwIfAborted();
+      // As in `pairDevice`: a check-in in flight is about the registration this one replaces.
+      this.registrationGeneration++;
       const registerResponse = await axios.post(
         registerUrl,
         {
@@ -2506,6 +2872,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
           timeout: 15_000,
         },
       );
+      pairing.throwIfAborted();
 
       if (registerResponse.status < 200 || registerResponse.status >= 300) {
         // biome-ignore lint/suspicious/noExplicitAny: External API response
@@ -2537,18 +2904,33 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       // Portal validation endpoint.
 
       await this.holdAppSyncForPairingCheck();
+      pairing.throwIfAborted();
+
+      // Portal now knows this Hub as `deviceId`, which may be one the operator typed. The record wins
+      // over DEVICE_ID and survives a registration reset, so a stale one left from an earlier pairing
+      // would send every check-in under an ID this registration never used.
+      persistRegisteredDeviceId(DATA_DIR, deviceId, this.logger);
+      this.deviceIdPromise = undefined;
+      this.deviceIdHostBinding = undefined;
 
       // Enter `paired` before infrastructure setup. The `paired` and
       // `provisioning` phases remain in memory until a database row exists. If the
       // process stops during setup, it starts as `unregistered` and can retry.
       await this.setPhase('paired');
+      pairing.throwIfAborted();
 
-      await this.setupOrganizationInfrastructure(organizationId, {
-        // biome-ignore lint/suspicious/noExplicitAny: External API response
-        ...(activateResult as any),
-        organization_name: organizationName,
-        slug: sanitizedName,
-      });
+      await this.setupOrganizationInfrastructure(
+        organizationId,
+        {
+          // biome-ignore lint/suspicious/noExplicitAny: External API response
+          ...(activateResult as any),
+          organization_name: organizationName,
+          slug: sanitizedName,
+        },
+        pairing,
+      );
+      // The polling below is the reset's now.
+      pairing.throwIfAborted();
 
       // Infrastructure setup owns the remaining phase transitions.
       if (this.checkInterval) {
@@ -2564,6 +2946,9 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         message: 'Device registered and activated successfully',
       };
     } catch (error) {
+      if (pairing.aborted) {
+        return this.pairingOvertaken();
+      }
       // As for pairing: a request that failed below HTTP has an empty message when no address of the
       // Portal answered, so it is described by why it failed.
       this.logger.error(
@@ -2581,22 +2966,31 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    *
    * The callback returns the device, organization, routing, tunnel, and optional
    * API-key details to Companion Hub.
+   *
+   * @param pairing The signal of the pairing this completes: `pairDevice` passes the one it started
+   *   with. A callback from Portal starts its pairing here.
+   * @param keyEpoch The `deviceKeyEpoch` when that pairing asked Portal. A callback from Portal reads it here.
    */
-  public async completeRegistrationFromCallback(data: {
-    deviceId: string;
-    organizationId: string;
-    organizationName: string;
-    slug: string;
-    subdomain: string;
-    tunnelId: string;
-    tunnelToken: string;
-    apiKey?: string;
-    /** Only `/pair` returns one; the redirected callback never carries it. */
-    moveKey?: string;
-    domain?: string;
-  }): Promise<{ success: boolean; message: string; domain?: string; subdomain?: string }> {
+  public async completeRegistrationFromCallback(
+    data: {
+      deviceId: string;
+      organizationId: string;
+      organizationName: string;
+      slug: string;
+      subdomain: string;
+      tunnelId: string;
+      tunnelToken: string;
+      apiKey?: string;
+      /** Only `/pair` returns one; the redirected callback never carries it. */
+      moveKey?: string;
+      domain?: string;
+    },
+    pairing: AbortSignal = this.pairingAbort.signal,
+    keyEpoch: number = this.deviceKeyEpoch,
+  ): Promise<{ success: boolean; message: string; domain?: string; subdomain?: string }> {
     try {
-      // Reject callbacks for a different hardware device.
+      // Reject callbacks for a different hardware device. Before the reset check: keys for another
+      // device are never this Hub's to keep.
       const currentDeviceId = await this.getDeviceId();
       if (data.deviceId !== currentDeviceId) {
         this.logger.warn(`Device ID mismatch: expected ${currentDeviceId}, got ${data.deviceId}`);
@@ -2606,26 +3000,25 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         };
       }
 
+      // The optional device API key for authenticated Portal requests and the move key Portal issued with it.
+      const issued = { keys: { apiKey: data.apiKey, moveKey: data.moveKey }, keyEpoch };
+      if (pairing.aborted) {
+        return await this.pairingOvertaken(issued);
+      }
+
       await this.holdAppSyncForPairingCheck();
-
-      // Persist the optional device API key for authenticated Portal requests.
-      if (data.apiKey) {
-        this.logger.info('Saving CI Hub API Key from registration callback');
-        await this.config.setUserSettings({ ciHubApiKey: data.apiKey });
+      if (pairing.aborted) {
+        return await this.pairingOvertaken(issued);
       }
 
-      /*
-       * Kept in settings.json with the device key, and nowhere else: `AppHelpers` hands first-party
-       * Memory the device key, never this, so a key leaked from an app cannot move this Hub.
-       */
-      if (data.moveKey) {
-        await this.config.setUserSettings({ ciHubMoveKey: data.moveKey });
-      }
+      await this.saveIssuedKeys(issued.keys);
+      pairing.throwIfAborted();
 
       // Persist the organization ID for future Portal disambiguation.
       if (data.organizationId) {
         this.logger.info('Saving CI Hub Organization ID from registration callback');
         await this.config.setUserSettings({ ciHubOrganizationId: data.organizationId });
+        pairing.throwIfAborted();
       }
 
       // Use the subdomain already validated by Companion Portal. It can represent
@@ -2641,6 +3034,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
       // Enter `paired` so the frontend can display provisioning progress.
       await this.setPhase('paired');
+      // Past here the polling is the reset's.
+      pairing.throwIfAborted();
       if (this.checkInterval) {
         clearInterval(this.checkInterval);
         this.checkInterval = null;
@@ -2652,25 +3047,34 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       const rootDomain = data.domain || currentDomain;
       if (rootDomain && rootDomain !== 'example.com' && rootDomain !== currentDomain) {
         await this.config.setDomain(rootDomain);
+        pairing.throwIfAborted();
       }
 
       // Start Cloudflare tunnel and DNS setup without holding the callback open
       // while external infrastructure converges.
-      this.setupOrganizationInfrastructure(data.organizationId, {
-        organization_name: data.organizationName,
-        tunnel_id: data.tunnelId,
-        tunnel_token: data.tunnelToken,
-        subdomain: incomingSubdomain,
-        slug: data.slug,
-        domain: rootDomain,
-      }).catch((err) => {
+      this.setupOrganizationInfrastructure(
+        data.organizationId,
+        {
+          organization_name: data.organizationName,
+          tunnel_id: data.tunnelId,
+          tunnel_token: data.tunnelToken,
+          subdomain: incomingSubdomain,
+          slug: data.slug,
+          domain: rootDomain,
+        },
+        pairing,
+      ).catch((err) => {
         this.logger.error('Background infrastructure setup failed:', err);
       });
 
       // What this Hub registered as is now its identity, whatever a later image can read from the
       // host: the next image may run as a different user and derive a different hardware ID, and
-      // Portal answers that with 403 on every check-in.
-      persistRegisteredDeviceId(DATA_DIR, await this.getDeviceId(), this.logger);
+      // Portal answers that with 403 on every check-in. Not after Start fresh, which removed it.
+      const registeredDeviceId = await this.getDeviceId();
+      pairing.throwIfAborted();
+      persistRegisteredDeviceId(DATA_DIR, registeredDeviceId, this.logger);
+      // The host check judges the record when there is one, and before this pairing there may have been none.
+      this.deviceIdHostBinding = undefined;
 
       this.logger.info(`Device registration completed via callback: organization=${data.organizationId}, subdomain=${data.subdomain}`);
 
@@ -2683,6 +3087,9 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         subdomain: incomingSubdomain,
       };
     } catch (error) {
+      if (pairing.aborted) {
+        return this.pairingOvertaken();
+      }
       this.logger.error('Registration callback error:', error);
       return {
         success: false,

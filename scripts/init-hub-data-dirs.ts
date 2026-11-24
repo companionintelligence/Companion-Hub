@@ -6,10 +6,10 @@
  * /data/cache and /data/.docker must exist on the host before compose up.
  */
 import { execSync } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { isDirectScriptRun } from './lib/is-direct-run';
-import { removeEnvVar, parseEnvFile, upsertEnvVar } from './env-file';
+import { removeEnvVar, parseEnvFile, restrictEnvFileMode, upsertEnvVar } from './env-file';
 import { resolveRootFolderHostForRuntime } from './lib/paths';
 import {
   dockerSocketIsRootOnlyInsideContainers,
@@ -57,12 +57,52 @@ function resolveDockerGid(): string {
   }
 }
 
-function ensureContainerIdentityInEnvFile(cwd: string): void {
+export type InitHubDataDirsOptions = {
+  /**
+   * ENV_FILE is an appliance install's env file in the canonical data dir. ENV_FILE is not written
+   * into it: compose gets it from the environment, as it does from the desktop app.
+   *
+   * When the desktop app wrote the file ({@link isDesktopAppEnvFile}), it recomputes DOCKER_GID and
+   * CI_HUB_CONTAINER_UID/GID on every launch, so a key is only added when it is missing and never
+   * replaced or removed. `cihub restart prod` used to take the app's CI_HUB_CONTAINER_UID/GID out and
+   * add ENV_FILE. The app put them back. A file cihub seeded on a headless node has no app to
+   * recompute anything, so cihub refreshes the keys it computes itself, as in a checkout.
+   */
+  appliance?: boolean;
+};
+
+/**
+ * The line the desktop app's render puts in the env file it owns (`render_runtime_env_content_for_portal`
+ * in packages/desktop/src-tauri/src/hub_manager/runtime_env.rs). cihub's seed writes
+ * `# Derived (recomputed for this CLI seed)` instead. A desktop launch rewrites a seeded file with its
+ * own render, so the line names whoever owns the file now.
+ */
+export const DESKTOP_APP_ENV_FILE_MARKER = '# Derived (recomputed every launch from the current binary)';
+
+export function isDesktopAppEnvFile(envPath: string): boolean {
+  try {
+    return readFileSync(envPath, 'utf-8')
+      .split(/\r?\n/)
+      .some((line) => line.trim() === DESKTOP_APP_ENV_FILE_MARKER);
+  } catch {
+    return false;
+  }
+}
+
+function ensureContainerIdentityInEnvFile(cwd: string, options: InitHubDataDirsOptions): void {
   const envFile = process.env.ENV_FILE || '.env.dev';
   const envPath = path.isAbsolute(envFile) ? envFile : path.join(cwd, envFile);
   if (!existsSync(envPath)) return;
 
-  upsertEnvVar(envFile, 'ENV_FILE', envFile);
+  restrictEnvFileMode(envFile);
+  const appliance = options.appliance === true;
+  const desktopOwned = appliance && isDesktopAppEnvFile(envPath);
+  const setVar = (key: string, value: string) => {
+    if (desktopOwned && parseEnvFile(envFile)[key]?.trim()) return;
+    upsertEnvVar(envFile, key, value);
+  };
+
+  if (!appliance) upsertEnvVar(envFile, 'ENV_FILE', envFile);
 
   const socketRootOnly = dockerSocketIsRootOnlyInsideContainers();
   if (socketRootOnly === true || (socketRootOnly === null && likelyDockerDesktop())) {
@@ -75,13 +115,16 @@ function ensureContainerIdentityInEnvFile(cwd: string): void {
         'init-hub-data-dirs: Docker socket is root:root inside containers (common on Docker Desktop); Hub will run as root for socket access. Bind mounts remain on the host.',
       );
     }
-    upsertEnvVar(envFile, 'CI_HUB_CONTAINER_UID', '0');
-    upsertEnvVar(envFile, 'CI_HUB_CONTAINER_GID', '0');
+    setVar('CI_HUB_CONTAINER_UID', '0');
+    setVar('CI_HUB_CONTAINER_GID', '0');
     return;
   }
 
   const gid = resolveDockerGid();
-  upsertEnvVar(envFile, 'DOCKER_GID', gid);
+  setVar('DOCKER_GID', gid);
+  // The desktop app pins its own uid and gid on every launch, so a value equal to ours there is the
+  // app's, not this function's leftover.
+  if (desktopOwned) return;
 
   // Deliberately NOT pinning CI_HUB_CONTAINER_UID/GID here in the ordinary case.
   //
@@ -116,10 +159,10 @@ function ensureContainerIdentityInEnvFile(cwd: string): void {
   }
 }
 
-export function initHubDataDirs(): void {
+export function initHubDataDirs(options: InitHubDataDirsOptions = {}): void {
   const cwd = process.cwd();
   healPoisonedEnvMount(cwd);
-  ensureContainerIdentityInEnvFile(cwd);
+  ensureContainerIdentityInEnvFile(cwd, options);
 
   const envFile = process.env.ENV_FILE || '.env.dev';
   const root = resolveRootFolderHost();

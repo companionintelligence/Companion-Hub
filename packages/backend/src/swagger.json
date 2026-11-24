@@ -137,6 +137,27 @@
         ]
       }
     },
+    "/api/hub-access": {
+      "get": {
+        "operationId": "hubAccess",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HubAccessDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "App"
+        ]
+      }
+    },
     "/api/user-settings": {
       "patch": {
         "operationId": "updateUserSettings",
@@ -415,7 +436,7 @@
             "description": "Invalid callback data"
           },
           "403": {
-            "description": "No valid registration nonce, or the Hub is already registered"
+            "description": "No valid registration nonce, or the Hub is registered and the caller may not pair it again"
           }
         },
         "summary": "Handle registration callback from CI Cloud",
@@ -505,6 +526,9 @@
           },
           "400": {
             "description": "Invalid callback data"
+          },
+          "403": {
+            "description": "No host-local key, setup code or Hub manager, or the Hub is already registered"
           }
         },
         "summary": "Handle registration callback from CI Cloud (deprecated GET form — use POST)",
@@ -627,8 +651,15 @@
         "operationId": "listKeys",
         "parameters": [],
         "responses": {
-          "200": {
-            "description": ""
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeyListDto"
+                }
+              }
+            }
           }
         },
         "tags": [
@@ -1138,7 +1169,17 @@
     "/api/system/telemetry": {
       "get": {
         "operationId": "hostTelemetryHistory",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "minutes",
+            "required": false,
+            "in": "query",
+            "description": "Host CPU and memory over this many minutes, averaged to at most 360 points. Without it, the newest 288 raw samples.",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "",
@@ -1184,20 +1225,6 @@
         "responses": {
           "200": {
             "description": "Hub logs download"
-          }
-        },
-        "tags": [
-          "System"
-        ]
-      }
-    },
-    "/api/system/certificate": {
-      "get": {
-        "operationId": "downloadLocalCertificate",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
           }
         },
         "tags": [
@@ -1302,6 +1329,9 @@
           },
           "403": {
             "description": "Operator authentication required"
+          },
+          "409": {
+            "description": "The Hub's data folder is the top of a disk or a home folder, so nothing was changed"
           }
         },
         "summary": "Wipe all Hub state and return to first-operator setup",
@@ -1508,6 +1538,149 @@
         ]
       }
     },
+    "/api/auth/did/challenge": {
+      "post": {
+        "operationId": "didChallenge",
+        "parameters": [],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DidChallengeBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DidChallengeDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/did/verify": {
+      "post": {
+        "operationId": "didVerify",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DidProofBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/did/links": {
+      "get": {
+        "operationId": "didLinks",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DidLinksDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/did/link": {
+      "post": {
+        "operationId": "didLink",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DidProofBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DidLinkDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      },
+      "delete": {
+        "operationId": "didUnlink",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DidUnlinkBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DidLinkDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
     "/api/auth/register": {
       "post": {
         "operationId": "register",
@@ -1669,6 +1842,20 @@
         ]
       }
     },
+    "/api/auth/browser-handoff/confirm": {
+      "post": {
+        "operationId": "confirmBrowserHandoff",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
     "/api/auth/portal/start": {
       "get": {
         "operationId": "startPortalLogin",
@@ -1691,6 +1878,14 @@
           },
           {
             "name": "desktop_channel",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "app_challenge",
             "required": true,
             "in": "query",
             "schema": {
@@ -1801,6 +1996,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "verifier",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -1831,6 +2034,48 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PortalDesktopExchangeDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/portal/desktop-session": {
+      "post": {
+        "operationId": "establishPortalDesktopSession",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalDesktopExchangeDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/portal/desktop-config": {
+      "get": {
+        "operationId": "portalDesktopConfig",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalDesktopConfigDto"
                 }
               }
             }
@@ -2180,6 +2425,45 @@
         ]
       }
     },
+    "/api/.well-known/keri/oobi": {
+      "get": {
+        "operationId": "getHubOobi",
+        "parameters": [],
+        "responses": {
+          "503": {
+            "description": "The Hub cannot publish a verifiable OOBI until a persisted KERI key event log is configured."
+          }
+        },
+        "summary": "KERI Out-Of-Band Introduction (OOBI) metadata for the Hub appliance",
+        "tags": [
+          "KERI / Trust Over IP"
+        ]
+      }
+    },
+    "/api/.well-known/keri/oobi/{aid}": {
+      "get": {
+        "operationId": "getOobiForAid",
+        "parameters": [
+          {
+            "name": "aid",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "503": {
+            "description": "The Hub cannot resolve OOBIs until it can verify and serve persisted KERI key event logs."
+          }
+        },
+        "summary": "Resolve OOBI for a specific AID",
+        "tags": [
+          "KERI / Trust Over IP"
+        ]
+      }
+    },
     "/api/apps/installed": {
       "get": {
         "operationId": "getInstalledApps",
@@ -2497,6 +2781,39 @@
             }
           }
         ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Apps"
+        ]
+      }
+    },
+    "/api/apps/{urn}/guest-visibility": {
+      "patch": {
+        "operationId": "setGuestVisibility",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GuestVisibilityBodyDto"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": ""
@@ -3094,6 +3411,48 @@
         ]
       }
     },
+    "/api/inference/v1/images/generations": {
+      "post": {
+        "operationId": "v1ImagesGenerations",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/media/acquire": {
+      "post": {
+        "operationId": "mediaAcquire",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/media/release": {
+      "post": {
+        "operationId": "mediaRelease",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
     "/api/inference/health": {
       "get": {
         "operationId": "health",
@@ -3172,7 +3531,8 @@
                 "ollama",
                 "vllm",
                 "lemonade",
-                "omlx"
+                "omlx",
+                "localai"
               ]
             }
           }
@@ -3365,6 +3725,16 @@
       "post": {
         "operationId": "loadModel",
         "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoadModelBody"
+              }
+            }
+          }
+        },
         "responses": {
           "201": {
             "description": ""
@@ -3379,14 +3749,6 @@
       "post": {
         "operationId": "unloadModel",
         "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -3396,7 +3758,15 @@
               }
             }
           }
-        }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
       }
     },
     "/api/inference/models/pin": {
@@ -3483,6 +3853,27 @@
         }
       }
     },
+    "/api/inference/cloud-policy": {
+      "get": {
+        "operationId": "getCloudPolicy",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CloudFallbackPolicyDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
     "/api/inference/cloud-providers/{provider}": {
       "delete": {
         "operationId": "removeCloudProvider",
@@ -3520,7 +3911,8 @@
                 "ollama",
                 "vllm",
                 "lemonade",
-                "omlx"
+                "omlx",
+                "localai"
               ]
             }
           },
@@ -4643,8 +5035,36 @@
         "operationId": "getRehydrateStatus",
         "parameters": [],
         "responses": {
-          "200": {
-            "description": ""
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RehydrateStatusDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "AppLifecycle"
+        ]
+      }
+    },
+    "/api/app-lifecycle/rehydrate/acknowledge": {
+      "post": {
+        "operationId": "acknowledgeRestore",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcknowledgeRestoreResponseDto"
+                }
+              }
+            }
           }
         },
         "tags": [
@@ -4714,6 +5134,39 @@
         ],
         "responses": {
           "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AppLifecycle"
+        ]
+      }
+    },
+    "/api/app-lifecycle/{urn}/hub-access/mcp": {
+      "put": {
+        "operationId": "setMcpAccess",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpAccessBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
             "description": ""
           }
         },
@@ -5473,14 +5926,9 @@
             "in": "query",
             "required": false,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": -9007199254740991,
-                  "maximum": 9007199254740991
-                },
-                {}
-              ]
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
             }
           }
         ],
@@ -5503,14 +5951,9 @@
             "in": "query",
             "required": false,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": -9007199254740991,
-                  "maximum": 9007199254740991
-                },
-                {}
-              ]
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
             }
           }
         ],
@@ -5666,105 +6109,28 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/TerminusHealthCheckResult"
+                    }
+                  ],
                   "properties": {
                     "status": {
-                      "type": "string",
                       "enum": [
                         "ok",
                         "degraded"
                       ],
                       "example": "ok"
                     },
-                    "info": {
-                      "type": [
-                        "object",
-                        "null"
-                      ],
-                      "example": {
-                        "database": {
-                          "status": "up",
-                          "responseTime": 12
-                        }
-                      },
-                      "additionalProperties": {
-                        "type": "object",
-                        "required": [
-                          "status"
-                        ],
-                        "properties": {
-                          "status": {
-                            "type": "string",
-                            "enum": [
-                              "up",
-                              "degraded",
-                              "down"
-                            ]
-                          },
-                          "responseTime": {
-                            "type": "number",
-                            "description": "Time the health indicator took to respond, in ms"
-                          }
-                        },
-                        "additionalProperties": true
-                      }
-                    },
                     "error": {
-                      "type": [
-                        "object",
-                        "null"
-                      ],
-                      "example": {},
-                      "additionalProperties": {
-                        "type": "object",
-                        "required": [
-                          "status"
-                        ],
-                        "properties": {
-                          "status": {
-                            "type": "string",
-                            "enum": [
-                              "up",
-                              "degraded",
-                              "down"
-                            ]
-                          },
-                          "responseTime": {
-                            "type": "number",
-                            "description": "Time the health indicator took to respond, in ms"
-                          }
-                        },
-                        "additionalProperties": true
-                      }
+                      "example": {}
                     },
                     "details": {
-                      "type": "object",
                       "example": {
                         "database": {
                           "status": "up",
                           "responseTime": 12
                         }
-                      },
-                      "additionalProperties": {
-                        "type": "object",
-                        "required": [
-                          "status"
-                        ],
-                        "properties": {
-                          "status": {
-                            "type": "string",
-                            "enum": [
-                              "up",
-                              "degraded",
-                              "down"
-                            ]
-                          },
-                          "responseTime": {
-                            "type": "number",
-                            "description": "Time the health indicator took to respond, in ms"
-                          }
-                        },
-                        "additionalProperties": true
                       }
                     }
                   }
@@ -5777,85 +6143,29 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/TerminusHealthCheckResult"
+                    }
+                  ],
                   "properties": {
                     "status": {
-                      "type": "string",
                       "enum": [
                         "error",
                         "shutting_down"
                       ],
                       "example": "error"
                     },
-                    "info": {
-                      "type": [
-                        "object",
-                        "null"
-                      ],
-                      "example": {
-                        "database": {
-                          "status": "up",
-                          "responseTime": 12
-                        }
-                      },
-                      "additionalProperties": {
-                        "type": "object",
-                        "required": [
-                          "status"
-                        ],
-                        "properties": {
-                          "status": {
-                            "type": "string",
-                            "enum": [
-                              "up",
-                              "degraded",
-                              "down"
-                            ]
-                          },
-                          "responseTime": {
-                            "type": "number",
-                            "description": "Time the health indicator took to respond, in ms"
-                          }
-                        },
-                        "additionalProperties": true
-                      }
-                    },
                     "error": {
-                      "type": [
-                        "object",
-                        "null"
-                      ],
                       "example": {
                         "redis": {
                           "status": "down",
                           "message": "Could not connect",
                           "responseTime": 3005
                         }
-                      },
-                      "additionalProperties": {
-                        "type": "object",
-                        "required": [
-                          "status"
-                        ],
-                        "properties": {
-                          "status": {
-                            "type": "string",
-                            "enum": [
-                              "up",
-                              "degraded",
-                              "down"
-                            ]
-                          },
-                          "responseTime": {
-                            "type": "number",
-                            "description": "Time the health indicator took to respond, in ms"
-                          }
-                        },
-                        "additionalProperties": true
                       }
                     },
                     "details": {
-                      "type": "object",
                       "example": {
                         "database": {
                           "status": "up",
@@ -5866,27 +6176,6 @@
                           "message": "Could not connect",
                           "responseTime": 3005
                         }
-                      },
-                      "additionalProperties": {
-                        "type": "object",
-                        "required": [
-                          "status"
-                        ],
-                        "properties": {
-                          "status": {
-                            "type": "string",
-                            "enum": [
-                              "up",
-                              "degraded",
-                              "down"
-                            ]
-                          },
-                          "responseTime": {
-                            "type": "number",
-                            "description": "Time the health indicator took to respond, in ms"
-                          }
-                        },
-                        "additionalProperties": true
                       }
                     }
                   }
@@ -6114,6 +6403,27 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CreateCustomAppResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "CustomApp"
+        ]
+      }
+    },
+    "/api/custom-apps/access": {
+      "get": {
+        "operationId": "getCustomAppAccess",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CustomAppAccessDto"
                 }
               }
             }
@@ -6367,6 +6677,27 @@
         }
       }
     },
+    "/api/system/update/blocked": {
+      "get": {
+        "operationId": "getUpdateBlocks",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateBlocksDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "SystemUpdate"
+        ]
+      }
+    },
     "/api/system/update/host-listener": {
       "get": {
         "operationId": "getHostListenerStatus",
@@ -6450,12 +6781,181 @@
         ]
       }
     },
-    "/api/memory-connect/start": {
+    "/api/training/jobs": {
+      "post": {
+        "operationId": "submitTrainingJob",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrainingJobManifestBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Training"
+        ]
+      },
       "get": {
-        "operationId": "start",
+        "operationId": "listTrainingJobs",
         "parameters": [],
         "responses": {
           "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Training"
+        ]
+      }
+    },
+    "/api/training/jobs/{id}": {
+      "get": {
+        "operationId": "getTrainingJob",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Training"
+        ]
+      }
+    },
+    "/api/training/jobs/{id}/cancel": {
+      "post": {
+        "operationId": "cancelTrainingJob",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Training"
+        ]
+      }
+    },
+    "/api/training/pool/peers": {
+      "get": {
+        "operationId": "listTrainingPeers",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Training"
+        ]
+      }
+    },
+    "/api/training/pool/capabilities": {
+      "get": {
+        "operationId": "getPeerCapabilities",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Training"
+        ]
+      }
+    },
+    "/api/training/pool/jobs": {
+      "post": {
+        "operationId": "receivePeerJob",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrainingJobManifestBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Training"
+        ]
+      }
+    },
+    "/api/training/pool/jobs/{id}": {
+      "get": {
+        "operationId": "getPeerJobStatus",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Training"
+        ]
+      }
+    },
+    "/api/memory-connect/start": {
+      "get": {
+        "operationId": "startNavigation",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "MemoryConnect"
+        ]
+      },
+      "post": {
+        "operationId": "start",
+        "parameters": [],
+        "responses": {
+          "201": {
             "description": ""
           }
         },
@@ -6466,10 +6966,22 @@
     },
     "/api/memory-connect/callback": {
       "get": {
-        "operationId": "callback",
+        "operationId": "callbackNavigation",
         "parameters": [],
         "responses": {
           "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "MemoryConnect"
+        ]
+      },
+      "post": {
+        "operationId": "callback",
+        "parameters": [],
+        "responses": {
+          "201": {
             "description": ""
           }
         },
@@ -6581,6 +7093,46 @@
         },
         "tags": [
           "MemoryConnect"
+        ]
+      }
+    },
+    "/api/app-links": {
+      "get": {
+        "operationId": "list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AppLinks"
+        ]
+      }
+    },
+    "/api/app-links/approval": {
+      "post": {
+        "operationId": "approve",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AppLinks"
+        ]
+      },
+      "delete": {
+        "operationId": "revoke",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AppLinks"
         ]
       }
     },
@@ -6937,16 +7489,10 @@
           "isPasswordResetDisabled": {
             "type": "boolean"
           },
-          "allowAutoThemes": {
-            "type": "boolean"
-          },
           "allowErrorMonitoring": {
             "type": "boolean"
           },
           "themeColor": {
-            "type": "string"
-          },
-          "themeBase": {
             "type": "string"
           },
           "localDomain": {
@@ -6963,6 +7509,15 @@
           },
           "sessionRefreshRecommendedAt": {
             "type": "number"
+          },
+          "didAuthEnabled": {
+            "type": "boolean"
+          },
+          "keriOobiEnabled": {
+            "type": "boolean"
+          },
+          "allowCloudFallback": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -6971,10 +7526,8 @@
           "isConfigured",
           "isGuestDashboardEnabled",
           "isPasswordResetDisabled",
-          "allowAutoThemes",
           "allowErrorMonitoring",
           "themeColor",
-          "themeBase",
           "localDomain",
           "domain",
           "sslPort"
@@ -7030,9 +7583,6 @@
               "advancedSettings": {
                 "type": "boolean"
               },
-              "allowAutoThemes": {
-                "type": "boolean"
-              },
               "allowErrorMonitoring": {
                 "type": "boolean"
               },
@@ -7052,9 +7602,6 @@
                 "pattern": "^\\d+[kmg]?b?$"
               },
               "autoAllocateAppResources": {
-                "type": "boolean"
-              },
-              "autoUpdates": {
                 "type": "boolean"
               },
               "demoMode": {
@@ -7134,16 +7681,7 @@
               "experimental_insecureCookie": {
                 "type": "boolean"
               },
-              "themeBase": {
-                "type": "string"
-              },
               "themeColor": {
-                "type": "string"
-              },
-              "ciHubApiKey": {
-                "type": "string"
-              },
-              "ciHubMoveKey": {
                 "type": "string"
               },
               "ciHubOrganizationId": {
@@ -7167,7 +7705,8 @@
                   "ollama",
                   "vllm",
                   "lemonade",
-                  "omlx"
+                  "omlx",
+                  "localai"
                 ]
               },
               "inferenceModel": {
@@ -7177,9 +7716,6 @@
                 "type": "string"
               },
               "inferenceVisionModel": {
-                "type": "string"
-              },
-              "inferenceVllmApiKey": {
                 "type": "string"
               },
               "inferenceVllmUrl": {
@@ -7203,6 +7739,19 @@
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 64
+              },
+              "inferenceOllamaKvCacheType": {
+                "type": "string",
+                "enum": [
+                  "f16",
+                  "q8_0",
+                  "q4_0"
+                ]
+              },
+              "inferenceOllamaKeepAlive": {
+                "type": "integer",
+                "minimum": -1,
+                "maximum": 31536000
               },
               "hubPoolEnabled": {
                 "type": "boolean"
@@ -7320,46 +7869,10 @@
                   ],
                   "additionalProperties": false
                 }
-              },
-              "inferenceCloudProviders": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "provider": {
-                      "type": "string",
-                      "enum": [
-                        "openai",
-                        "anthropic",
-                        "google",
-                        "github-copilot"
-                      ]
-                    },
-                    "apiKey": {
-                      "type": "string"
-                    },
-                    "baseUrl": {
-                      "type": "string"
-                    },
-                    "defaultModel": {
-                      "type": "string"
-                    },
-                    "enabled": {
-                      "type": "boolean"
-                    }
-                  },
-                  "required": [
-                    "provider",
-                    "defaultModel",
-                    "enabled"
-                  ],
-                  "additionalProperties": false
-                }
               }
             },
             "required": [
               "advancedSettings",
-              "allowAutoThemes",
               "allowErrorMonitoring",
               "appDataPath",
               "demoMode",
@@ -7571,13 +8084,22 @@
         ],
         "additionalProperties": false
       },
+      "HubAccessDto": {
+        "type": "object",
+        "properties": {
+          "manageHub": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "manageHub"
+        ],
+        "additionalProperties": false
+      },
       "UserSettingsBody": {
         "type": "object",
         "properties": {
           "advancedSettings": {
-            "type": "boolean"
-          },
-          "allowAutoThemes": {
             "type": "boolean"
           },
           "allowErrorMonitoring": {
@@ -7676,16 +8198,7 @@
           "experimental_insecureCookie": {
             "type": "boolean"
           },
-          "themeBase": {
-            "type": "string"
-          },
           "themeColor": {
-            "type": "string"
-          },
-          "ciHubApiKey": {
-            "type": "string"
-          },
-          "ciHubMoveKey": {
             "type": "string"
           },
           "ciHubOrganizationId": {
@@ -7709,7 +8222,8 @@
               "ollama",
               "vllm",
               "lemonade",
-              "omlx"
+              "omlx",
+              "localai"
             ]
           },
           "inferenceModel": {
@@ -7730,6 +8244,9 @@
           "inferenceOmlxUrl": {
             "type": "string"
           },
+          "inferenceOmlxApiKey": {
+            "type": "string"
+          },
           "inferenceDecodeEndpoint": {
             "type": "string"
           },
@@ -7745,6 +8262,19 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 64
+          },
+          "inferenceOllamaKvCacheType": {
+            "type": "string",
+            "enum": [
+              "f16",
+              "q8_0",
+              "q4_0"
+            ]
+          },
+          "inferenceOllamaKeepAlive": {
+            "type": "integer",
+            "minimum": -1,
+            "maximum": 31536000
           },
           "hubPoolEnabled": {
             "type": "boolean"
@@ -7910,6 +8440,97 @@
         },
         "required": [
           "allowErrorMonitoring"
+        ],
+        "additionalProperties": false
+      },
+      "ApiKeyListDto": {
+        "type": "object",
+        "properties": {
+          "keys": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "number"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "prefix": {
+                  "type": "string"
+                },
+                "scopes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "capability": {
+                  "type": "string",
+                  "enum": [
+                    "read",
+                    "write",
+                    "full"
+                  ]
+                },
+                "managed": {
+                  "type": "boolean"
+                },
+                "ownerAppUrn": {
+                  "nullable": true,
+                  "type": "string"
+                },
+                "expiresAt": {
+                  "nullable": true,
+                  "type": "string"
+                },
+                "lastUsedAt": {
+                  "nullable": true,
+                  "type": "string"
+                },
+                "createdAt": {
+                  "type": "string"
+                },
+                "createdByUserId": {
+                  "nullable": true,
+                  "type": "number"
+                },
+                "createdByUsername": {
+                  "nullable": true,
+                  "type": "string"
+                },
+                "hubWideBlocked": {
+                  "nullable": true,
+                  "type": "string",
+                  "enum": [
+                    "app-key",
+                    "no-creator",
+                    "creator-role"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "prefix",
+                "scopes",
+                "capability",
+                "managed",
+                "ownerAppUrn",
+                "expiresAt",
+                "lastUsedAt",
+                "createdAt",
+                "createdByUserId",
+                "createdByUsername",
+                "hubWideBlocked"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "keys"
         ],
         "additionalProperties": false
       },
@@ -8298,6 +8919,9 @@
           "confirmation": {
             "type": "string",
             "minLength": 1
+          },
+          "removeAppsFromPortal": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -8355,6 +8979,129 @@
         ],
         "additionalProperties": false
       },
+      "DidChallengeBody": {
+        "type": "object",
+        "properties": {
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "sign-in",
+              "link"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "DidChallengeDto": {
+        "type": "object",
+        "properties": {
+          "challengeId": {
+            "type": "string"
+          },
+          "nonce": {
+            "type": "string"
+          },
+          "audience": {
+            "type": "string"
+          },
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "sign-in",
+              "link"
+            ]
+          },
+          "expiresAt": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "challengeId",
+          "nonce",
+          "audience",
+          "purpose",
+          "expiresAt"
+        ],
+        "additionalProperties": false
+      },
+      "DidProofBody": {
+        "type": "object",
+        "properties": {
+          "challengeId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "idToken": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "challengeId",
+          "idToken"
+        ],
+        "additionalProperties": false
+      },
+      "DidLinksDto": {
+        "type": "object",
+        "properties": {
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "did": {
+                  "type": "string"
+                },
+                "linkedAt": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "did",
+                "linkedAt"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "links"
+        ],
+        "additionalProperties": false
+      },
+      "DidLinkDto": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "did": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "success",
+          "did"
+        ],
+        "additionalProperties": false
+      },
+      "DidUnlinkBody": {
+        "type": "object",
+        "properties": {
+          "did": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "did"
+        ],
+        "additionalProperties": false
+      },
       "RegisterBody": {
         "type": "object",
         "properties": {
@@ -8379,6 +9126,9 @@
           },
           "requiresEmailVerification": {
             "type": "boolean"
+          },
+          "sessionId": {
+            "type": "string"
           }
         },
         "required": [
@@ -8490,6 +9240,19 @@
         "required": [
           "sessionId",
           "redirectPath"
+        ],
+        "additionalProperties": false
+      },
+      "PortalDesktopConfigDto": {
+        "type": "object",
+        "properties": {
+          "portalUrl": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "portalUrl"
         ],
         "additionalProperties": false
       },
@@ -9194,7 +9957,8 @@
                             },
                             "spec_path": {
                               "default": "agents/openapi.yaml",
-                              "type": "string"
+                              "type": "string",
+                              "minLength": 1
                             },
                             "base_url": {
                               "type": "string"
@@ -9831,6 +10595,69 @@
                             }
                           },
                           "additionalProperties": false
+                        },
+                        "links": {
+                          "type": "object",
+                          "properties": {
+                            "connects_to": {
+                              "default": [],
+                              "maxItems": 16,
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "app": {
+                                    "type": "string",
+                                    "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                                  },
+                                  "store": {
+                                    "type": "string",
+                                    "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                                  },
+                                  "service": {
+                                    "type": "string",
+                                    "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                                  },
+                                  "alias": {
+                                    "type": "string",
+                                    "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                                  }
+                                },
+                                "required": [
+                                  "app",
+                                  "service"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "accepts_from": {
+                              "default": [],
+                              "maxItems": 32,
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "app": {
+                                    "type": "string",
+                                    "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                                  },
+                                  "store": {
+                                    "type": "string",
+                                    "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                                  }
+                                },
+                                "required": [
+                                  "app"
+                                ],
+                                "additionalProperties": false
+                              }
+                            }
+                          },
+                          "required": [
+                            "connects_to",
+                            "accepts_from"
+                          ],
+                          "additionalProperties": false
                         }
                       },
                       "required": [
@@ -9839,6 +10666,28 @@
                         "sse_events"
                       ],
                       "additionalProperties": false
+                    },
+                    "data_moves": {
+                      "default": [],
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "from": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "to": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "from",
+                          "to"
+                        ],
+                        "additionalProperties": false
+                      }
                     }
                   },
                   "required": [
@@ -9865,7 +10714,8 @@
                     "dynamic_config",
                     "created_at",
                     "updated_at",
-                    "force_pull"
+                    "force_pull",
+                    "data_moves"
                   ],
                   "additionalProperties": false
                 },
@@ -10079,6 +10929,10 @@
                     "ignoredVersion": {
                       "nullable": true,
                       "type": "number"
+                    },
+                    "publicUrl": {
+                      "nullable": true,
+                      "type": "string"
                     }
                   },
                   "required": [
@@ -10467,7 +11321,8 @@
                             },
                             "spec_path": {
                               "default": "agents/openapi.yaml",
-                              "type": "string"
+                              "type": "string",
+                              "minLength": 1
                             },
                             "base_url": {
                               "type": "string"
@@ -11104,6 +11959,69 @@
                             }
                           },
                           "additionalProperties": false
+                        },
+                        "links": {
+                          "type": "object",
+                          "properties": {
+                            "connects_to": {
+                              "default": [],
+                              "maxItems": 16,
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "app": {
+                                    "type": "string",
+                                    "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                                  },
+                                  "store": {
+                                    "type": "string",
+                                    "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                                  },
+                                  "service": {
+                                    "type": "string",
+                                    "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                                  },
+                                  "alias": {
+                                    "type": "string",
+                                    "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                                  }
+                                },
+                                "required": [
+                                  "app",
+                                  "service"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "accepts_from": {
+                              "default": [],
+                              "maxItems": 32,
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "app": {
+                                    "type": "string",
+                                    "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                                  },
+                                  "store": {
+                                    "type": "string",
+                                    "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                                  }
+                                },
+                                "required": [
+                                  "app"
+                                ],
+                                "additionalProperties": false
+                              }
+                            }
+                          },
+                          "required": [
+                            "connects_to",
+                            "accepts_from"
+                          ],
+                          "additionalProperties": false
                         }
                       },
                       "required": [
@@ -11112,6 +12030,28 @@
                         "sse_events"
                       ],
                       "additionalProperties": false
+                    },
+                    "data_moves": {
+                      "default": [],
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "from": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "to": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "from",
+                          "to"
+                        ],
+                        "additionalProperties": false
+                      }
                     }
                   },
                   "required": [
@@ -11138,7 +12078,8 @@
                     "dynamic_config",
                     "created_at",
                     "updated_at",
-                    "force_pull"
+                    "force_pull",
+                    "data_moves"
                   ],
                   "additionalProperties": false
                 },
@@ -11598,6 +12539,86 @@
             ],
             "additionalProperties": false
           },
+          "operation": {
+            "nullable": true,
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "enum": [
+                  "install",
+                  "start",
+                  "stop",
+                  "restart",
+                  "update",
+                  "uninstall",
+                  "reset",
+                  "backup",
+                  "restore",
+                  "generate_env"
+                ]
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "failure": {
+            "nullable": true,
+            "type": "object",
+            "properties": {
+              "message": {
+                "type": "string"
+              },
+              "errorCode": {
+                "type": "string"
+              },
+              "errorDetail": {
+                "type": "string"
+              },
+              "settingsPath": {
+                "type": "string"
+              },
+              "serviceFailure": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "restarting",
+                      "exited",
+                      "none_running"
+                    ]
+                  },
+                  "service": {
+                    "type": "string"
+                  },
+                  "others": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "exitCode": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "logLine": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "message"
+            ],
+            "additionalProperties": false
+          },
           "info": {
             "type": "object",
             "properties": {
@@ -11969,7 +12990,8 @@
                       },
                       "spec_path": {
                         "default": "agents/openapi.yaml",
-                        "type": "string"
+                        "type": "string",
+                        "minLength": 1
                       },
                       "base_url": {
                         "type": "string"
@@ -12606,6 +13628,69 @@
                       }
                     },
                     "additionalProperties": false
+                  },
+                  "links": {
+                    "type": "object",
+                    "properties": {
+                      "connects_to": {
+                        "default": [],
+                        "maxItems": 16,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "app": {
+                              "type": "string",
+                              "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                            },
+                            "store": {
+                              "type": "string",
+                              "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                            },
+                            "service": {
+                              "type": "string",
+                              "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                            },
+                            "alias": {
+                              "type": "string",
+                              "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                            }
+                          },
+                          "required": [
+                            "app",
+                            "service"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "accepts_from": {
+                        "default": [],
+                        "maxItems": 32,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "app": {
+                              "type": "string",
+                              "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                            },
+                            "store": {
+                              "type": "string",
+                              "pattern": "^[^.\\-\\s/\\\\\\0:][^\\s/\\\\\\0:]*$"
+                            }
+                          },
+                          "required": [
+                            "app"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "connects_to",
+                      "accepts_from"
+                    ],
+                    "additionalProperties": false
                   }
                 },
                 "required": [
@@ -12614,6 +13699,28 @@
                   "sse_events"
                 ],
                 "additionalProperties": false
+              },
+              "data_moves": {
+                "default": [],
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "from": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "to": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "from",
+                    "to"
+                  ],
+                  "additionalProperties": false
+                }
               }
             },
             "required": [
@@ -12640,7 +13747,8 @@
               "dynamic_config",
               "created_at",
               "updated_at",
-              "force_pull"
+              "force_pull",
+              "data_moves"
             ],
             "additionalProperties": false
           },
@@ -12904,6 +14012,18 @@
         "required": [
           "current",
           "new"
+        ],
+        "additionalProperties": false
+      },
+      "GuestVisibilityBodyDto": {
+        "type": "object",
+        "properties": {
+          "visible": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "visible"
         ],
         "additionalProperties": false
       },
@@ -13347,7 +14467,8 @@
               "ollama",
               "vllm",
               "lemonade",
-              "omlx"
+              "omlx",
+              "localai"
             ]
           },
           "model": {
@@ -13379,6 +14500,10 @@
             "type": "string",
             "format": "uri"
           },
+          "omlxApiKey": {
+            "nullable": true,
+            "type": "string"
+          },
           "decodeEndpoint": {
             "nullable": true,
             "type": "string",
@@ -13400,6 +14525,21 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 64
+          },
+          "ollamaKeepAlive": {
+            "nullable": true,
+            "type": "integer",
+            "minimum": -1,
+            "maximum": 31536000
+          },
+          "ollamaKvCacheType": {
+            "nullable": true,
+            "type": "string",
+            "enum": [
+              "f16",
+              "q8_0",
+              "q4_0"
+            ]
           }
         },
         "required": [
@@ -13427,6 +14567,70 @@
         },
         "required": [
           "phase"
+        ],
+        "additionalProperties": false
+      },
+      "LoadModelBody": {
+        "type": "object",
+        "properties": {
+          "modelId": {
+            "type": "string"
+          },
+          "backend": {
+            "type": "string",
+            "enum": [
+              "ollama",
+              "vllm",
+              "lemonade",
+              "omlx",
+              "localai"
+            ]
+          }
+        },
+        "required": [
+          "modelId"
+        ],
+        "additionalProperties": false
+      },
+      "UnloadModelBody": {
+        "type": "object",
+        "properties": {
+          "modelId": {
+            "type": "string"
+          },
+          "backend": {
+            "type": "string",
+            "enum": [
+              "ollama",
+              "vllm",
+              "lemonade",
+              "omlx",
+              "localai"
+            ]
+          }
+        },
+        "required": [
+          "modelId"
+        ],
+        "additionalProperties": false
+      },
+      "CloudFallbackPolicyDto": {
+        "type": "object",
+        "properties": {
+          "allowCloudFallback": {
+            "type": "boolean"
+          },
+          "hasCloudFallback": {
+            "type": "boolean"
+          },
+          "envFlag": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "allowCloudFallback",
+          "hasCloudFallback",
+          "envFlag"
         ],
         "additionalProperties": false
       },
@@ -13584,6 +14788,210 @@
         ],
         "additionalProperties": false
       },
+      "RehydrateStatusDto": {
+        "type": "object",
+        "properties": {
+          "completed": {
+            "type": "boolean"
+          },
+          "state": {
+            "type": "object",
+            "properties": {
+              "completedAt": {
+                "type": "string"
+              },
+              "queuedUrns": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "startedUrns": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "skipped": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    },
+                    "appUrn": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "already_running",
+                        "busy",
+                        "unlisted",
+                        "no_target",
+                        "refused",
+                        "failed"
+                      ]
+                    },
+                    "params": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "reason"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "completedAt",
+              "queuedUrns",
+              "startedUrns",
+              "skipped"
+            ],
+            "additionalProperties": false
+          },
+          "restoreIntent": {
+            "type": "boolean"
+          },
+          "checking": {
+            "type": "boolean"
+          },
+          "noticePending": {
+            "type": "boolean"
+          },
+          "summary": {
+            "type": "object",
+            "properties": {
+              "completedAt": {
+                "type": "string"
+              },
+              "restored": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "urn": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "usesAi": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "urn",
+                    "status",
+                    "usesAi"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "notRestored": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "urn": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "already_running",
+                        "busy",
+                        "unlisted",
+                        "no_target",
+                        "refused",
+                        "failed"
+                      ]
+                    },
+                    "params": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "reason"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "aiModelChosen": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "completedAt",
+              "restored",
+              "notRestored",
+              "aiModelChosen"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "completed",
+          "restoreIntent",
+          "checking",
+          "noticePending"
+        ],
+        "additionalProperties": false
+      },
+      "AcknowledgeRestoreResponseDto": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "success"
+        ],
+        "additionalProperties": false
+      },
+      "McpAccessBody": {
+        "type": "object",
+        "properties": {
+          "access": {
+            "type": "string",
+            "enum": [
+              "none",
+              "read",
+              "write",
+              "full"
+            ]
+          }
+        },
+        "required": [
+          "access"
+        ],
+        "additionalProperties": false
+      },
       "AppFormBody": {
         "type": "object",
         "properties": {
@@ -13620,6 +15028,15 @@
           },
           "autoRestartOnDomainChange": {
             "type": "boolean"
+          },
+          "mcpAccess": {
+            "type": "string",
+            "enum": [
+              "none",
+              "read",
+              "write",
+              "full"
+            ]
           },
           "localSubdomain": {
             "type": "string",
@@ -14025,6 +15442,111 @@
         ],
         "additionalProperties": false
       },
+      "TerminusHealthIndicatorResult": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "up",
+              "degraded",
+              "down"
+            ],
+            "description": "The status of this health indicator"
+          },
+          "responseTime": {
+            "type": "number",
+            "description": "Time the health indicator took to respond, in ms"
+          },
+          "cachedResponse": {
+            "type": "boolean",
+            "description": "Whether this result was served from the cache"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "TerminusHealthCheckResult": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "error",
+              "ok",
+              "degraded",
+              "shutting_down"
+            ],
+            "example": "ok"
+          },
+          "info": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/TerminusHealthIndicatorResult"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              ]
+            },
+            "example": {
+              "database": {
+                "status": "up",
+                "responseTime": 12
+              }
+            }
+          },
+          "error": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/TerminusHealthIndicatorResult"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              ]
+            },
+            "example": {}
+          },
+          "details": {
+            "type": "object",
+            "additionalProperties": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/TerminusHealthIndicatorResult"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              ]
+            },
+            "example": {
+              "database": {
+                "status": "up",
+                "responseTime": 12
+              }
+            }
+          }
+        },
+        "required": [
+          "status",
+          "details"
+        ]
+      },
       "PublicWebRepairBody": {
         "type": "object",
         "properties": {
@@ -14130,6 +15652,34 @@
           "appUrn",
           "appName",
           "storeId"
+        ],
+        "additionalProperties": false
+      },
+      "CustomAppAccessDto": {
+        "type": "object",
+        "properties": {
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "view",
+                "start",
+                "stop",
+                "restart",
+                "install",
+                "update",
+                "uninstall",
+                "reset",
+                "backup",
+                "restore",
+                "configure"
+              ]
+            }
+          }
+        },
+        "required": [
+          "actions"
         ],
         "additionalProperties": false
       },
@@ -14424,15 +15974,11 @@
                           "value": {
                             "anyOf": [
                               {
-                                "anyOf": [
-                                  {
-                                    "type": "string",
-                                    "minLength": 1
-                                  },
-                                  {
-                                    "type": "number"
-                                  }
-                                ]
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              {
+                                "type": "number"
                               },
                               {
                                 "type": "boolean"
@@ -14714,6 +16260,10 @@
                     },
                     "platform": {
                       "type": "string"
+                    },
+                    "runtime": {
+                      "type": "string",
+                      "pattern": "^[a-zA-Z0-9_.-]+$"
                     }
                   },
                   "required": [
@@ -15007,15 +16557,11 @@
                                 "value": {
                                   "anyOf": [
                                     {
-                                      "anyOf": [
-                                        {
-                                          "type": "string",
-                                          "minLength": 1
-                                        },
-                                        {
-                                          "type": "number"
-                                        }
-                                      ]
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "type": "number"
                                     },
                                     {
                                       "type": "boolean"
@@ -15297,6 +16843,10 @@
                           },
                           "platform": {
                             "type": "string"
+                          },
+                          "runtime": {
+                            "type": "string",
+                            "pattern": "^[a-zA-Z0-9_.-]+$"
                           }
                         },
                         "additionalProperties": false
@@ -15639,15 +17189,11 @@
                           "value": {
                             "anyOf": [
                               {
-                                "anyOf": [
-                                  {
-                                    "type": "string",
-                                    "minLength": 1
-                                  },
-                                  {
-                                    "type": "number"
-                                  }
-                                ]
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              {
+                                "type": "number"
                               },
                               {
                                 "type": "boolean"
@@ -15929,6 +17475,10 @@
                     },
                     "platform": {
                       "type": "string"
+                    },
+                    "runtime": {
+                      "type": "string",
+                      "pattern": "^[a-zA-Z0-9_.-]+$"
                     }
                   },
                   "required": [
@@ -16222,15 +17772,11 @@
                                 "value": {
                                   "anyOf": [
                                     {
-                                      "anyOf": [
-                                        {
-                                          "type": "string",
-                                          "minLength": 1
-                                        },
-                                        {
-                                          "type": "number"
-                                        }
-                                      ]
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "type": "number"
                                     },
                                     {
                                       "type": "boolean"
@@ -16512,6 +18058,10 @@
                           },
                           "platform": {
                             "type": "string"
+                          },
+                          "runtime": {
+                            "type": "string",
+                            "pattern": "^[a-zA-Z0-9_.-]+$"
                           }
                         },
                         "additionalProperties": false
@@ -16549,6 +18099,28 @@
         ],
         "additionalProperties": false
       },
+      "UpdateBlocksDto": {
+        "type": "object",
+        "properties": {
+          "updateBlockedReason": {
+            "nullable": true,
+            "type": "string"
+          },
+          "autoUpdateBlockedReason": {
+            "nullable": true,
+            "type": "string"
+          },
+          "desktopAppUpdatesHub": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "updateBlockedReason",
+          "autoUpdateBlockedReason",
+          "desktopAppUpdatesHub"
+        ],
+        "additionalProperties": false
+      },
       "DesktopReleaseDto": {
         "type": "object",
         "properties": {
@@ -16564,6 +18136,218 @@
         "required": [
           "latestVersion",
           "downloadUrl"
+        ],
+        "additionalProperties": false
+      },
+      "TrainingJobManifestBody": {
+        "type": "object",
+        "properties": {
+          "jobId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[a-zA-Z0-9_-]+$"
+          },
+          "appId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "jobType": {
+            "type": "string",
+            "enum": [
+              "hbpe_bootstrap_hmt",
+              "hbpe_nightly_lora",
+              "llm_lora_finetune",
+              "embedding_adaptation",
+              "unsloth_decision_train"
+            ]
+          },
+          "userId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "model": {
+            "type": "object",
+            "properties": {
+              "backboneId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              },
+              "framework": {
+                "type": "string",
+                "enum": [
+                  "pytorch",
+                  "mlx",
+                  "tinygrad",
+                  "unsloth"
+                ]
+              },
+              "targetFormat": {
+                "type": "string",
+                "enum": [
+                  "onnx_int8",
+                  "pytorch_lora",
+                  "mlx_adapter",
+                  "unsloth_decision_lora"
+                ]
+              },
+              "baseCheckpointPath": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "backboneId",
+              "framework",
+              "targetFormat"
+            ],
+            "additionalProperties": false
+          },
+          "dataset": {
+            "type": "object",
+            "properties": {
+              "format": {
+                "type": "string",
+                "enum": [
+                  "token_stream_jsonl",
+                  "arrow",
+                  "parquet"
+                ]
+              },
+              "dataPath": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "trainDaysCount": {
+                "type": "integer",
+                "minimum": 0,
+                "exclusiveMinimum": true,
+                "maximum": 9007199254740991
+              },
+              "valFraction": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "exclusiveMaximum": true
+              }
+            },
+            "required": [
+              "format",
+              "dataPath",
+              "valFraction"
+            ],
+            "additionalProperties": false
+          },
+          "hyperparameters": {
+            "type": "object",
+            "properties": {
+              "batchSize": {
+                "type": "integer",
+                "minimum": 0,
+                "exclusiveMinimum": true,
+                "maximum": 9007199254740991
+              },
+              "learningRate": {
+                "type": "number",
+                "minimum": 0,
+                "exclusiveMinimum": true
+              },
+              "epochs": {
+                "type": "integer",
+                "minimum": 0,
+                "exclusiveMinimum": true,
+                "maximum": 9007199254740991
+              },
+              "weightDecay": {
+                "type": "number",
+                "minimum": 0
+              },
+              "loraRank": {
+                "type": "integer",
+                "minimum": 0,
+                "exclusiveMinimum": true,
+                "maximum": 9007199254740991
+              },
+              "loraAlpha": {
+                "type": "number",
+                "minimum": 0,
+                "exclusiveMinimum": true
+              },
+              "patience": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "mixedPrecision": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "batchSize",
+              "learningRate",
+              "epochs",
+              "mixedPrecision"
+            ],
+            "additionalProperties": false
+          },
+          "resourcePolicy": {
+            "type": "object",
+            "properties": {
+              "devicePreference": {
+                "type": "string",
+                "enum": [
+                  "auto",
+                  "cuda",
+                  "mps",
+                  "cpu"
+                ]
+              },
+              "maxVramMb": {
+                "type": "integer",
+                "minimum": 0,
+                "exclusiveMinimum": true,
+                "maximum": 9007199254740991
+              },
+              "allowRemoteOffload": {
+                "type": "boolean"
+              },
+              "priority": {
+                "type": "string",
+                "enum": [
+                  "interactive",
+                  "normal",
+                  "nightly_idle"
+                ]
+              },
+              "timeoutSeconds": {
+                "type": "integer",
+                "minimum": 0,
+                "exclusiveMinimum": true,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "devicePreference",
+              "allowRemoteOffload",
+              "priority",
+              "timeoutSeconds"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "jobId",
+          "appId",
+          "jobType",
+          "model",
+          "dataset",
+          "hyperparameters",
+          "resourcePolicy"
         ],
         "additionalProperties": false
       },
@@ -16718,14 +18502,9 @@
             "type": "string"
           },
           "maxLines": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "minimum": -9007199254740991,
-                "maximum": 9007199254740991
-              },
-              {}
-            ]
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
           }
         },
         "required": [
@@ -16737,14 +18516,9 @@
         "type": "object",
         "properties": {
           "maxLines": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "minimum": -9007199254740991,
-                "maximum": 9007199254740991
-              },
-              {}
-            ]
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
           }
         },
         "additionalProperties": false
@@ -16758,7 +18532,8 @@
               "ollama",
               "vllm",
               "lemonade",
-              "omlx"
+              "omlx",
+              "localai"
             ]
           },
           "vllmUrl": {
@@ -16789,7 +18564,8 @@
               "ollama",
               "vllm",
               "lemonade",
-              "omlx"
+              "omlx",
+              "localai"
             ]
           }
         },
@@ -16990,18 +18766,6 @@
         ],
         "additionalProperties": false
       },
-      "UnloadModelBody": {
-        "type": "object",
-        "properties": {
-          "modelId": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "modelId"
-        ],
-        "additionalProperties": false
-      },
       "SetCloudProviderBody": {
         "type": "object",
         "properties": {
@@ -17051,6 +18815,9 @@
         "properties": {
           "targetVersion": {
             "type": "string"
+          },
+          "includeDesktopApp": {
+            "type": "boolean"
           }
         },
         "additionalProperties": false

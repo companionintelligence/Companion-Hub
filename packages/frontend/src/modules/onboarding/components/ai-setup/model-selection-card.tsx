@@ -1,13 +1,17 @@
 import { cn } from '@/lib/utils';
-import type { CuratedModel, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
+import type { CuratedModel, HardwareTier, InferenceBackendType, ModelContextPlan } from '@ci-hub/common/types';
 import { ChevronRight, HardDrive, MemoryStick } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
+import { asLegacyTranslate, type LegacyTranslate } from '@/lib/i18n/legacy-translate';
 import { CubeModelsIcon, ModelIcon } from './icons';
 import { ARTIFICIAL_ANALYSIS_URL, type LevelColor, LEVEL_TAG, LEVEL_TEXT, resourceColor, scoreColor, TIER_TAG_COLOR, TIER_TAG_LABEL } from './levels';
 import { ModelCard, StepSection } from './primitives';
+import { ModelContextNote } from './model-context-note';
 import { useTranslation } from 'react-i18next';
 
 interface RecommendedModelsProps {
+  /** The profile's `contextPlans`: what each model gets here, shown under its card. */
+  contextPlans?: Record<string, ModelContextPlan>;
   tier: HardwareTier;
   recommendedModels: CuratedModel[];
   availableModels: CuratedModel[];
@@ -45,7 +49,7 @@ const MODALITY_FALLBACK_TAG: Record<string, string> = {
  * Reasoning / Vision / Tools / Audio (from catalog capability metadata) for LLMs, and a single
  * descriptive tag for non-LLM modalities (Embedding / Speech / Transcription).
  */
-type TranslateFn = (key: string, options?: Record<string, unknown>) => string;
+type TranslateFn = LegacyTranslate;
 
 export function modelTags(model: CuratedModel, t?: TranslateFn): string[] {
   if (model.modality && model.modality !== 'llm') {
@@ -94,6 +98,7 @@ export function modelScores(model: CuratedModel): { intelligence?: number } {
 /** Step 2 — Recommended Models. Top catalog models for the detected hardware, as selectable tiles.
  * The collapsible Other Models drawer is rendered via `children` at the bottom of the section. */
 export const RecommendedModels = ({
+  contextPlans,
   tier,
   recommendedModels,
   availableModels,
@@ -113,14 +118,13 @@ export const RecommendedModels = ({
     .filter((m) => recommendedIds.has(m.id))
     .sort((a, b) => Number(b.id === preferredModelId) - Number(a.id === preferredModelId));
 
+  // The Hub downloads what is ticked on every engine but vLLM, oMLX's models through oMLX.
   const installHint =
-    chatBackend === 'omlx'
-      ? t('ONBOARDING_BACKEND_OMLX_HINT')
-      : chatBackend === 'vllm'
-        ? t('ONBOARDING_MODELS_VLLM_INSTALL_HINT')
-        : chatBackend === 'lemonade'
-          ? t('ONBOARDING_MODELS_LEMONADE_INSTALL_HINT')
-          : t('ONBOARDING_MODELS_INSTALL_DURING_DOWNLOAD');
+    chatBackend === 'vllm'
+      ? t('ONBOARDING_MODELS_VLLM_INSTALL_HINT')
+      : chatBackend === 'lemonade'
+        ? t('ONBOARDING_MODELS_LEMONADE_INSTALL_HINT')
+        : t('ONBOARDING_MODELS_INSTALL_DURING_DOWNLOAD');
 
   return (
     <StepSection number={4} badge="recommended" title={t('ONBOARDING_MODELS_TITLE')}>
@@ -135,13 +139,14 @@ export const RecommendedModels = ({
               checkboxTestId={`model-checkbox-${model.id}`}
               title={model.displayName}
               icon={<ModelIcon model={model} />}
-              tags={modelTags(model, t)}
+              tags={modelTags(model, asLegacyTranslate(t))}
               selected={selectedModelIds.includes(model.id)}
               onToggle={() => onToggleModel(model.id)}
               agentDefault={model.id === preferredModelId}
               installed={installed.has(model.id)}
               meta={modelMeta(model, false)}
               metaInline
+              contextNote={<ModelContextNote plan={contextPlans?.[model.id]} />}
               scores={modelScores(model)}
             />
           ))}
@@ -168,7 +173,7 @@ interface OtherModelsProps {
 function ScoreCell({ value }: { value?: number }) {
   const { t } = useTranslation();
   if (value == null) return <span className="text-muted-foreground/50">{t('COMMON_DASH')}</span>;
-  return <span className={cn('font-semibold tabular-nums', LEVEL_TEXT[scoreColor(value)])}>{Math.round(value)}</span>;
+  return <span className={cn('font-medium tabular-nums', LEVEL_TEXT[scoreColor(value)])}>{Math.round(value)}</span>;
 }
 
 function ResourceCell({ mb }: { mb?: number }) {
@@ -225,15 +230,13 @@ function ModelTableRow({
         </label>
       </td>
       <td className="py-2 pr-3 align-middle">
-        <span
-          className={cn('rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide', LEVEL_TAG[TIER_TAG_COLOR[tier] ?? 'gold'])}
-        >
+        <span className={cn('rounded border px-1.5 py-0.5 text-[10px] font-medium  ', LEVEL_TAG[TIER_TAG_COLOR[tier] ?? 'gold'])}>
           {TIER_TAG_LABEL[tier] ?? tier}
         </span>
       </td>
       <td className="py-2 pr-3 align-middle">
         <span className="flex flex-wrap gap-1">
-          {modelTags(model, t).map((tag) => (
+          {modelTags(model, asLegacyTranslate(t)).map((tag) => (
             <span key={tag} className="rounded border border-primary/30 px-1.5 py-0.5 text-[10px] font-medium text-primary/90">
               {tag}
             </span>
@@ -288,14 +291,14 @@ function ModelGroup({
         className="flex w-full items-center gap-2 px-3 py-2 text-left"
       >
         <ChevronRight className={cn('h-4 w-4 flex-shrink-0 transition-transform', open && 'rotate-90')} />
-        <span className="flex-1 text-sm font-semibold">{group.title}</span>
+        <span className="flex-1 text-sm font-medium">{group.title}</span>
         <span className="rounded-full bg-background/40 px-2 py-0.5 text-xs">{group.items.length}</span>
       </button>
       {open && (
         <div className="min-w-0 overflow-x-auto border-t border-border/60 bg-card">
           <table className="w-full border-collapse text-left">
             <thead>
-              <tr className="text-[10px] uppercase tracking-wide text-muted-foreground">
+              <tr className="text-[10px]   text-muted-foreground">
                 <th className="w-8" aria-label={t('ONBOARDING_SELECT')} />
                 <th className="py-1.5 pr-3 font-medium">{t('COMMON_MODEL')}</th>
                 <th className="py-1.5 pr-3 font-medium">{t('ONBOARDING_TIER')}</th>
@@ -432,7 +435,7 @@ export const OtherModelsSection = (props: OtherModelsProps) => {
           <CubeModelsIcon />
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block text-sm font-semibold">{t('ONBOARDING_OTHER_MODELS')}</span>
+          <span className="block text-sm font-medium">{t('ONBOARDING_OTHER_MODELS')}</span>
         </span>
       </div>
       <OtherModels {...props} />

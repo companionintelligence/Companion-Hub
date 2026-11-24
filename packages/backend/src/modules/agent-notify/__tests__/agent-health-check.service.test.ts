@@ -113,6 +113,21 @@ describe('AgentHealthCheckService', () => {
       expect(notifyService.notify).not.toHaveBeenCalledWith('system.high_memory', expect.any(Object), expect.any(String));
     });
 
+    it('should report free memory in MB and free disk in GB', async () => {
+      systemService.getSystemLoad.mockResolvedValue({
+        diskUsed: 300,
+        diskSize: 320,
+        percentUsed: 94,
+        cpuLoad: 10,
+        cpuCores: 4,
+        memoryTotal: 195,
+        percentUsedMemory: 95,
+      });
+      await service.runHealthCheck();
+      expect(notifyService.notify).toHaveBeenCalledWith('system.high_memory', { usagePercent: 95, availableMb: 9984 }, 'medium');
+      expect(notifyService.notify).toHaveBeenCalledWith('system.high_disk', { usagePercent: 94, availableGb: 20 }, 'high');
+    });
+
     it('should not re-emit same health event within 1 hour', async () => {
       systemService.getSystemLoad.mockResolvedValue({
         diskUsed: 95,

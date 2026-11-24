@@ -6,6 +6,8 @@ const { usesCrossOriginDesktopApi } = vi.hoisted(() => ({
 
 vi.mock('@/lib/hub-runtime-mode', () => ({
   usesCrossOriginDesktopApi,
+  // A plain browser unless a test makes this a cross-origin desktop build.
+  getHubRuntimeMode: () => (usesCrossOriginDesktopApi() ? 'desktop-embedded' : 'browser'),
 }));
 
 const { isTauriMobileSync, isMobileClient } = vi.hoisted(() => ({
@@ -81,11 +83,13 @@ describe('api-fetch session storage', () => {
     setTauriSessionId(null);
   });
 
-  it('stores the session in sessionStorage for browser builds', () => {
+  // The token is a browser's only credential now (the Hub's cookie reached every app on its host),
+  // and sessionStorage is per tab: a second tab would open signed out. localStorage is still scoped
+  // to this page's scheme, host and port.
+  it('stores the session in localStorage for browser builds, so every tab shares it', () => {
     setTauriSessionId('browser-session');
 
-    expect(sessionStorage.getItem(TAURI_SESSION_STORAGE_KEY)).toBe('browser-session');
-    expect(localStorage.getItem(TAURI_SESSION_STORAGE_KEY)).toBeNull();
+    expect(localStorage.getItem(TAURI_SESSION_STORAGE_KEY)).toBe('browser-session');
     expect(getTauriSessionId()).toBe('browser-session');
   });
 

@@ -2,16 +2,14 @@ import { render } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
 import { poolNodeCards } from '../pool-node-series';
-import { poolReach, type PoolNodeSummary, type PoolPeerSummary } from '../use-dashboard-data';
-import { PoolReach } from './pool-reach';
+import type { PoolNodeSummary, PoolPeerSummary } from '../use-dashboard-data';
+import { PoolReachGraph } from './pool-reach';
 
 /*
- * The reach drawing, rendered. The rules it must keep are the page's: a failed pool status is a
- * failure and not an empty pool, an empty pool is said in words, and a spoke's status is legible
- * without colour and without a mouse.
+ * The reach drawing, rendered. A spoke's status must be legible without colour, and the drawing
+ * must lay out at the width it is shown. The AI pool tab's own tests cover what sits around it.
  */
 
-const READY = { pending: false, failed: false };
 const NOW = Date.now();
 const seenAgo = (seconds: number) => new Date(NOW - seconds * 1000).toISOString().replace('T', ' ').replace('Z', '');
 
@@ -37,15 +35,10 @@ function peer(name: string, extras: Partial<PoolPeerSummary> = {}): PoolPeerSumm
   };
 }
 
-function renderReach(
-  peers: PoolPeerSummary[],
-  state = READY,
-  local: PoolNodeSummary | undefined = LOCAL,
-  routingOff: 'pool' | 'outbound' | null = null,
-) {
-  const cards = poolNodeCards(local, peers, { localLabel: 'This Hub', localContainers: null, now: NOW });
+function renderReach(peers: PoolPeerSummary[], routingOff: 'pool' | 'outbound' | null = null) {
+  const cards = poolNodeCards(LOCAL, peers, { localLabel: 'This Hub', localContainers: null, now: NOW });
 
-  return render(<PoolReach cards={cards} figures={poolReach(peers, local)} routingOff={routingOff} state={state} />).container;
+  return render(<PoolReachGraph cards={cards} routingOff={routingOff} />).container;
 }
 
 const MIXED = [
@@ -56,25 +49,7 @@ const MIXED = [
   peer('beta-red', { enabled: false }),
 ];
 
-describe('PoolReach', () => {
-  it('renders a failed pool status as a failure, never as a Hub with no peers', () => {
-    const container = renderReach([], { pending: false, failed: true });
-
-    expect(container.textContent).toContain('Could not read pool status.');
-    expect(container.querySelector('[data-testid="pool-reach-graph"]')).toBeNull();
-    expect(container.querySelector('[data-testid="pool-reach-empty"]')).toBeNull();
-    // The caption is a fact about pooling, not about the query, so it stays.
-    expect(container.textContent).toContain("isn't reachable from here");
-  });
-
-  it('says in words that nothing is paired, and draws no lone hub pretending to be a pool', () => {
-    const container = renderReach([]);
-
-    expect(container.querySelector('[data-testid="pool-reach-empty"]')?.textContent).toContain('No Hubs paired');
-    expect(container.querySelector('svg')).toBeNull();
-    expect(container.querySelector('[data-testid="pool-reach-legend"]')).toBeNull();
-  });
-
+describe('PoolReachGraph', () => {
   it('draws each status with its own line pattern and marker, not only its own colour', () => {
     const container = renderReach(MIXED);
     const spoke = (status: string) => container.querySelector(`line[data-status="${status}"]`);
@@ -119,26 +94,17 @@ describe('PoolReach', () => {
     expect(spoke?.getAttribute('stroke-dasharray')).toBeTruthy();
     expect(container.querySelector('line[data-spoke="beta-1"]')?.getAttribute('stroke-dasharray')).toBeNull();
     expect(container.textContent).not.toContain('0 models');
-    // Keyed in the legend, counted inside "connected" as the rail counts it.
-    const legend = container.querySelector('[data-testid="pool-reach-legend"]')?.textContent ?? '';
-    expect(legend).toContain('3connected');
-    expect(legend).toContain('2of them degraded');
   });
 
-  it('greys every spoke and says why when this Hub sends work to none of them', () => {
-    const outboundOff = renderReach([peer('beta-1'), peer('core-3')], READY, LOCAL, 'outbound');
-
-    expect(outboundOff.querySelector('[data-testid="pool-reach-routing-off"]')?.textContent).toContain('Outbound routing is off');
+  it('greys every spoke when this Hub sends work to none of them', () => {
+    const outboundOff = renderReach([peer('beta-1'), peer('core-3')], 'outbound');
     for (const spoke of outboundOff.querySelectorAll('line[data-spoke]')) {
       expect(spoke.getAttribute('class')).toContain('stroke-muted-foreground');
       expect(spoke.getAttribute('stroke-dasharray')).toBeTruthy();
     }
 
-    const poolOff = renderReach([peer('beta-1')], READY, LOCAL, 'pool');
-    expect(poolOff.querySelector('[data-testid="pool-reach-routing-off"]')?.textContent).toContain('Pooling is off');
-
     const on = renderReach([peer('beta-1')]);
-    expect(on.querySelector('[data-testid="pool-reach-routing-off"]')).toBeNull();
+    expect(on.querySelector('line[data-spoke="beta-1"]')?.getAttribute('class')).toContain('stroke-success');
   });
 
   it('names what is folded away with each status, not as "connected"', () => {
@@ -161,14 +127,13 @@ describe('PoolReach', () => {
     for (const size of sizes) expect(size).toBeGreaterThanOrEqual(10);
   });
 
-  it('widens the in-flight badge into a pill for three characters, and keys it in the legend', () => {
+  it('widens the in-flight badge into a pill for three characters', () => {
     const container = renderReach([peer('beta-1', { inFlightRequests: 2 }), peer('core-14', { inFlightRequests: 128 })]);
     const width = (name: string) =>
       Number(container.querySelector(`[data-peer="${name}"] [data-testid="pool-reach-in-flight"] rect`)?.getAttribute('width'));
 
     expect(container.querySelector('[data-peer="core-14"] [data-testid="pool-reach-in-flight"]')?.textContent).toBe('99+');
     expect(width('core-14')).toBeGreaterThan(width('beta-1'));
-    expect(container.querySelector('[data-testid="pool-reach-legend"] [data-testid="pool-reach-legend-badge"]')).not.toBeNull();
   });
 
   it('lays out at the width it is drawn, so its text is not shrunk on a phone', () => {
@@ -202,7 +167,7 @@ describe('PoolReach', () => {
     expect(badges[0]?.textContent).toBe('2');
   });
 
-  it('puts the details in a tooltip for a mouse and in a disclosure anyone can open', () => {
+  it('puts the details in a tooltip and the whole picture in the label', () => {
     const container = renderReach(MIXED);
 
     const tooltip = container.querySelector('[data-peer="core-7"] title')?.textContent ?? '';
@@ -210,62 +175,18 @@ describe('PoolReach', () => {
     expect(tooltip).toContain('seen 5m ago');
     expect(tooltip).toContain('probes unanswered');
     expect(tooltip).toContain('signed auth');
-
-    const list = [...container.querySelectorAll('[data-testid="pool-reach-list"] li')].map((item) => item.textContent);
-    expect(list).toHaveLength(5);
-    expect(list.find((item) => item?.startsWith('beta-1'))).toContain('2 requests forwarded, in flight');
-    // Not `sr-only`: a keyboard or a phone cannot open an SVG <title>, so the same facts sit behind a
-    // native disclosure that both can.
-    const details = container.querySelector('[data-testid="pool-reach-details"]');
-    expect(details?.tagName).toBe('DETAILS');
-    expect(details?.querySelector('summary')?.textContent).toContain('5 peers');
-    expect(container.querySelector('[data-testid="pool-reach-list"]')?.className ?? '').not.toContain('sr-only');
+    expect(container.querySelector('[data-peer="beta-1"] title')?.textContent).toContain('2 requests forwarded, in flight');
 
     const graph = container.querySelector('[data-testid="pool-reach-graph"]');
     expect(graph?.getAttribute('role')).toBe('img');
     expect(graph?.getAttribute('aria-label')).toBe('core-2 and its 5 paired peers: 1 connected, 1 unreachable, 2 pending, 1 disabled here');
   });
 
-  it("keeps the old chip row's facts as the legend", () => {
-    const container = renderReach(MIXED);
-    const legend = container.querySelector('[data-testid="pool-reach-legend"]')?.textContent ?? '';
+  it('draws a peer that is both disabled and unreachable as disabled, and still badges its work', () => {
+    const container = renderReach([peer('beta-1'), peer('beta-red', { status: 'unreachable', enabled: false, inFlightRequests: 1 })]);
 
-    expect(legend).toContain('1connected');
-    expect(legend).toContain('1unreachable');
-    expect(legend).toContain('2 models reachable');
-    // beta-1's two models; core-2 holds neither.
-    expect(legend).toContain('2 peer-only');
-    expect(legend).toContain('2 forwarded in flight');
-  });
-
-  it('keeps the peer-only definition on a hint a keyboard can reach, as the chip it replaced had', () => {
-    const container = renderReach(MIXED);
-    const term = [...container.querySelectorAll('[data-testid="pool-reach-legend"] [tabindex="0"]')].find((node) =>
-      node.textContent?.includes('peer-only'),
-    );
-
-    expect(term).toBeTruthy();
-    expect(term?.className).toContain('field-hint-dashboard-exclusive-models');
-  });
-
-  it('agrees with the rail about a peer that is both disabled and unreachable', () => {
-    const peers = [peer('beta-1'), peer('beta-red', { status: 'unreachable', enabled: false, inFlightRequests: 1 })];
-    const container = renderReach(peers);
-    const legend = container.querySelector('[data-testid="pool-reach-legend"]')?.textContent ?? '';
-
-    // The rail's "N unreachable" reads `poolReach().unreachable`; the drawing draws beta-red disabled.
-    expect(poolReach(peers, LOCAL).unreachable).toBe(0);
-    expect(legend).toContain('1disabled here');
-    expect(legend).not.toContain('unreachable');
-    // Its badge and the legend's forwarded total count the same request.
+    expect(container.querySelector('[data-peer="beta-red"]')?.getAttribute('data-status')).toBe('disabled');
     expect(container.querySelector('[data-peer="beta-red"] [data-testid="pool-reach-in-flight"]')?.textContent).toBe('1');
-    expect(legend).toContain('1 forwarded in flight');
-  });
-
-  it('reads a forwarded counter no peer reported as unknown, not as idle', () => {
-    const container = renderReach([peer('beta-1', { inFlightRequests: undefined })]);
-
-    expect(container.querySelector('[data-testid="pool-reach-legend"]')?.textContent).toContain('— forwarded in flight');
   });
 
   it('draws a 15-peer hub whole, scaled by its viewBox rather than a fixed width', () => {
@@ -279,11 +200,11 @@ describe('PoolReach', () => {
     expect(graph?.getAttribute('class')).toContain('w-full');
   });
 
-  it('folds a 30-peer pool into "+7 more" and still lists all thirty', () => {
+  it('folds a 30-peer pool into "+7 more" and names the folded ones', () => {
     const container = renderReach(Array.from({ length: 30 }, (_, index) => peer(`core-${index + 1}`)));
 
     expect(container.querySelectorAll('[data-testid="pool-reach-peer"]')).toHaveLength(23);
     expect(container.querySelector('[data-testid="pool-reach-overflow"]')?.textContent).toContain('+7 more');
-    expect(container.querySelectorAll('[data-testid="pool-reach-list"] li')).toHaveLength(30);
+    expect(container.querySelector('[data-testid="pool-reach-overflow"] title')?.textContent).toContain('core-30');
   });
 });

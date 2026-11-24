@@ -1,4 +1,4 @@
-import { NotFoundException } from '@nestjs/common';
+import { HttpStatus, NotFoundException } from '@nestjs/common';
 import type { ModuleRef } from '@nestjs/core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fromPartial } from '@total-typescript/shoehorn';
@@ -7,9 +7,11 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { AppsRepository } from '@/modules/apps/apps.repository';
 import { ForwardAuthSecretResolver } from '@/modules/auth/forward-auth-secret.resolver';
 import { EnvUtils } from '@/modules/env/env.utils';
-import { AppLifecycleService } from '../app-lifecycle.service';
+import { TranslatableError } from '@/common/error/translatable-error';
+import { AppLifecycleService, type HeldApp, RESTARTS_THAT_WAIT_FOR_THE_APP } from '../app-lifecycle.service';
 import { HubAccessService } from '../hub-access.service';
 
 /** Per-app operator surface for Hub trust material: status view + the rotation lever (#74). */
@@ -17,9 +19,11 @@ describe('HubAccessService', () => {
   let service: HubAccessService;
   let apiKeys: MockProxy<ApiKeyService>;
   let appFilesManager: MockProxy<AppFilesManager>;
+  let appsRepository: MockProxy<AppsRepository>;
   let appLifecycle: MockProxy<AppLifecycleService>;
   let forwardAuthResolver: MockProxy<ForwardAuthSecretResolver>;
   let moduleRef: MockProxy<ModuleRef>;
+  let held: MockProxy<HeldApp>;
 
   const urn = 'importer:ci-marketplace' as AppUrn;
   const managedKey = fromPartial<Awaited<ReturnType<ApiKeyService['list']>>[number]>({
@@ -36,27 +40,65 @@ describe('HubAccessService', () => {
     vi.clearAllMocks();
     apiKeys = mock<ApiKeyService>();
     appFilesManager = mock<AppFilesManager>();
+    appsRepository = mock<AppsRepository>();
+    appsRepository.getAppMcpAccess.mockResolvedValue(null);
     appLifecycle = mock<AppLifecycleService>();
     forwardAuthResolver = mock<ForwardAuthSecretResolver>();
     moduleRef = mock<ModuleRef>();
     moduleRef.get.mockReturnValue(forwardAuthResolver);
-    service = new HubAccessService(apiKeys, appFilesManager, appLifecycle, new EnvUtils(), mock<LoggerService>(), moduleRef);
+    service = new HubAccessService(apiKeys, appFilesManager, appLifecycle, new EnvUtils(), mock<LoggerService>(), moduleRef, appsRepository);
 
     appFilesManager.getInstalledAppInfo.mockResolvedValue(
       fromPartial({ urn, hub_integration: { memory: { url_env: 'CI_SERVER_URL', token_env: 'CI_SERVER_TOKEN' } } }),
     );
     appFilesManager.getAppEnv.mockResolvedValue({ path: '/x', content: 'CI_HUB_FORWARD_AUTH_SECRET=s3cret\nOTHER=1\n' });
     apiKeys.findManagedByApp.mockResolvedValue(managedKey);
-    appLifecycle.restartApp.mockResolvedValue({ requestId: 'req-1' });
+    held = mock<HeldApp>();
+    held.restart.mockResolvedValue({ requestId: 'req-1' });
+    appLifecycle.withAppHeld.mockImplementation(async (_appUrn, run) => run(held));
   });
 
   describe('getStatus', () => {
+    describe('for an app that asks for the Hub MCP tools', () => {
+      const agentUrn = 'agent:someone-elses-store' as AppUrn;
+
+      beforeEach(() => {
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(fromPartial({ urn: agentUrn, hub_integration: { mcp_client: true } }));
+        appFilesManager.getAppEnv.mockResolvedValue({ path: '/x', content: '' });
+        apiKeys.findManagedByApp.mockResolvedValue(null);
+      });
+
+      it('says nobody has answered, and that it would get no key', async () => {
+        const status = await service.getStatus(agentUrn);
+
+        expect(status.mcp).toEqual({ access: null, keyCapability: null });
+        expect(status.provisioned).toBe(false);
+      });
+
+      it("reports the answer and the level the app's key works at", async () => {
+        appsRepository.getAppMcpAccess.mockResolvedValue('write');
+        apiKeys.findManagedByApp.mockResolvedValue(fromPartial({ ...managedKey, ownerAppUrn: agentUrn, scopes: ['mcp'], capability: 'read' }));
+
+        const status = await service.getStatus(agentUrn);
+
+        expect(status.mcp).toEqual({ access: 'write', keyCapability: 'read' });
+        expect(status.provisioned).toBe(true);
+      });
+
+      it('reports a refusal as no access', async () => {
+        appsRepository.getAppMcpAccess.mockResolvedValue('none');
+
+        expect((await service.getStatus(agentUrn)).mcp).toEqual({ access: 'none', keyCapability: null });
+      });
+    });
+
     it("reports the app's key metadata (never raw values) + identity verification + provisioning eligibility", async () => {
       const status = await service.getStatus(urn);
       expect(status).toEqual({
         appKey: { prefix: 'abcd1234', scopes: ['app'], lastUsedAt: '2026-07-20T00:00:00Z', createdAt: '2026-07-01T00:00:00Z' },
         identityVerification: true,
         provisioned: true,
+        mcp: null,
       });
       // Nothing resembling a secret escapes: the serialized status contains no raw key or secret.
       expect(JSON.stringify(status)).not.toContain('s3cret');
@@ -67,12 +109,44 @@ describe('HubAccessService', () => {
       appFilesManager.getAppEnv.mockResolvedValue({ path: '/x', content: '' });
       appFilesManager.getInstalledAppInfo.mockResolvedValue(fromPartial({ urn, hub_integration: undefined }));
       const status = await service.getStatus(urn);
-      expect(status).toEqual({ appKey: null, identityVerification: false, provisioned: false });
+      expect(status).toEqual({ appKey: null, identityVerification: false, provisioned: false, mcp: null });
     });
 
     it("reports identity verification for Companion Memory's own key alone", async () => {
       appFilesManager.getAppEnv.mockResolvedValue({ path: '/x', content: 'CI_HUB_FORWARD_AUTH_IDENTITY_SECRET=own\n' });
       expect((await service.getStatus(urn)).identityVerification).toBe(true);
+    });
+
+    // Companion Memory needs neither a managed key nor MCP access, but every env generation hands it an identity
+    // secret of its own. Reported as not provisioned, its settings had no Hub access section to rotate that secret.
+    it('counts Companion Memory as provisioned for the identity secret it is issued', async () => {
+      const memoryUrn = 'ci-memory:ci-marketplace' as AppUrn;
+      apiKeys.findManagedByApp.mockResolvedValue(null);
+      appFilesManager.getInstalledAppInfo.mockResolvedValue(fromPartial({ urn: memoryUrn, hub_integration: undefined }));
+      appFilesManager.getAppEnv.mockResolvedValue({
+        path: '/x',
+        content: 'CI_HUB_FORWARD_AUTH_SECRET=hub-wide\nCI_HUB_FORWARD_AUTH_IDENTITY_SECRET=own\n',
+      });
+
+      expect(await service.getStatus(memoryUrn)).toEqual({ appKey: null, identityVerification: true, provisioned: true, mcp: null });
+    });
+
+    it('counts Companion Memory as provisioned before its first env generation, from the install URN alone', async () => {
+      const memoryUrn = 'ci-memory:ci-marketplace' as AppUrn;
+      apiKeys.findManagedByApp.mockResolvedValue(null);
+      appFilesManager.getInstalledAppInfo.mockResolvedValue(fromPartial({ urn: memoryUrn, hub_integration: undefined }));
+      appFilesManager.getAppEnv.mockResolvedValue({ path: '/x', content: '' });
+
+      expect(await service.getStatus(memoryUrn)).toEqual({ appKey: null, identityVerification: false, provisioned: true, mcp: null });
+    });
+
+    it('does not count an app named ci-memory from another store, which is never issued the secret', async () => {
+      const squatterUrn = 'ci-memory:someone-elses-store' as AppUrn;
+      apiKeys.findManagedByApp.mockResolvedValue(null);
+      appFilesManager.getInstalledAppInfo.mockResolvedValue(fromPartial({ urn: squatterUrn, hub_integration: undefined }));
+      appFilesManager.getAppEnv.mockResolvedValue({ path: '/x', content: '' });
+
+      expect((await service.getStatus(squatterUrn)).provisioned).toBe(false);
     });
 
     it('404s for an unknown app', async () => {
@@ -91,10 +165,28 @@ describe('HubAccessService', () => {
       const written = appFilesManager.writeAppEnv.mock.calls[0]?.[1] as string;
       expect(written).not.toContain('CI_HUB_FORWARD_AUTH_SECRET');
       expect(written).toContain('OTHER=1');
-      // The restart is what regenerates env + reloads the container in one event.
-      // As the Hub: the rotation was the authorized act, and a refused restart would strand the app.
-      expect(appLifecycle.restartApp).toHaveBeenCalledWith({ appUrn: urn, actor: { kind: 'system', reason: 'hub-access-rotate' } });
+      // The restart is what regenerates env + reloads the container in one event, under the hold
+      // taken before the revoke. As the Hub: the rotation was the authorized act.
+      expect(appLifecycle.withAppHeld).toHaveBeenCalledWith(urn, expect.any(Function));
+      expect(held.restart).toHaveBeenCalledWith({ reason: 'hub-access-rotate' });
+      expect(appLifecycle.restartApp).not.toHaveBeenCalled();
       expect(res).toEqual({ requestId: 'req-1' });
+    });
+
+    // Revoking and then waiting for the app left it on revoked credentials for as long as the
+    // operation holding it lasted, and kept the request open as long.
+    it('is refused with the 409 of the operation holding the app, and revokes nothing', async () => {
+      appLifecycle.withAppHeld.mockRejectedValue(new TranslatableError('APP_ERROR_START_IN_PROGRESS', { id: 'importer' }, HttpStatus.CONFLICT));
+
+      await expect(service.rotate(urn)).rejects.toMatchObject({ status: HttpStatus.CONFLICT });
+
+      expect(apiKeys.revokeManagedByApp).not.toHaveBeenCalled();
+      expect(appFilesManager.writeAppEnv).not.toHaveBeenCalled();
+      expect(forwardAuthResolver.invalidateApp).not.toHaveBeenCalled();
+    });
+
+    it('is not one of the restarts that wait for the app', () => {
+      expect(RESTARTS_THAT_WAIT_FOR_THE_APP.has('hub-access-rotate')).toBe(false);
     });
 
     it("clears Companion Memory's own forward-auth key too, so the restart mints a fresh one", async () => {
@@ -121,7 +213,7 @@ describe('HubAccessService', () => {
       });
       const res = await service.rotate(urn);
       expect(apiKeys.revokeManagedByApp).toHaveBeenCalledWith(urn);
-      expect(appLifecycle.restartApp).toHaveBeenCalled();
+      expect(held.restart).toHaveBeenCalled();
       expect(res).toEqual({ requestId: 'req-1' });
     });
 
@@ -130,21 +222,80 @@ describe('HubAccessService', () => {
       await service.rotate(urn);
       expect(appFilesManager.writeAppEnv).not.toHaveBeenCalled();
       expect(apiKeys.revokeManagedByApp).toHaveBeenCalled();
-      expect(appLifecycle.restartApp).toHaveBeenCalled();
+      expect(held.restart).toHaveBeenCalled();
     });
 
     it('404s for an unknown app without revoking anything', async () => {
       appFilesManager.getInstalledAppInfo.mockResolvedValue(null as never);
       await expect(service.rotate(urn)).rejects.toThrow(NotFoundException);
       expect(apiKeys.revokeManagedByApp).not.toHaveBeenCalled();
+      expect(appLifecycle.withAppHeld).not.toHaveBeenCalled();
     });
 
     it('propagates a restart failure so the operator learns the app is left holding revoked credentials', async () => {
       // Credentials are already gone by the time the restart is dispatched; a swallowed failure
       // would report success while the app authenticates against nothing until a manual restart.
-      appLifecycle.restartApp.mockRejectedValue(new Error('queue offline'));
+      held.restart.mockRejectedValue(new Error('queue offline'));
       await expect(service.rotate(urn)).rejects.toThrow('queue offline');
       expect(apiKeys.revokeManagedByApp).toHaveBeenCalledWith(urn);
+    });
+  });
+
+  describe('setMcpAccess', () => {
+    const agentUrn = 'agent:someone-elses-store' as AppUrn;
+    const mcpKey = fromPartial<Awaited<ReturnType<ApiKeyService['list']>>[number]>({
+      ...managedKey,
+      ownerAppUrn: agentUrn,
+      scopes: ['mcp'],
+      capability: 'write',
+    });
+
+    beforeEach(() => {
+      appFilesManager.getInstalledAppInfo.mockResolvedValue(fromPartial({ urn: agentUrn, hub_integration: { mcp_client: true } }));
+      appsRepository.getAppStatusByUrn.mockResolvedValue({ status: 'running', updatedAt: '2026-11-20T00:00:00Z' });
+      apiKeys.findManagedByApp.mockResolvedValue(mcpKey);
+    });
+
+    it('records a grant under the app held, sets the key to that level, and restarts a running app', async () => {
+      await expect(service.setMcpAccess(agentUrn, 'read')).resolves.toEqual({ restarting: true });
+
+      expect(appLifecycle.withAppHeld).toHaveBeenCalledWith(agentUrn, expect.any(Function));
+      expect(appsRepository.setAppMcpAccess).toHaveBeenCalledWith(agentUrn, 'read');
+      expect(apiKeys.setCapability).toHaveBeenCalledWith(mcpKey.id, 'read');
+      expect(held.restart).toHaveBeenCalledWith({ reason: 'hub-access-mcp' });
+    });
+
+    it('deletes an MCP-only key at once when access is taken away', async () => {
+      await service.setMcpAccess(agentUrn, 'none');
+
+      expect(appsRepository.setAppMcpAccess).toHaveBeenCalledWith(agentUrn, 'none');
+      expect(apiKeys.revokeManagedByApp).toHaveBeenCalledWith(agentUrn);
+    });
+
+    it("leaves a key that also holds the app scope to the restart, which takes off only 'mcp'", async () => {
+      apiKeys.findManagedByApp.mockResolvedValue(fromPartial({ ...mcpKey, scopes: ['mcp', 'app'] }));
+
+      await service.setMcpAccess(agentUrn, 'none');
+
+      expect(apiKeys.revokeManagedByApp).not.toHaveBeenCalled();
+      expect(held.restart).toHaveBeenCalledWith({ reason: 'hub-access-mcp' });
+    });
+
+    it('does not start a stopped app; it applies at the next start', async () => {
+      appsRepository.getAppStatusByUrn.mockResolvedValue({ status: 'stopped', updatedAt: '2026-11-20T00:00:00Z' });
+
+      await expect(service.setMcpAccess(agentUrn, 'write')).resolves.toEqual({ restarting: false });
+
+      expect(appsRepository.setAppMcpAccess).toHaveBeenCalledWith(agentUrn, 'write');
+      expect(held.restart).not.toHaveBeenCalled();
+    });
+
+    it('refuses an app whose manifest does not ask, and records nothing', async () => {
+      appFilesManager.getInstalledAppInfo.mockResolvedValue(fromPartial({ urn: agentUrn, hub_integration: undefined }));
+
+      await expect(service.setMcpAccess(agentUrn, 'write')).rejects.toThrow('does not ask');
+
+      expect(appsRepository.setAppMcpAccess).not.toHaveBeenCalled();
     });
   });
 });

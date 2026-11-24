@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -21,6 +21,7 @@ use crate::portal_url::{compiled_ci_cloud_url, launch_portal_url, PortalUrlResol
 
 mod cli_install;
 mod compose;
+mod container_exec;
 mod containers;
 mod credentials;
 mod docker_access;
@@ -29,19 +30,24 @@ mod docker_vm;
 mod host_probe;
 mod installers;
 mod lifecycle;
+mod live_session;
 mod logging;
 mod markers;
+mod quiet_watch;
 mod runtime_env;
 mod runtime_state;
+mod start_retry;
 mod status;
 mod windows_paths;
 mod wsl;
+mod wsl_engine_files;
 
 #[cfg(test)]
 mod tests;
 
 pub(crate) use cli_install::*;
 pub use compose::*;
+pub(crate) use container_exec::*;
 pub use containers::*;
 pub(crate) use credentials::*;
 pub use docker_access::*;
@@ -50,16 +56,20 @@ pub(crate) use docker_vm::*;
 pub(crate) use host_probe::*;
 pub use installers::*;
 pub use lifecycle::*;
+pub use live_session::*;
 pub use logging::*;
 pub use markers::*;
 pub use runtime_env::*;
 pub(crate) use runtime_state::*;
+pub use start_retry::*;
 pub use status::*;
 pub(crate) use windows_paths::*;
 // Every consumer of these is #[cfg(windows)], so on other hosts the re-export
 // resolves to nothing and rustc flags it. It is load-bearing on Windows.
 #[allow(unused_imports)]
 pub(crate) use wsl::*;
+#[allow(unused_imports)]
+pub(crate) use wsl_engine_files::*;
 
 #[cfg(target_os = "windows")]
 pub(crate) const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -98,6 +108,48 @@ static START_BEGAN_AT_MS: AtomicU64 = AtomicU64::new(0);
 /// True once a startup-progress poll during the current start found an image still missing.
 /// Download progress then counts toward the startup percentage until the Hub is ready.
 static START_IMAGE_DOWNLOADS_SEEN: AtomicBool = AtomicBool::new(false);
+
+/// How many [`StackChange`] guards are alive. A count, not a flag: the launch check holds one while
+/// the `stop_hub_for_update` it may call holds another, and the inner one ending must not end both.
+static STACK_CHANGES: AtomicUsize = AtomicUsize::new(0);
+
+/// Marks the desktop app as about to remove or recreate the Hub's containers, until it is dropped
+/// (panics included).
+///
+/// The launch check, a stop and the stop half of a restart all remove the running Hub container
+/// before `start_hub` sets `START_IN_PROGRESS`, if it runs at all. A Hub that answers then may be
+/// gone a second later, so the startup page waits for this as well before it opens the Hub (see
+/// [`stack_change_state`]).
+#[must_use = "the stack change ends when this is dropped"]
+pub struct StackChange(());
+
+impl StackChange {
+    pub fn begin() -> Self {
+        STACK_CHANGES.fetch_add(1, Ordering::SeqCst);
+        Self(())
+    }
+}
+
+impl Drop for StackChange {
+    fn drop(&mut self) {
+        STACK_CHANGES.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Whether the desktop app may still remove or recreate the Hub's containers. Two atomics and no
+/// Docker call, so the startup page can ask on every poll without waiting on a slow engine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct StackChangeState {
+    pub stack_change_pending: bool,
+    pub start_in_progress: bool,
+}
+
+pub fn stack_change_state() -> StackChangeState {
+    StackChangeState {
+        stack_change_pending: STACK_CHANGES.load(Ordering::SeqCst) > 0,
+        start_in_progress: START_IN_PROGRESS.load(Ordering::SeqCst),
+    }
+}
 
 /// True while the current start still has to run its final `compose up --force-recreate`.
 /// The database and queue it brings up first are replaced then, so they are not ready yet.
@@ -492,6 +544,9 @@ pub struct StartupProgress {
     pub docker_access: DockerAccessCheck,
     /// The Hub API answers its liveness check.
     pub hub_api_live: bool,
+    /// The engine the Hub runs on (`wsl-engine`, `desktop`, ...), when known. The startup
+    /// screens explain the WSL engine stopping instead of offering Docker Desktop's steps.
+    pub docker_engine: Option<String>,
 }
 
 /// Get the Hub data directory (platform-specific)
@@ -711,12 +766,10 @@ fn truncate_command_output(output: &str) -> String {
         return trimmed.to_string();
     }
 
-    let truncated: String = trimmed.chars().take(MAX_COMMAND_OUTPUT_CHARS).collect();
-    format!(
-        "{}… [truncated {} chars]",
-        truncated,
-        char_count - MAX_COMMAND_OUTPUT_CHARS
-    )
+    // A failure's cause is at the end of its log, and these messages get shown to people.
+    let dropped = char_count - MAX_COMMAND_OUTPUT_CHARS;
+    let kept: String = trimmed.chars().skip(dropped).collect();
+    format!("[truncated {} chars] …{}", dropped, kept)
 }
 
 pub(crate) fn format_command_output(stdout: &str, stderr: &str) -> String {

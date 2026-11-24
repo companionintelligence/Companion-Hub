@@ -51,17 +51,29 @@ describe('planSelfUpdate refusals', () => {
     expect(result.ok === false && result.why).toContain('running executable');
   });
 
-  it('names the private repository as the reason a token is needed', () => {
-    // A node with no token gets a bare 404 from the releases API, which reads like "no such
-    // release" — the misdiagnosis that stalled a fifteen-node install on 2026-09-18.
-    const result = plan({ env: {} });
-    expect(result.ok === false && result.why).toContain('private');
-    expect(result.ok === false && result.fix[0]).toContain('GH_TOKEN');
-  });
-
   it('refuses a platform the release publishes no asset for', () => {
     const result = plan({ arch: 'riscv64' });
     expect(result.ok === false && result.why).toContain('riscv64');
+  });
+});
+
+describe('planSelfUpdate token', () => {
+  it('goes ahead without a token: the repository and its release assets are public', () => {
+    // It used to refuse with "the CI-Hub releases are private, so fetching the cihub asset needs a
+    // GitHub token", which left a machine without the gh CLI no way to self-update.
+    const result = plan({ env: {}, stackVersion: '0.3.6' });
+    expect(result).toMatchObject({ ok: true, version: '0.3.6', assetName: 'cihub-linux-x64' });
+    expect(result.ok && result.token).toBeUndefined();
+  });
+
+  it('still sends a token when one is set, from either env name', () => {
+    expect(plan({ env: { GH_TOKEN: 'ghp_x' } })).toMatchObject({ ok: true, token: 'ghp_x' });
+    expect(plan({ env: { GITHUB_TOKEN: 'ghp_y' } })).toMatchObject({ ok: true, token: 'ghp_y' });
+  });
+
+  it('treats a blank token as none rather than sending an empty Authorization header', () => {
+    const result = plan({ env: { GH_TOKEN: '  ' } });
+    expect(result.ok && result.token).toBeUndefined();
   });
 });
 

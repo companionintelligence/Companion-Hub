@@ -18,15 +18,16 @@ export type UserContextDto = {
     isConfigured: boolean;
     isGuestDashboardEnabled: boolean;
     isPasswordResetDisabled: boolean;
-    allowAutoThemes: boolean;
     allowErrorMonitoring: boolean;
     themeColor: string;
-    themeBase: string;
     localDomain: string;
     domain: string;
     sslPort: number;
     sessionExpiresAt?: number;
     sessionRefreshRecommendedAt?: number;
+    didAuthEnabled?: boolean;
+    keriOobiEnabled?: boolean;
+    allowCloudFallback?: boolean;
 };
 
 export type AppContextDto = {
@@ -41,14 +42,12 @@ export type AppContextDto = {
     };
     userSettings: {
         advancedSettings: boolean;
-        allowAutoThemes: boolean;
         allowErrorMonitoring: boolean;
         appDataPath: string;
         appsRepoUrl?: string;
         defaultAppCpuLimit?: string;
         defaultAppMemoryLimit?: string;
         autoAllocateAppResources?: boolean;
-        autoUpdates?: boolean;
         demoMode: boolean;
         disablePasswordReset: boolean;
         dnsIp: string;
@@ -67,26 +66,24 @@ export type AppContextDto = {
         sslPort: number;
         timeZone: string;
         experimental_insecureCookie?: boolean;
-        themeBase?: string;
         themeColor?: string;
-        ciHubApiKey?: string;
-        ciHubMoveKey?: string;
         ciHubOrganizationId?: string;
         ciHubOrganizationSlug?: string;
         ciHubOrganizationLabel?: string;
         ciHubDeviceSlug?: string;
         ciHubHubSubdomain?: string;
-        inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
+        inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx' | 'localai';
         inferenceModel?: string;
         inferenceEmbeddingModel?: string;
         inferenceVisionModel?: string;
-        inferenceVllmApiKey?: string;
         inferenceVllmUrl?: string;
         inferenceOmlxUrl?: string;
         inferenceDecodeEndpoint?: string;
         inferenceEncodeEndpoint?: string;
         inferenceMaxNumCtx?: number;
         inferenceOllamaSlots?: number;
+        inferenceOllamaKvCacheType?: 'f16' | 'q8_0' | 'q4_0';
+        inferenceOllamaKeepAlive?: number;
         hubPoolEnabled?: boolean;
         hubPoolOutboundEnabled?: boolean;
         hubPoolInboundEnabled?: boolean;
@@ -110,13 +107,6 @@ export type AppContextDto = {
             targetKind: 'local' | 'peer';
             peerId?: string;
             mode: 'prefer';
-        }>;
-        inferenceCloudProviders?: Array<{
-            provider: 'openai' | 'anthropic' | 'google' | 'github-copilot';
-            apiKey?: string;
-            baseUrl?: string;
-            defaultModel: string;
-            enabled: boolean;
         }>;
     };
     appDataRootHostPath?: string;
@@ -152,9 +142,12 @@ export type AppContextDto = {
     tailscaleHttpsEnabled?: boolean;
 };
 
+export type HubAccessDto = {
+    manageHub: boolean;
+};
+
 export type UserSettingsBody = {
     advancedSettings?: boolean;
-    allowAutoThemes?: boolean;
     allowErrorMonitoring?: boolean;
     appDataPath?: string;
     appsRepoUrl?: string;
@@ -179,26 +172,26 @@ export type UserSettingsBody = {
     sslPort?: number;
     timeZone?: unknown;
     experimental_insecureCookie?: boolean;
-    themeBase?: string;
     themeColor?: string;
-    ciHubApiKey?: string;
-    ciHubMoveKey?: string;
     ciHubOrganizationId?: string;
     ciHubOrganizationSlug?: string;
     ciHubOrganizationLabel?: string;
     ciHubDeviceSlug?: string;
     ciHubHubSubdomain?: string;
-    inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
+    inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx' | 'localai';
     inferenceModel?: string;
     inferenceEmbeddingModel?: string;
     inferenceVisionModel?: string;
     inferenceVllmApiKey?: string;
     inferenceVllmUrl?: string;
     inferenceOmlxUrl?: string;
+    inferenceOmlxApiKey?: string;
     inferenceDecodeEndpoint?: string;
     inferenceEncodeEndpoint?: string;
     inferenceMaxNumCtx?: number;
     inferenceOllamaSlots?: number;
+    inferenceOllamaKvCacheType?: 'f16' | 'q8_0' | 'q4_0';
+    inferenceOllamaKeepAlive?: number;
     hubPoolEnabled?: boolean;
     hubPoolOutboundEnabled?: boolean;
     hubPoolInboundEnabled?: boolean;
@@ -234,6 +227,24 @@ export type UserSettingsBody = {
 
 export type AcknowledgeWelcomeBody = {
     allowErrorMonitoring: boolean;
+};
+
+export type ApiKeyListDto = {
+    keys: Array<{
+        id: number;
+        name: string;
+        prefix: string;
+        scopes: Array<string>;
+        capability: 'read' | 'write' | 'full';
+        managed: boolean;
+        ownerAppUrn: string;
+        expiresAt: string;
+        lastUsedAt: string;
+        createdAt: string;
+        createdByUserId: number;
+        createdByUsername: string;
+        hubWideBlocked: 'app-key' | 'no-creator' | 'creator-role';
+    }>;
 };
 
 export type CreateApiKeyBody = {
@@ -332,6 +343,7 @@ export type HostEventLogDto = {
 
 export type FactoryResetDto = {
     confirmation: string;
+    removeAppsFromPortal?: boolean;
 };
 
 export type LoginBody = {
@@ -350,6 +362,39 @@ export type VerifyTotpBody = {
     totpSessionId: string;
 };
 
+export type DidChallengeBody = {
+    purpose?: 'sign-in' | 'link';
+};
+
+export type DidChallengeDto = {
+    challengeId: string;
+    nonce: string;
+    audience: string;
+    purpose: 'sign-in' | 'link';
+    expiresAt: number;
+};
+
+export type DidProofBody = {
+    challengeId: string;
+    idToken: string;
+};
+
+export type DidLinksDto = {
+    links: Array<{
+        did: string;
+        linkedAt: string;
+    }>;
+};
+
+export type DidLinkDto = {
+    success: boolean;
+    did: string;
+};
+
+export type DidUnlinkBody = {
+    did: string;
+};
+
 export type RegisterBody = {
     username: string;
     password: string;
@@ -358,6 +403,7 @@ export type RegisterBody = {
 export type RegisterDto = {
     success: boolean;
     requiresEmailVerification?: boolean;
+    sessionId?: string;
 };
 
 export type HubClaimStatusDto = {
@@ -399,6 +445,10 @@ export type HubOperatorsDto = {
 export type PortalDesktopExchangeDto = {
     sessionId: string;
     redirectPath: string;
+};
+
+export type PortalDesktopConfigDto = {
+    portalUrl: string;
 };
 
 export type PortalDesktopHandoffStatusDto = {
@@ -702,7 +752,23 @@ export type MyAppsDto = {
                 edge_auth?: {
                     default?: boolean;
                 };
+                links?: {
+                    connects_to: Array<{
+                        app: string;
+                        store?: string;
+                        service: string;
+                        alias?: string;
+                    }>;
+                    accepts_from: Array<{
+                        app: string;
+                        store?: string;
+                    }>;
+                };
             };
+            data_moves: Array<{
+                from: string;
+                to: string;
+            }>;
         };
         metadata: {
             hasCustomConfig?: boolean;
@@ -756,6 +822,7 @@ export type GuestAppsDto = {
             customDomain?: string;
             pendingRestart: boolean;
             ignoredVersion: number;
+            publicUrl?: string;
         };
         info: {
             id: string;
@@ -961,7 +1028,23 @@ export type GuestAppsDto = {
                 edge_auth?: {
                     default?: boolean;
                 };
+                links?: {
+                    connects_to: Array<{
+                        app: string;
+                        store?: string;
+                        service: string;
+                        alias?: string;
+                    }>;
+                    accepts_from: Array<{
+                        app: string;
+                        store?: string;
+                    }>;
+                };
             };
+            data_moves: Array<{
+                from: string;
+                to: string;
+            }>;
         };
         metadata: {
             hasCustomConfig?: boolean;
@@ -1066,6 +1149,22 @@ export type GetAppDto = {
         customDomainTakeover?: boolean;
         pendingRestart: boolean;
         ignoredVersion: number;
+    };
+    operation?: {
+        command: 'install' | 'start' | 'stop' | 'restart' | 'update' | 'uninstall' | 'reset' | 'backup' | 'restore' | 'generate_env';
+    };
+    failure?: {
+        message: string;
+        errorCode?: string;
+        errorDetail?: string;
+        settingsPath?: string;
+        serviceFailure?: {
+            kind: 'restarting' | 'exited' | 'none_running';
+            service?: string;
+            others?: number;
+            exitCode?: number;
+            logLine?: string;
+        };
     };
     info: {
         id: string;
@@ -1271,7 +1370,23 @@ export type GetAppDto = {
             edge_auth?: {
                 default?: boolean;
             };
+            links?: {
+                connects_to: Array<{
+                    app: string;
+                    store?: string;
+                    service: string;
+                    alias?: string;
+                }>;
+                accepts_from: Array<{
+                    app: string;
+                    store?: string;
+                }>;
+            };
         };
+        data_moves: Array<{
+            from: string;
+            to: string;
+        }>;
     };
     metadata: {
         hasCustomConfig?: boolean;
@@ -1335,6 +1450,10 @@ export type GetConfigDiffDto = {
     new: string;
 };
 
+export type GuestVisibilityBodyDto = {
+    visible: boolean;
+};
+
 export type AppRuntimeHealthDto = {
     appUrn: string;
     appName: string;
@@ -1394,6 +1513,10 @@ export type SearchAppsDto = {
     total: number;
 };
 
+export type AppListingDto = {
+    [key: string]: unknown;
+};
+
 export type AppMediaDto = {
     screenshots: Array<string>;
     demoVideoUrl: string;
@@ -1434,22 +1557,41 @@ export type UpdateAppStoreDto = {
 };
 
 export type UpdateInferencePreferencesBody = {
-    backend: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
+    backend: 'ollama' | 'vllm' | 'lemonade' | 'omlx' | 'localai';
     model?: string;
     embeddingModel?: string;
     visionModel?: string;
     vllmApiKey?: string;
     vllmUrl?: string;
     omlxUrl?: string;
+    omlxApiKey?: string;
     decodeEndpoint?: string;
     encodeEndpoint?: string;
     maxNumCtx?: number;
     ollamaSlots?: number;
+    ollamaKeepAlive?: number;
+    ollamaKvCacheType?: 'f16' | 'q8_0' | 'q4_0';
 };
 
 export type UpdateRocmInstallStateBody = {
     phase: 'idle' | 'downloading' | 'installing' | 'reboot_required' | 'failed' | 'completed';
     message?: string;
+};
+
+export type LoadModelBody = {
+    modelId: string;
+    backend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx' | 'localai';
+};
+
+export type UnloadModelBody = {
+    modelId: string;
+    backend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx' | 'localai';
+};
+
+export type CloudFallbackPolicyDto = {
+    allowCloudFallback: boolean;
+    hasCloudFallback: boolean;
+    envFlag: string;
 };
 
 export type UpdateHubPoolPreferencesBody = {
@@ -1499,6 +1641,54 @@ export type PairingUpgradeBody = {
     publicKey: string;
 };
 
+export type RehydrateStatusDto = {
+    completed: boolean;
+    state?: {
+        completedAt: string;
+        queuedUrns: Array<string>;
+        startedUrns: Array<string>;
+        skipped: Array<{
+            name: string;
+            reason: string;
+            appUrn?: string;
+            code?: 'already_running' | 'busy' | 'unlisted' | 'no_target' | 'refused' | 'failed';
+            params?: {
+                [key: string]: string;
+            };
+        }>;
+    };
+    restoreIntent: boolean;
+    checking: boolean;
+    noticePending: boolean;
+    summary?: {
+        completedAt: string;
+        restored: Array<{
+            name: string;
+            urn: string;
+            status: string;
+            usesAi: boolean;
+        }>;
+        notRestored: Array<{
+            name: string;
+            urn?: string;
+            reason: string;
+            code?: 'already_running' | 'busy' | 'unlisted' | 'no_target' | 'refused' | 'failed';
+            params?: {
+                [key: string]: string;
+            };
+        }>;
+        aiModelChosen: boolean;
+    };
+};
+
+export type AcknowledgeRestoreResponseDto = {
+    success: boolean;
+};
+
+export type McpAccessBody = {
+    access: 'none' | 'read' | 'write' | 'full';
+};
+
 export type AppFormBody = {
     port?: number;
     exposed?: boolean;
@@ -1509,6 +1699,7 @@ export type AppFormBody = {
     isVisibleOnGuestDashboard?: boolean;
     enableAuth?: boolean;
     autoRestartOnDomainChange?: boolean;
+    mcpAccess?: 'none' | 'read' | 'write' | 'full';
     localSubdomain?: string;
     publicDomain?: string;
     customDomain?: string;
@@ -1610,6 +1801,40 @@ export type EditLinkBodyDto = {
     isVisibleOnGuestDashboard?: boolean;
 };
 
+export type TerminusHealthIndicatorResult = {
+    /**
+     * The status of this health indicator
+     */
+    status: 'up' | 'degraded' | 'down';
+    /**
+     * Time the health indicator took to respond, in ms
+     */
+    responseTime?: number;
+    /**
+     * Whether this result was served from the cache
+     */
+    cachedResponse?: boolean;
+};
+
+export type TerminusHealthCheckResult = {
+    status: 'error' | 'ok' | 'degraded' | 'shutting_down';
+    info?: {
+        [key: string]: TerminusHealthIndicatorResult & {
+            [key: string]: unknown;
+        };
+    } | null;
+    error?: {
+        [key: string]: TerminusHealthIndicatorResult & {
+            [key: string]: unknown;
+        };
+    } | null;
+    details: {
+        [key: string]: TerminusHealthIndicatorResult & {
+            [key: string]: unknown;
+        };
+    };
+};
+
 export type PublicWebRepairBody = {
     appUrns?: Array<string>;
 };
@@ -1637,6 +1862,10 @@ export type CreateCustomAppResponseDto = {
     appUrn: string;
     appName: string;
     storeId: string;
+};
+
+export type CustomAppAccessDto = {
+    actions: Array<'view' | 'start' | 'stop' | 'restart' | 'install' | 'update' | 'uninstall' | 'reset' | 'backup' | 'restore' | 'configure'>;
 };
 
 export type CreateCustomAppDto = {
@@ -1757,6 +1986,7 @@ export type CreateCustomAppDto = {
             };
             dns?: string | Array<string>;
             platform?: string;
+            runtime?: string;
         }>;
         overrides?: Array<{
             architecture?: 'arm64' | 'amd64';
@@ -1874,6 +2104,7 @@ export type CreateCustomAppDto = {
                 };
                 dns?: string | Array<string>;
                 platform?: string;
+                runtime?: string;
             }>;
         }>;
     };
@@ -2003,6 +2234,7 @@ export type UpdateCustomAppDto = {
             };
             dns?: string | Array<string>;
             platform?: string;
+            runtime?: string;
         }>;
         overrides?: Array<{
             architecture?: 'arm64' | 'amd64';
@@ -2120,6 +2352,7 @@ export type UpdateCustomAppDto = {
                 };
                 dns?: string | Array<string>;
                 platform?: string;
+                runtime?: string;
             }>;
         }>;
     };
@@ -2129,9 +2362,51 @@ export type UpdateAppMetadataDto = {
     data: string;
 };
 
+export type UpdateBlocksDto = {
+    updateBlockedReason: string;
+    autoUpdateBlockedReason: string;
+    desktopAppUpdatesHub: boolean;
+};
+
 export type DesktopReleaseDto = {
     latestVersion: string;
     downloadUrl: string;
+};
+
+export type TrainingJobManifestBody = {
+    jobId: string;
+    appId: string;
+    jobType: 'hbpe_bootstrap_hmt' | 'hbpe_nightly_lora' | 'llm_lora_finetune' | 'embedding_adaptation' | 'unsloth_decision_train';
+    userId?: string;
+    model: {
+        backboneId: string;
+        framework: 'pytorch' | 'mlx' | 'tinygrad' | 'unsloth';
+        targetFormat: 'onnx_int8' | 'pytorch_lora' | 'mlx_adapter' | 'unsloth_decision_lora';
+        baseCheckpointPath?: string;
+    };
+    dataset: {
+        format: 'token_stream_jsonl' | 'arrow' | 'parquet';
+        dataPath: string;
+        trainDaysCount?: number;
+        valFraction: number;
+    };
+    hyperparameters: {
+        batchSize: number;
+        learningRate: number;
+        epochs: number;
+        weightDecay?: number;
+        loraRank?: number;
+        loraAlpha?: number;
+        patience?: number;
+        mixedPrecision: boolean;
+    };
+    resourcePolicy: {
+        devicePreference: 'auto' | 'cuda' | 'mps' | 'cpu';
+        maxVramMb?: number;
+        allowRemoteOffload: boolean;
+        priority: 'interactive' | 'normal' | 'nightly_idle';
+        timeoutSeconds: number;
+    };
 };
 
 export type McpToolCallBody = {
@@ -2174,15 +2449,15 @@ export type McpInstallSchemaDto = {
 
 export type StreamAppLogsQueryDto = {
     appUrn: string;
-    maxLines?: number | unknown;
+    maxLines?: number;
 };
 
 export type StreamHubLogsQueryDto = {
-    maxLines?: number | unknown;
+    maxLines?: number;
 };
 
 export type OnboardingProfileQueryDto = {
-    backend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
+    backend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx' | 'localai';
     vllmUrl?: string;
     omlxUrl?: string;
     decodeEndpoint?: string;
@@ -2190,7 +2465,7 @@ export type OnboardingProfileQueryDto = {
 };
 
 export type RuntimeModelsQueryDto = {
-    backend: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
+    backend: 'ollama' | 'vllm' | 'lemonade' | 'omlx' | 'localai';
 };
 
 export type RoutingLogQueryDto = {
@@ -2246,10 +2521,6 @@ export type UnpinModelBody = {
     modelId: string;
 };
 
-export type UnloadModelBody = {
-    modelId: string;
-};
-
 export type SetCloudProviderBody = {
     provider: 'openai' | 'anthropic' | 'google' | 'github-copilot';
     apiKey: string;
@@ -2264,6 +2535,7 @@ export type PairDeviceBody = {
 
 export type PerformUpdateBody = {
     targetVersion?: string;
+    includeDesktopApp?: boolean;
 };
 
 export type AvailableDomainsResponseDto = {
@@ -2398,6 +2670,19 @@ export type AppContextResponses = {
 };
 
 export type AppContextResponse = AppContextResponses[keyof AppContextResponses];
+
+export type HubAccessData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/hub-access';
+};
+
+export type HubAccessResponses = {
+    default: HubAccessDto;
+};
+
+export type HubAccessResponse = HubAccessResponses[keyof HubAccessResponses];
 
 export type UpdateUserSettingsData = {
     body: UserSettingsBody;
@@ -2630,6 +2915,10 @@ export type HandleCallbackErrors = {
      * Invalid callback data
      */
     400: unknown;
+    /**
+     * No host-local key, setup code or Hub manager, or the Hub is already registered
+     */
+    403: unknown;
 };
 
 export type HandleCallbackResponses = {
@@ -2657,7 +2946,7 @@ export type HandleCallbackPostErrors = {
      */
     400: unknown;
     /**
-     * No valid registration nonce, or the Hub is already registered
+     * No valid registration nonce, or the Hub is registered and the caller may not pair it again
      */
     403: unknown;
 };
@@ -2765,8 +3054,10 @@ export type ListKeysData = {
 };
 
 export type ListKeysResponses = {
-    200: unknown;
+    default: ApiKeyListDto;
 };
+
+export type ListKeysResponse = ListKeysResponses[keyof ListKeysResponses];
 
 export type CreateKeyData = {
     body: CreateApiKeyBody;
@@ -3083,7 +3374,12 @@ export type SystemResourcesResponse = SystemResourcesResponses[keyof SystemResou
 export type HostTelemetryHistoryData = {
     body?: never;
     path?: never;
-    query?: never;
+    query?: {
+        /**
+         * Host CPU and memory over this many minutes, averaged to at most 360 points. Without it, the newest 288 raw samples.
+         */
+        minutes?: number;
+    };
     url: '/api/system/telemetry';
 };
 
@@ -3117,17 +3413,6 @@ export type DownloadHubLogsResponses = {
     /**
      * Hub logs download
      */
-    200: unknown;
-};
-
-export type DownloadLocalCertificateData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/system/certificate';
-};
-
-export type DownloadLocalCertificateResponses = {
     200: unknown;
 };
 
@@ -3202,6 +3487,10 @@ export type FactoryResetErrors = {
      * Operator authentication required
      */
     403: unknown;
+    /**
+     * The Hub's data folder is the top of a disk or a home folder, so nothing was changed
+     */
+    409: unknown;
 };
 
 export type FactoryResetResponses = {
@@ -3327,6 +3616,71 @@ export type VerifyTotpResponses = {
 
 export type VerifyTotpResponse = VerifyTotpResponses[keyof VerifyTotpResponses];
 
+export type DidChallengeData = {
+    body?: DidChallengeBody;
+    path?: never;
+    query?: never;
+    url: '/api/auth/did/challenge';
+};
+
+export type DidChallengeResponses = {
+    default: DidChallengeDto;
+};
+
+export type DidChallengeResponse = DidChallengeResponses[keyof DidChallengeResponses];
+
+export type DidVerifyData = {
+    body: DidProofBody;
+    path?: never;
+    query?: never;
+    url: '/api/auth/did/verify';
+};
+
+export type DidVerifyResponses = {
+    default: LoginDto;
+};
+
+export type DidVerifyResponse = DidVerifyResponses[keyof DidVerifyResponses];
+
+export type DidLinksData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/auth/did/links';
+};
+
+export type DidLinksResponses = {
+    default: DidLinksDto;
+};
+
+export type DidLinksResponse = DidLinksResponses[keyof DidLinksResponses];
+
+export type DidUnlinkData = {
+    body: DidUnlinkBody;
+    path?: never;
+    query?: never;
+    url: '/api/auth/did/link';
+};
+
+export type DidUnlinkResponses = {
+    default: DidLinkDto;
+};
+
+export type DidUnlinkResponse = DidUnlinkResponses[keyof DidUnlinkResponses];
+
+export type DidLinkData = {
+    body: DidProofBody;
+    path?: never;
+    query?: never;
+    url: '/api/auth/did/link';
+};
+
+export type DidLinkResponses = {
+    default: DidLinkDto;
+};
+
+export type DidLinkResponse = DidLinkResponses[keyof DidLinkResponses];
+
 export type RegisterData = {
     body: RegisterBody;
     path?: never;
@@ -3414,6 +3768,17 @@ export type ConsumeBrowserHandoffResponses = {
     200: unknown;
 };
 
+export type ConfirmBrowserHandoffData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/auth/browser-handoff/confirm';
+};
+
+export type ConfirmBrowserHandoffResponses = {
+    201: unknown;
+};
+
 export type StartPortalLoginData = {
     body?: never;
     path?: never;
@@ -3421,6 +3786,7 @@ export type StartPortalLoginData = {
         redirect_url: string;
         desktop: string;
         desktop_channel: string;
+        app_challenge: string;
     };
     url: '/api/auth/portal/start';
 };
@@ -3476,6 +3842,7 @@ export type ExchangePortalDesktopLoginData = {
     path?: never;
     query: {
         token: string;
+        verifier: string;
     };
     url: '/api/auth/portal/desktop-exchange';
 };
@@ -3485,6 +3852,45 @@ export type ExchangePortalDesktopLoginResponses = {
 };
 
 export type ExchangePortalDesktopLoginResponse = ExchangePortalDesktopLoginResponses[keyof ExchangePortalDesktopLoginResponses];
+
+export type EstablishPortalMobileSessionData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/auth/portal/mobile-session';
+};
+
+export type EstablishPortalMobileSessionResponses = {
+    default: PortalDesktopExchangeDto;
+};
+
+export type EstablishPortalMobileSessionResponse = EstablishPortalMobileSessionResponses[keyof EstablishPortalMobileSessionResponses];
+
+export type EstablishPortalDesktopSessionData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/auth/portal/desktop-session';
+};
+
+export type EstablishPortalDesktopSessionResponses = {
+    default: PortalDesktopExchangeDto;
+};
+
+export type EstablishPortalDesktopSessionResponse = EstablishPortalDesktopSessionResponses[keyof EstablishPortalDesktopSessionResponses];
+
+export type PortalDesktopConfigData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/auth/portal/desktop-config';
+};
+
+export type PortalDesktopConfigResponses = {
+    default: PortalDesktopConfigDto;
+};
+
+export type PortalDesktopConfigResponse = PortalDesktopConfigResponses[keyof PortalDesktopConfigResponses];
 
 export type PortalDesktopHandoffStatusData = {
     body?: never;
@@ -3658,6 +4064,36 @@ export type EdgeSsoResponses = {
     200: unknown;
 };
 
+export type GetHubOobiData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/.well-known/keri/oobi';
+};
+
+export type GetHubOobiErrors = {
+    /**
+     * The Hub cannot publish a verifiable OOBI until a persisted KERI key event log is configured.
+     */
+    503: unknown;
+};
+
+export type GetOobiForAidData = {
+    body?: never;
+    path: {
+        aid: string;
+    };
+    query?: never;
+    url: '/api/.well-known/keri/oobi/{aid}';
+};
+
+export type GetOobiForAidErrors = {
+    /**
+     * The Hub cannot resolve OOBIs until it can verify and serve persisted KERI key event logs.
+     */
+    503: unknown;
+};
+
 export type GetInstalledAppsData = {
     body?: never;
     path?: never;
@@ -3722,6 +4158,17 @@ export type GetGuestAppsResponses = {
 };
 
 export type GetGuestAppsResponse = GetGuestAppsResponses[keyof GetGuestAppsResponses];
+
+export type GetAppStartingPageData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/apps/starting';
+};
+
+export type GetAppStartingPageResponses = {
+    200: unknown;
+};
 
 export type GetRandomPortData = {
     body?: never;
@@ -3835,6 +4282,19 @@ export type UnignoreAppVersionResponses = {
     200: unknown;
 };
 
+export type SetGuestVisibilityData = {
+    body: GuestVisibilityBodyDto;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/apps/{urn}/guest-visibility';
+};
+
+export type SetGuestVisibilityResponses = {
+    200: unknown;
+};
+
 export type GetInferenceEnvStalenessData = {
     body?: never;
     path: {
@@ -3907,6 +4367,21 @@ export type SearchAppsResponses = {
 };
 
 export type SearchAppsResponse = SearchAppsResponses[keyof SearchAppsResponses];
+
+export type GetAppListingData = {
+    body?: never;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/marketplace/apps/{urn}/listing';
+};
+
+export type GetAppListingResponses = {
+    default: AppListingDto;
+};
+
+export type GetAppListingResponse = GetAppListingResponses[keyof GetAppListingResponses];
 
 export type GetImageData = {
     body?: never;
@@ -4122,6 +4597,39 @@ export type V1AudioTranscriptionsResponses = {
     200: unknown;
 };
 
+export type V1ImagesGenerationsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/v1/images/generations';
+};
+
+export type V1ImagesGenerationsResponses = {
+    200: unknown;
+};
+
+export type MediaAcquireData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/media/acquire';
+};
+
+export type MediaAcquireResponses = {
+    200: unknown;
+};
+
+export type MediaReleaseData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/media/release';
+};
+
+export type MediaReleaseResponses = {
+    200: unknown;
+};
+
 export type HealthData = {
     body?: never;
     path?: never;
@@ -4170,7 +4678,7 @@ export type GetRuntimeModelsData = {
     body?: never;
     path?: never;
     query: {
-        backend: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
+        backend: 'ollama' | 'vllm' | 'lemonade' | 'omlx' | 'localai';
     };
     url: '/api/inference/models/runtime';
 };
@@ -4301,7 +4809,7 @@ export type PullModelResponses = {
 };
 
 export type LoadModelData = {
-    body?: never;
+    body: LoadModelBody;
     path?: never;
     query?: never;
     url: '/api/inference/models/load';
@@ -4366,6 +4874,32 @@ export type SetCloudProviderResponses = {
     201: unknown;
 };
 
+export type GetCloudPolicyData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/cloud-policy';
+};
+
+export type GetCloudPolicyResponses = {
+    default: CloudFallbackPolicyDto;
+};
+
+export type GetCloudPolicyResponse = GetCloudPolicyResponses[keyof GetCloudPolicyResponses];
+
+export type RemoveCloudProviderData = {
+    body?: never;
+    path: {
+        provider: string;
+    };
+    query?: never;
+    url: '/api/inference/cloud-providers/{provider}';
+};
+
+export type RemoveCloudProviderResponses = {
+    200: unknown;
+};
+
 export type GetOnboardingProfileData = {
     body?: never;
     headers?: {
@@ -4380,7 +4914,7 @@ export type GetOnboardingProfileData = {
     };
     path?: never;
     query?: {
-        backend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
+        backend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx' | 'localai';
         vllmUrl?: string;
         omlxUrl?: string;
         decodeEndpoint?: string;
@@ -5081,8 +5615,23 @@ export type GetRehydrateStatusData = {
 };
 
 export type GetRehydrateStatusResponses = {
-    200: unknown;
+    default: RehydrateStatusDto;
 };
+
+export type GetRehydrateStatusResponse = GetRehydrateStatusResponses[keyof GetRehydrateStatusResponses];
+
+export type AcknowledgeRestoreData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/app-lifecycle/rehydrate/acknowledge';
+};
+
+export type AcknowledgeRestoreResponses = {
+    default: AcknowledgeRestoreResponseDto;
+};
+
+export type AcknowledgeRestoreResponse = AcknowledgeRestoreResponses[keyof AcknowledgeRestoreResponses];
 
 export type ExecuteRehydrateData = {
     body: RehydrateBody;
@@ -5119,6 +5668,19 @@ export type RotateHubAccessData = {
 
 export type RotateHubAccessResponses = {
     201: unknown;
+};
+
+export type SetMcpAccessData = {
+    body: McpAccessBody;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/app-lifecycle/{urn}/hub-access/mcp';
+};
+
+export type SetMcpAccessResponses = {
+    200: unknown;
 };
 
 export type InstallAppData = {
@@ -5455,7 +6017,7 @@ export type AppLogsEventsData = {
     path?: never;
     query: {
         appUrn: string;
-        maxLines?: number | unknown;
+        maxLines?: number;
     };
     url: '/api/sse/app-logs';
 };
@@ -5468,7 +6030,7 @@ export type HubLogsEventsData = {
     body?: never;
     path?: never;
     query?: {
-        maxLines?: number | unknown;
+        maxLines?: number;
     };
     url: '/api/sse/ci-hub-logs';
 };
@@ -5562,38 +6124,10 @@ export type CheckErrors = {
     /**
      * The Health Check is not successful
      */
-    503: {
+    503: TerminusHealthCheckResult & {
         status?: 'error' | 'shutting_down';
-        info?: {
-            [key: string]: {
-                status: 'up' | 'degraded' | 'down';
-                /**
-                 * Time the health indicator took to respond, in ms
-                 */
-                responseTime?: number;
-                [key: string]: unknown;
-            };
-        } | null;
-        error?: {
-            [key: string]: {
-                status: 'up' | 'degraded' | 'down';
-                /**
-                 * Time the health indicator took to respond, in ms
-                 */
-                responseTime?: number;
-                [key: string]: unknown;
-            };
-        } | null;
-        details?: {
-            [key: string]: {
-                status: 'up' | 'degraded' | 'down';
-                /**
-                 * Time the health indicator took to respond, in ms
-                 */
-                responseTime?: number;
-                [key: string]: unknown;
-            };
-        };
+        error?: unknown;
+        details?: unknown;
     };
 };
 
@@ -5603,38 +6137,10 @@ export type CheckResponses = {
     /**
      * The Health Check is successful
      */
-    200: {
+    200: TerminusHealthCheckResult & {
         status?: 'ok' | 'degraded';
-        info?: {
-            [key: string]: {
-                status: 'up' | 'degraded' | 'down';
-                /**
-                 * Time the health indicator took to respond, in ms
-                 */
-                responseTime?: number;
-                [key: string]: unknown;
-            };
-        } | null;
-        error?: {
-            [key: string]: {
-                status: 'up' | 'degraded' | 'down';
-                /**
-                 * Time the health indicator took to respond, in ms
-                 */
-                responseTime?: number;
-                [key: string]: unknown;
-            };
-        } | null;
-        details?: {
-            [key: string]: {
-                status: 'up' | 'degraded' | 'down';
-                /**
-                 * Time the health indicator took to respond, in ms
-                 */
-                responseTime?: number;
-                [key: string]: unknown;
-            };
-        };
+        error?: unknown;
+        details?: unknown;
     };
 };
 
@@ -5762,6 +6268,19 @@ export type CreatePortExposeAppResponses = {
 
 export type CreatePortExposeAppResponse = CreatePortExposeAppResponses[keyof CreatePortExposeAppResponses];
 
+export type GetCustomAppAccessData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/custom-apps/access';
+};
+
+export type GetCustomAppAccessResponses = {
+    default: CustomAppAccessDto;
+};
+
+export type GetCustomAppAccessResponse = GetCustomAppAccessResponses[keyof GetCustomAppAccessResponses];
+
 export type CreateCustomAppData = {
     body: CreateCustomAppDto;
     path?: never;
@@ -5876,6 +6395,19 @@ export type SetAutoUpdatesResponses = {
     201: unknown;
 };
 
+export type GetUpdateBlocksData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/system/update/blocked';
+};
+
+export type GetUpdateBlocksResponses = {
+    default: UpdateBlocksDto;
+};
+
+export type GetUpdateBlocksResponse = GetUpdateBlocksResponses[keyof GetUpdateBlocksResponses];
+
 export type GetHostListenerStatusData = {
     body?: never;
     path?: never;
@@ -5915,6 +6447,111 @@ export type WakeResponses = {
     201: unknown;
 };
 
+export type ListTrainingJobsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/training/jobs';
+};
+
+export type ListTrainingJobsResponses = {
+    200: unknown;
+};
+
+export type SubmitTrainingJobData = {
+    body: TrainingJobManifestBody;
+    path?: never;
+    query?: never;
+    url: '/api/training/jobs';
+};
+
+export type SubmitTrainingJobResponses = {
+    202: unknown;
+};
+
+export type GetTrainingJobData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/training/jobs/{id}';
+};
+
+export type GetTrainingJobResponses = {
+    200: unknown;
+};
+
+export type CancelTrainingJobData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/training/jobs/{id}/cancel';
+};
+
+export type CancelTrainingJobResponses = {
+    201: unknown;
+};
+
+export type ListTrainingPeersData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/training/pool/peers';
+};
+
+export type ListTrainingPeersResponses = {
+    200: unknown;
+};
+
+export type GetPeerCapabilitiesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/training/pool/capabilities';
+};
+
+export type GetPeerCapabilitiesResponses = {
+    200: unknown;
+};
+
+export type ReceivePeerJobData = {
+    body: TrainingJobManifestBody;
+    path?: never;
+    query?: never;
+    url: '/api/training/pool/jobs';
+};
+
+export type ReceivePeerJobResponses = {
+    202: unknown;
+};
+
+export type GetPeerJobStatusData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/training/pool/jobs/{id}';
+};
+
+export type GetPeerJobStatusResponses = {
+    200: unknown;
+};
+
+export type StartNavigationData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/memory-connect/start';
+};
+
+export type StartNavigationResponses = {
+    200: unknown;
+};
+
 export type StartData = {
     body?: never;
     path?: never;
@@ -5923,6 +6560,17 @@ export type StartData = {
 };
 
 export type StartResponses = {
+    201: unknown;
+};
+
+export type CallbackNavigationData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/memory-connect/callback';
+};
+
+export type CallbackNavigationResponses = {
     200: unknown;
 };
 
@@ -5934,7 +6582,7 @@ export type CallbackData = {
 };
 
 export type CallbackResponses = {
-    200: unknown;
+    201: unknown;
 };
 
 export type StateData = {
@@ -5997,6 +6645,39 @@ export type Disconnect2Data = {
 };
 
 export type Disconnect2Responses = {
+    201: unknown;
+};
+
+export type ListData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/app-links';
+};
+
+export type ListResponses = {
+    200: unknown;
+};
+
+export type RevokeData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/app-links/approval';
+};
+
+export type RevokeResponses = {
+    200: unknown;
+};
+
+export type ApproveData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/app-links/approval';
+};
+
+export type ApproveResponses = {
     201: unknown;
 };
 

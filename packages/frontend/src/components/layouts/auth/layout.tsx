@@ -1,8 +1,6 @@
 import { LanguageSelector } from '@/components/language-selector/language-selector';
 import { Card, CardContent } from '@/components/ui/Card';
-import { useUserContext } from '@/context/user-context';
 import type { Locale } from '@/lib/i18n/locales';
-import { getLogo } from '@/lib/theme/theme';
 import i18next from 'i18next';
 import type { PropsWithChildren } from 'react';
 import { cn } from '@/lib/utils';
@@ -14,13 +12,13 @@ type AuthLayoutProps = PropsWithChildren<{
 export const AuthLayout = ({ children, wide = false }: AuthLayoutProps) => {
   const locale = i18next.language;
 
-  const { allowAutoThemes } = useUserContext();
   return (
     <div
       className="flex flex-col items-center overflow-y-auto bg-background"
       style={{
-        height: 'calc(100vh - var(--titlebar-height, 0px))',
-        paddingTop: 'calc(var(--titlebar-height, 0px) + max(2rem, var(--safe-area-top, 0px)))',
+        height: 'var(--app-height)',
+        // The shell is laid out below the desktop title bar, so the bar takes no padding here.
+        paddingTop: 'max(2rem, var(--safe-area-top, 0px))',
         paddingBottom: 'max(2rem, var(--safe-area-bottom, 0px))',
         paddingLeft: 'max(1rem, env(safe-area-inset-left, 0px))',
         paddingRight: 'max(1rem, env(safe-area-inset-right, 0px))',
@@ -32,8 +30,8 @@ export const AuthLayout = ({ children, wide = false }: AuthLayoutProps) => {
       <div className={cn('w-full my-auto', wide ? 'max-w-4xl' : 'max-w-md')}>
         <div className="mb-6 text-center">
           <img
-            alt="CI Hub logo"
-            src={getLogo(allowAutoThemes)}
+            alt="Companion Hub logo"
+            src="/hub.png"
             height={80}
             width={80}
             className="mx-auto"
@@ -43,7 +41,7 @@ export const AuthLayout = ({ children, wide = false }: AuthLayoutProps) => {
             }}
           />
         </div>
-        <Card className={cn('w-full', wide && 'border-primary/30 shadow-[0_0_48px_-12px] shadow-primary/25 ring-1 ring-primary/20')}>
+        <Card className={cn('w-full', wide && 'border-primary/30')}>
           <CardContent className={cn('p-6', wide && 'md:p-8')}>{children}</CardContent>
         </Card>
       </div>

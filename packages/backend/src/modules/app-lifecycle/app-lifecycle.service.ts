@@ -1,19 +1,22 @@
+import { AppCommandDeadline, appEventsQueueTimeoutMs } from '@/common/helpers/app-command-deadline';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
+import { resolveHubPublicDomainRoot } from '@/common/helpers/hub-origin';
 import messages from '@ci-hub/common/i18n/translations/en.json';
-import type { SSE } from '@ci-hub/common/schemas';
-import { isPortExposeApp, manifestDefaultsEdgeAuthOn } from '@ci-hub/common/schemas';
+import type { AppServiceFailure, HostPortMove, SSE } from '@ci-hub/common/schemas';
+import { isPortExposeApp, manifestDefaultsEdgeAuthOn, servedOpenPort } from '@ci-hub/common/schemas';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { SSEService } from '@/core/sse/sse.service';
-import { HttpStatus, Inject, Injectable, OnApplicationBootstrap, OnModuleDestroy, Optional } from '@nestjs/common';
+import { HttpException, HttpStatus, Inject, Injectable, OnApplicationBootstrap, OnModuleDestroy, Optional } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
-import type { AppUrn } from '@ci-hub/common/types';
-import { normalizeStoredHostname, sanitizeAppSubdomain } from '@ci-hub/common/types';
+import type { AppUrn, McpAccessChoice } from '@ci-hub/common/types';
+import { normalizeStoredHostname, sanitizeAppSubdomain, servedExposureMode } from '@ci-hub/common/types';
 import { type CustomDomainForm, type CustomDomainState, requestsCustomDomainChange } from './custom-domain-authority';
 import { customDomainAuditLine } from './custom-domain-audit';
 import validator from 'validator';
 import { AppFilesManager } from '../apps/app-files-manager';
+import { assertAppIdFree } from '../apps/app-id.helpers';
 import { AppRuntimeMonitorService } from '../apps/app-runtime-monitor.service';
 import { AppsRepository } from '../apps/apps.repository';
 import { AppsService } from '../apps/apps.service';
@@ -21,7 +24,7 @@ import { InstallPipelineTracker } from '../apps/install-pipeline.tracker';
 import { BackupManager } from '../backups/backup.manager';
 import { TailscaleService } from '../tailscale/tailscale.service';
 import { ExposureSyncService, type ExposureSyncOptions } from './exposure-sync.service';
-import { hasUpdateAvailable } from '../marketplace/app-version';
+import { hasUpdateAvailable } from '@ci-hub/common/validation';
 import { MarketplaceService } from '../marketplace/marketplace.service';
 import { ImageSizeService } from '../marketplace/image-size.service';
 import { ReposHelpers } from '../app-stores/repos.helpers';
@@ -29,17 +32,25 @@ import { AppStoreService } from '../app-stores/app-store.service';
 import { AppEventsQueue, appEventResultSchema, appEventSchema } from '../queue/entities/app-events';
 import { QUEUE_UNAVAILABLE_CODE } from '../queue/queue.constants';
 import { AppLifecycleCommandFactory } from './app-lifecycle-command.factory';
-import { AppOperationRegistry, type CancellabilityTier, type OperationCommand, type PreparingInstall } from './app-operation-registry';
+import {
+  AppOperationRegistry,
+  type CancellabilityTier,
+  type OperationClaim,
+  type OperationCommand,
+  type PreparingInstall,
+} from './app-operation-registry';
 import type { AppStatus, LifecycleJob } from '@/core/database/drizzle/types';
 import { LifecycleJobService } from './lifecycle-job.service';
 import { toAppCommandFailureResult } from './commands/app-lifecycle-errors';
 import type { CommandExecutionContext } from './commands/command';
 import { assertHostDevicesAvailable } from './commands/host-device-preflight';
 import { extractComposeImages } from './commands/install-app-command';
+import { securityGrantsFor } from '@/modules/apps/security-grants';
 import { toCheckResult, planImages, planPorts, planFormFields } from './planning/install-plan';
 import type { InstallPlan, InstallPlanChecks } from './planning/install-plan.types';
+import { configAfterMove } from './commands/main-host-port';
 import { buildComposePortRequests, buildMainPortRequest, type PortRequestInput } from './planning/port-requests';
-import { PortManagerService } from '../network/port-manager.service';
+import { PortManagerService, isUniqueViolation } from '../network/port-manager.service';
 import { EnvUtils } from '../env/env.utils';
 import { appFormSchema } from './dto/app-lifecycle.dto';
 import { INSTALL_PIPELINE_MUTEX_KEY } from '@/common/constants';
@@ -52,11 +63,14 @@ import { DATA_DIR } from '@/common/constants';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { MarketplaceEntitlementService } from '@/core/portal/marketplace-entitlement.service';
 import type { HubAction } from '@/core/portal/hub-actions';
-import type { ActorCheckContext, LifecycleActor } from '@/core/portal/lifecycle-actor';
+import type { ActorCheckContext, LifecycleActor, SystemLifecycleReason } from '@/core/portal/lifecycle-actor';
 import type { ApiKeyCapability } from '@/modules/api-keys/api-key.capabilities';
+import { personMayGrantFullCapability } from '@/modules/api-keys/may-grant-full';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 import { ErrorReportingService, type AppFailurePhase } from '@/core/error-reporting/error-reporting.service';
-import { publishesHostPort } from '../apps/app-exposure.helpers';
+import { getEffectiveExposureMode, publishForcedExposure, publishesHostPort, servesForcedExposure } from '../apps/app-exposure.helpers';
+import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
+import { canonicalJson } from '../queue/message-signing';
 import {
   canServeOnCustomDomain,
   didPublicRoutingIdentityChange,
@@ -64,6 +78,7 @@ import {
   type AppPublicRoutingSnapshot,
 } from '../apps/app-public-routing.helpers';
 import { DockerService } from '../docker/docker.service';
+import { describeAppServiceFailure } from '../docker/managed-app-containers';
 import { AppIntentSyncService } from '../apps/app-intent-sync.service';
 import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate';
 import type { MemoryConnectService } from '../memory-connect/memory-connect.service';
@@ -79,6 +94,91 @@ type AppOutcomeSseEvent = Extract<Extract<SSE, { topic: 'app' }>['data'], { appU
  * treating them as stopped would take them down and leave them there.
  */
 const STATUSES_MEANING_NOT_RUNNING: ReadonlySet<string> = new Set(['stopped', 'stopping', 'missing', 'install_failed', 'uninstalling']);
+
+/** What a command refused for an app with another operation under way tells the caller, by that operation. */
+const OPERATION_BUSY_MESSAGES: Record<OperationCommand, keyof typeof messages> = {
+  install: 'APP_ERROR_INSTALL_IN_PROGRESS',
+  uninstall: 'APP_ERROR_UNINSTALL_IN_PROGRESS',
+  start: 'APP_ERROR_START_IN_PROGRESS',
+  stop: 'APP_ERROR_STOP_IN_PROGRESS',
+  restart: 'APP_ERROR_RESTART_IN_PROGRESS',
+  update: 'APP_ERROR_UPDATE_IN_PROGRESS',
+  reset: 'APP_ERROR_RESET_IN_PROGRESS',
+  backup: 'APP_ERROR_BACKUP_IN_PROGRESS',
+  restore: 'APP_ERROR_RESTORE_IN_PROGRESS',
+  generate_env: 'APP_ERROR_EVENT_IN_PROGRESS',
+};
+
+/**
+ * System restarts that wait for an operation under way instead of taking its 409: a caller that
+ * cannot redo the restart, or that already changed what the restart is to apply (wrote its env,
+ * saved its settings). Not the restarts a sync or a sweep makes, which run inside other lifecycle
+ * work and would wait on the very command running them. Nor a credential change, such as a Hub
+ * access rotate or a Memory connect: that holds the app before it changes anything
+ * ({@link AppLifecycleService.withAppHeld}).
+ */
+export const RESTARTS_THAT_WAIT_FOR_THE_APP: ReadonlySet<SystemLifecycleReason> = new Set(['device-key-refresh', 'restart-after-config-update']);
+
+/** How often a waiting command looks at the app again, besides being woken when its slot empties. */
+const OPERATION_WAIT_POLL_MS = 5_000;
+
+/**
+ * A start the queue refused because RabbitMQ was still connecting is published again, the delay
+ * doubling from QUEUE_RECONNECT_FIRST_DELAY_MS up to QUEUE_RECONNECT_MAX_DELAY_MS, for
+ * QUEUE_RECONNECT_WAIT_MS in all. The boot gives a start it refused the same ten minutes (app.service.ts).
+ */
+const QUEUE_RECONNECT_FIRST_DELAY_MS = 1_000;
+const QUEUE_RECONNECT_MAX_DELAY_MS = 15_000;
+const QUEUE_RECONNECT_WAIT_MS = 10 * 60_000;
+
+/**
+ * The restart a caller of {@link AppLifecycleService.withAppHeld} applies its change with, under the
+ * claim it already holds. One restart per hold: the restart takes the claim over, and once it has
+ * settled the app is free again.
+ */
+export interface HeldApp {
+  /** Queue the restart; resolves once it is queued, as `restartApp` does. */
+  restart(params: { skipPull?: boolean; reason: SystemLifecycleReason }): Promise<{ requestId: string }>;
+  /** Restart and resolve with whether the app came back, as `restartAppAndWait` does. */
+  restartAndWait(params: { skipPull?: boolean }): Promise<boolean>;
+}
+
+type ArchitectureCheck = Awaited<ReturnType<ImageSizeService['verifyAppArchitecture']>>;
+
+/** Whether two compose image lists name the same images. Two unreadable lists count as the same. */
+function sameImages(a: string[] | null | undefined, b: string[] | null | undefined): boolean {
+  if (!a || !b) {
+    return !a && !b;
+  }
+
+  const left = new Set(a);
+  return left.size === new Set(b).size && b.every((image) => left.has(image));
+}
+
+/** The claim `installApp` takes on the app right before it writes anything, for its `finally` to hand back. */
+type InstallSlot = { claim: symbol | null };
+
+/**
+ * Times the checks an install runs before it registers, for one log line per install call, so a
+ * slow one (WhoIs, the bundle download, a registry) shows which it was.
+ */
+class InstallCheckTimings {
+  private readonly startedAt = Date.now();
+  private readonly steps: string[] = [];
+
+  async time<T>(step: string, work: Promise<T>): Promise<T> {
+    const startedAt = Date.now();
+    try {
+      return await work;
+    } finally {
+      this.steps.push(`${step} ${Date.now() - startedAt} ms`);
+    }
+  }
+
+  summary(): string {
+    return `${Date.now() - this.startedAt} ms (${this.steps.join(', ') || 'no checks'})`;
+  }
+}
 
 function hasUpdateAvailableForInstalledApp(item: {
   app: { version: number | string; ignoredVersion?: number | string | null; status: string };
@@ -144,6 +244,39 @@ function dropUnservableCustomDomain(parsedForm: ParsedAppForm, exposable: boolea
 }
 
 /**
+ * The only form an app whose listing says `exposable: false` runs with: This Machine Only.
+ *
+ * Compose, Traefik and the Portal sync all read the mode before anything else, so clearing the other
+ * fields alone leaves a form naming `cloudflare` on a public route, with the login turned off here too.
+ * The host port is open because a local form always publishes it (`normalizeSubmittedForm`).
+ *
+ * Returns whether the form asked for anything else, so the caller can say it was reset.
+ */
+function keepOnThisMachineOnly(parsedForm: ParsedAppForm): boolean {
+  const moved = Boolean(parsedForm.exposed || parsedForm.exposedLocal || parsedForm.enableAuth) || getEffectiveExposureMode(parsedForm) !== 'local';
+  parsedForm.exposed = false;
+  parsedForm.exposedLocal = false;
+  parsedForm.exposureMode = 'local';
+  parsedForm.openPort = true;
+  parsedForm.enableAuth = false;
+  parsedForm.domain = undefined;
+  parsedForm.publicDomain = undefined;
+  return moved;
+}
+
+/**
+ * Whether an installed app's stored form still names a route its listing says it cannot have.
+ *
+ * Saving or reinstalling such an app is the Hub's move rather than the operator's. It starts publishing
+ * a host port the app never published and the dialog has no port field to answer a refusal with, so
+ * these moves skip the host port check. A start moves the app if the port does turn out to be held
+ * (`moveMainPortOffConflict`). Refusing would leave the app on the route with its login off.
+ */
+function storedOnForbiddenRoute(appInfo: { exposable?: boolean }, app: Parameters<typeof servedExposureMode>[0]): boolean {
+  return !appInfo.exposable && servedExposureMode(app) !== 'local';
+}
+
+/**
  * The submitted form as the Hub will act on it.
  *
  * Local exposure always publishes the host port, and the routing subdomain is
@@ -175,11 +308,63 @@ function normalizeSubmittedForm(parsedForm: ParsedAppForm): ParsedAppForm {
     normalized = { ...normalized, localSubdomain: sanitizeAppSubdomain(normalized.localSubdomain) || undefined };
   }
 
-  if ((normalized.exposureMode ?? 'local') === 'local' && !normalized.openPort) {
+  // A form public through the legacy `exposedLocal` flag closes its host port only by saying so. The
+  // queue serves one that says nothing on an open port, so the row and the custom-domain gate must too.
+  const publicByFlag = !normalized.exposureMode && Boolean(normalized.exposedLocal);
+  if (publicByFlag ? normalized.openPort === undefined : getEffectiveExposureMode(normalized) === 'local' && !normalized.openPort) {
     normalized = { ...normalized, openPort: true };
   }
 
+  // Such a form always had the Hub login, through the host port the Hub used to open for it. Closing
+  // the port must not take the login off a public route unless the form says so.
+  if (publicByFlag && normalized.openPort === false && normalized.enableAuth === undefined) {
+    normalized = { ...normalized, enableAuth: true };
+  }
+
   return normalized;
+}
+
+/**
+ * Keep the exposure the app runs with when a save says nothing about it.
+ *
+ * A save and a reinstall replace the stored form whole, so a form naming no mode, an MCP or API call
+ * changing one setting, took the app off Public Web or the Private VPN and released its public name.
+ * Naming another `exposureMode` is a decision. So is an `exposedLocal` that
+ * differs from what the app is. One that repeats it is not: `false` says only "not public", which a
+ * Private VPN app already is. Repeating the mode the app is in gives up neither its name nor a closed
+ * host port.
+ *
+ * `submitted` is the form as it came in: `normalizeSubmittedForm` has already opened the host port
+ * of any form naming no mode, which would open it here on an app that is not on This Machine Only.
+ * `stored` is read as the no-change check reads it, so a value kept here cannot compare as a change.
+ */
+function keepStoredExposure(parsedForm: ParsedAppForm, submitted: ParsedAppForm, storedConfig: unknown): void {
+  const stored = normalizeConfigForCompare((storedConfig ?? {}) as Record<string, unknown>) as Partial<ParsedAppForm>;
+  const storedMode = getEffectiveExposureMode(stored);
+  // `parsedForm` may be `submitted` itself, so what it named is read before anything is written.
+  const namedMode = submitted.exposureMode;
+  const moves =
+    namedMode === undefined
+      ? submitted.exposedLocal !== undefined && submitted.exposedLocal !== (storedMode === 'cloudflare')
+      : namedMode !== storedMode;
+  if (moves) return;
+
+  if (namedMode === undefined) {
+    parsedForm.exposureMode = stored.exposureMode;
+    parsedForm.exposedLocal = stored.exposedLocal;
+  } else {
+    parsedForm.exposedLocal ??= stored.exposedLocal;
+  }
+  // This Machine Only always publishes the host port. Elsewhere a stored form with no `openPort` stays
+  // that way, or the save would read as a change and restart the app.
+  const mode = getEffectiveExposureMode(parsedForm);
+  parsedForm.openPort = mode === 'local' ? true : (submitted.openPort ?? stored.openPort);
+  parsedForm.localSubdomain ??= stored.localSubdomain;
+  parsedForm.publicDomain ??= stored.publicDomain;
+  // A form with no `enableAuth` has the Hub login only while its host port is open, so closing the port
+  // here must not take the login off an app that stays public.
+  const closesPortOnLogin = mode === 'cloudflare' && parsedForm.openPort === false && servedOpenPort(stored);
+  parsedForm.enableAuth ??= stored.enableAuth ?? (closesPortOnLogin || undefined);
 }
 
 /**
@@ -229,7 +414,13 @@ function customDomainColumns(parsedForm: {
   return { customDomainIntent: intent, customDomainTakeover: intent !== null && parsedForm.customDomainTakeover === true };
 }
 
-function buildInstallRowPatch(parsedForm: ParsedAppForm): Record<string, unknown> {
+/** The host port a stored form names, if it names one. */
+function storedFormPort(storedConfig: unknown): number | undefined {
+  const port = (storedConfig as { port?: unknown } | null | undefined)?.port;
+  return typeof port === 'number' ? port : undefined;
+}
+
+function buildInstallRowPatch(parsedForm: ParsedAppForm, storedConfig: unknown): Record<string, unknown> {
   /*
    * BOTH destructured out before the spread. `customDomain` always was — it must
    * never land in `app.custom_domain`, per the note above. `customDomainTakeover`
@@ -247,12 +438,30 @@ function buildInstallRowPatch(parsedForm: ParsedAppForm): Record<string, unknown
     customDomain: _customDomain,
     customDomainTakeover: _customDomainTakeover,
     customDomainIntent: _customDomainIntent,
+    // A person's answer about the app's MCP key; only `installerMcpAccess` may write it.
+    mcpAccess: _mcpAccess,
     ...rowFields
   } = parsedForm;
 
+  /*
+   * A form that names no port keeps the one the app is on. The config is replaced whole, and every start
+   * rebuilds APP_PORT from it (`lifecycleCommandForm`), so a port the form left out sent the app back to the
+   * manifest's while the row still named the port it had. A port is set by a move or by a save that names one.
+   */
+  const config = toStoredConfig(parsedForm);
+  const storedPort = storedFormPort(storedConfig);
+  if (parsedForm.port === undefined && storedPort !== undefined) {
+    config.port = storedPort;
+  }
+
   return {
-    config: toStoredConfig(parsedForm),
+    config,
     ...rowFields,
+    // What compose runs the form as, as a first install and a save record it. A form naming no mode has
+    // no `exposureMode` to spread, which left the row on whatever mode the app had before. A form naming
+    // no `openPort` has none either, and the queue serves it on an open port.
+    exposureMode: getEffectiveExposureMode(parsedForm),
+    openPort: servedOpenPort(parsedForm),
     ...customDomainColumns(parsedForm),
   };
 }
@@ -279,6 +488,20 @@ function buildInstallRowPatch(parsedForm: ParsedAppForm): Record<string, unknown
  * any caller that patches one setting send no value, and reading that as `false`
  * would quietly turn off a choice somebody made.
  */
+/**
+ * The installer's answer to the app's request for the Hub's MCP tools, as a row patch, or nothing.
+ *
+ * Only a person's answer counts: the route checked that they may give it (`AppLifecycleController
+ * .installApp`). A key that installs an app gives none, even `none`, so a later grant is a person's
+ * call. Omitted means keep, as for the other row settings, so a reinstall without one keeps the answer.
+ */
+function installerMcpAccess(actor: LifecycleActor, parsedForm: ParsedAppForm): { mcpAccess?: McpAccessChoice } {
+  if ((actor.kind !== 'operator' && actor.kind !== 'exempt') || parsedForm.mcpAccess === undefined) {
+    return {};
+  }
+  return { mcpAccess: parsedForm.mcpAccess };
+}
+
 function autoRestartColumn(parsedForm: ParsedAppForm): { autoRestartOnDomainChange?: boolean } {
   return parsedForm.autoRestartOnDomainChange === undefined ? {} : { autoRestartOnDomainChange: parsedForm.autoRestartOnDomainChange };
 }
@@ -310,6 +533,12 @@ function toStoredConfig(parsedForm: ParsedAppForm): Record<string, unknown> {
    */
   delete stored.autoRestartOnDomainChange;
   /*
+   * ⚠ AND THE MCP ANSWER, WHICH MUST NEVER BE REPLAYED. It lives on `app.mcp_access`, written by a
+   * person. A copy in the snapshot would be re-submitted by every version bump, and the snapshot is
+   * what the app's own key may rewrite.
+   */
+  delete stored.mcpAccess;
+  /*
    * ⚠ AND THE EXPECTED VALUE, FOR THE SAME REASON ONE STEP FURTHER ON.
    *
    * `customDomainExpected` asserts what the app was being served on at the moment
@@ -324,6 +553,20 @@ function toStoredConfig(parsedForm: ParsedAppForm): Record<string, unknown> {
 }
 
 /** Apply the same schema defaults/normalization used on save so unchanged configs compare equal. */
+/**
+ * A failed command's reason as its event says it. The `app` topic reaches every signed-in session
+ * whatever it may read. A container's log takes `settingsReadAction`. So when the reason quotes a
+ * log the event names the service and the exit code. The app page reads the rest off
+ * `GET /api/apps/:urn`, which asks.
+ */
+function failureForEveryone(result: { message?: string; errorDetail?: string; serviceFailure?: AppServiceFailure }) {
+  if (!result.serviceFailure) {
+    return { error: result.message, errorDetail: result.errorDetail };
+  }
+  const { logLine: _logLine, ...serviceFailure } = result.serviceFailure;
+  return { error: describeAppServiceFailure(serviceFailure), serviceFailure };
+}
+
 function normalizeConfigForCompare(raw: Record<string, unknown>): Record<string, unknown> {
   const parsed = appFormSchema.safeParse(raw);
   if (!parsed.success) {
@@ -355,6 +598,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   private lastTailscaleConnected = false;
   private lastTailscaleHttpsAvailable = false;
 
+  /**
+   * How long the publisher of an app event waits for its reply. Read once, at boot, as `QueueModule`
+   * reads it for the queue's RPC client: a later change to the events timeout in Settings does not
+   * reach that client, so a deadline read from the live setting could outlast the real wait.
+   */
+  private readonly appEventsReplyTimeoutMs: number;
+
   constructor(
     private readonly logger: LoggerService,
     private readonly appEventsQueue: AppEventsQueue,
@@ -381,18 +631,67 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     @Optional() private readonly errorReportingService?: ErrorReportingService,
     @Optional() private readonly lifecycleJobService?: LifecycleJobService,
   ) {
+    this.appEventsReplyTimeoutMs = appEventsQueueTimeoutMs(this.config.get('userSettings')?.eventsTimeout);
     this.logger.debug('Subscribing to app events...');
     this.appEventsQueue.onEvent((data, reply) => this.invokeCommand(data, reply));
+  }
+
+  /**
+   * Recreates each app `ensureHubOnAppNetworks` took off a shared Hub network, by queueing a restart
+   * for it. A restart that cannot be queued is logged and the next app goes on.
+   *
+   * Only an app whose row says `running` is recreated. Its containers are listed stopped or not, and a
+   * restart is `down` then `up`, so recreating every one of them started each app the operator had
+   * stopped on the first boot after the upgrade. A stopped app is composed onto its own network at its
+   * next start anyway.
+   */
+  private async recreateAppsMovedOffSharedNetworks(appUrns: AppUrn[]): Promise<void> {
+    for (const appUrn of appUrns) {
+      try {
+        const status = (await this.appRepository.getAppByUrn(appUrn))?.status;
+        if (status !== 'running') {
+          this.logger.info(`Not recreating ${appUrn} onto its own network now: it is ${status ?? 'not installed'}; its next start does it`);
+          continue;
+        }
+        this.logger.info(`Recreating ${appUrn} onto its own network: it was on a network every app shared`);
+        await this.restartApp({ appUrn, skipPull: true, actor: { kind: 'system', reason: 'app-network-isolation' } });
+      } catch (error) {
+        this.logger.warn(
+          `Could not recreate ${appUrn} onto its own network: ${error instanceof Error ? error.message : String(error)}. Restart it to route to it again.`,
+        );
+      }
+    }
   }
 
   async onApplicationBootstrap() {
     void this.recoverStuckInstallsOnStartup();
 
     // Recreating this container drops the app-network attachments `compose up` added. Put them
-    // back before apps call inference, or an off-network service cannot resolve `ci-hub`.
-    void this.dockerService.ensureHubOnAppNetworks().catch((error: unknown) => {
-      this.logger.error(`Failed to reattach the Hub to app networks: ${error instanceof Error ? error.message : String(error)}`);
-    });
+    // back before apps call inference, or an off-network service cannot resolve `ci-hub`. An app still
+    // on a shared Hub network from before apps had networks of their own is taken off it there, and is
+    // recreated here so its labels, Memory URL and trusted Traefik hop match its own network.
+    const appNetworksRejoined = Promise.resolve().then(() => this.dockerService.ensureHubOnAppNetworks());
+    void appNetworksRejoined
+      .then((moved) => this.recreateAppsMovedOffSharedNetworks(moved ?? []))
+      .catch((error: unknown) => {
+        this.logger.error(`Failed to reattach the Hub to app networks: ${error instanceof Error ? error.message : String(error)}`);
+      });
+
+    // Docker does not retry a container that failed to start when the daemon did, and Traefik fails
+    // then whenever the Hub's data folder mounts after Docker (an encrypted home or drive): the Hub
+    // comes up and every app hostname stays dead. Start it once its app networks are right (a stopped
+    // Traefik is joined to them too), and put it on the edge network cloudflared reaches it on.
+    void appNetworksRejoined
+      .catch(() => undefined)
+      .then(() => this.dockerService.ensureTraefikRunning())
+      .then(async (result) => {
+        if (result === 'started') {
+          await this.dockerService.ensureTraefikOnEdgeNetwork();
+        }
+      })
+      .catch((error: unknown) => {
+        this.logger.error(`Failed to start Traefik: ${error instanceof Error ? error.message : String(error)}`);
+      });
 
     this.logger.info('Triggering initial Cloudflare sync in 5s...');
     setTimeout(() => {
@@ -582,7 +881,29 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     void action().catch((err) => this.logLifecycleHandlerError(command, appUrn, err));
   }
 
+  /** Answers a command that will not run because its app was already settled. A failed reply is only logged. */
+  private async endSettledCommand(
+    data: z.infer<typeof appEventSchema>,
+    job: LifecycleJob | null,
+    reply: (response: z.output<typeof appEventResultSchema>) => Promise<void>,
+    message: string,
+  ) {
+    if (job) {
+      await this.lifecycleJobService?.cancelJob(job.id, message).catch(() => null);
+    }
+    try {
+      await reply({ success: false, cancelled: true, message });
+    } catch (err) {
+      this.logger.warn(
+        `[lifecycle] could not reply to the settled '${data.command}' for ${data.appUrn}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
   async invokeCommand(data: z.infer<typeof appEventSchema>, reply: (response: z.output<typeof appEventResultSchema>) => Promise<void>) {
+    // This consumer registers before bootstrap has loaded the app stores, so a redelivered command waits for them.
+    await this.marketplaceService.whenInitialized();
+
     // Serialize installs so a second "Install" cannot compete with an in-progress image pull.
     let releasePipeline: (() => void) | undefined;
     const isInstall = data.command === 'install';
@@ -593,6 +914,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     const release = await this.mutex.acquire(data.appUrn);
+    // What the command left for after its reply (an update's old snapshot), started in `finally`.
+    let afterReply: (() => Promise<void>) | undefined;
 
     let job: LifecycleJob | null = null;
     if (this.lifecycleJobService) {
@@ -617,16 +940,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       // row by URN, which may now belong to the newer install, and would fail it.
       if (this.operationRegistry.takeSettledBeforeStart(data.requestId)) {
         this.logger.info(`[lifecycle] '${data.command}' for ${data.appUrn} was cancelled while queued and is already settled; skipping it`);
-        if (job) {
-          await this.lifecycleJobService?.cancelJob(job.id, 'Operation cancelled before it started').catch(() => null);
-        }
-        try {
-          await reply({ success: false, cancelled: true, message: 'Operation cancelled before it started' });
-        } catch (err) {
-          this.logger.warn(
-            `[lifecycle] could not reply to the settled '${data.command}' for ${data.appUrn}: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
+        await this.endSettledCommand(data, job, reply, 'Operation cancelled before it started');
         return;
       }
 
@@ -634,7 +948,26 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       // message dequeued after a newer op replaced the entry must NOT wire the newer op's AbortSignal
       // into this command or mutate the newer entry's phase.
       const registered = this.operationRegistry.get(data.appUrn);
-      const entry = registered && registered.requestId === data.requestId ? registered : undefined;
+      let entry = registered && registered.requestId === data.requestId ? registered : undefined;
+
+      // An install redelivered across a restart has no entry. Startup recovery fails every install it
+      // does not see running, which includes one still waiting its turn or delivered late. Running that
+      // one would install an app its page already shows as failed (#2286). A retry puts the row back to
+      // `installing` under its own request, so the row alone cannot tell the old message from the retry.
+      if (isInstall && !entry) {
+        const row = await this.appRepository.getAppByUrn(data.appUrn);
+        // Read after the row: a retry can register during that read.
+        const newer = this.operationRegistry.get(data.appUrn);
+        if (newer || row?.status !== 'installing') {
+          const why = newer ? `request ${newer.requestId} holds the app` : `row is ${row?.status ?? 'gone'}`;
+          this.logger.info(`[lifecycle] redelivered install of ${data.appUrn} is no longer wanted (${why}); skipping it`);
+          await this.endSettledCommand(data, job, reply, 'Install already ended before it could resume');
+          return;
+        }
+        // Registered as a dispatched install is, so Cancel reaches it and other commands wait for it.
+        this.registerDispatchedCommand(data.appUrn, data.requestId, 'install', { takesOverClaim: false });
+        entry = this.operationRegistry.get(data.appUrn);
+      }
 
       // Tier-A: the op was cancelled while queued (before this worker dequeued it). Skip execution
       // entirely and finalize the cancellation. No compose/pull ran, so there is nothing to compensate.
@@ -643,11 +976,16 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         if (job) {
           await this.lifecycleJobService?.cancelJob(job.id, 'Operation cancelled before it started').catch(() => null);
         }
-        await this.handleCancelledResult(data.command, data.appUrn, {
-          success: false,
-          cancelled: true,
-          message: 'Operation cancelled before it started',
-        });
+        await this.handleCancelledResult(
+          data.command,
+          data.appUrn,
+          {
+            success: false,
+            cancelled: true,
+            message: 'Operation cancelled before it started',
+          },
+          data,
+        );
         await reply({ success: false, cancelled: true, message: 'Operation cancelled before it started' });
         this.operationRegistry.clear(data.appUrn, data.requestId);
         return;
@@ -668,10 +1006,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
                 await this.lifecycleJobService?.updateProgress(job.id, percent).catch(() => null);
               }
             },
+            // The publisher's wait started when the entry was registered, just before the publish.
+            deadline: AppCommandDeadline.untilReply(entry.createdAt, this.appEventsReplyTimeoutMs),
           }
         : undefined;
 
       const command = this.commandFactory.createCommand(data);
+      afterReply = command.afterReply?.bind(command);
       // Only pass the context when there is one, so commands without cancellation see the original 2-arg call.
       const result = (await (ctx ? command.execute(data.appUrn, data.form, ctx) : command.execute(data.appUrn, data.form))) as z.output<
         typeof appEventResultSchema
@@ -686,23 +1027,32 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         if (job) {
           await this.lifecycleJobService?.cancelJob(job.id, result.message || 'Operation was cancelled').catch(() => null);
         }
-        await this.handleCancelledResult(data.command, data.appUrn, result);
+        await this.handleCancelledResult(data.command, data.appUrn, result, data);
         this.operationRegistry.clear(data.appUrn, data.requestId);
       } else if (result.success) {
         if (job) {
           await this.lifecycleJobService?.completeJob(job.id).catch(() => null);
         }
-        this.logger.debug('Command executed successfully, triggering Cloudflare sync...');
-        // Trigger sync to ensure cloud state matches local state (exposed apps)
-        await this.syncExposure();
         // Install success is finalized worker-side (markInstallSucceeded); the publisher-side
-        // handler only performs optional follow-up work.
+        // handler only performs optional follow-up work. Cleared before the sync below: the app is
+        // `running` already, and an entry left over the Portal round trips refused every command
+        // sent to it as "already being installed", the sync's own custom-domain restart included.
         if (isInstall) {
           this.operationRegistry.clear(data.appUrn, data.requestId);
         }
+        this.logger.debug('Command executed successfully, triggering Cloudflare sync...');
+        // Trigger sync to ensure cloud state matches local state (exposed apps)
+        await this.syncExposure();
       } else {
         if (job) {
-          await this.lifecycleJobService?.failJob(job.id, result.message || 'Operation failed').catch(() => null);
+          // What the app page shows after a reload, when the event that carried it is gone (see `AppsReadService.lastFailure`).
+          const failure = {
+            errorCode: result.errorCode,
+            errorDetail: result.errorDetail,
+            settingsPath: result.settingsPath,
+            serviceFailure: result.serviceFailure,
+          };
+          await this.lifecycleJobService?.failJob(job.id, result.message || 'Operation failed', { failure }).catch(() => null);
         }
         await this.handleFailedResult(data.command, data.appUrn, result);
         if (isInstall) {
@@ -729,9 +1079,21 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       // transitional statuses (e.g. update -> start-after-update). Superseded handlers
       // still lose the claim when a newer op replaced the registry entry.
       release();
-      if (isInstall) {
-        // Whatever the install's last event was, a new tab must not be told it is still installing.
+      // Tidying up the command left for after its reply: not awaited, so it neither delays the reply
+      // nor holds the app's lock. Started here rather than after the reply, so a reply that failed
+      // does not leave it undone.
+      if (afterReply) {
+        void afterReply().catch((err: unknown) =>
+          this.logger.warn(`Tidying up after '${data.command}' for ${data.appUrn} failed: ${err instanceof Error ? err.message : String(err)}`),
+        );
+      }
+      if (isInstall || data.command === 'update') {
+        // Whatever the install's or update's last event was, a new tab must not be told it is still
+        // installing or updating. An update can end with no event for the app: a superseded
+        // completion, or a cancel whose row had already left `updating`.
         this.sseService.forgetInstallProgress(data.appUrn);
+      }
+      if (isInstall) {
         this.installPipelineTracker.setActive(null);
         releasePipeline?.();
         void this.emitInstallQueueUpdate();
@@ -745,7 +1107,17 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * `install_cancelled` SSE event so the UI returns to the not-installed (store) state. Other
    * commands are wired in later phases; until then this is a safe no-op for them.
    */
-  private async handleCancelledResult(command: OperationCommand | string, appUrn: AppUrn, result: z.output<typeof appEventResultSchema>) {
+  private async handleCancelledResult(
+    command: OperationCommand | string,
+    appUrn: AppUrn,
+    result: z.output<typeof appEventResultSchema>,
+    message?: z.output<typeof appEventSchema>,
+  ) {
+    if (command === 'update') {
+      await this.finalizeCancelledUpdate(appUrn, result, message?.command === 'update' ? message : undefined);
+      return;
+    }
+
     if (command === 'install') {
       const app = await this.appRepository.getAppByUrn(appUrn).catch(() => null);
       if (app) {
@@ -757,13 +1129,63 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       }
       this.logger.info(`[lifecycle] install of ${appUrn} cancelled${result.message ? `: ${result.message}` : ''}`);
       // Use 'missing' (not 'uninstalled') to match uninstall_success — both delete the app record.
-      this.sseService.emit('app', { event: 'install_cancelled', appUrn, appStatus: 'missing' });
+      this.sseService.emit('app', {
+        event: 'install_cancelled',
+        appUrn,
+        appStatus: 'missing',
+        warningCode: result.warningCode,
+        warningDetail: result.warningDetail,
+      });
       void this.emitInstallQueueUpdate();
       return;
     }
 
     // Other commands report a cancelled-status resting state in later phases; nothing to do yet.
     this.logger.info(`[lifecycle] '${command}' for ${appUrn} cancelled (no finalization wired yet)`);
+  }
+
+  /**
+   * Settle a cancelled update worker-side, as a cancelled install is. The publisher's handler cannot:
+   * its claim on the operation is gone once the worker clears it, so the app would stay `updating`. The command reports where the app landed (`cancelledStatus`); a cancel that arrived
+   * while the update was still queued changed nothing, so the app is back as it was.
+   */
+  private async finalizeCancelledUpdate(
+    appUrn: AppUrn,
+    result: z.output<typeof appEventResultSchema>,
+    message: Extract<z.output<typeof appEventSchema>, { command: 'update' }> | undefined,
+  ) {
+    const app = await this.appRepository.getAppByUrn(appUrn).catch(() => null);
+    if (!app) {
+      return;
+    }
+
+    // Where a failed update leaves the app (see `updateApp`): back to the status it had when the
+    // previous version is back, or when nothing had changed yet (a cancel while it was queued), and
+    // stopped when the previous version could not be put back after running.
+    const wasRunning = message?.wasRunning ?? true;
+    const before = (message?.statusBeforeUpdate as AppStatus | undefined) ?? (wasRunning ? 'running' : 'stopped');
+    const status: AppStatus = result.rolledBack === false && wasRunning ? 'stopped' : before;
+    if (!(await this.appRepository.updateAppByIdIfStatus(app.id, 'updating', { status }))) {
+      return;
+    }
+
+    this.logger.info(`[lifecycle] update of ${appUrn} cancelled; the app is ${status}${result.message ? `: ${result.message}` : ''}`);
+    if (result.rolledBack === false) {
+      // The previous version could not be put back: the person has to see that as the failure it is.
+      this.sseService.emit('app', { event: 'update_error', appUrn, appStatus: status, error: result.message });
+      this.agentNotifyService?.notify('update_error', { appUrn }, 'high');
+      // Reported as a failed update's rollback is: the command skipped its own report for a cancel.
+      this.reportAppFailure(
+        appUrn,
+        'update',
+        result.message || 'The cancelled update could not be rolled back',
+        result.errorCode,
+        result.serviceFailure,
+      );
+      return;
+    }
+    this.sseService.emit('app', { event: 'update_cancelled', appUrn, appStatus: status });
+    this.agentNotifyService?.notify('update_cancelled', { appUrn }, 'info');
   }
 
   /**
@@ -856,16 +1278,16 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       event: 'install_error',
       appUrn,
       appStatus: 'install_failed',
-      error: result.message,
+      ...failureForEveryone(result),
       errorCode: result.errorCode,
-      errorDetail: result.errorDetail,
       settingsPath: result.settingsPath,
+      movedHostPort: result.movedHostPort,
     });
     if (emitQueueUpdate) {
       void this.emitInstallQueueUpdate();
     }
     this.agentNotifyService?.notify('install_error', { appUrn }, 'high');
-    this.reportAppFailure(appUrn, 'install', result.message, result.errorCode);
+    this.reportAppFailure(appUrn, 'install', result.message, result.errorCode, result.serviceFailure);
   }
 
   /**
@@ -920,13 +1342,14 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     // Aborting somebody else's install or update weighs what stopping the app does, so it takes
     // `stop` — the verb the cancel route asserts. Before the registry is read; see `assertActorMay`.
-    // Unmarked, unlike stopping the app: cancelling an install undoes it, down to the data it was
-    // installing onto, so a managed key needs `full` to cancel another app's operation.
+    // Unmarked, unlike stopping the app: cancelling an install undoes it, down to the data it wrote,
+    // so a managed key needs `full` to cancel another app's operation.
     await this.assertActorMay(params.actor, appUrn, 'stop');
     const entry = this.operationRegistry.get(appUrn);
     if (!entry) {
-      // An install still in its checks has not registered; `installApp` applies the cancel before writing anything.
-      if (!requestId && this.operationRegistry.holdPreparingCancel(appUrn)) {
+      // An install still in its checks has not registered; `installApp` applies the cancel before
+      // writing anything, also when it comes while the install is still checking the caller's grant.
+      if (!requestId && (this.operationRegistry.holdPreparingCancel(appUrn) || this.operationRegistry.holdGrantCheckCancel(appUrn))) {
         return { outcome: 'cancelling', message: 'Cancellation requested' };
       }
       return { outcome: 'not_found', message: 'No operation in progress for this app' };
@@ -969,17 +1392,40 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * Check if the configuration has changed in a way that requires a restart
    */
   private hasConfigChanged(oldConfig: Record<string, unknown>, newConfig: Record<string, unknown>): boolean {
-    const oldJSON = JSON.stringify(oldConfig);
-    const newJSON = JSON.stringify(newConfig);
+    // Canonical, because the order means nothing: Postgres stores `config` as jsonb, which sets its
+    // own. A setting a save inherits also lands after the ones it named.
+    return canonicalJson(oldConfig) !== canonicalJson(newConfig);
+  }
 
-    return oldJSON !== newJSON;
+  /**
+   * The form a start or restart publishes: the stored config with this command's options on top.
+   *
+   * `appFormSchema` passes unknown keys through into the stored config, so a stored
+   * `onlyRecreateChanged` would otherwise stop every dashboard start from force-recreating.
+   * Only the caller decides it: the Hub boot and the start after an update. Likewise `stopIfNotUp`.
+   */
+  private lifecycleCommandForm(
+    storedConfig: unknown,
+    options: { skipPull?: boolean; onlyRecreateChanged?: boolean; stopIfNotUp?: boolean },
+  ): Record<string, unknown> {
+    const { onlyRecreateChanged: _storedRecreateMode, stopIfNotUp: _storedStopIfNotUp, ...config } = (storedConfig ?? {}) as Record<string, unknown>;
+    return {
+      ...config,
+      skipPull: options.skipPull,
+      ...(options.onlyRecreateChanged ? { onlyRecreateChanged: true } : {}),
+      ...(options.stopIfNotUp ? { stopIfNotUp: true } : {}),
+    };
   }
 
   async startApp(params: { appUrn: AppUrn; skipPull?: boolean; onlyRecreateChanged?: boolean; actor: LifecycleActor }) {
-    const { appUrn, skipPull, onlyRecreateChanged } = params;
-
     // Before the app is even read — see `assertActorMay`.
-    await this.assertActorMay(params.actor, appUrn, 'start');
+    await this.assertActorMay(params.actor, params.appUrn, 'start');
+    return this.withOperationClaim(params.appUrn, 'start', () => this.dispatchStart({ ...params, stopIfNotUp: params.actor.kind !== 'system' }));
+  }
+
+  /** `startApp` past its grant check, with the app claimed: by this start, or by the install it is part of. */
+  private async dispatchStart(params: { appUrn: AppUrn; skipPull?: boolean; onlyRecreateChanged?: boolean; stopIfNotUp?: boolean }) {
+    const { appUrn, skipPull, onlyRecreateChanged, stopIfNotUp } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -992,14 +1438,16 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const requestId = crypto.randomUUID();
     this.registerDispatchedCommand(appUrn, requestId, 'start');
-    // `appFormSchema` passes unknown keys through into the stored config, so a stored
-    // `onlyRecreateChanged` would otherwise stop every dashboard start from force-recreating.
-    // Only the boot path decides it.
-    const { onlyRecreateChanged: _storedRecreateMode, ...storedConfig } = (app.config ?? {}) as Record<string, unknown>;
-    this.appEventsQueue
-      .publish({ appUrn, command: 'start', requestId, form: { ...storedConfig, skipPull, ...(onlyRecreateChanged ? { onlyRecreateChanged } : {}) } })
+    this.publishStartWhenQueueUp(appUrn, requestId, {
+      appUrn,
+      command: 'start',
+      requestId,
+      form: this.lifecycleCommandForm(app.config, { skipPull, onlyRecreateChanged, stopIfNotUp }),
+    })
       .then(async (raw) => {
-        const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
+        const { success, message, errorCode, errorDetail, settingsPath, serviceFailure, movedHostPort, rolledBack } = raw as z.output<
+          typeof appEventResultSchema
+        >;
         if (success) {
           this.logger.info(`App ${appUrn} started successfully`);
           await this.settleCommandOutcome({
@@ -1008,10 +1456,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             requestId,
             command: 'start',
             success: true,
+            movedHostPort,
             successOutcome: {
               status: 'running',
               event: 'start_success',
               clearPendingRestart: true,
+              configAtDispatch: app.config,
               afterApply: async () => {
                 /*
                  * NOT GATED ON `isProduction`, and that is the fix.
@@ -1035,7 +1485,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             },
           });
         } else {
-          this.logger.error(`Failed to start app ${appUrn}: ${message}`);
+          // The queue never took the command, so nothing ran and the app settles on the status it had. That is a
+          // warning: the queue was not up, which is the device's, not a failure of the start itself.
+          if (errorCode === QUEUE_UNAVAILABLE_CODE) {
+            this.logger.warn(`Failed to start app ${appUrn}: ${message}`);
+          } else {
+            this.logger.error(`Failed to start app ${appUrn}: ${message}`);
+          }
           await this.settleCommandOutcome({
             appId: app.id,
             appUrn,
@@ -1046,8 +1502,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             errorCode,
             errorDetail,
             settingsPath,
+            serviceFailure,
+            movedHostPort,
             failureOutcome: {
-              status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped'),
+              status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped', rolledBack),
               event: 'start_error',
               notifyEvent: 'start_error',
               failurePhase: 'start',
@@ -1129,7 +1587,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       this.marketplaceService.getDockerComposeJson(appUrn),
     ]);
 
-    const images = composeJson.content ? await planImages(this.dockerService, extractComposeImages(composeJson.content)) : [];
+    const images = composeJson.content
+      ? await planImages(this.dockerService, extractComposeImages(composeJson.content, securityGrantsFor(appUrn)))
+      : [];
 
     // Parsed the same way `validateAppConfig`/`installApp` do; an invalid form still produces a
     // usable (if empty) basis here — `checks.config` is what reports the validation failure.
@@ -1143,7 +1603,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
     if (composeJson.content) {
       try {
-        portRequests.push(...buildComposePortRequests(composeJson.content));
+        portRequests.push(...buildComposePortRequests(composeJson.content, securityGrantsFor(appUrn)));
       } catch {
         // Malformed compose — already surfaced via `checks.config`/`images`; the port plan just omits extras.
       }
@@ -1216,6 +1676,34 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   private async assertActorMayApplyForm(actor: LifecycleActor, appUrn: AppUrn, form: unknown, action: HubAction): Promise<void> {
     await this.assertActorMay(actor, appUrn, action);
     await this.authorizeCustomDomainChange(appUrn, form, () => this.assertActorMayChangeCustomDomain(actor, appUrn));
+    // Only an install writes the answer (`installerMcpAccess`); a settings save drops it (`toStoredConfig`).
+    if (action === 'install') {
+      await this.assertActorMayGrantFullMcpAccess(actor, form);
+    }
+  }
+
+  /**
+   * Who may answer an app's request for the Hub's MCP tools with `full` in its install form: what
+   * raising any key to `full` takes, the operator who claimed the Hub or an organization owner or
+   * admin (`personMayGrantFullCapability`), asked of WhoIs fresh and refused when it can't say.
+   *
+   * The install route asks this of the request before it calls in, but the MCP tool runner
+   * (`hub_install_app` from `/api/mcp-admin`) passes the form straight through as the signed-in
+   * person, and `installerMcpAccess` writes an operator's answer. So it is asked here of the actor,
+   * for every path. A key's answer is never written, and an exempt principal is admitted by name, as
+   * by the route.
+   */
+  private async assertActorMayGrantFullMcpAccess(actor: LifecycleActor, form: unknown): Promise<void> {
+    if (actor.kind !== 'operator') {
+      return;
+    }
+    const mcpAccess = typeof form === 'object' && form !== null ? (form as { mcpAccess?: unknown }).mcpAccess : undefined;
+    if (mcpAccess !== 'full') {
+      return;
+    }
+    if (!(await personMayGrantFullCapability(actor.userId, this.resolveWhois()))) {
+      throw new TranslatableError('API_KEY_FULL_ROLE_REQUIRED', {}, HttpStatus.FORBIDDEN);
+    }
   }
 
   /**
@@ -1240,6 +1728,27 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     throw new TranslatableError('CUSTOM_DOMAIN_ROLE_REQUIRED', {}, HttpStatus.FORBIDDEN);
+  }
+
+  /**
+   * Who may create a custom app: an organization owner or admin, the rule a custom app's `install`
+   * follows (`MarketplaceWhoIsService.customAppActionsFor`), asked of the Portal fresh and refused
+   * when the role can't be read. As for a custom-domain change, that is the operator for a session
+   * and, for an unmanaged MCP key, the person who created it. A managed app key, and a key nobody is
+   * recorded as creating, has no person whose role could be asked, so it is refused whatever its
+   * capability. A named exempt principal and the Hub itself are admitted.
+   */
+  async assertActorMayCreateCustomApp(actor: LifecycleActor): Promise<void> {
+    if (actor.kind === 'exempt' || actor.kind === 'system') {
+      return;
+    }
+
+    const person = actor.kind === 'operator' ? actor.userId : actor.ownerAppUrn === null ? actor.createdByUserId : null;
+    const actions = person === null ? [] : ((await this.resolveWhois()?.customAppActionsFor(person)) ?? []);
+
+    if (!actions.includes('install')) {
+      throw new TranslatableError('CUSTOM_APP_CREATE_ROLE_REQUIRED', {}, HttpStatus.FORBIDDEN);
+    }
   }
 
   /** What {@link requestsCustomDomainChange} compares a save against; `null` for an app not installed. */
@@ -1267,33 +1776,137 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     };
   }
 
+  /**
+   * The image check `installAppWhilePreparing` started beside the bundle download, or a new one when
+   * the downloaded compose names other images than those it checked.
+   */
+  private async settleArchitectureCheck(
+    appUrn: AppUrn,
+    architecture: string,
+    started: { imagesBeforeDownload: string[] | null; earlyArchCheck: Promise<ArchitectureCheck> },
+    timings: InstallCheckTimings,
+  ): Promise<ArchitectureCheck> {
+    const imagesNow = await this.imageSizeService.listAppImages(appUrn);
+    if (sameImages(started.imagesBeforeDownload, imagesNow)) {
+      return started.earlyArchCheck;
+    }
+
+    return timings.time('architecture of the new images', this.imageSizeService.verifyAppArchitecture(appUrn, architecture, imagesNow));
+  }
+
+  /**
+   * Refuse an install that would land on another operation for the same app. Taken as a reinstall,
+   * it patched the row and queued a Start, which took over that operation's slot in the registry: a
+   * second install restarted the app as soon as the first one finished, and an uninstall never
+   * completed, leaving a row that "starts" with no containers behind it.
+   *
+   * A row left `installing` with no operation under way is not refused: the install that wrote it
+   * is gone (its worker died, or the Hub restarted before it finished), and this one retries it. A
+   * row left `uninstalling` is refused all the same, as that app is half removed and an install
+   * would start what is left of it.
+   */
+  private refuseInstallWhileBusy(appUrn: AppUrn, status: AppStatus | undefined): void {
+    const live = this.operationRegistry.liveOperation(appUrn);
+    if (live) {
+      throw this.operationBusyError(appUrn, live.command);
+    }
+
+    if (status === 'uninstalling') {
+      throw this.operationBusyError(appUrn, 'uninstall');
+    }
+
+    // An install queued behind others outlives the stale window from the time it registered, and its
+    // worker still runs it. The status sync and the boot recovery treat it as live the same way.
+    if (
+      status === 'installing' &&
+      (this.operationRegistry.get(appUrn)?.command === 'install' || this.installPipelineTracker.getActive() === appUrn)
+    ) {
+      throw this.operationBusyError(appUrn, 'install');
+    }
+  }
+
   async installApp(params: { appUrn: AppUrn; form: unknown; skipRun?: boolean; actor: LifecycleActor }) {
+    const timings = new InstallCheckTimings();
+
+    // Before anything is fetched, written or queued, and before the busy refusals below, so a caller
+    // without the grant is refused for that whatever the app is doing (see `assertActorMay`). The
+    // HTTP route leaves the check to here, so an install asks WhoIs once. A cancel sent while the
+    // check runs (the page offers Cancel from the click) is held and applied once it passes.
+    this.operationRegistry.beginInstallGrantCheck(params.appUrn);
+    let cancelHeldDuringGrant = false;
+    try {
+      await timings.time('grant', this.assertActorMayApplyForm(params.actor, params.appUrn, params.form, 'install'));
+    } finally {
+      cancelHeldDuringGrant = this.operationRegistry.endInstallGrantCheck(params.appUrn);
+    }
+
+    // A second install sent while the first is still in here gets past the status checks below: a
+    // fresh install has no row yet, and a reinstall's row says `running` until its Start. Checked and
+    // begun in one synchronous step, so two requests cannot both get through.
+    if (!this.operationRegistry.beginInstallCall(params.appUrn)) {
+      throw this.operationBusyError(params.appUrn, 'install');
+    }
+
+    // Every open page of the app shows the install from here, not only the one that clicked.
+    this.sseService.emit('app', { event: 'operation_change', appUrn: params.appUrn, operation: 'install' });
+
     // The page offers Cancel as soon as Install is clicked, but the operation registers only after
     // the checks below, which take seconds. A cancel in that window is held and applied here.
     const preparing = this.operationRegistry.beginPreparingInstall(params.appUrn);
+    preparing.cancelRequested = cancelHeldDuringGrant;
+    const slot: InstallSlot = { claim: null };
     try {
-      return await this.installAppWhilePreparing(params, preparing);
+      return await this.installAppWhilePreparing(params, preparing, slot, timings);
     } finally {
+      if (slot.claim) {
+        this.operationRegistry.releaseClaim(params.appUrn, slot.claim);
+      }
       this.operationRegistry.endPreparingInstall(params.appUrn, preparing);
+      this.operationRegistry.endInstallCall(params.appUrn);
+      // The install now queued, or what else holds the app, or nothing when this install gave up.
+      const operation = this.operationRegistry.liveOperation(params.appUrn)?.command ?? null;
+      this.sseService.emit('app', { event: 'operation_change', appUrn: params.appUrn, operation });
+      this.logger.info(`[install] ${params.appUrn} took ${timings.summary()}`);
     }
   }
 
   private async installAppWhilePreparing(
     params: { appUrn: AppUrn; form: unknown; skipRun?: boolean; actor: LifecycleActor },
     preparing: PreparingInstall,
+    slot: InstallSlot,
+    timings: InstallCheckTimings,
   ) {
     const { appUrn, form, skipRun } = params;
-
-    // Before anything is fetched, written or queued — see `assertActorMay`.
-    await this.assertActorMayApplyForm(params.actor, appUrn, form, 'install');
     const { demoMode, architecture } = this.config.getConfig();
 
     // Check if we need to download files from Companion Portal
     const { appStoreId, appName } = extractAppUrn(appUrn);
     const store = await this.appStoreService.getAppStoreBySlug(appStoreId);
+    const downloadsBundle = store?.type === 'ci_cloud_api';
 
-    if (store && store.type === 'ci_cloud_api') {
-      const result = await this.repoHelpers.downloadAppFiles(store.url, store.slug, appName);
+    if (downloadsBundle) {
+      // Before the Portal download, which rewrites the app's store files and takes seconds.
+      this.refuseInstallWhileBusy(appUrn, (await this.appRepository.getAppByUrn(appUrn))?.status);
+    }
+
+    // Before the download and the image checks too: the refusal needs only the installed apps.
+    const apps = await this.appRepository.getApps();
+    assertAppIdFree(appUrn, apps);
+
+    /*
+     * The image check asks each image's registry, the bundle download asks Companion Portal, and on a
+     * slow link each took seconds, one after the other. The check starts here, on the compose the
+     * store already holds (the catalog sync keeps it for every free app), and runs beside the
+     * download. If the downloaded compose names other images, they are checked once it is in.
+     */
+    const imagesBeforeDownload = await this.imageSizeService.listAppImages(appUrn);
+    // On exactly the images read here: a second read of the compose could land on the download's writes.
+    const earlyArchCheck = timings
+      .time('architecture', this.imageSizeService.verifyAppArchitecture(appUrn, architecture, imagesBeforeDownload))
+      .catch(() => null);
+
+    if (store && downloadsBundle) {
+      const result = await timings.time('bundle', this.repoHelpers.downloadAppFiles(store.url, store.slug, appName));
       if (!result.success) {
         const failure = this.describePortalBundleFailure(appUrn, 'install', result);
         this.sseService.emit('app', {
@@ -1310,11 +1923,15 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     const existingApp = await this.appRepository.getAppByUrn(appUrn);
+    // For an operation under way, including one that began during the download.
+    this.refuseInstallWhileBusy(appUrn, existingApp?.status);
+    // A failed install, or one that left its row `installing` and is gone (see `refuseInstallWhileBusy`).
+    const retrying = existingApp?.status === 'install_failed' || existingApp?.status === 'installing';
 
     // Reinstalling an app that is already there restarts it below, which nothing can cancel. Its
     // window ends here, and a cancel held for it is dropped: applying it would send
     // `install_cancelled` for an app that is still installed.
-    const reinstall = !!existingApp && existingApp.status !== 'install_failed';
+    const reinstall = !!existingApp && !retrying;
     if (reinstall) {
       this.operationRegistry.endPreparingInstall(appUrn, preparing);
       if (preparing.cancelRequested) {
@@ -1322,8 +1939,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       }
     }
     const cancelHeld = () => preparing.cancelRequested && !reinstall;
-    // A retry of a failed install, which a cancel puts back to failed rather than deleting.
-    const retriedRow = existingApp?.status === 'install_failed' ? { rowId: existingApp.id, rewritten: false } : null;
+    // A retry of a failed install, which a cancel puts back to failed rather than deleting. A row left
+    // `installing` is written back too: the cancel tells every page it failed, and a reload must agree.
+    const retriedRow = existingApp && retrying ? { rowId: existingApp.id, rewritten: existingApp.status === 'installing' } : null;
 
     if (cancelHeld()) {
       return this.endInstallCancelledBeforeQueue(appUrn, retriedRow);
@@ -1341,8 +1959,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       throw new TranslatableError('APP_INSTALL_FORM_ERROR_INVALID', { fields: labels }, HttpStatus.BAD_REQUEST);
     }
 
-    const { exposed, exposedLocal, openPort, domain, isVisibleOnGuestDashboard, enableAuth, port } = parsedForm;
-    const apps = await this.appRepository.getApps();
+    // What the REQUEST asked for, used by the checks below. Everything written to the row reads
+    // `parsedForm`: the production guard and the non-exposable reset both change it after this point.
+    const { exposed, exposedLocal, domain, isVisibleOnGuestDashboard, port } = parsedForm;
 
     if (demoMode && apps.length >= 6) {
       throw new TranslatableError('SYSTEM_ERROR_DEMO_MODE_LIMIT');
@@ -1380,7 +1999,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     // "no matching manifest for linux/arm64/v8" mid-pull that previously
     // cascaded into an install_failed crash. Best-effort: a null result
     // (registry/network couldn't be inspected) does not block the install.
-    const archCheck = await this.imageSizeService.verifyAppArchitecture(appUrn, architecture);
+    const archCheck = await this.settleArchitectureCheck(appUrn, architecture, { imagesBeforeDownload, earlyArchCheck }, timings);
     if (archCheck && !archCheck.ok) {
       const canEmulateAmd64 = architecture === 'arm64' && archCheck.available.includes('amd64') && appInfo.supported_architectures?.includes('amd64');
 
@@ -1396,18 +2015,21 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       );
     }
 
-    if (!appInfo.exposable) {
-      if (exposed || exposedLocal || enableAuth) {
-        this.logger.warn(`App ${appUrn} is not exposable, resetting proxy settings`);
-      }
-      parsedForm.exposed = false;
-      parsedForm.exposedLocal = false;
-      parsedForm.enableAuth = false;
-      parsedForm.domain = undefined;
-      parsedForm.publicDomain = undefined;
+    // As a save does: the form replaces the stored one whole. Not for a retry, whose app was never served.
+    if (reinstall && existingApp && appInfo.exposable) {
+      keepStoredExposure(parsedForm, parsedFormResult.data, existingApp.config);
     }
 
-    if (parsedForm.exposureMode !== 'cloudflare') {
+    if (!appInfo.exposable && keepOnThisMachineOnly(parsedForm)) {
+      this.logger.warn(`App ${appUrn} is not exposable, resetting proxy settings`);
+    }
+
+    // Before the custom-domain and login checks below, which read what this writes.
+    if (appInfo.force_expose) {
+      publishForcedExposure(parsedForm);
+    }
+
+    if (getEffectiveExposureMode(parsedForm) !== 'cloudflare') {
       parsedForm.publicDomain = undefined;
     }
 
@@ -1423,18 +2045,29 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       parsedForm.enableAuth = manifestDefaultsEdgeAuthOn(appInfo) || undefined;
     }
 
-    if (appInfo.force_expose && !exposed) {
-      throw new TranslatableError('APP_ERROR_APP_FORCE_EXPOSED', { id: appUrn });
+    if (appInfo.force_expose && !servesForcedExposure(parsedForm)) {
+      throw new TranslatableError('APP_ERROR_APP_FORCE_EXPOSED', { id: appUrn }, HttpStatus.BAD_REQUEST);
+    }
+
+    // As the install dialog refuses it: nothing would serve the name the app first starts with, and it
+    // can't take another later. A reinstall keeps the name it has, and a named domain needs no tunnel.
+    if (
+      appInfo.force_expose &&
+      !reinstall &&
+      !parsedForm.exposed &&
+      !this.moduleRef.get(CloudflareClientService, { strict: false })?.getTunnelToken()
+    ) {
+      throw new TranslatableError('APP_INSTALL_FORM_NEEDS_PUBLIC_WEB', undefined, HttpStatus.BAD_REQUEST);
     }
 
     const conflictsOtherApp = <T extends { id?: number }>(candidates: T[]) =>
       existingApp ? candidates.filter((candidate) => candidate.id !== existingApp.id) : candidates;
 
-    if (exposed && domain) {
-      const appsWithSameDomain = conflictsOtherApp(await this.appRepository.getAppsByDomain(domain));
+    if (parsedForm.exposed && parsedForm.domain) {
+      const appsWithSameDomain = conflictsOtherApp(await this.appRepository.getAppsByDomain(parsedForm.domain));
 
       if (appsWithSameDomain.length > 0) {
-        throw new TranslatableError('APP_ERROR_DOMAIN_ALREADY_IN_USE', { domain, id: appsWithSameDomain[0]?.appName });
+        throw new TranslatableError('APP_ERROR_DOMAIN_ALREADY_IN_USE', { domain: parsedForm.domain, id: appsWithSameDomain[0]?.appName });
       }
     }
 
@@ -1450,11 +2083,22 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       }
     }
 
-    if (publishesHostPort(parsedForm) && port) {
+    const leavesRoute = !!existingApp && storedOnForbiddenRoute(appInfo, existingApp);
+
+    if (publishesHostPort(parsedForm) && port && !leavesRoute) {
       const appsWithSamePort = conflictsOtherApp(await this.appRepository.getAppsByPort(port));
 
       if (appsWithSamePort.length > 0) {
-        throw new TranslatableError('APP_ERROR_PORT_ALREADY_IN_USE', { port: port.toString(), id: appsWithSamePort[0]?.appName });
+        throw new TranslatableError(
+          'APP_ERROR_PORT_ALREADY_IN_USE',
+          { port: port.toString(), id: appsWithSamePort[0]?.appName },
+          HttpStatus.CONFLICT,
+        );
+      }
+      // A first install or a retry allocates afresh and takes a free port when this one is held. A
+      // reinstall publishes what the form names, so a port it moves to has to be free now.
+      if (reinstall && port !== existingApp?.port) {
+        await this.refusePortAllocatedToAnotherApp(appUrn, port);
       }
     }
 
@@ -1474,15 +2118,42 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
      * afterwards would park the operator's domain for a reinstall they were told
      * had failed.
      */
+    /*
+     * Once more before anything is written, for a fresh install, a reinstall and a retry alike. The
+     * checks since the last look reach the image registry and Companion Portal, and an operation that
+     * began meanwhile would lose its outcome to this install's Start or its queued install. A row
+     * that is gone was removed by an uninstall that finished. The app is claimed in the same step,
+     * so nothing else can begin on it until this install has registered or given up. Before the
+     * release, which must follow every refusal.
+     */
+    const current = existingApp ? await this.appRepository.getAppByUrn(appUrn) : undefined;
+    this.refuseInstallWhileBusy(appUrn, existingApp && !current ? 'uninstalling' : current?.status);
+    const claim = this.operationRegistry.claim(appUrn, 'install');
+    if (!claim.claimed) {
+      throw this.operationBusyError(appUrn, claim.busy.command);
+    }
+    slot.claim = claim.token;
+
     if (existingApp) {
       await this.releaseClearedCustomDomain(appUrn, parsedForm, existingApp);
     }
 
-    if (existingApp && existingApp.status !== 'install_failed') {
-      await this.appRepository.updateAppById(existingApp.id, buildInstallRowPatch(parsedForm));
+    if (existingApp && !retrying) {
+      await this.recordMainPort(appUrn, parsedForm.port);
+      await this.appRepository.updateAppById(existingApp.id, {
+        ...buildInstallRowPatch(parsedForm, current?.config),
+        ...installerMcpAccess(params.actor, parsedForm),
+        // The reset leaves these `undefined`, which keeps a column as it was.
+        ...(appInfo.exposable ? {} : { domain: null, publicDomain: null }),
+      });
       await this.claimCustomDomainIntent(existingApp.id, parsedForm.customDomain);
-      // Part of the install the caller was authorized for, not a new decision.
-      return this.startApp({ appUrn, actor: { kind: 'system', reason: 'reinstall-start' } });
+      if (leavesRoute) {
+        // The start below syncs only a row that says `exposedLocal`, which this one no longer does. The
+        // row is local already, so this sync leaves the app out. That is what releases its route.
+        this.fireAndForgetLifecycle('release-route-after-reinstall', appUrn, () => this.syncExposure());
+      }
+      // Part of the install the caller was authorized for, not a new decision. Under this install's claim.
+      return this.dispatchStart({ appUrn });
     }
 
     // min_hub_version enforcement intentionally disabled until Hub semver stabilizes (post-CIHub migration).
@@ -1490,6 +2161,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     let installRecord: InstallRow | undefined = existingApp
       ? { id: existingApp.id, status: existingApp.status, port: existingApp.port, exposedLocal: existingApp.exposedLocal }
       : undefined;
+    // A row this install did not create: a failed install, or one gone with its row left `installing`.
+    let retriesRow = !!existingApp;
     if (!installRecord) {
       try {
         const created = await this.appRepository.createApp({
@@ -1502,8 +2175,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           // - Traefik routing uses params.internalPort from the service definition, not this database field.
           port: parsedForm.port ?? appInfo.port,
           version: appInfo.cihub_app_version,
-          exposed: exposed ?? false,
-          domain: domain ?? null,
+          exposed: parsedForm.exposed ?? false,
+          domain: parsedForm.domain ?? null,
           localSubdomain: parsedForm.localSubdomain ?? null,
           publicDomain: parsedForm.publicDomain ?? null,
           // The custom domain the installer picked, recorded as an intent. It is
@@ -1516,24 +2189,19 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           // defaulted false, the bind pass read that as a refusal, and the move
           // the person had just agreed to was cleared on the next sync.
           ...customDomainColumns(parsedForm),
-          openPort: openPort ?? false,
-          exposedLocal: exposedLocal ?? !!appInfo.exposable,
-          exposureMode: parsedForm.exposureMode ?? 'local',
+          openPort: servedOpenPort(parsedForm),
+          exposedLocal: parsedForm.exposedLocal ?? !!appInfo.exposable,
+          exposureMode: getEffectiveExposureMode(parsedForm),
           appStoreSlug: appStoreId,
           isVisibleOnGuestDashboard,
           enableAuth: parsedForm.enableAuth ?? false,
           autoRestartOnDomainChange: parsedForm.autoRestartOnDomainChange ?? false,
+          ...installerMcpAccess(params.actor, parsedForm),
         });
         installRecord = { id: created.id, status: created.status, port: created.port, exposedLocal: created.exposedLocal };
         await this.claimCustomDomainIntent(created.id, parsedForm.customDomain);
       } catch (createError) {
-        const isUniqueViolation =
-          createError instanceof Error &&
-          (createError.message.includes('23505') ||
-            createError.message.includes('unique') ||
-            createError.message.includes('duplicate') ||
-            (createError as { code?: string }).code === '23505');
-        if (!isUniqueViolation) {
+        if (!isUniqueViolation(createError)) {
           throw createError;
         }
 
@@ -1542,15 +2210,24 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           throw createError;
         }
 
-        if (raced.status !== 'install_failed') {
+        if (raced.status === 'uninstalling') {
+          throw this.operationBusyError(appUrn, 'uninstall');
+        }
+
+        if (raced.status !== 'install_failed' && raced.status !== 'installing') {
           // A reinstall after all, which nothing can cancel (see `reinstall` above).
           this.operationRegistry.endPreparingInstall(appUrn, preparing);
-          await this.appRepository.updateAppById(raced.id, buildInstallRowPatch(parsedForm));
+          await this.recordMainPort(appUrn, parsedForm.port);
+          await this.appRepository.updateAppById(raced.id, {
+            ...buildInstallRowPatch(parsedForm, raced.config),
+            ...installerMcpAccess(params.actor, parsedForm),
+          });
           await this.claimCustomDomainIntent(raced.id, parsedForm.customDomain);
-          return this.startApp({ appUrn, actor: { kind: 'system', reason: 'reinstall-start' } });
+          return this.dispatchStart({ appUrn });
         }
 
         installRecord = { id: raced.id, status: raced.status, port: raced.port, exposedLocal: raced.exposedLocal };
+        retriesRow = true;
       }
     }
 
@@ -1558,14 +2235,15 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       throw new Error(`Failed to create or load install record for ${appUrn}`);
     }
 
-    if (existingApp || installRecord.status === 'install_failed') {
+    if (retriesRow) {
       await this.appRepository.updateAppById(installRecord.id, {
         status: 'installing',
+        ...installerMcpAccess(params.actor, parsedForm),
         config: toStoredConfig(parsedForm),
         port: parsedForm.port ?? installRecord.port ?? appInfo.port,
         version: appInfo.cihub_app_version,
-        exposed: exposed ?? false,
-        domain: domain ?? null,
+        exposed: parsedForm.exposed ?? false,
+        domain: parsedForm.domain ?? null,
         localSubdomain: parsedForm.localSubdomain ?? null,
         publicDomain: parsedForm.publicDomain ?? null,
         /*
@@ -1577,9 +2255,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
          * otherwise wipe every recorded choice on the Hub.
          */
         ...customDomainColumns(parsedForm),
-        openPort: openPort ?? false,
-        exposedLocal: exposedLocal ?? !!appInfo.exposable,
-        exposureMode: parsedForm.exposureMode ?? 'local',
+        openPort: servedOpenPort(parsedForm),
+        exposedLocal: parsedForm.exposedLocal ?? !!appInfo.exposable,
+        exposureMode: getEffectiveExposureMode(parsedForm),
         isVisibleOnGuestDashboard,
         enableAuth: parsedForm.enableAuth ?? false,
         ...autoRestartColumn(parsedForm),
@@ -1596,8 +2274,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     // A cancel that came while the row was being written. Nothing is queued yet, so settle it here.
     if (cancelHeld()) {
-      // `installRecord.status` is the row's status from before this install rewrote it.
-      const retry = installRecord.status === 'install_failed' ? { rowId: installRecord.id, rewritten: true } : null;
+      // A row this install retried goes back to failed; one it created is deleted.
+      const retry = retriesRow ? { rowId: installRecord.id, rewritten: true } : null;
       return this.endInstallCancelledBeforeQueue(appUrn, retry, requestId);
     }
 
@@ -1608,7 +2286,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     this.appEventsQueue
       .publish({ appUrn, command: 'install', requestId, form: { ...parsedForm, skipRun } })
       .then(async (raw) => {
-        const { success, message, cancelled } = raw as z.output<typeof appEventResultSchema>;
+        const { success, message, cancelled, movedHostPort } = raw as z.output<typeof appEventResultSchema>;
         // Cancellation is finalized worker-side in invokeCommand (record deleted + install_cancelled
         // emitted), independent of this RPC reply. Nothing to do here — avoids a double delete/SSE/toast.
         if (cancelled) {
@@ -1619,7 +2297,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           const claimed = this.operationRegistry.claimCompletion(appUrn, requestId);
           if (claimed) {
             await this.appRepository.updateAppById(appId, { status: 'running' });
-            this.sseService.emit('app', { event: 'install_success', appUrn, appStatus: 'running' });
+            this.sseService.emit('app', { event: 'install_success', appUrn, appStatus: 'running', movedHostPort });
 
             const appIntentSyncService = this.appIntentSyncService;
             if (appIntentSyncService) {
@@ -1666,10 +2344,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * Stop an app by its ID
    */
   public async stopApp(params: { appUrn: AppUrn; actor: LifecycleActor }) {
-    const { appUrn } = params;
-
     // Marked as stopping the app, which a managed key at `write` may do to any app; see `managedKeyMayOperate`.
-    await this.assertActorMay(params.actor, appUrn, 'stop', { stopsApp: true });
+    await this.assertActorMay(params.actor, params.appUrn, 'stop', { stopsApp: true });
+    return this.withOperationClaim(params.appUrn, 'stop', () => this.dispatchStop(params.appUrn));
+  }
+
+  private async dispatchStop(appUrn: AppUrn) {
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -1687,8 +2367,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const requestId = crypto.randomUUID();
     this.registerDispatchedCommand(appUrn, requestId, 'stop');
-    this.appEventsQueue
-      .publish({ command: 'stop', appUrn, requestId, form: app.config })
+    this.publishRegistered(appUrn, requestId, { command: 'stop', appUrn, requestId, form: app.config })
       .then(async (raw) => {
         const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
         if (success) {
@@ -1743,6 +2422,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     return { requestId };
   }
 
+  /**
+   * Not claimed like every other command: this is the way out of a stop hung on Docker, so it must
+   * get through while that stop still holds the app. It registers over it.
+   */
   public async forceStopApp(params: { appUrn: AppUrn }) {
     const { appUrn } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
@@ -1758,7 +2441,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const release = await this.mutex.acquire(appUrn);
     const requestId = crypto.randomUUID();
-    this.registerDispatchedCommand(appUrn, requestId, 'stop');
+    // Over a live entry, as the way out of a stop hung on Docker, but not over another caller's claim.
+    this.registerDispatchedCommand(appUrn, requestId, 'stop', { takesOverClaim: false });
 
     try {
       await this.appRepository.updateAppById(app.id, { status: 'stopping' });
@@ -1813,13 +2497,23 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * Restart an app by its ID
    */
   public async restartApp(params: { appUrn: AppUrn; skipPull?: boolean; actor: LifecycleActor }) {
-    const { appUrn, skipPull } = params;
+    await this.assertActorMay(params.actor, params.appUrn, 'restart');
+    const waitForApp = params.actor.kind === 'system' && RESTARTS_THAT_WAIT_FOR_THE_APP.has(params.actor.reason);
+    return this.withOperationClaim(params.appUrn, 'restart', (waited) => this.dispatchRestart({ ...params, onlyIfUp: waited }), { waitForApp });
+  }
 
-    await this.assertActorMay(params.actor, appUrn, 'restart');
+  /** `onlyIfUp`: a Hub restart that waited for another operation; see {@link stoppedWhileWaiting}. */
+  private async dispatchRestart(params: { appUrn: AppUrn; skipPull?: boolean; actor: LifecycleActor; onlyIfUp?: boolean }) {
+    const { appUrn, skipPull } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn }, HttpStatus.NOT_FOUND);
+    }
+
+    if (params.onlyIfUp && this.stoppedWhileWaiting(appUrn, app.status)) {
+      // Names no operation: nothing was queued.
+      return { requestId: crypto.randomUUID() };
     }
 
     /*
@@ -1843,10 +2537,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const requestId = crypto.randomUUID();
     this.registerDispatchedCommand(appUrn, requestId, 'restart');
-    this.appEventsQueue
-      .publish({ command: 'restart', appUrn, requestId, form: { ...app.config, skipPull } })
+    const form = this.lifecycleCommandForm(app.config, { skipPull, stopIfNotUp: params.actor.kind !== 'system' });
+    this.publishRegistered(appUrn, requestId, { command: 'restart', appUrn, requestId, form })
       .then(async (raw) => {
-        const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
+        const { success, message, errorCode, errorDetail, settingsPath, serviceFailure, movedHostPort, rolledBack } = raw as z.output<
+          typeof appEventResultSchema
+        >;
         if (success) {
           this.logger.info(`App ${appUrn} restarted successfully`);
           await this.settleCommandOutcome({
@@ -1855,10 +2551,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             requestId,
             command: 'restart',
             success: true,
+            movedHostPort,
             successOutcome: {
               status: 'running',
               event: 'restart_success',
               clearPendingRestart: true,
+              configAtDispatch: app.config,
             },
           });
         } else {
@@ -1873,8 +2571,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             errorCode,
             errorDetail,
             settingsPath,
+            serviceFailure,
+            movedHostPort,
             failureOutcome: {
-              status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped'),
+              status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped', rolledBack),
               event: 'restart_error',
               notifyEvent: 'restart_error',
               failurePhase: 'restart',
@@ -1893,9 +2593,22 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * {@link startApp} resolves once the command is published; this variant is for callers
    * (such as post-update restart) that must not proceed until the app reaches a terminal
    * start outcome.
+   *
+   * `onlyRecreateChanged` leaves containers whose definition is unchanged running instead of
+   * recreating them (see `startComposeCommand`).
    */
-  public async startAppAndWait(params: { appUrn: AppUrn; skipPull?: boolean }): Promise<boolean> {
-    const { appUrn, skipPull } = params;
+  /** `waitForApp`: wait for an operation under way rather than be refused, as the restarts in `RESTARTS_THAT_WAIT_FOR_THE_APP` do. */
+  public async startAppAndWait(params: {
+    appUrn: AppUrn;
+    skipPull?: boolean;
+    onlyRecreateChanged?: boolean;
+    waitForApp?: boolean;
+  }): Promise<boolean> {
+    return this.withOperationClaim(params.appUrn, 'start', () => this.startAndWaitClaimed(params), { waitForApp: params.waitForApp });
+  }
+
+  private async startAndWaitClaimed(params: { appUrn: AppUrn; skipPull?: boolean; onlyRecreateChanged?: boolean }): Promise<boolean> {
+    const { appUrn, skipPull, onlyRecreateChanged } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -1907,13 +2620,15 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const requestId = crypto.randomUUID();
     this.registerDispatchedCommand(appUrn, requestId, 'start');
-    const raw = await this.appEventsQueue.publish({
+    const raw = await this.publishRegistered(appUrn, requestId, {
       appUrn,
       command: 'start',
       requestId,
-      form: { ...app.config, skipPull },
+      form: this.lifecycleCommandForm(app.config, { skipPull, onlyRecreateChanged }),
     });
-    const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
+    const { success, message, errorCode, errorDetail, settingsPath, serviceFailure, movedHostPort, rolledBack } = raw as z.output<
+      typeof appEventResultSchema
+    >;
 
     if (success) {
       this.logger.info(`App ${appUrn} started successfully`);
@@ -1923,10 +2638,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         requestId,
         command: 'start',
         success: true,
+        movedHostPort,
         successOutcome: {
           status: 'running',
           event: 'start_success',
           clearPendingRestart: true,
+          configAtDispatch: app.config,
           afterApply: async () => {
             /*
              * NOT GATED ON `isProduction`, and that is the fix.
@@ -1964,8 +2681,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       errorCode,
       errorDetail,
       settingsPath,
+      serviceFailure,
+      movedHostPort,
       failureOutcome: {
-        status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped'),
+        status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped', rolledBack),
         event: 'start_error',
         notifyEvent: 'start_error',
         failurePhase: 'start',
@@ -1984,7 +2703,14 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * memory-connect key rotation strands an app on a retired key if it does not).
    * Returns whether the restart succeeded; the status/SSE bookkeeping is identical.
    */
-  public async restartAppAndWait(params: { appUrn: AppUrn; skipPull?: boolean }): Promise<boolean> {
+  /** `waitForApp`: wait for an operation under way rather than be refused, as the restarts in `RESTARTS_THAT_WAIT_FOR_THE_APP` do. */
+  public async restartAppAndWait(params: { appUrn: AppUrn; skipPull?: boolean; waitForApp?: boolean }): Promise<boolean> {
+    return this.withOperationClaim(params.appUrn, 'restart', (waited) => this.restartAndWaitClaimed({ ...params, onlyIfUp: waited }), {
+      waitForApp: params.waitForApp,
+    });
+  }
+
+  private async restartAndWaitClaimed(params: { appUrn: AppUrn; skipPull?: boolean; onlyIfUp?: boolean }): Promise<boolean> {
     const { appUrn, skipPull } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
 
@@ -1992,18 +2718,25 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn }, HttpStatus.NOT_FOUND);
     }
 
+    // Nothing is owed to an app stopped meanwhile: it applies the change when it next starts.
+    if (params.onlyIfUp && this.stoppedWhileWaiting(appUrn, app.status)) {
+      return true;
+    }
+
     await this.appRepository.updateAppById(app.id, { status: 'restarting' });
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'restarting' });
 
     const requestId = crypto.randomUUID();
     this.registerDispatchedCommand(appUrn, requestId, 'restart');
-    const raw = await this.appEventsQueue.publish({
+    const raw = await this.publishRegistered(appUrn, requestId, {
       command: 'restart',
       appUrn,
       requestId,
-      form: { ...app.config, skipPull },
+      form: this.lifecycleCommandForm(app.config, { skipPull }),
     });
-    const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
+    const { success, message, errorCode, errorDetail, settingsPath, serviceFailure, movedHostPort, rolledBack } = raw as z.output<
+      typeof appEventResultSchema
+    >;
 
     if (success) {
       this.logger.info(`App ${appUrn} restarted successfully`);
@@ -2013,10 +2746,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         requestId,
         command: 'restart',
         success: true,
+        movedHostPort,
         successOutcome: {
           status: 'running',
           event: 'restart_success',
           clearPendingRestart: true,
+          configAtDispatch: app.config,
         },
       });
 
@@ -2034,8 +2769,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       errorCode,
       errorDetail,
       settingsPath,
+      serviceFailure,
+      movedHostPort,
       failureOutcome: {
-        status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped'),
+        status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped', rolledBack),
         event: 'restart_error',
         notifyEvent: 'restart_error',
         failurePhase: 'restart',
@@ -2128,9 +2865,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * Uninstall an app by its ID
    */
   public async uninstallApp(params: { appUrn: AppUrn; deleteAllData: boolean; force?: boolean; actor: LifecycleActor }) {
-    const { appUrn, deleteAllData, force } = params;
+    await this.assertActorMay(params.actor, params.appUrn, 'uninstall');
+    return this.withOperationClaim(params.appUrn, 'uninstall', () => this.dispatchUninstall(params));
+  }
 
-    await this.assertActorMay(params.actor, appUrn, 'uninstall');
+  private async dispatchUninstall(params: { appUrn: AppUrn; deleteAllData: boolean; force?: boolean }) {
+    const { appUrn, deleteAllData, force } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -2179,8 +2919,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const requestId = crypto.randomUUID();
     this.registerDispatchedCommand(appUrn, requestId, 'uninstall');
-    this.appEventsQueue
-      .publish({ command: 'uninstall', appUrn, requestId, form: app.config, deleteAllData })
+    this.publishRegistered(appUrn, requestId, { command: 'uninstall', appUrn, requestId, form: app.config, deleteAllData })
       .then(async (result) => {
         const { success, message, errorCode, errorDetail, settingsPath } = result as z.output<typeof appEventResultSchema>;
         if (success) {
@@ -2272,9 +3011,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * Reset an app by its ID
    */
   public async resetApp(params: { appUrn: AppUrn; force?: boolean; actor: LifecycleActor }) {
-    const { appUrn, force } = params;
+    await this.assertActorMay(params.actor, params.appUrn, 'reset');
+    return this.withOperationClaim(params.appUrn, 'reset', () => this.dispatchReset(params));
+  }
 
-    await this.assertActorMay(params.actor, appUrn, 'reset');
+  private async dispatchReset(params: { appUrn: AppUrn; force?: boolean }) {
+    const { appUrn, force } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -2290,8 +3032,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const requestId = crypto.randomUUID();
     this.registerDispatchedCommand(appUrn, requestId, 'reset');
-    this.appEventsQueue
-      .publish({ command: 'reset', appUrn, requestId, form: app.config })
+    this.publishRegistered(appUrn, requestId, { command: 'reset', appUrn, requestId, form: app.config })
       .then(async (raw) => {
         const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
         if (success) {
@@ -2387,6 +3128,25 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn });
     }
 
+    // An app that is not exposable offers no choice of mode, so there is none to keep.
+    if (appInfo.exposable) {
+      keepStoredExposure(parsedForm, parsedFormResult.data, app.config);
+    }
+
+    // A save that leaves the port out keeps the one the app is on, as a reinstall does
+    // (`buildInstallRowPatch`). It would fall back to the listing's below, which is the port a move left
+    // because another program holds it. A custom app's config.json keeps its internal port, so its host
+    // port is on the row (`allocateCustomAppHostPort`). A form that never named a port still follows its listing.
+    const keptPort = extractAppUrn(appUrn).appStoreId === '_user' ? app.port : storedFormPort(app.config);
+    if (parsedForm.port === undefined && typeof keptPort === 'number') {
+      parsedForm.port = keptPort;
+    }
+
+    // Before the comparison below: a form that opens the port would change the name the app keeps.
+    if (appInfo.force_expose) {
+      publishForcedExposure(parsedForm);
+    }
+
     // Manifest edge-auth default (CI-Engineering#74): when this update does not carry an
     // enableAuth decision, inherit the app's STORED choice first, and only fall to the manifest
     // default when the app never had one (an onboarding-era install). "Explicit operator choice
@@ -2456,9 +3216,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
          */
         (!!parsedForm.customDomain && parsedForm.customDomainTakeover === true) !== (app.customDomainTakeover === true));
 
+    // A save that repeats such an app's stored form still has to move it off the route it names.
+    const leavesRoute = storedOnForbiddenRoute(appInfo, app);
+
     const settingsChanged =
       this.hasConfigChanged(normalizeConfigForCompare((app.config ?? {}) as Record<string, unknown>), toStoredConfig(parsedForm)) ||
-      customDomainChanged;
+      customDomainChanged ||
+      leavesRoute;
     /*
      * ⚠ SAVED ON ITS OWN, AND BEFORE THE EARLY RETURN BELOW.
      *
@@ -2474,6 +3238,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     if (!settingsChanged) {
+      // Nothing to apply, but a legacy form re-submitted by a version bump is still public through
+      // `exposedLocal` on a row that says local. Writing the mode restarts nothing.
+      const servedMode = getEffectiveExposureMode(parsedForm);
+      if ((app.exposureMode || 'local') !== servedMode) {
+        await this.appRepository.updateAppById(app.id, { exposureMode: servedMode });
+      }
       this.logger.debug(`App ${appUrn} config update skipped — no changes detected`);
       return { requestId: crypto.randomUUID() };
     }
@@ -2484,22 +3254,17 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       // the stale copies would make this warning describe the REQUEST rather than what is actually
       // being reset — announcing a reset that already happened, and staying silent on an
       // enableAuth the defaulting just resolved.
-      if (parsedForm.exposed || parsedForm.exposedLocal || parsedForm.enableAuth) {
+      if (keepOnThisMachineOnly(parsedForm)) {
         this.logger.warn(`App ${appUrn} is not exposable, resetting proxy settings`);
       }
-      parsedForm.exposed = false;
-      parsedForm.exposedLocal = false;
-      parsedForm.enableAuth = false;
-      parsedForm.domain = undefined;
+    }
+
+    if (getEffectiveExposureMode(parsedForm) !== 'cloudflare') {
       parsedForm.publicDomain = undefined;
     }
 
-    if (parsedForm.exposureMode !== 'cloudflare') {
-      parsedForm.publicDomain = undefined;
-    }
-
-    if (appInfo.force_expose && !exposed) {
-      throw new TranslatableError('APP_ERROR_APP_FORCE_EXPOSED', { id: appUrn });
+    if (appInfo.force_expose && !servesForcedExposure(parsedForm)) {
+      throw new TranslatableError('APP_ERROR_APP_FORCE_EXPOSED', { id: appUrn }, HttpStatus.BAD_REQUEST);
     }
 
     if (exposed && domain) {
@@ -2522,11 +3287,20 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       }
     }
 
-    if (publishesHostPort(parsedForm) && port) {
+    if (publishesHostPort(parsedForm) && port && !leavesRoute) {
       const appsWithSamePort = await this.appRepository.getAppsByPort(port, app.id);
 
       if (appsWithSamePort.length > 0) {
-        throw new TranslatableError('APP_ERROR_PORT_ALREADY_IN_USE', { port: port.toString(), id: appsWithSamePort[0]?.appName });
+        throw new TranslatableError(
+          'APP_ERROR_PORT_ALREADY_IN_USE',
+          { port: port.toString(), id: appsWithSamePort[0]?.appName },
+          HttpStatus.CONFLICT,
+        );
+      }
+      // Only a port the save moves to. An app can already sit on a port another app holds in the table
+      // (`migrateExistingPortAllocations` leaves that as it is). Every save sends its port again.
+      if (port !== app.port) {
+        await this.refusePortAllocatedToAnotherApp(appUrn, port);
       }
     }
 
@@ -2555,6 +3329,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       throw new TranslatableError('APP_ERROR_APP_FAILED_TO_UPDATE', { id: appUrn }, HttpStatus.INTERNAL_SERVER_ERROR, { cause: message });
     }
 
+    await this.recordMainPort(appUrn, parsedForm.port ?? appInfo.port);
+
     const changed = await this.appRepository.updateAppById(app.id, {
       // `parsedForm`, not the request snapshot: the row must record what was actually applied.
       // Reading the snapshot here wrote `exposed: true` (and kept the domain) for a request the
@@ -2562,8 +3338,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       // `config` blob stored in this same call, which does carry the corrected form.
       exposed: parsedForm.exposed ?? false,
       exposedLocal: parsedForm.exposedLocal ?? false,
-      exposureMode: parsedForm.exposureMode ?? 'local',
-      openPort: parsedForm.openPort,
+      // What compose runs the form as: a legacy form's `exposedLocal` is Public Web, not This Machine Only.
+      exposureMode: getEffectiveExposureMode(parsedForm),
+      openPort: servedOpenPort(parsedForm),
       port: parsedForm.port ?? appInfo.port,
       domain: parsedForm.domain ?? null,
       localSubdomain: parsedForm.localSubdomain ?? null,
@@ -2588,7 +3365,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const { appName, appStoreId } = extractAppUrn(appUrn);
     // The row as it was published: the sync judged it by its stored form, not its columns.
-    const routingChanged = didPublicRoutingIdentityChange(publicRoutingSnapshotOf(app as AppPublicRoutingSnapshot), parsedForm, appName, appStoreId);
+    const routingChanged = didPublicRoutingIdentityChange(
+      publicRoutingSnapshotOf(app as AppPublicRoutingSnapshot),
+      parsedForm,
+      appName,
+      appStoreId,
+      resolveHubPublicDomainRoot(this.config.getConfig()),
+    );
 
     if (!changed?.pendingRestart) {
       await this.appRepository.updateAppById(app.id, { pendingRestart: settingsChanged });
@@ -2612,6 +3395,45 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     return { requestId };
+  }
+
+  /**
+   * Refuse a port the port manager gave another app. The check on the rows beside this one can't see
+   * an `addPorts` mapping or the main port of an app that isn't publishing it right now. Either would
+   * fail that app's next start if this one took the port. Two allocations hold nothing a next start
+   * needs: one a removal could not give back, which names an app with no row, and a main allocation
+   * whose app has left that port, as an exposed port's save does until the next boot corrects the table.
+   */
+  private async refusePortAllocatedToAnotherApp(appUrn: AppUrn, port: number): Promise<void> {
+    const holder = await this.moduleRef.get(PortManagerService, { strict: false })?.getPortHolder(port);
+    if (!holder || holder.appUrn === appUrn) {
+      return;
+    }
+    const holderApp = await this.appRepository.getAppByUrn(holder.appUrn as AppUrn);
+    if (!holderApp || (holder.label === 'main' && holderApp.port !== port)) {
+      return;
+    }
+    const { appName } = extractAppUrn(holder.appUrn as AppUrn);
+    throw new TranslatableError('APP_ERROR_PORT_ALREADY_IN_USE', { port: port.toString(), id: appName }, HttpStatus.CONFLICT);
+  }
+
+  /**
+   * Keep the port manager's table on the port a save or reinstall just gave the app's row. What is held
+   * by another app was refused above, unless it was taken since or the app doesn't publish the port. The
+   * row then wins: a start refused on that port moves the app (`moveMainPortOffHostConflict`). So does a
+   * table it could not write: the save or reinstall still goes through and the boot backfill corrects it.
+   */
+  private async recordMainPort(appUrn: AppUrn, port: number | undefined): Promise<void> {
+    if (port === undefined) {
+      return;
+    }
+    try {
+      if ((await this.moduleRef.get(PortManagerService, { strict: false })?.setMainPort(appUrn, port)) === false) {
+        this.logger.warn(`Port ${port} of ${appUrn} is already allocated, so its main allocation stays as it was`);
+      }
+    } catch (error) {
+      this.logger.warn(`Could not record port ${port} of ${appUrn}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   /**
@@ -2647,9 +3469,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   }
 
   public async updateApp(params: { appUrn: AppUrn; performBackup: boolean; actor: LifecycleActor }) {
-    const { appUrn, performBackup } = params;
+    await this.assertActorMay(params.actor, params.appUrn, 'update');
+    return this.withOperationClaim(params.appUrn, 'update', () => this.dispatchUpdate(params));
+  }
 
-    await this.assertActorMay(params.actor, appUrn, 'update');
+  private async dispatchUpdate(params: { appUrn: AppUrn; performBackup: boolean }) {
+    const { appUrn, performBackup } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -2674,45 +3499,83 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     await this.appRepository.updateAppById(app.id, { status: 'updating' });
 
     const appStatusBeforeUpdate = app.status;
+    // The command starts the new version of such an app, so the start below must run for the same set.
+    const wasRunning = !STATUSES_MEANING_NOT_RUNNING.has(appStatusBeforeUpdate);
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'updating' });
 
     const requestId = crypto.randomUUID();
     this.registerDispatchedCommand(appUrn, requestId, 'update');
-    this.appEventsQueue
-      .publish({
-        command: 'update',
-        appUrn,
-        requestId,
-        form: app.config,
-        performBackup,
-        wasRunning: !STATUSES_MEANING_NOT_RUNNING.has(appStatusBeforeUpdate),
-      })
+    this.publishRegistered(appUrn, requestId, {
+      command: 'update',
+      appUrn,
+      requestId,
+      statusBeforeUpdate: appStatusBeforeUpdate,
+      form: app.config,
+      performBackup,
+      wasRunning,
+    })
       .then(async (raw) => {
-        const { success, message, errorCode, errorDetail, settingsPath, rolledBack } = raw as z.output<typeof appEventResultSchema>;
+        const { success, message, errorCode, errorDetail, settingsPath, rolledBack, cancelled } = raw as z.output<typeof appEventResultSchema>;
+        if (cancelled) {
+          // Settled by the worker (`finalizeCancelledUpdate`), which knows where the app landed.
+          return;
+        }
         if (success) {
           if (!this.operationRegistry.claimCompletion(appUrn, requestId)) {
             return;
           }
 
-          const appInfo = await this.appFilesManager.getInstalledAppInfo(appUrn);
-          const restoredStatus = appStatusBeforeUpdate === 'running' ? 'stopped' : appStatusBeforeUpdate;
+          // The update still holds the app while it reapplies the config, in the same step it settled
+          // its entry: a command sent meanwhile took the app and the start below was refused, leaving
+          // the updated app stopped. Handed back right before that start claims the app itself.
+          const followUp = this.operationRegistry.claim(appUrn, 'update');
+          const restoredStatus = wasRunning ? 'stopped' : appStatusBeforeUpdate;
+          try {
+            const appInfo = await this.appFilesManager.getInstalledAppInfo(appUrn);
 
-          // Part of the update the caller was already authorized for; not a new decision.
-          await this.updateAppConfig({ appUrn, form: app.config, actor: { kind: 'system', reason: 'update-reapply' } });
-          await this.appRepository.updateAppById(app.id, { version: appInfo?.cihub_app_version, status: restoredStatus });
-          this.sseService.emit('app', { event: 'update_success', appUrn, appStatus: restoredStatus });
-          this.agentNotifyService?.notify('update_success', { appUrn }, 'info');
+            // The new version is in, so a refused re-apply is not a failed update. It left the app on
+            // Updating with its version unrecorded until the status sync gave up on it.
+            let settingsReapplied = true;
+            try {
+              // Part of the update the caller was already authorized for; not a new decision.
+              await this.updateAppConfig({ appUrn, form: app.config, actor: { kind: 'system', reason: 'update-reapply' } });
+            } catch (err) {
+              settingsReapplied = false;
+              // A refusal's message is only its translation key. The port and the app holding it are in its response.
+              this.logger.warn(
+                `App ${appUrn} updated, but its settings were not re-applied:`,
+                err instanceof HttpException ? err.getResponse() : err,
+              );
+            }
+            await this.appRepository.updateAppById(app.id, { version: appInfo?.cihub_app_version, status: restoredStatus });
+            this.sseService.emit('app', {
+              event: 'update_success',
+              appUrn,
+              appStatus: restoredStatus,
+              ...(settingsReapplied ? {} : { warningCode: 'APP_UPDATE_SETTINGS_NOT_REAPPLIED' }),
+            });
+            this.agentNotifyService?.notify('update_success', { appUrn }, 'info');
+          } finally {
+            if (followUp.claimed) {
+              this.operationRegistry.releaseClaim(appUrn, followUp.token);
+            }
+          }
 
-          if (appStatusBeforeUpdate === 'running') {
+          if (wasRunning) {
+            // The update command already started the new version and waited for its health check, so
+            // this start must not recreate what it started: it records the app as running and applies
+            // only what changed since, such as settings the update re-applied. A force-recreate here
+            // restarted the app seconds after its first start, which cut Uptime Kuma 2's data
+            // conversion off half-way and left it crash-looping.
             // The update command pulled the images before it stopped anything, so the start does not
             // need to ask for them again (it only matters for an app that always force-pulls).
-            await this.startAppAndWait({ appUrn, skipPull: true });
+            await this.startAppAndWait({ appUrn, skipPull: true, onlyRecreateChanged: true });
           }
         } else {
           this.logger.error(`Failed to update app ${appUrn}: ${message}`);
           // A failed update that put the previous version back left it running if it was running.
           // Anything else is only known to be stopped.
-          const restoredStatus = rolledBack ? appStatusBeforeUpdate : appStatusBeforeUpdate === 'running' ? 'stopped' : appStatusBeforeUpdate;
+          const restoredStatus = rolledBack ? appStatusBeforeUpdate : wasRunning ? 'stopped' : appStatusBeforeUpdate;
           await this.settleCommandOutcome({
             appId: app.id,
             appUrn,
@@ -2786,6 +3649,14 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     const runningApps = apps.filter((app: AppFromDb) => app.status === 'running');
 
     (async () => {
+      // A boot can come before RabbitMQ has connected, and every start is refused until it has. Wait for it
+      // rather than fail each start at once. If it never connects, the apps are left as they are.
+      if (runningApps.length > 0 && !(await this.waitForAppEventsQueue(QUEUE_RECONNECT_WAIT_MS))) {
+        this.logger.warn(
+          `RabbitMQ did not connect within ${QUEUE_RECONNECT_WAIT_MS / 60_000} minutes, so ${runningApps.length} running app(s) were not restarted.`,
+        );
+        return;
+      }
       for (const app of runningApps) {
         try {
           const appUrn = createAppUrn(app.appName, app.appStoreSlug);
@@ -2904,15 +3775,18 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
   }
 
-  private reportAppFailure(appUrn: AppUrn, phase: AppFailurePhase, message: string, errorCode?: string): void {
-    this.errorReportingService?.reportAppFailure({ appUrn, phase, message, errorCode });
+  private reportAppFailure(appUrn: AppUrn, phase: AppFailurePhase, message: string, errorCode?: string, serviceFailure?: AppServiceFailure): void {
+    // Container logs are app-controlled and may contain arbitrary private data. Keep them in the
+    // permission-gated app failure details, but send only the structured reason to telemetry.
+    const telemetryMessage = serviceFailure ? describeAppServiceFailure({ ...serviceFailure, logLine: undefined }) : message;
+    this.errorReportingService?.reportAppFailure({ appUrn, phase, message: telemetryMessage, errorCode });
   }
 
   /**
    * Turn a failed Portal bundle fetch into the error the caller throws, and report it first.
    *
    * The user sees a translation key: the one `downloadAppFiles` chose when Portal's status had a
-   * meaning of its own (401/402/403), else `COMMON_AN_ERROR_OCCURRED`. Everything else about the
+   * meaning of its own (401/402/403, or a refusal about the organization), else `COMMON_AN_ERROR_OCCURRED`. Everything else about the
    * failure — `timeout of 20000ms exceeded`, `Failed to fetch app files: 503 …` — used to stop
    * here: it was replaced by that key before being reported, so every non-auth Portal failure
    * reached Sentry as `COMMON_AN_ERROR_OCCURRED`, unclassified, with the cause only in a log on
@@ -2958,8 +3832,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   /**
    * The status a failed start, stop, or restart settles on. A command the queue
    * never took ran no docker action, so the app is still in the status it had
-   * before; any other failure keeps the status that failure implies. The readiness
-   * gate cannot catch every such failure: a connection flagged ready whose
+   * before, as is one the command refused before it touched a container (`rolledBack`:
+   * a host-device check, CI-Hub#2376). Any other failure keeps the status that failure
+   * implies. The readiness gate cannot catch every such failure: a connection flagged ready whose
    * channels are dead (core-14, 2026-09-17) fails the publish with no channel opened.
    *
    * Only `running` and `stopped` are restored. A transitional status belongs to the
@@ -2968,18 +3843,206 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * `restarting` (a public-route repair) would leave a spinner nothing settles. The
    * status sync skips transitional rows for its grace period, and it runs on the
    * queue that just failed.
+   *
+   * A failed install stays one when a start sent to it through the API fails too: `stopped` would take
+   * away its Retry install and send the next retry through Start, past install's port handling.
    */
-  private statusAfterFailedCommand(errorCode: string | undefined, statusBefore: AppStatus, statusOnFailure: AppStatus): AppStatus {
+  private statusAfterFailedCommand(
+    errorCode: string | undefined,
+    statusBefore: AppStatus,
+    statusOnFailure: AppStatus,
+    rolledBack?: boolean,
+  ): AppStatus {
+    if (statusBefore === 'install_failed') {
+      return statusBefore;
+    }
     const settled = statusBefore === 'running' || statusBefore === 'stopped';
-    return errorCode === QUEUE_UNAVAILABLE_CODE && settled ? statusBefore : statusOnFailure;
+    return (errorCode === QUEUE_UNAVAILABLE_CODE || rolledBack) && settled ? statusBefore : statusOnFailure;
   }
 
-  private registerDispatchedCommand(appUrn: AppUrn, requestId: string, command: OperationCommand): void {
-    this.operationRegistry.register(appUrn, {
-      requestId,
-      command,
-      tier: this.cancellabilityTierFor(command),
+  /**
+   * Run a lifecycle command's dispatch with the app claimed for it, or refuse the command with a 409
+   * that says what the app is busy with.
+   *
+   * The one place every command (and `BackupsService`) goes through after its grant check. Each
+   * entry method used to register over whatever held the app: a start, stop, restart, reset or update
+   * sent during an uninstall took the uninstall's slot, its completion was dropped as superseded and
+   * the row stayed behind with no containers.
+   */
+  async withOperationClaim<T>(
+    appUrn: AppUrn,
+    command: OperationCommand,
+    run: (waited: boolean) => Promise<T>,
+    options: { waitForApp?: boolean } = {},
+  ): Promise<T> {
+    let claim = this.operationRegistry.claim(appUrn, command);
+    let waited = false;
+    if (!claim.claimed && options.waitForApp) {
+      waited = true;
+      claim = await this.waitForOperationClaim(appUrn, command, claim.busy.command);
+    }
+    if (!claim.claimed) {
+      this.logger.info(`[lifecycle] ${command} for ${appUrn} refused: ${claim.busy.command} is still under way`);
+      throw this.operationBusyError(appUrn, claim.busy.command);
+    }
+
+    try {
+      return await run(waited);
+    } finally {
+      this.operationRegistry.releaseClaim(appUrn, claim.token);
+    }
+  }
+
+  /**
+   * Hold an app for a change that only reaches it through a restart, such as revoking its
+   * credentials: the app is claimed before `run` changes anything, and the restart `run` is handed
+   * applies the change under that claim. While another operation holds the app this is refused with
+   * the usual 409 and nothing is changed.
+   *
+   * Revoking first and then waiting for the app to restart onto the change left it running on the
+   * revoked credentials for as long as the operation holding it lasted, and kept the request open as
+   * long: past about 100 s the public address answered 524 while the Hub went on rotating.
+   */
+  async withAppHeld<T>(appUrn: AppUrn, run: (app: HeldApp) => Promise<T>): Promise<T> {
+    return this.withOperationClaim(appUrn, 'restart', () => run(this.heldApp(appUrn)));
+  }
+
+  /**
+   * {@link withAppHeld} for work that can wait for its next round, such as a sweep's key rotation:
+   * `{ busy }` while another operation holds the app, with nothing run.
+   */
+  async withAppHeldUnlessBusy<T>(appUrn: AppUrn, run: (app: HeldApp) => Promise<T>): Promise<{ result: T } | { busy: OperationCommand }> {
+    const claim = this.operationRegistry.claim(appUrn, 'restart');
+    if (!claim.claimed) {
+      return { busy: claim.busy.command };
+    }
+    try {
+      return { result: await run(this.heldApp(appUrn)) };
+    } finally {
+      this.operationRegistry.releaseClaim(appUrn, claim.token);
+    }
+  }
+
+  private heldApp(appUrn: AppUrn): HeldApp {
+    let restarted = false;
+    const once = () => {
+      if (restarted) {
+        // The first restart took the claim over: a second would register over it.
+        throw new Error(`${appUrn} was already restarted under this hold`);
+      }
+      restarted = true;
+    };
+    return {
+      restart: async ({ skipPull, reason }) => {
+        once();
+        const actor: LifecycleActor = { kind: 'system', reason };
+        await this.assertActorMay(actor, appUrn, 'restart');
+        return this.dispatchRestart({ appUrn, skipPull, actor });
+      },
+      restartAndWait: async ({ skipPull }) => {
+        once();
+        return this.restartAndWaitClaimed({ appUrn, skipPull });
+      },
+    };
+  }
+
+  /**
+   * Whether an app a Hub restart waited for is no longer up. The restart was decided while the app
+   * ran, and what it waited behind may have stopped it: a person's Stop, or a start that failed.
+   * Restarting it then brought back an app someone had just stopped. Its env is regenerated when it
+   * next starts, so the change the restart was for is not lost.
+   */
+  private stoppedWhileWaiting(appUrn: AppUrn, status: AppStatus): boolean {
+    if (!STATUSES_MEANING_NOT_RUNNING.has(status)) {
+      return false;
+    }
+    this.logger.info(`[lifecycle] restart for ${appUrn} not run: it is ${status} now, and picks the change up when it next starts`);
+    return true;
+  }
+
+  /**
+   * Claim the app for `command` once the operation that holds it lets go, waking whenever its slot
+   * empties and at least every few seconds. Bounded by the time an operation can hold an app at all
+   * (`staleAfterMs`): past that the holder no longer counts and the claim goes through.
+   */
+  private async waitForOperationClaim(appUrn: AppUrn, command: OperationCommand, busy: OperationCommand): Promise<OperationClaim> {
+    this.logger.info(`[lifecycle] ${command} for ${appUrn} waits for the ${busy} under way`);
+    const deadline = Date.now() + this.operationRegistry.staleAfterMs();
+    for (;;) {
+      const remaining = deadline - Date.now();
+      if (remaining > 0) {
+        await this.operationRegistry.whenMaybeFree(appUrn, Math.min(remaining, OPERATION_WAIT_POLL_MS));
+      }
+      const claim = this.operationRegistry.claim(appUrn, command);
+      if (claim.claimed || remaining <= 0) {
+        return claim;
+      }
+    }
+  }
+
+  /**
+   * Publish a command the registry already holds the app for. A publish that rejects (an event the
+   * queue's schema refuses) reaches no worker and no completion handler, so nothing would settle the
+   * entry and it held the app for the whole stale window. It is cleared here and the error goes on.
+   */
+  private publishRegistered(appUrn: AppUrn, requestId: string, event: z.input<typeof appEventSchema>) {
+    return this.appEventsQueue.publish(event).catch((error: unknown) => {
+      this.operationRegistry.clear(appUrn, requestId);
+      throw error;
     });
+  }
+
+  /**
+   * Resolves true once the app-events queue can take a command, polling on the backoff of the
+   * QUEUE_RECONNECT_* constants. Resolves false when it still cannot after `waitMs`.
+   */
+  private async waitForAppEventsQueue(waitMs: number): Promise<boolean> {
+    const deadline = Date.now() + waitMs;
+    let delay = QUEUE_RECONNECT_FIRST_DELAY_MS;
+    while (this.appEventsQueue.unavailableReason() !== undefined) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        return false;
+      }
+      await new Promise((resolve) => setTimeout(resolve, Math.min(delay, remaining)));
+      delay = Math.min(delay * 2, QUEUE_RECONNECT_MAX_DELAY_MS);
+    }
+    return true;
+  }
+
+  /**
+   * Publish a start. While the queue refuses it because RabbitMQ is still connecting, wait for the queue
+   * (waitForAppEventsQueue) and publish it again, until the queue takes it or QUEUE_RECONNECT_WAIT_MS has
+   * passed. Only the refusal the queue makes before it sends anything (QUEUE_UNAVAILABLE_CODE, see
+   * queue.entity.ts) is repeated, so the start cannot run twice. A refusal while the queue reports itself
+   * ready is returned at once, as before.
+   */
+  private async publishStartWhenQueueUp(appUrn: AppUrn, requestId: string, event: z.input<typeof appEventSchema>) {
+    const deadline = Date.now() + QUEUE_RECONNECT_WAIT_MS;
+    let raw = (await this.publishRegistered(appUrn, requestId, event)) as z.output<typeof appEventResultSchema>;
+    while (!raw.success && raw.errorCode === QUEUE_UNAVAILABLE_CODE && this.appEventsQueue.unavailableReason() !== undefined) {
+      if (!(await this.waitForAppEventsQueue(Math.max(deadline - Date.now(), 0)))) {
+        break;
+      }
+      raw = (await this.publishRegistered(appUrn, requestId, event)) as z.output<typeof appEventResultSchema>;
+    }
+    return raw;
+  }
+
+  private operationBusyError(appUrn: AppUrn, busy: OperationCommand): TranslatableError {
+    return new TranslatableError(OPERATION_BUSY_MESSAGES[busy], { id: extractAppUrn(appUrn).appName }, HttpStatus.CONFLICT);
+  }
+
+  private registerDispatchedCommand(appUrn: AppUrn, requestId: string, command: OperationCommand, options?: { takesOverClaim?: boolean }): void {
+    this.operationRegistry.register(
+      appUrn,
+      {
+        requestId,
+        command,
+        tier: this.cancellabilityTierFor(command),
+      },
+      options,
+    );
   }
 
   private cancellabilityTierFor(command: OperationCommand): CancellabilityTier {
@@ -3010,10 +4073,18 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     errorCode?: string;
     errorDetail?: string;
     settingsPath?: string;
+    serviceFailure?: z.output<typeof appEventResultSchema>['serviceFailure'];
+    /** The host port the command moved the app off and onto, which the person is told about. If it then failed, the row stays on the new one. */
+    movedHostPort?: HostPortMove;
     successOutcome?: {
       status: AppStatus;
       event: AppOutcomeSseEvent;
       clearPendingRestart?: boolean;
+      /**
+       * The config the command was dispatched with. A restart owed for settings saved after that
+       * (while the app was starting, say) is still owed, so it is not cleared then.
+       */
+      configAtDispatch?: unknown;
       afterApply?: () => Promise<void>;
     };
     failureOutcome?: {
@@ -3024,21 +4095,33 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       notifySeverity?: 'high' | 'info';
     };
   }): Promise<boolean> {
-    if (!this.operationRegistry.claimCompletion(params.appUrn, params.requestId)) {
+    // The app stays claimed while the outcome is written: a command waiting for it (see
+    // `waitForOperationClaim`) would otherwise write its own status before this one lands.
+    const settling = this.operationRegistry.settleCompletion(params.appUrn, params.requestId);
+    if (!settling) {
       this.logger.debug(`[lifecycle] Superseded ${params.command} completion for ${params.appUrn} (req=${params.requestId})`);
       return false;
     }
 
     if (params.success && params.successOutcome) {
-      await this.appRepository.updateAppById(params.appId, {
-        status: params.successOutcome.status,
-        ...(params.successOutcome.clearPendingRestart ? { pendingRestart: false } : {}),
-      });
-      this.sseService.emit('app', {
-        event: params.successOutcome.event,
-        appUrn: params.appUrn,
-        appStatus: params.successOutcome.status,
-      });
+      try {
+        const clearPendingRestart =
+          params.successOutcome.clearPendingRestart &&
+          (await this.configUnchangedSince(params.appId, params.appUrn, params.successOutcome.configAtDispatch, params.movedHostPort));
+        await this.appRepository.updateAppById(params.appId, {
+          status: params.successOutcome.status,
+          ...(clearPendingRestart ? { pendingRestart: false } : {}),
+        });
+        this.sseService.emit('app', {
+          event: params.successOutcome.event,
+          appUrn: params.appUrn,
+          appStatus: params.successOutcome.status,
+          movedHostPort: params.movedHostPort,
+        });
+      } finally {
+        // Before `afterApply`, whose own restarts (a custom domain bound meanwhile) need the app.
+        this.operationRegistry.releaseClaim(params.appUrn, settling);
+      }
       if (params.successOutcome.afterApply) {
         await params.successOutcome.afterApply();
       }
@@ -3046,22 +4129,75 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     if (!params.success && params.failureOutcome) {
-      await this.appRepository.updateAppById(params.appId, { status: params.failureOutcome.status });
+      try {
+        await this.appRepository.updateAppById(params.appId, { status: params.failureOutcome.status });
+      } finally {
+        this.operationRegistry.releaseClaim(params.appUrn, settling);
+      }
       this.sseService.emit('app', {
         event: params.failureOutcome.event,
         appUrn: params.appUrn,
         appStatus: params.failureOutcome.status,
-        error: params.message,
+        ...failureForEveryone(params),
         errorCode: params.errorCode,
-        errorDetail: params.errorDetail,
         settingsPath: params.settingsPath,
+        movedHostPort: params.movedHostPort,
       });
       this.agentNotifyService?.notify(params.failureOutcome.notifyEvent, { appUrn: params.appUrn }, params.failureOutcome.notifySeverity ?? 'high');
-      this.reportAppFailure(params.appUrn, params.failureOutcome.failurePhase, params.message ?? 'Unknown error', params.errorCode);
+      this.reportAppFailure(
+        params.appUrn,
+        params.failureOutcome.failurePhase,
+        params.message ?? 'Unknown error',
+        params.errorCode,
+        params.serviceFailure,
+      );
       return true;
     }
 
+    this.operationRegistry.releaseClaim(params.appUrn, settling);
     return true;
+  }
+
+  /**
+   * Whether the app's stored config is still the one a command was dispatched with. Settings saved
+   * while a start ran were not in it, so the restart they asked for is still owed. A move rewrites the
+   * stored port and declared app base URLs, so those changes don't count (`configAfterMove`). Other
+   * settings that happen to contain the moved port still count as saves the app hasn't taken up.
+   */
+  private async configUnchangedSince(appId: number, appUrn: AppUrn, configAtDispatch: unknown, move?: HostPortMove): Promise<boolean> {
+    if (configAtDispatch === undefined) {
+      return true;
+    }
+
+    try {
+      const current = await this.appRepository.getAppById(appId);
+      if (!current) {
+        return true;
+      }
+      const storedPort = (current.config as { port?: unknown } | null)?.port;
+      if (move && storedPort !== undefined && storedPort !== move.to) {
+        return false;
+      }
+      let baseUrlFields: string[] = [];
+      if (move) {
+        try {
+          const installedInfo = await this.appFilesManager.getInstalledAppInfo(appUrn);
+          if (!installedInfo) {
+            return false;
+          }
+          baseUrlFields = (installedInfo?.form_fields ?? []).filter((field) => field.type === 'app_base_url').map((field) => field.env_variable);
+        } catch {
+          // Without the field declarations, we cannot distinguish the port's base-URL rewrite from
+          // a concurrent save. Keep the restart owed rather than clearing it on uncertain state.
+          return false;
+        }
+      }
+      const comparable = (config: unknown) => JSON.stringify(move ? configAfterMove(config, move, baseUrlFields) : (config ?? null));
+      return comparable(current.config) === comparable(configAtDispatch);
+    } catch {
+      // Unknown: clear it, as before this check existed.
+      return true;
+    }
   }
   /**
    * Record a custom-domain choice, and take it off any app that held it before.

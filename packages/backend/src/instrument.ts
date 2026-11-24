@@ -1,6 +1,6 @@
 import * as Sentry from '@sentry/nestjs';
 import { DEFAULT_DEV_CI_CLOUD_URL, DEFAULT_PROD_CI_CLOUD_URL } from './common/constants';
-import { scrubEvent } from './core/error-reporting/sentry-scrubber';
+import { scrubEvent, scrubSpan } from './core/error-reporting/sentry-scrubber';
 import { envTelemetryBlock, isReportingAllowed } from './core/error-reporting/telemetry-consent';
 
 const dsn = process.env.SENTRY_DSN?.trim();
@@ -77,6 +77,23 @@ function gateAndScrub(event: Parameters<typeof scrubEvent>[0], hint: Parameters<
   return scrubEvent(event, hint);
 }
 
+/**
+ * A transport that sends nothing while the user's switch is off.
+ *
+ * `beforeSend` gates error events, but traces and sessions never reach it: the SDK
+ * hands those envelopes straight to the transport. A span cannot be dropped from
+ * `beforeSendSpan` in this SDK version, because a null return keeps the original
+ * span, so the gate sits here.
+ */
+function consentGatedTransport(transportOptions: Parameters<typeof Sentry.makeNodeTransport>[0]): ReturnType<typeof Sentry.makeNodeTransport> {
+  const inner = Sentry.makeNodeTransport(transportOptions);
+
+  return {
+    send: (envelope) => (isReportingAllowed(process.env) ? inner.send(envelope) : Promise.resolve({})),
+    flush: (timeout) => inner.flush(timeout),
+  };
+}
+
 // `CI_LOCAL_ONLY` / `CI_TELEMETRY` are process-lifetime env switches, so an
 // opted-out process should never construct a transport at all. The *user's*
 // switch is deliberately not consulted here — gating it in `beforeSend` instead
@@ -117,8 +134,16 @@ if (dsn && !envTelemetryBlock(process.env)) {
     // the `device_id` tag exists to replace. `scrubEvent` deletes the field too;
     // this stops it ever being computed.
     includeServerName: false,
-    integrations: (defaults) => defaults.filter((integration) => !MANUALLY_HANDLED_INTEGRATIONS.has(integration.name)),
+    integrations: (defaults) =>
+      defaults
+        .filter((integration) => !MANUALLY_HANDLED_INTEGRATIONS.has(integration.name))
+        // Console arguments are not scrubbed for bare emails or IDs, so the default console breadcrumbs go quiet.
+        .map((integration) => (integration.name === 'Console' ? Sentry.consoleIntegration({ levels: [] }) : integration)),
     beforeSend: gateAndScrub,
+    // Spans are the trace payload in the default `stream` lifecycle, where
+    // `beforeSendTransaction` is never called. The gate that drops them is the transport.
+    beforeSendSpan: (span) => scrubSpan(span),
+    transport: consentGatedTransport,
   });
 
   if (deviceId) {

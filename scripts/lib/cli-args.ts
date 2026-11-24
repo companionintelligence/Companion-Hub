@@ -48,7 +48,10 @@ export function printRemovedCommand(oldUsage: string, replacement: string, detai
   process.exit(2);
 }
 
-export function normalizeDetachedFlag(args: string[]): { detached: boolean; attached: boolean; remaining: string[] } {
+/** `--detached` / `--attached` as typed; {@link resolveUpStartMode} turns them into a start mode. */
+export type StartFlags = { detached: boolean; attached: boolean };
+
+export function normalizeDetachedFlag(args: string[]): StartFlags & { remaining: string[] } {
   return {
     detached: args.includes('--detached'),
     attached: args.includes('--attached'),
@@ -129,11 +132,7 @@ export function normalizeClaimFlags(args: string[]): { email?: string; env: HubE
 }
 
 /** Non-local appliance stacks default to detached so `cihub up dev` returns after boot. */
-export function resolveUpStartMode(
-  env: HubEnv,
-  options: { detached: boolean; attached: boolean },
-  appliance: boolean = isApplianceMode(),
-): StartMode {
+export function resolveUpStartMode(env: HubEnv, options: StartFlags, appliance: boolean = isApplianceMode()): StartMode {
   // Outside a checkout there is no source to run, so never start local-dev; default to detached
   // (matching `cihub up dev`) unless the user explicitly asked to stay attached.
   if (appliance) {

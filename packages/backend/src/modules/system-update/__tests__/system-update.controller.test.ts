@@ -59,6 +59,27 @@ describe('SystemUpdateController', () => {
       expect(updateService.performUpdate).toHaveBeenCalledWith('1.1.0');
     });
 
+    it('updates the Hub image only when the caller leaves the desktop app out (#2316)', async () => {
+      updateService.performUpdate.mockResolvedValue({ success: true, stack: 'updating', host: 'skipped' } as any);
+
+      await controller.performUpdate({ targetVersion: '1.1.0', includeDesktopApp: false });
+      expect(updateService.performUpdate).toHaveBeenCalledWith('1.1.0', { includeDesktopApp: false, desktopAppWhenOnlyWay: true });
+    });
+
+    it('keeps the desktop app in the update when the caller says so or says nothing', async () => {
+      updateService.performUpdate.mockResolvedValue({ success: true } as any);
+
+      await controller.performUpdate({ targetVersion: '1.1.0', includeDesktopApp: true });
+      expect(updateService.performUpdate).toHaveBeenLastCalledWith('1.1.0');
+    });
+
+    it.each(['false', 0, null])('refuses includeDesktopApp %j without starting an update', async (includeDesktopApp) => {
+      await expect(controller.performUpdate({ targetVersion: '1.1.0', includeDesktopApp: includeDesktopApp as never })).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(updateService.performUpdate).not.toHaveBeenCalled();
+    });
+
     it.each(['1.1.0\nCI_HUB_CLOUD_URL_OVERRIDE=https://attacker.example', 'latest', '', 42])(
       'refuses target version %j without starting an update',
       async (targetVersion) => {
@@ -85,11 +106,23 @@ describe('SystemUpdateController', () => {
     });
   });
 
+  describe('getUpdateBlocks', () => {
+    it('answers with the service blocks, for a signed-in user only', async () => {
+      const blocks = { updateBlockedReason: 'started on Windows', autoUpdateBlockedReason: 'started on Windows', desktopAppUpdatesHub: true };
+      updateService.getUpdateBlocks.mockResolvedValue(blocks);
+
+      await expect(controller.getUpdateBlocks()).resolves.toEqual(blocks);
+      expect(updateService.checkForUpdates).not.toHaveBeenCalled();
+      const guards = (Reflect.getMetadata('__guards__', SystemUpdateController.prototype.getUpdateBlocks) ?? []) as unknown[];
+      expect(guards).toContain(AuthGuard);
+    });
+  });
+
   describe('getHostListenerStatus', () => {
     it('returns whether the desktop listener is reachable', async () => {
-      updateService.getHostListenerStatus.mockResolvedValue({ reachable: false });
+      updateService.getHostListenerStatus.mockResolvedValue({ reachable: false, desktopApp: true });
 
-      await expect(controller.getHostListenerStatus()).resolves.toEqual({ reachable: false });
+      await expect(controller.getHostListenerStatus()).resolves.toEqual({ reachable: false, desktopApp: true });
     });
   });
 

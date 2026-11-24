@@ -3,8 +3,10 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { AppsService } from '@/modules/apps/apps.service';
 import { DockerService } from '@/modules/docker/docker.service';
-import { castAppUrn } from '@/common/helpers/app-helpers';
-import { assertMcpCallerMay } from '../mcp-tool-call';
+import { hasUpdateAvailable } from '@ci-hub/common/validation';
+import { castAppUrn, createAppUrn } from '@/common/helpers/app-helpers';
+import { settingsReadAction } from '@/core/portal/local-app-reads';
+import { assertMcpCallerMay, mcpCallerMayReadSettingValues } from '../mcp-tool-call';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 
 @Injectable()
@@ -21,9 +23,22 @@ export class AppDiscoveryTools implements OnModuleInit {
       category: 'App Discovery',
       name: 'hub_list_installed_apps',
       access: 'read',
-      description: 'List all installed apps with status, ports, domains, and metadata. Use to get an overview of what is running on the Hub.',
-      inputSchema: { type: 'object', properties: {}, required: [] },
-      handler: () => this.listInstalledApps(),
+      description:
+        'List every installed app, one short entry each: appUrn, name, status, version, whether an update is waiting, and how it is reached ' +
+        '(exposureMode, host port, public or custom domain). `count` is the number of installed apps. ' +
+        "For one app's full record (description, form fields, privacy notes) call hub_get_app. " +
+        'Pass full: true only if you need every full record at once; that is several KB per app.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          full: {
+            type: 'boolean',
+            description: 'Return the full stored record of every app (catalog description, form fields, privacy notes) instead of the short entries.',
+          },
+        },
+        required: [],
+      },
+      handler: (p) => this.listInstalledApps(p as { full?: boolean }),
     });
     this.registry.register({
       category: 'App Discovery',
@@ -102,8 +117,13 @@ export class AppDiscoveryTools implements OnModuleInit {
     });
   }
 
-  async listInstalledApps() {
-    return this.appsService.getInstalledApps();
+  async listInstalledApps(params: { full?: boolean } = {}) {
+    const entries = await this.appsService.getInstalledApps();
+    if (params.full === true) {
+      return entries.map((entry) => withoutSettingValuesFor(createAppUrn(entry.app.appName, entry.app.appStoreSlug), entry));
+    }
+
+    return { count: entries.length, apps: entries.map(summarizeInstalledApp) };
   }
 
   /*
@@ -114,7 +134,7 @@ export class AppDiscoveryTools implements OnModuleInit {
   async getApp(params: { appUrn: string }) {
     const appUrn = castAppUrn(params.appUrn);
     await assertMcpCallerMay(this.appLifecycleService, appUrn, 'view');
-    return this.appsService.getApp(appUrn);
+    return withoutSettingValuesFor(appUrn, await this.appsService.getApp(appUrn));
   }
 
   async getAppLogs(params: { appUrn: string; maxLines?: number }): Promise<{ lines: string[] }> {
@@ -180,7 +200,8 @@ export class AppDiscoveryTools implements OnModuleInit {
 
   async getComposeDiff(params: { appUrn: string }) {
     const appUrn = castAppUrn(params.appUrn);
-    await assertMcpCallerMay(this.appLifecycleService, appUrn, 'view');
+    // A custom app's compose holds its env values, which are its owner's and admins' (`settingsReadAction`).
+    await assertMcpCallerMay(this.appLifecycleService, appUrn, settingsReadAction(appUrn));
     return this.appsService.getAppComposeDiff(appUrn);
   }
 
@@ -189,4 +210,56 @@ export class AppDiscoveryTools implements OnModuleInit {
     await assertMcpCallerMay(this.appLifecycleService, appUrn, 'view');
     return this.appsService.getAppConfigDiff(appUrn);
   }
+}
+
+type InstalledAppEntry = Awaited<ReturnType<AppsService['getInstalledApps']>>[number];
+
+/**
+ * An app's record without the values a person typed into its install form (`app.config`), for a
+ * caller that may look after the app but not read them (`mcpCallerMayReadSettingValues`): another
+ * app's MCP key below `full`. Those values hold passwords and API keys; what the app is, where it
+ * runs and how it is doing stay.
+ */
+export function withoutSettingValuesFor<T extends { app: { config?: unknown } | null }>(appUrn: AppUrn, entry: T): T {
+  if (!entry?.app || mcpCallerMayReadSettingValues(appUrn)) {
+    return entry;
+  }
+  const { config: _config, ...app } = entry.app;
+  return { ...entry, app };
+}
+
+/**
+ * One installed app as `hub_list_installed_apps` reports it by default. The full entry carries the
+ * catalog's description, form fields and privacy notes, about 6 KB an app: 14 apps came to 83 KB,
+ * which OpenClaw cut at 16k characters and then answered from the two apps it had kept.
+ * Fields that are unset or false are left out, so an app on defaults costs a few hundred bytes.
+ */
+export function summarizeInstalledApp(entry: InstalledAppEntry) {
+  const { app, info, metadata } = entry;
+  const updateAvailable =
+    app.status !== 'updating' &&
+    hasUpdateAvailable({
+      installedCounter: app.version,
+      latestCounter: metadata.latestVersion,
+      ignoredCounter: app.ignoredVersion,
+      installedVersion: info.version,
+      latestVersion: metadata.latestDockerVersion,
+    });
+
+  return {
+    appUrn: createAppUrn(app.appName, app.appStoreSlug),
+    name: info.name,
+    summary: info.short_desc,
+    status: app.status,
+    version: info.version,
+    ...(updateAvailable ? { updateAvailable: true, latestVersion: metadata.latestDockerVersion } : {}),
+    exposureMode: app.exposureMode,
+    ...(app.openPort && app.port ? { port: app.port } : {}),
+    ...(app.localSubdomain ? { localSubdomain: app.localSubdomain } : {}),
+    ...(app.publicDomain ? { publicDomain: app.publicDomain } : {}),
+    ...(app.customDomain ? { customDomain: app.customDomain } : {}),
+    ...(app.domain ? { domain: app.domain } : {}),
+    ...(app.pendingRestart ? { pendingRestart: true } : {}),
+    ...(info.no_gui ? { noGui: true } : {}),
+  };
 }

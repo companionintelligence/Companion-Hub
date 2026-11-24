@@ -1,17 +1,26 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mock, mockDeep } from 'vitest-mock-extended';
 import { InstallAppCommand, extractComposeImages, mapPullProgressToInstallProgress } from '../install-app-command';
+import { withMovedPort } from '../main-host-port';
 import type { ModuleRef } from '@nestjs/core';
 import type Dockerode from 'dockerode';
+import { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
+import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
+import { ApiKeyService } from '@/modules/api-keys/api-key.service';
+import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
+import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { SSEService } from '@/core/sse/sse.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { AppsRepository } from '@/modules/apps/apps.repository';
 import { AppHelpers } from '@/modules/apps/app.helpers';
 import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
 import { DockerService } from '@/modules/docker/docker.service';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
+import { AppVolumeArchiveService } from '@/modules/docker/app-volume-archive.service';
 import { EnvUtils } from '@/modules/env/env.utils';
+import { ImageSizeService } from '@/modules/marketplace/image-size.service';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { PortManagerService } from '@/modules/network/port-manager.service';
 import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.service';
@@ -38,10 +47,12 @@ vi.mock('node:fs', async () => ({
   },
 }));
 
-vi.mock('@ci-hub/common/schemas', async (importOriginal) => ({
-  ...((await importOriginal()) as any),
-  parseComposeJson: vi.fn().mockReturnValue({ services: [], overrides: [] }),
-}));
+// The host-device preflight reads the installed compose with parseInstalledComposeJson: one stub
+// stands for both parses.
+vi.mock('@ci-hub/common/schemas', async (importOriginal) => {
+  const parse = vi.fn().mockReturnValue({ services: [], overrides: [] });
+  return { ...((await importOriginal()) as any), parseComposeJson: parse, parseInstalledComposeJson: parse };
+});
 
 vi.mock('@/modules/inference/host-rocm-availability', () => ({
   isRocmKfdPassthroughAvailable: vi.fn().mockResolvedValue(true),
@@ -68,11 +79,41 @@ describe('install progress helpers', () => {
   });
 });
 
+describe('withMovedPort', () => {
+  it('moves the port a URL names, keeping the rest of it as written', () => {
+    expect(withMovedPort('http://localhost:8080', 8080, 10000)).toBe('http://localhost:10000');
+    expect(withMovedPort('http://localhost:8080/', 8080, 10000)).toBe('http://localhost:10000/');
+    expect(withMovedPort('https://hub.tail1234.ts.net:8080/ghost?x=1#top', 8080, 10000)).toBe('https://hub.tail1234.ts.net:10000/ghost?x=1#top');
+    expect(withMovedPort('http://[::1]:8080', 8080, 10000)).toBe('http://[::1]:10000');
+    expect(withMovedPort('HTTP://192.168.1.20:8080', 8080, 10000)).toBe('HTTP://192.168.1.20:10000');
+  });
+
+  it('leaves a URL naming another port or none, and anything that is not an http(s) URL', () => {
+    for (const value of [
+      'http://localhost:18080',
+      'http://localhost:80800',
+      'http://localhost:808',
+      'https://ghost.example.com',
+      'https://ghost.example.com/blog:8080',
+      'http://user:secret@localhost:8080',
+      'localhost:8080',
+      'ftp://localhost:8080',
+      '',
+    ]) {
+      expect(withMovedPort(value, 8080, 10000)).toBe(value);
+    }
+  });
+});
+
 describe('InstallAppCommand — pull policy', () => {
+  let traefikConfigService: ReturnType<typeof mock<TraefikConfigService>>;
   let command: InstallAppCommand;
   let dockerService: any;
+  let imageSizeService: ReturnType<typeof mock<ImageSizeService>>;
   let dockerReadFacade: any;
   let composeArgs: string[] = [];
+  let appFilesManager: ReturnType<typeof mock<AppFilesManager>>;
+  let appVolumes: ReturnType<typeof mock<AppVolumeArchiveService>>;
 
   const appUrn = 'urn:store:test-app' as AppUrn;
 
@@ -90,16 +131,14 @@ describe('InstallAppCommand — pull policy', () => {
         composeArgs.push(args);
       }),
       pullImages: vi.fn().mockResolvedValue(undefined),
-      waitForManagedAppContainersReady: vi.fn().mockResolvedValue({
-        ok: true,
-        appStatus: 'running',
-        summary: { total: 1, running: 1, exitZero: 0 },
-        message: 'All containers are running',
-      }),
+      waitForManagedAppContainersReady: vi.fn().mockResolvedValue({ ok: true, message: 'All containers came up' }),
       removeAppNetworks: vi.fn().mockResolvedValue(undefined),
       // Used by install-cancel compensation.
-      snapshotAppImageIds: vi.fn().mockResolvedValue([]),
+      imageIdLocally: vi.fn().mockResolvedValue(null),
+      imageIdsLocally: vi.fn().mockResolvedValue(new Set()),
+      imageTagsLocally: vi.fn().mockResolvedValue([]),
       removeAppImages: vi.fn().mockResolvedValue(undefined),
+      removeAppDataDirAsRoot: vi.fn().mockResolvedValue(true),
     };
 
     const logger = mockDeep<LoggerService>();
@@ -121,7 +160,7 @@ describe('InstallAppCommand — pull policy', () => {
       localDomain: 'local',
     });
 
-    const appFilesManager = mock<AppFilesManager>();
+    appFilesManager = mock<AppFilesManager>();
     appFilesManager.getDockerComposeJson.mockResolvedValue({ content: '{}', path: '/tmp/compose.json' });
     appFilesManager.getAppEnv.mockResolvedValue({ content: '', path: '/tmp/.env' });
     appFilesManager.getUserComposeFile.mockResolvedValue({ content: null, path: '/tmp/user-compose.yml' });
@@ -129,8 +168,16 @@ describe('InstallAppCommand — pull policy', () => {
     appFilesManager.writeDockerComposeYml.mockResolvedValue();
     appFilesManager.deleteAppFolder.mockResolvedValue(true);
     appFilesManager.deleteAppDataDir.mockResolvedValue(true);
+    appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: true, permissionDenied: false });
+    appFilesManager.getAppDataHostDir.mockReturnValue('/srv/app-data/store/test-app');
+    appFilesManager.hasAppData.mockResolvedValue(false);
+
+    appVolumes = mock<AppVolumeArchiveService>();
+    appVolumes.hasProjectVolumes.mockResolvedValue(false);
 
     const marketplaceService = mock<MarketplaceService>();
+
+    marketplaceService.listedAppUrns.mockResolvedValue([]);
     marketplaceService.getDockerComposeJson.mockResolvedValue({ content: '{}', path: '/tmp/compose.json' });
     marketplaceService.copyAppFromRepoToInstalled.mockResolvedValue();
     marketplaceService.copyDataDir.mockResolvedValue();
@@ -140,14 +187,19 @@ describe('InstallAppCommand — pull policy', () => {
 
     const sseService = mock<SSEService>();
     const envUtils = new EnvUtils();
-    const traefikConfigService = mock<TraefikConfigService>();
+    traefikConfigService = mock<TraefikConfigService>();
     traefikConfigService.regenerateTraefikConfig.mockResolvedValue();
 
     const portManager = mock<PortManagerService>();
     portManager.releaseAll.mockResolvedValue();
     portManager.allocatePorts.mockResolvedValue([]);
 
+    const appsRepository = mock<AppsRepository>();
+
+    appsRepository.getApps.mockResolvedValue([]);
+
     const cloudflareService = mock<CloudflareClientService>();
+    imageSizeService = mock<ImageSizeService>();
 
     const dockerode = mock<Dockerode>();
     // @ts-expect-error
@@ -166,7 +218,10 @@ describe('InstallAppCommand — pull policy', () => {
         if (token === EnvUtils) return envUtils;
         if (token === TraefikConfigService) return traefikConfigService;
         if (token === PortManagerService) return portManager;
+        if (token === AppsRepository) return appsRepository;
         if (token === CloudflareClientService) return cloudflareService;
+        if (token === ImageSizeService) return imageSizeService;
+        if (token === AppVolumeArchiveService) return appVolumes;
         return mock();
       }),
     } as unknown as ModuleRef;
@@ -197,6 +252,92 @@ describe('InstallAppCommand — pull policy', () => {
     expect(upCommand).not.toContain('--pull never');
   });
 
+  it('creates the bind-mount folders as the Hub, then opens them up, before compose up', async () => {
+    const result = await command.execute(appUrn, {});
+
+    expect(result.success).toBe(true);
+    expect(appFilesManager.createVolumeHostDirs).toHaveBeenCalledWith(appUrn);
+    const created = appFilesManager.createVolumeHostDirs.mock.invocationCallOrder[0] as number;
+    // The sweep that follows is what opens the new folders up for the app's own user.
+    expect(appFilesManager.setAppDataDirPermissions.mock.invocationCallOrder.some((order) => order > created)).toBe(true);
+  });
+
+  describe('OpenClaw start scripts', () => {
+    const openclaw = 'openclaw:store' as AppUrn;
+    let filesystem: ReturnType<typeof mock<FilesystemService>>;
+
+    beforeEach(() => {
+      filesystem = mock<FilesystemService>();
+      filesystem.createDirectory.mockResolvedValue(true);
+      filesystem.writeTextFile.mockResolvedValue(true);
+      filesystem.makeExecutable.mockResolvedValue(true);
+      appFilesManager.getAppPaths.mockReturnValue({ appDataDir: '/tmp/app-data/store/openclaw', appInstalledDir: '/tmp/apps/store/openclaw' });
+      const moduleRef = (command as any).moduleRef;
+      const resolve = moduleRef.get.getMockImplementation();
+      moduleRef.get.mockImplementation((token: unknown) => (token === FilesystemService ? filesystem : resolve(token)));
+      vi.mocked(fs.promises.writeFile).mockClear();
+      vi.mocked(fs.promises.chmod).mockClear();
+    });
+
+    it('copies a shipped regular file through the filesystem service', async () => {
+      filesystem.isFile.mockResolvedValue(true);
+      filesystem.copyFile.mockResolvedValue(true);
+
+      await command.execute(openclaw, {});
+
+      expect(filesystem.copyFile).toHaveBeenCalledWith(
+        '/tmp/apps/store/openclaw/data/ci-wrapper.sh',
+        '/tmp/app-data/store/openclaw/data/ci-wrapper.sh',
+      );
+      expect(filesystem.makeExecutable).toHaveBeenCalledWith('/tmp/app-data/store/openclaw/data/ci-wrapper.sh');
+      expect(fs.promises.writeFile).not.toHaveBeenCalledWith(expect.stringContaining('ci-wrapper.sh'), expect.anything(), expect.anything());
+      expect(fs.promises.chmod).not.toHaveBeenCalledWith(expect.stringContaining('ci-wrapper.sh'), expect.anything());
+    });
+
+    it('writes the built-in script through the filesystem service when nothing shipped is a regular file', async () => {
+      filesystem.isFile.mockResolvedValue(false);
+
+      await command.execute(openclaw, {});
+
+      expect(filesystem.copyFile).not.toHaveBeenCalled();
+      expect(filesystem.writeTextFile).toHaveBeenCalledWith(
+        '/tmp/app-data/store/openclaw/data/ci-wrapper.sh',
+        expect.stringContaining('ci-entrypoint.sh'),
+      );
+      expect(filesystem.makeExecutable).toHaveBeenCalledWith('/tmp/app-data/store/openclaw/data/ci-entrypoint.sh');
+      expect(fs.promises.writeFile).not.toHaveBeenCalledWith(expect.stringContaining('ci-wrapper.sh'), expect.anything(), expect.anything());
+    });
+
+    it('fails the install when the scripts folder cannot be created', async () => {
+      filesystem.createDirectory.mockResolvedValue(false);
+
+      const result = await command.execute(openclaw, {});
+
+      expect(result.success).toBe(false);
+      expect(filesystem.writeTextFile).not.toHaveBeenCalled();
+    });
+
+    it('fails the install when the built-in script cannot be written', async () => {
+      filesystem.isFile.mockResolvedValue(false);
+      filesystem.writeTextFile.mockResolvedValue(false);
+
+      const result = await command.execute(openclaw, {});
+
+      expect(result.success).toBe(false);
+      expect(filesystem.makeExecutable).not.toHaveBeenCalled();
+    });
+
+    it('fails the install when a restored script cannot be made executable', async () => {
+      filesystem.isFile.mockResolvedValue(true);
+      filesystem.copyFile.mockResolvedValue(true);
+      filesystem.makeExecutable.mockResolvedValue(false);
+
+      const result = await command.execute(openclaw, {});
+
+      expect(result.success).toBe(false);
+    });
+  });
+
   it('MUST omit --pull flag entirely when force_pull is false', async () => {
     const result = await command.execute(appUrn, {});
 
@@ -204,6 +345,30 @@ describe('InstallAppCommand — pull policy', () => {
     const upCommand = composeArgs.find((a) => a.includes('up'));
     expect(upCommand).toBeDefined();
     expect(upCommand).not.toContain('--pull');
+  });
+
+  it('records an image that arrived in compose up rather than in the pull', async () => {
+    const afm = (command as any).moduleRef.get(AppFilesManager);
+    const onComputer = new Map<string, string>();
+    vi.mocked(parseComposeJson).mockReturnValue({
+      services: [{ name: 'app', image: 'ghcr.io/example/app:arm64', isMain: true }],
+      overrides: [],
+    } as any);
+    afm.readPulledImages.mockResolvedValue({ imageIds: [], imageTags: [] });
+    afm.addPulledImages.mockResolvedValue(true);
+    dockerService.imageIdLocally = vi.fn(async (ref: string) => onComputer.get(ref) ?? null);
+    dockerService.imageIdsLocally = vi.fn(async () => new Set(onComputer.values()));
+    dockerService.imageTagsLocally = vi.fn(async () => []);
+    dockerService.composeApp.mockImplementation(async (_urn: string, args: string) => {
+      if (args.startsWith('up')) {
+        onComputer.set('ghcr.io/example/app:arm64', 'sha256:arm64');
+      }
+    });
+
+    const result = await command.execute(appUrn, {});
+
+    expect(result.success).toBe(true);
+    expect(afm.addPulledImages).toHaveBeenCalledWith(appUrn, { imageIds: ['sha256:arm64'], imageTags: [] });
   });
 
   it('MUST pre-pull images when force_pull is true and still omit --pull from compose up', async () => {
@@ -233,6 +398,32 @@ describe('InstallAppCommand — pull policy', () => {
     const upCommand = composeArgs.find((a) => a.includes('up'));
     expect(upCommand).toBeDefined();
     expect(upCommand).not.toContain('--pull');
+  });
+
+  it('records the image its pull brought onto the computer for the app, and not the one that was already there', async () => {
+    const afm = (command as any).moduleRef.get(AppFilesManager);
+    afm.addPulledImages.mockResolvedValue(true);
+    vi.mocked(parseComposeJson).mockReturnValue({
+      services: [
+        { name: 'app', image: 'ghcr.io/example/app:latest' },
+        { name: 'db', image: 'postgres:16' },
+      ],
+      overrides: [],
+    } as any);
+    const onComputer = new Map([['postgres:16', 'sha256:postgres']]);
+    dockerService.imageIdLocally = vi.fn(async (ref: string) => onComputer.get(ref) ?? null);
+    dockerService.imageIdsLocally = vi.fn(async () => new Set(onComputer.values()));
+    dockerService.imageTagsLocally = vi.fn(async () => []);
+    dockerService.pullImages = vi.fn(async () => {
+      onComputer.set('ghcr.io/example/app:latest', 'sha256:app');
+    });
+
+    const result = await command.execute(appUrn, {});
+
+    expect(result.success).toBe(true);
+    expect(dockerService.pullImages).toHaveBeenCalled();
+    expect(afm.addPulledImages).toHaveBeenCalledTimes(1);
+    expect(afm.addPulledImages).toHaveBeenCalledWith(appUrn, { imageIds: ['sha256:app'], imageTags: [] });
   });
 
   it('SHOULD pass through other compose arguments unchanged', async () => {
@@ -432,35 +623,97 @@ describe('InstallAppCommand — pull policy', () => {
     expect(composeArgs.some((a) => a.includes('up --detach'))).toBe(false);
   });
 
-  it('SHOULD fail install when labeled containers are missing after compose up', async () => {
+  it('SHOULD fail install when nothing is running after compose up', async () => {
     dockerService.waitForManagedAppContainersReady.mockResolvedValue({
       ok: false,
-      appStatus: 'missing',
-      summary: { total: 0, running: 0, exitZero: 0 },
-      message: 'Install finished but no Hub-managed containers were found. The app may have failed to start.',
+      message: "None of this app's services are running.",
+      errorDetail: 'Compose finished but no Hub-managed containers were found.',
+      serviceFailure: { kind: 'none_running' },
     });
 
     const result = await command.execute(appUrn, {});
 
     expect(result.success).toBe(false);
-    expect(result.message).toContain('no Hub-managed containers were found');
-    expect(dockerService.waitForManagedAppContainersReady).toHaveBeenCalledWith(appUrn);
+    expect(result.message).toContain("None of this app's services");
+    expect(dockerService.waitForManagedAppContainersReady).toHaveBeenCalledWith(appUrn, undefined);
   });
 
-  it('SHOULD fail install with container logs when containers exit after compose up', async () => {
+  it('SHOULD regenerate Traefik for an exposed app when a service failed, since the rest stay up', async () => {
     dockerService.waitForManagedAppContainersReady.mockResolvedValue({
       ok: false,
-      appStatus: 'stopped',
-      summary: { total: 1, running: 0, exitZero: 0 },
-      message: 'One or more containers exited after install.',
-      errorDetail: 'ghost-ghost-ci-marketplace (Exited (1)): bootstrap failed',
+      message: 'ghost keeps restarting',
+      serviceFailure: { kind: 'restarting', service: 'ghost' },
     });
+
+    const result = await command.execute(appUrn, { exposureMode: 'cloudflare' });
+
+    expect(result.success).toBe(false);
+    expect(traefikConfigService.regenerateTraefikConfig).toHaveBeenCalledWith(0);
+  });
+
+  it('SHOULD register the agent webhook when a service failed, since the status sync can bring the app to running', async () => {
+    dockerService.waitForManagedAppContainersReady.mockResolvedValue({
+      ok: false,
+      message: 'ghost keeps restarting',
+      serviceFailure: { kind: 'restarting', service: 'ghost' },
+    });
+    const agentNotifyService = {
+      resolveWebhookTarget: vi.fn().mockResolvedValue({ url: 'http://agent/hook', token: 'token', service: 'agent' }),
+      registerWebhook: vi.fn(),
+    };
+    const moduleRef = (command as any).moduleRef;
+    const resolve = moduleRef.get.getMockImplementation();
+    moduleRef.get.mockImplementation((token: unknown) => (token === AgentNotifyService ? agentNotifyService : resolve(token)));
 
     const result = await command.execute(appUrn, {});
 
     expect(result.success).toBe(false);
-    expect(result.message).toContain('exited after install');
-    expect(result.errorDetail).toContain('bootstrap failed');
+    expect(agentNotifyService.registerWebhook).toHaveBeenCalledWith(appUrn, 'http://agent/hook', 'token', 'agent');
+  });
+
+  it('SHOULD name the failing service and keep its logs when it crashes after compose up', async () => {
+    const serviceFailure = { kind: 'restarting', service: 'ghost', exitCode: 1, logLine: 'bootstrap failed' };
+    dockerService.waitForManagedAppContainersReady.mockResolvedValue({
+      ok: false,
+      message: 'ghost keeps restarting (exit 1): bootstrap failed',
+      errorDetail: 'ghost-ghost-ci-marketplace (restarting, exit 1): bootstrap failed',
+      serviceFailure,
+    });
+
+    const result = await command.execute(appUrn, {});
+
+    expect(result).toMatchObject({ success: false, message: 'ghost keeps restarting (exit 1): bootstrap failed', serviceFailure });
+    expect(result.success === false && result.errorDetail).toContain('bootstrap failed');
+  });
+
+  it('reports post-start diagnostics without app-owned log text', async () => {
+    vi.useFakeTimers();
+    try {
+      const privateLog = 'DATABASE_URL=private-value';
+      dockerReadFacade.diagnoseAppContainers.mockResolvedValue({
+        unhealthy: [{ name: 'ghost-1', state: 'restarting', logs: privateLog }],
+        healthy: [],
+      });
+      const errorReportingService = { reportAppFailure: vi.fn() };
+      const moduleRef = (command as any).moduleRef;
+      const originalGet = moduleRef.get.getMockImplementation() as (token: unknown) => unknown;
+      moduleRef.get.mockImplementation((token: unknown) => (token === ErrorReportingService ? errorReportingService : originalGet(token)));
+
+      const result = await command.execute(appUrn, {});
+      expect(result.success).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(errorReportingService.reportAppFailure).toHaveBeenCalledWith({
+        appUrn,
+        phase: 'post_start',
+        message: 'ghost-1 (restarting)',
+        containers: [{ name: 'ghost-1', state: 'restarting' }],
+      });
+      expect(JSON.stringify(errorReportingService.reportAppFailure.mock.calls)).not.toContain(privateLog);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // ── cancellation ──────────────────────────────────────────────────────────
@@ -510,6 +763,269 @@ describe('InstallAppCommand — pull policy', () => {
     expect(afm.deleteAppFolder).toHaveBeenCalledWith(appUrn);
   });
 
+  describe('removing the data of a cancelled install', () => {
+    const cancelDuringComposeUp = async (deadline?: AppCommandDeadline, fails: (args: string) => boolean = () => false) => {
+      const ac = new AbortController();
+      dockerService.composeApp = vi.fn(async (_urn: string, args: string) => {
+        if (args.includes('up --detach')) {
+          ac.abort();
+          throw new DOMException('Aborted', 'AbortError');
+        }
+        if (fails(args)) {
+          throw new Error(`docker compose ${args} exited with status 1`);
+        }
+      });
+      return (await command.execute(appUrn, {}, { signal: ac.signal, setPhase: vi.fn(), deadline })) as Record<string, unknown>;
+    };
+
+    it('removes it and reports a clean cancel when the Hub can delete it', async () => {
+      const result = await cancelDuringComposeUp();
+
+      expect(result).toMatchObject({ cancelled: true, message: `Install of ${appUrn} was cancelled and cleaned up` });
+      expect(result.warningCode).toBeUndefined();
+      expect(dockerService.removeAppDataDirAsRoot).not.toHaveBeenCalled();
+    });
+
+    it('goes to the root helper for files a container wrote as another user', async () => {
+      appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
+
+      const result = await cancelDuringComposeUp();
+
+      expect(dockerService.removeAppDataDirAsRoot).toHaveBeenCalledWith(appUrn, undefined);
+      expect(appFilesManager.deleteAppDataDir).toHaveBeenCalledWith(appUrn);
+      expect(result).toMatchObject({ cancelled: true, message: `Install of ${appUrn} was cancelled and cleaned up` });
+      expect(result.warningCode).toBeUndefined();
+    });
+
+    it('holds the root helper to the time the command has left', async () => {
+      appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
+      const deadline = AppCommandDeadline.after(60_000);
+
+      await cancelDuringComposeUp(deadline);
+
+      expect(dockerService.removeAppDataDirAsRoot).toHaveBeenCalledWith(appUrn, deadline);
+    });
+
+    it('does not claim a clean-up when data from before this install is still there', async () => {
+      appFilesManager.hasAppData.mockResolvedValue(true);
+
+      const result = await cancelDuringComposeUp();
+
+      expect(result.message).not.toContain('cleaned up');
+      expect(result.message).toContain('left in place');
+      expect(result.warningCode).toBeUndefined();
+      expect(appFilesManager.deleteAppDataDirDetailed).not.toHaveBeenCalled();
+    });
+
+    it('says what is left and where when even the root helper cannot remove it', async () => {
+      appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
+      dockerService.removeAppDataDirAsRoot.mockResolvedValue(false);
+
+      const result = await cancelDuringComposeUp();
+
+      expect(result).toMatchObject({
+        cancelled: true,
+        warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT',
+        warningDetail: '/srv/app-data/store/test-app',
+      });
+      expect(result.message).not.toContain('cleaned up');
+    });
+
+    it('keeps root away from data that was there before this install and warns about nothing', async () => {
+      appFilesManager.hasAppData.mockResolvedValue(true);
+      appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
+
+      const result = await cancelDuringComposeUp();
+
+      expect(dockerService.removeAppDataDirAsRoot).not.toHaveBeenCalled();
+      expect(result.warningCode).toBeUndefined();
+      expect(appFilesManager.deleteAppDataDir).not.toHaveBeenCalled();
+      expect(appFilesManager.deleteAppDataDirDetailed).not.toHaveBeenCalled();
+    });
+
+    it('keeps root away when it cannot tell what was there before this install', async () => {
+      appFilesManager.hasAppData.mockRejectedValue(new Error('EIO'));
+      appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
+
+      const result = await cancelDuringComposeUp();
+
+      expect(dockerService.removeAppDataDirAsRoot).not.toHaveBeenCalled();
+      expect(result.warningCode).toBeUndefined();
+    });
+
+    it('warns without a path when the app folder is what could not go', async () => {
+      appFilesManager.deleteAppFolder.mockResolvedValue(false);
+
+      const result = await cancelDuringComposeUp();
+
+      expect(result.warningCode).toBe('APP_INSTALL_CANCELLED_PARTIAL_REMNANT');
+      expect(result.warningDetail).toBeUndefined();
+      expect(result.message).toContain('app folder');
+    });
+
+    it('does not claim a clean-up when compose down fails, and still removes the folder and data', async () => {
+      const result = await cancelDuringComposeUp(undefined, (args) => args.startsWith('down'));
+
+      expect(result).toMatchObject({ cancelled: true, warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT' });
+      expect(result.warningDetail).toBeUndefined();
+      expect(result.message).toContain('its containers or volumes could not be fully removed');
+      expect(result.message).not.toContain('cleaned up');
+      expect(appFilesManager.deleteAppFolder).toHaveBeenCalledWith(appUrn);
+      expect(appFilesManager.deleteAppDataDirDetailed).toHaveBeenCalledWith(appUrn);
+    });
+
+    it('names the app data with the containers when the data cannot go either', async () => {
+      appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
+      dockerService.removeAppDataDirAsRoot.mockResolvedValue(false);
+
+      const result = await cancelDuringComposeUp(undefined, (args) => args.startsWith('down'));
+
+      expect(result).toMatchObject({
+        cancelled: true,
+        warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT',
+        warningDetail: '/srv/app-data/store/test-app',
+      });
+      expect(result.message).toContain('its app data and containers or volumes could not be fully removed');
+    });
+
+    it('names all three when the app folder cannot go either', async () => {
+      appFilesManager.deleteAppFolder.mockResolvedValue(false);
+      appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
+      dockerService.removeAppDataDirAsRoot.mockResolvedValue(false);
+
+      const result = await cancelDuringComposeUp(undefined, (args) => args.startsWith('down'));
+
+      expect(result.message).toContain('its app folder, app data and containers or volumes could not be fully removed');
+    });
+  });
+
+  describe('revoking the managed key of a cancelled install', () => {
+    let apiKeys: ReturnType<typeof mock<ApiKeyService>>;
+    let resolveToken: (token: unknown) => unknown;
+
+    beforeEach(() => {
+      apiKeys = mock<ApiKeyService>();
+      apiKeys.revokeManagedByApp.mockResolvedValue();
+      const moduleRef = (command as any).moduleRef;
+      resolveToken = moduleRef.get.getMockImplementation();
+      moduleRef.get.mockImplementation((token: unknown) => (token === ApiKeyService ? apiKeys : resolveToken(token)));
+    });
+
+    const cancelDuringComposeUp = async () => {
+      const ac = new AbortController();
+      dockerService.composeApp = vi.fn(async (_urn: string, args: string) => {
+        if (args.includes('up --detach')) {
+          ac.abort();
+          throw new DOMException('Aborted', 'AbortError');
+        }
+      });
+      return (await command.execute(appUrn, {}, { signal: ac.signal, setPhase: vi.fn() })) as Record<string, unknown>;
+    };
+
+    it('revokes the key before the containers are taken down, and still reports a clean cancel', async () => {
+      const result = await cancelDuringComposeUp();
+
+      expect(apiKeys.revokeManagedByApp).toHaveBeenCalledWith(appUrn);
+      const [teardown] = dockerService.composeApp.mock.invocationCallOrder.slice(-1);
+      expect(apiKeys.revokeManagedByApp.mock.invocationCallOrder[0]).toBeLessThan(teardown);
+      expect(result).toMatchObject({ cancelled: true, message: `Install of ${appUrn} was cancelled and cleaned up` });
+      expect(result.warningCode).toBeUndefined();
+    });
+
+    it('says the kept data stayed when the revoke fails and nothing else does', async () => {
+      apiKeys.revokeManagedByApp.mockRejectedValue(new Error('db down'));
+      appFilesManager.hasAppData.mockResolvedValue(true);
+
+      const result = await cancelDuringComposeUp();
+
+      expect(result).toMatchObject({ cancelled: true, warningCode: 'APP_INSTALL_CANCELLED_KEY_REMAINS' });
+      expect(result.message).toContain('left in place');
+      expect(result.message).toContain('may stay valid');
+    });
+
+    it('revokes the key on the path that keeps data from before the install', async () => {
+      appFilesManager.hasAppData.mockResolvedValue(true);
+      appVolumes.hasProjectVolumes.mockResolvedValue(true);
+
+      const result = await cancelDuringComposeUp();
+
+      expect(apiKeys.revokeManagedByApp).toHaveBeenCalledWith(appUrn);
+      expect(result.message).toContain('left in place');
+      expect(result.warningCode).toBeUndefined();
+    });
+
+    it('reports that the key may stay valid when the revoke fails, and still takes the app down', async () => {
+      apiKeys.revokeManagedByApp.mockRejectedValue(new Error('db down'));
+
+      const result = await cancelDuringComposeUp();
+
+      expect(result).toMatchObject({
+        cancelled: true,
+        message: `Install of ${appUrn} was cancelled, but its managed key could not be revoked and may stay valid`,
+        warningCode: 'APP_INSTALL_CANCELLED_KEY_REMAINS',
+      });
+      expect(result.warningDetail).toBeUndefined();
+      expect(appFilesManager.deleteAppFolder).toHaveBeenCalledWith(appUrn);
+      expect(String(dockerService.composeApp.mock.calls.at(-1)?.[1])).toMatch(/^down/);
+    });
+
+    it('reports that the key may stay valid when the key service cannot be reached', async () => {
+      const moduleRef = (command as any).moduleRef;
+      moduleRef.get.mockImplementation((token: unknown) => {
+        if (token === ApiKeyService) throw new Error('no provider');
+        return resolveToken(token);
+      });
+
+      const result = await cancelDuringComposeUp();
+
+      expect(result).toMatchObject({ cancelled: true, warningCode: 'APP_INSTALL_CANCELLED_KEY_REMAINS' });
+    });
+
+    it('reports the disk leftover and the key together when both could not be removed', async () => {
+      apiKeys.revokeManagedByApp.mockRejectedValue(new Error('db down'));
+      appFilesManager.deleteAppFolder.mockResolvedValue(false);
+      appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
+      dockerService.removeAppDataDirAsRoot.mockResolvedValue(false);
+
+      const result = await cancelDuringComposeUp();
+
+      expect(result).toMatchObject({
+        cancelled: true,
+        warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT_KEY_REMAINS',
+        warningDetail: '/srv/app-data/store/test-app',
+      });
+      expect(result.message).toContain('app folder');
+      expect(result.message).toContain('may stay valid');
+    });
+
+    it('stops waiting for a revoke that does not answer, and says the key may stay valid', async () => {
+      vi.useFakeTimers();
+      try {
+        apiKeys.revokeManagedByApp.mockReturnValue(new Promise(() => undefined));
+
+        const cancelled = cancelDuringComposeUp();
+        await vi.waitFor(() => expect(apiKeys.revokeManagedByApp).toHaveBeenCalled());
+        await vi.advanceTimersByTimeAsync(15_000);
+        const result = await cancelled;
+
+        expect(result).toMatchObject({ cancelled: true, warningCode: 'APP_INSTALL_CANCELLED_KEY_REMAINS' });
+        expect(appFilesManager.deleteAppFolder).toHaveBeenCalledWith(appUrn);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('revokes the key when the cancel lands before compose up', async () => {
+      const ac = new AbortController();
+      ac.abort();
+
+      const result = await command.execute(appUrn, {}, { signal: ac.signal, setPhase: vi.fn() });
+
+      expect(result).toMatchObject({ cancelled: true });
+      expect(apiKeys.revokeManagedByApp).toHaveBeenCalledWith(appUrn);
+    });
+  });
+
   it('returns cancelled (before compose up) when the signal is already aborted', async () => {
     const ac = new AbortController();
     ac.abort();
@@ -522,9 +1038,506 @@ describe('InstallAppCommand — pull policy', () => {
     expect(composeArgs.some((a) => a.includes('up --detach'))).toBe(false);
   });
 
+  describe('cancelling over data from before the install', () => {
+    const composeDown = () => composeArgs.filter((args) => args.startsWith('down --remove-orphans'));
+
+    const cancelDuringThePull = async () => {
+      vi.mocked(parseComposeJson).mockReturnValue({
+        services: [{ name: 'app', image: 'ghcr.io/example/app:latest' }],
+        overrides: [],
+      } as any);
+      const ac = new AbortController();
+      dockerService.pullImages = vi.fn(async () => {
+        ac.abort();
+        throw new DOMException('Aborted', 'AbortError');
+      });
+
+      const result = await command.execute(appUrn, {}, { signal: ac.signal, setPhase: vi.fn() });
+
+      expect((result as any).cancelled).toBe(true);
+      return result;
+    };
+
+    it('removes the folder and volumes of a fresh install', async () => {
+      const result = await cancelDuringThePull();
+
+      expect(composeDown()).toEqual(['down --remove-orphans -v --rmi local']);
+      expect(composeArgs.filter((args) => args.startsWith('rm '))).toEqual([]);
+      expect(appFilesManager.deleteAppDataDirDetailed).toHaveBeenCalledWith(appUrn);
+      expect(result.message).toContain('cleaned up');
+    });
+
+    it('leaves a folder that already held files and still removes volumes when there were none', async () => {
+      appFilesManager.hasAppData.mockResolvedValue(true);
+
+      const result = await cancelDuringThePull();
+
+      expect(appFilesManager.deleteAppDataDir).not.toHaveBeenCalled();
+      expect(appFilesManager.deleteAppDataDirDetailed).not.toHaveBeenCalled();
+      expect(dockerService.removeAppDataDirAsRoot).not.toHaveBeenCalled();
+      expect(appFilesManager.deleteAppFolder).toHaveBeenCalledWith(appUrn);
+      expect(composeDown()).toEqual(['down --remove-orphans -v --rmi local']);
+      expect(result.message).toContain('left in place');
+      expect(result.message).not.toContain('cleaned up');
+    });
+
+    it('keeps named volumes from before the install, even when the data folder was empty', async () => {
+      appVolumes.hasProjectVolumes.mockResolvedValue(true);
+
+      const result = await cancelDuringThePull();
+
+      expect(composeDown()).toEqual(['down --remove-orphans --rmi local']);
+      expect(appFilesManager.deleteAppDataDirDetailed).toHaveBeenCalledWith(appUrn);
+      expect(result.message).not.toContain('cleaned up');
+    });
+
+    it('leaves the folder when the check for earlier files fails', async () => {
+      appFilesManager.hasAppData.mockRejectedValue(new Error('EIO'));
+
+      await cancelDuringThePull();
+
+      expect(appFilesManager.deleteAppDataDir).not.toHaveBeenCalled();
+      expect(appFilesManager.deleteAppDataDirDetailed).not.toHaveBeenCalled();
+      expect(dockerService.removeAppDataDirAsRoot).not.toHaveBeenCalled();
+    });
+
+    it('keeps volumes when the check for earlier volumes fails', async () => {
+      appVolumes.hasProjectVolumes.mockRejectedValue(new Error('docker is not answering'));
+
+      await cancelDuringThePull();
+
+      expect(composeDown()).toEqual(['down --remove-orphans --rmi local']);
+    });
+
+    it('says the kept data stayed when the app folder cannot be removed', async () => {
+      appFilesManager.hasAppData.mockResolvedValue(true);
+      appFilesManager.deleteAppFolder.mockResolvedValue(false);
+
+      const result = await cancelDuringThePull();
+
+      expect(result).toMatchObject({ cancelled: true, warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT' });
+      expect((result as any).warningDetail).toBeUndefined();
+      expect(result.message).toContain('left in place');
+      expect(appFilesManager.deleteAppDataDirDetailed).not.toHaveBeenCalled();
+    });
+
+    it('says the kept volumes stayed when the root helper cannot remove a fresh data folder', async () => {
+      appVolumes.hasProjectVolumes.mockResolvedValue(true);
+      appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
+      dockerService.removeAppDataDirAsRoot.mockResolvedValue(false);
+
+      const result = await cancelDuringThePull();
+
+      expect(composeDown()).toEqual(['down --remove-orphans --rmi local']);
+      expect(result).toMatchObject({ cancelled: true, warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT' });
+      expect(result.message).toContain('left in place');
+    });
+
+    it('clears the anonymous volumes of its containers before a down that keeps named ones', async () => {
+      appVolumes.hasProjectVolumes.mockResolvedValue(true);
+
+      await cancelDuringThePull();
+
+      const teardown = composeArgs.filter((args) => args.startsWith('rm ') || args.startsWith('down --remove-orphans'));
+      expect(teardown).toEqual(['rm --force --stop -v', 'down --remove-orphans --rmi local']);
+    });
+
+    it('still takes the install down when clearing the anonymous volumes fails, and says so', async () => {
+      appVolumes.hasProjectVolumes.mockResolvedValue(true);
+      dockerService.composeApp = vi.fn(async (_urn: string, args: string) => {
+        composeArgs.push(args);
+        if (args.startsWith('rm ')) {
+          throw new Error('compose rm failed');
+        }
+      });
+
+      const result = await cancelDuringThePull();
+
+      expect(composeDown()).toEqual(['down --remove-orphans --rmi local']);
+      expect(result).toMatchObject({ cancelled: true, warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT' });
+      expect(result.message).toContain('containers or volumes');
+      expect(result.message).not.toContain('cleaned up');
+    });
+
+    it('warns and does not claim a clean-up when compose down fails over data from before the install', async () => {
+      appFilesManager.hasAppData.mockResolvedValue(true);
+      dockerService.composeApp = vi.fn(async (_urn: string, args: string) => {
+        composeArgs.push(args);
+        if (args.startsWith('down')) {
+          throw new Error('compose down failed');
+        }
+      });
+
+      const result = await cancelDuringThePull();
+
+      expect(result).toMatchObject({ cancelled: true, warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT' });
+      expect(result.message).toContain('containers or volumes');
+      expect(result.message).toContain('left in place');
+      expect(result.message).not.toContain('cleaned up');
+      expect(appFilesManager.deleteAppDataDirDetailed).not.toHaveBeenCalled();
+    });
+
+    it('warns when compose down fails over named volumes from before the install', async () => {
+      appVolumes.hasProjectVolumes.mockResolvedValue(true);
+      dockerService.composeApp = vi.fn(async (_urn: string, args: string) => {
+        composeArgs.push(args);
+        if (args.startsWith('down')) {
+          throw new Error('compose down failed');
+        }
+      });
+
+      const result = await cancelDuringThePull();
+
+      expect(composeDown()).toEqual(['down --remove-orphans --rmi local']);
+      expect(result).toMatchObject({ cancelled: true, warningCode: 'APP_INSTALL_CANCELLED_PARTIAL_REMNANT' });
+      expect(result.message).not.toContain('cleaned up');
+    });
+
+    it('stops waiting for a Docker engine that does not answer and keeps the volumes', async () => {
+      vi.useFakeTimers();
+      try {
+        appVolumes.hasProjectVolumes.mockReturnValue(new Promise(() => undefined));
+
+        const cancelled = cancelDuringThePull();
+        await vi.advanceTimersByTimeAsync(15_000);
+        await cancelled;
+
+        expect(composeDown()).toEqual(['down --remove-orphans --rmi local']);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('checks before the install writes anything', async () => {
+      const marketplaceService = (command as any).moduleRef.get(MarketplaceService);
+
+      await cancelDuringThePull();
+
+      const firstWrite = marketplaceService.copyAppFromRepoToInstalled.mock.invocationCallOrder[0] as number;
+      expect(appFilesManager.hasAppData.mock.invocationCallOrder[0]).toBeLessThan(firstWrite);
+      expect(appVolumes.hasProjectVolumes.mock.invocationCallOrder[0]).toBeLessThan(firstWrite);
+    });
+
+    it('a failed install still runs no cleanup, kept data or not', async () => {
+      appFilesManager.hasAppData.mockResolvedValue(true);
+      dockerService.composeApp = vi.fn(async (_urn: string, args: string) => {
+        composeArgs.push(args);
+        if (args.includes('up --detach')) {
+          throw new Error('compose up failed');
+        }
+      });
+
+      const result = await command.execute(appUrn, {}, { signal: new AbortController().signal, setPhase: vi.fn() });
+
+      expect((result as any).cancelled).toBeFalsy();
+      expect(composeDown()).toEqual([]);
+      expect(appFilesManager.deleteAppDataDir).not.toHaveBeenCalled();
+      expect(appFilesManager.deleteAppDataDirDetailed).not.toHaveBeenCalled();
+      expect(dockerService.removeAppDataDirAsRoot).not.toHaveBeenCalled();
+    });
+  });
+
   it('still succeeds when called without a cancellation context (backward compatible)', async () => {
     const result = await command.execute(appUrn, {});
     expect(result.success).toBe(true);
+  });
+
+  describe('when something outside the Hub holds the host port', () => {
+    const envUtilsMap = (content: string) => Object.fromEntries(new EnvUtils().envStringToMap(content));
+    /** Docker Engine 29.6's wording when a program on the host already listens on the port. */
+    const portTaken = (port: number) =>
+      new Error(
+        `Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint test-app-1 (a65f29c5): failed to bind host port 127.0.0.1:${port}/tcp: address already in use`,
+      );
+    const mainAllocation = (hostPort: number) => ({
+      id: hostPort,
+      appUrn,
+      hostPort,
+      containerPort: 8080,
+      protocol: 'tcp' as const,
+      label: 'main',
+      createdAt: '',
+    });
+
+    let portManager: ReturnType<typeof mock<PortManagerService>>;
+    let appFilesManager: ReturnType<typeof mock<AppFilesManager>>;
+    let appsRepository: ReturnType<typeof mock<AppsRepository>>;
+    /** Host ports Docker refuses, in the order `compose up` meets them. */
+    let refusals: number[];
+    /** app.env as the last write left it, which the next read returns, as the file would. */
+    let appEnv: string;
+
+    beforeEach(() => {
+      const moduleRef = (command as any).moduleRef as ModuleRef;
+      portManager = moduleRef.get(PortManagerService) as any;
+      appFilesManager = moduleRef.get(AppFilesManager) as any;
+      appsRepository = moduleRef.get(AppsRepository) as any;
+
+      // What generateEnvFile writes before the install allocates: the manifest's port, 8080.
+      appEnv = ['APP_PORT=8080', 'APP_INTERNAL_AUTHORITY=127.0.0.1:8080', 'APP_URL=http://127.0.0.1:8080'].join('\n');
+      appFilesManager.getAppEnv.mockImplementation(async () => ({ content: appEnv, path: '/tmp/.env' }));
+      appFilesManager.writeAppEnv.mockImplementation(async (_urn, content) => {
+        appEnv = content;
+      });
+
+      portManager.allocatePorts.mockResolvedValue([mainAllocation(8080)]);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 7, port: 8080, config: { exposureMode: 'local' }, status: 'installing' } as any);
+
+      refusals = [];
+      dockerService.composeApp.mockImplementation(async (_urn: string, args: string) => {
+        composeArgs.push(args);
+        const refused = args.startsWith('up') ? refusals.shift() : undefined;
+        if (refused !== undefined) {
+          throw portTaken(refused);
+        }
+      });
+    });
+
+    it('moves the main port to a free one, records it on the app and app.env, and installs', async () => {
+      refusals = [8080];
+      portManager.getMainPort.mockResolvedValue(8080);
+      portManager.moveMainPort.mockResolvedValue(mainAllocation(10000));
+      const form: { port?: number } = {};
+
+      const result = await command.execute(appUrn, form);
+
+      expect(result.success).toBe(true);
+      expect(portManager.moveMainPort).toHaveBeenCalledExactlyOnceWith(appUrn, new Set([8080]));
+      expect(composeArgs.filter((args) => args.startsWith('up'))).toHaveLength(2);
+      const env = appFilesManager.writeAppEnv.mock.calls.at(-1)?.[1] ?? '';
+      expect(env).toContain('APP_PORT=10000');
+      expect(env).toContain('APP_INTERNAL_AUTHORITY=127.0.0.1:10000');
+      expect(env).toContain('APP_URL=http://127.0.0.1:10000');
+      // Starts, restarts and updates rebuild app.env from the row's config, so the port must be there.
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { config: { exposureMode: 'local', port: 10000 }, port: 10000 });
+      expect(form.port).toBe(10000);
+    });
+
+    it('reports the move in the success event the worker sends as well as in its result', async () => {
+      refusals = [8080];
+      portManager.getMainPort.mockResolvedValue(8080);
+      portManager.moveMainPort.mockResolvedValue(mainAllocation(10000));
+      const sseService = ((command as any).moduleRef as ModuleRef).get(SSEService) as any;
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result).toMatchObject({ success: true, movedHostPort: { from: 8080, to: 10000 } });
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({ event: 'install_success', movedHostPort: { from: 8080, to: 10000 } }),
+      );
+    });
+
+    describe('and a service then fails to come up', () => {
+      const crashLoop = {
+        ok: false,
+        message: 'ghost keeps restarting (exit 1): bootstrap failed',
+        serviceFailure: { kind: 'restarting', service: 'ghost', exitCode: 1 },
+      };
+
+      beforeEach(() => {
+        dockerService.waitForManagedAppContainersReady.mockResolvedValue(crashLoop as any);
+      });
+
+      it('reports the move beside the failure, since the app stays on the new port', async () => {
+        refusals = [8080];
+        portManager.moveMainPort.mockResolvedValue(mainAllocation(10000));
+
+        const result = await command.execute(appUrn, {});
+
+        expect(result).toMatchObject({
+          success: false,
+          errorCode: 'app_service_failed',
+          serviceFailure: crashLoop.serviceFailure,
+          movedHostPort: { from: 8080, to: 10000 },
+        });
+      });
+
+      it('reports the first port refused and the last one taken after two moves', async () => {
+        refusals = [8080, 10000];
+        portManager.moveMainPort.mockResolvedValueOnce(mainAllocation(10000)).mockResolvedValueOnce(mainAllocation(10001));
+
+        const result = await command.execute(appUrn, {});
+
+        expect(result).toMatchObject({ success: false, movedHostPort: { from: 8080, to: 10001 } });
+      });
+
+      it('reports no move when the app stayed on its port', async () => {
+        const result = await command.execute(appUrn, {});
+
+        expect(result.success).toBe(false);
+        expect(result.movedHostPort).toBeUndefined();
+      });
+    });
+
+    it('reports no move when no free port could be found', async () => {
+      refusals = [8080];
+      portManager.moveMainPort.mockResolvedValue(null);
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(false);
+      expect(result.movedHostPort).toBeUndefined();
+    });
+
+    // The row and app.env still name the old port, so a notice of the new one would send the person nowhere.
+    it('reports no move when the new port could not be written down', async () => {
+      refusals = [8080];
+      portManager.moveMainPort.mockResolvedValue(mainAllocation(10000));
+      appFilesManager.writeAppEnv.mockImplementation(async (_urn, content) => {
+        if (content.includes('APP_PORT=10000')) {
+          throw new Error('ENOSPC: no space left on device');
+        }
+        appEnv = content;
+      });
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(false);
+      expect(result.movedHostPort).toBeUndefined();
+    });
+
+    it('never offers a port Docker already refused during the same install', async () => {
+      refusals = [8080, 10000];
+      portManager.getMainPort.mockResolvedValueOnce(8080).mockResolvedValueOnce(10000);
+      const avoidedOnEachMove: number[][] = [];
+      portManager.moveMainPort.mockImplementation(async (_urn, avoid) => {
+        avoidedOnEachMove.push([...avoid]);
+        return mainAllocation(avoidedOnEachMove.length === 1 ? 10000 : 10001);
+      });
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(true);
+      expect(avoidedOnEachMove).toEqual([[8080], [8080, 10000]]);
+      expect(appFilesManager.writeAppEnv.mock.calls.at(-1)?.[1]).toContain('APP_PORT=10001');
+    });
+
+    it('fails as before when the refused port is not the main port', async () => {
+      // An `addPorts` port from the manifest: it is published as written, so moving the main port would not help.
+      refusals = [51820];
+      portManager.getMainPort.mockResolvedValue(8080);
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(false);
+      expect(portManager.moveMainPort).not.toHaveBeenCalled();
+      expect(composeArgs.filter((args) => args.startsWith('up'))).toHaveLength(1);
+    });
+
+    it('does not recover a non-main conflict just because a stale allocation matches it', async () => {
+      refusals = [51820];
+      portManager.getMainPort.mockResolvedValue(51820);
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(false);
+      expect(portManager.moveMainPort).not.toHaveBeenCalled();
+      expect(composeArgs.filter((args) => args.startsWith('up'))).toHaveLength(1);
+    });
+
+    it('does not recover an extra published port when the main port is not exposed', async () => {
+      refusals = [51820];
+      portManager.getMainPort.mockResolvedValue(51820);
+
+      const result = await command.execute(appUrn, { exposureMode: 'cloudflare', openPort: false, exposedLocal: false });
+
+      expect(result.success).toBe(false);
+      expect(portManager.moveMainPort).not.toHaveBeenCalled();
+      expect(composeArgs.filter((args) => args.startsWith('up'))).toHaveLength(1);
+    });
+
+    it('leaves the app row alone when the main port is the one it already records', async () => {
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(true);
+      expect(appsRepository.updateAppById).not.toHaveBeenCalledWith(7, expect.objectContaining({ port: expect.anything() }));
+    });
+
+    it('records config.port when only the port column already holds the new port', async () => {
+      // A retried install keeps the row's port from the failed attempt, but its config is the new form's.
+      portManager.allocatePorts.mockResolvedValue([mainAllocation(10000)]);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 7, port: 10000, config: { exposureMode: 'local' }, status: 'installing' } as any);
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(true);
+      // Without config.port, the next start would go back to the manifest's port, 8080.
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { config: { exposureMode: 'local', port: 10000 }, port: 10000 });
+    });
+
+    it('moves the base URLs that named the refused port, in app.env and in the stored config', async () => {
+      refusals = [8080];
+      portManager.getMainPort.mockResolvedValue(8080);
+      portManager.moveMainPort.mockResolvedValue(mainAllocation(10000));
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({
+        id: 'test-app',
+        name: 'Test App',
+        port: 8080,
+        force_pull: false,
+        form_fields: [
+          { type: 'app_base_url', label: 'Site URL', env_variable: 'SITE_URL', alias_env_variables: ['SITE_URL_SLASH'], trailing_slash: true },
+          { type: 'app_base_url', label: 'Media URL', env_variable: 'MEDIA_URL' },
+          { type: 'url', label: 'Other service', env_variable: 'OTHER_URL' },
+        ],
+      } as any);
+      appEnv = [
+        'APP_PORT=8080',
+        'APP_URL=http://127.0.0.1:8080',
+        'APP_BASE_URL=http://127.0.0.1:8080',
+        'APP_BASE_HOST=127.0.0.1:8080',
+        'APP_BASE_WSS_ORIGIN=ws://127.0.0.1:8080',
+        'SITE_URL=http://localhost:8080',
+        'SITE_URL_SLASH=http://localhost:8080/',
+        'MEDIA_URL=https://media.example.com',
+        'OTHER_URL=http://localhost:8080',
+      ].join('\n');
+      const storedConfig = {
+        exposureMode: 'local',
+        SITE_URL: 'http://localhost:8080',
+        MEDIA_URL: 'https://media.example.com',
+        OTHER_URL: 'http://localhost:8080',
+      };
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 7, port: 8080, config: storedConfig, status: 'installing' } as any);
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(true);
+      const env = envUtilsMap(appEnv);
+      expect(env).toMatchObject({
+        APP_PORT: '10000',
+        APP_URL: 'http://127.0.0.1:10000',
+        APP_BASE_URL: 'http://127.0.0.1:10000',
+        APP_BASE_HOST: '127.0.0.1:10000',
+        APP_BASE_WSS_ORIGIN: 'ws://127.0.0.1:10000',
+        SITE_URL: 'http://localhost:10000',
+        SITE_URL_SLASH: 'http://localhost:10000/',
+        // A public address names no port, and a `url` field is some other service's address.
+        MEDIA_URL: 'https://media.example.com',
+        OTHER_URL: 'http://localhost:8080',
+      });
+      // The stored form is what every later start replays.
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, {
+        config: { ...storedConfig, SITE_URL: 'http://localhost:10000', port: 10000 },
+        port: 10000,
+      });
+    });
+
+    it('does not move the main port for a UDP mapping on the same number', async () => {
+      portManager.getMainPort.mockResolvedValue(8080);
+      dockerService.composeApp.mockImplementation(async (_urn: string, args: string) => {
+        composeArgs.push(args);
+        if (args.startsWith('up')) {
+          throw new Error('Error response from daemon: failed to bind host port 0.0.0.0:8080/udp: address already in use');
+        }
+      });
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(false);
+      expect(portManager.moveMainPort).not.toHaveBeenCalled();
+      expect(composeArgs.filter((args) => args.startsWith('up'))).toHaveLength(1);
+    });
   });
 
   // ── download size in the progress ticks ─────────────────────────────────────
@@ -614,6 +1627,77 @@ describe('InstallAppCommand — pull policy', () => {
       expect(percents.lastIndexOf(98)).toBeLessThan(percents.indexOf(99));
     });
 
+    it('holds the size under the bar back until the total is final (#2177)', async () => {
+      const now = vi.spyOn(Date, 'now');
+      dockerService.pullImages = vi.fn(async (_images: string[], options: { onProgress: (event: unknown) => void }) => {
+        // ZeroNote's first layer on its own: the total is still growing.
+        now.mockReturnValue(1_000_000);
+        options.onProgress({ ...pullTick(3 * MB, 3.7 * MB), totalBytesKnown: false });
+        now.mockReturnValue(1_003_000);
+        options.onProgress({ ...pullTick(10 * MB, 26 * MB), totalBytesKnown: true });
+      });
+
+      try {
+        await command.execute(appUrn, {});
+      } finally {
+        now.mockRestore();
+      }
+
+      const sizes = progressTicks()
+        .filter((tick) => typeof tick.progress === 'number' && tick.progress >= 60 && tick.progress < 99)
+        .map((tick) => tick.totalBytes);
+      expect(sizes).not.toContain(3.7 * MB);
+      expect(sizes).toContain(26 * MB);
+    });
+
+    it("asks the registry for each image's layer sizes while it downloads", async () => {
+      const sizes = new Map([['sha256:abc', 1_000]]);
+      imageSizeService.getImageLayerSizes.mockResolvedValue(sizes);
+      let asked: Promise<unknown> | undefined;
+      const pullSignal = new AbortController().signal;
+      dockerService.pullImages = vi.fn(
+        async (_images: string[], options: { layerSizes?: (image: string, signal: AbortSignal) => Promise<unknown> }) => {
+          asked = options.layerSizes?.('ghcr.io/example/app:latest', pullSignal);
+        },
+      );
+
+      await command.execute(appUrn, {});
+
+      await expect(asked).resolves.toBe(sizes);
+      expect(imageSizeService.getImageLayerSizes).toHaveBeenCalledWith('ghcr.io/example/app:latest', { signal: pullSignal });
+    });
+
+    // The first layer to report can be a 405-byte one that is already done: 405 of 405 bytes.
+    it('moves the bar by whole images, not bytes, until the total is final', async () => {
+      dockerService.pullImages = vi.fn(async (_images: string[], options: { onProgress: (event: unknown) => void }) => {
+        options.onProgress({ ...pullTick(405, 405), totalBytesKnown: false });
+      });
+
+      await command.execute(appUrn, {});
+
+      const percents = progressTicks().map((tick) => tick.progress);
+      expect(percents).not.toContain(98);
+    });
+
+    it('shows the size as soon as the total turns final, even when nothing else moved', async () => {
+      const now = vi.spyOn(Date, 'now');
+      dockerService.pullImages = vi.fn(async (_images: string[], options: { onProgress: (event: unknown) => void }) => {
+        now.mockReturnValue(1_000_000);
+        options.onProgress({ ...pullTick(0, 10 * MB), totalBytesKnown: false });
+        // The manifest arrives a moment later. No byte has moved and the bar is still at 60.
+        now.mockReturnValue(1_000_100);
+        options.onProgress({ ...pullTick(0, 26 * MB), totalBytesKnown: true });
+      });
+
+      try {
+        await command.execute(appUrn, {});
+      } finally {
+        now.mockRestore();
+      }
+
+      expect(progressTicks()).toContainEqual(expect.objectContaining({ progress: 60, downloadedBytes: 0, totalBytes: 26 * MB }));
+    });
+
     it('does not rewrite the job when only the downloaded size moved', async () => {
       const now = vi.spyOn(Date, 'now');
       const updateProgress = vi.fn().mockResolvedValue(undefined);
@@ -659,15 +1743,13 @@ describe('InstallAppCommand — plan-based pre-flight', () => {
     dockerService = {
       composeApp: vi.fn().mockResolvedValue(undefined),
       pullImages: vi.fn().mockResolvedValue(undefined),
-      waitForManagedAppContainersReady: vi.fn().mockResolvedValue({
-        ok: true,
-        appStatus: 'running',
-        summary: { total: 1, running: 1, exitZero: 0 },
-        message: 'All containers are running',
-      }),
+      waitForManagedAppContainersReady: vi.fn().mockResolvedValue({ ok: true, message: 'All containers came up' }),
       removeAppNetworks: vi.fn().mockResolvedValue(undefined),
-      snapshotAppImageIds: vi.fn().mockResolvedValue([]),
+      imageIdLocally: vi.fn().mockResolvedValue(null),
+      imageIdsLocally: vi.fn().mockResolvedValue(new Set()),
+      imageTagsLocally: vi.fn().mockResolvedValue([]),
       removeAppImages: vi.fn().mockResolvedValue(undefined),
+      removeAppDataDirAsRoot: vi.fn().mockResolvedValue(true),
     };
 
     const logger = mockDeep<LoggerService>();
@@ -691,6 +1773,7 @@ describe('InstallAppCommand — plan-based pre-flight', () => {
     appFilesManager.getAppEnv.mockResolvedValue({ content: '', path: '/tmp/.env' });
     appFilesManager.getUserComposeFile.mockResolvedValue({ content: null, path: '/tmp/user-compose.yml' });
     appFilesManager.setAppDataDirPermissions.mockResolvedValue();
+    appFilesManager.hasAppData.mockResolvedValue(false);
     appFilesManager.getInstalledAppInfo.mockResolvedValue({
       id: 'test-app',
       name: 'Test App',
@@ -704,6 +1787,10 @@ describe('InstallAppCommand — plan-based pre-flight', () => {
     } as any);
 
     const marketplaceService = mock<MarketplaceService>();
+
+    marketplaceService.listedAppUrns.mockResolvedValue([]);
+    const appsRepository = mock<AppsRepository>();
+    appsRepository.getApps.mockResolvedValue([]);
     marketplaceService.getDockerComposeJson.mockResolvedValue({ content: '{}', path: '/tmp/compose.json' });
     marketplaceService.copyAppFromRepoToInstalled.mockResolvedValue();
     marketplaceService.copyDataDir.mockResolvedValue();
@@ -729,6 +1816,7 @@ describe('InstallAppCommand — plan-based pre-flight', () => {
         if (token === ConfigurationService) return config;
         if (token === AppFilesManager) return appFilesManager;
         if (token === MarketplaceService) return marketplaceService;
+        if (token === AppsRepository) return appsRepository;
         if (token === DockerService) return dockerService;
         if (token === DockerReadFacade) return dockerReadFacade;
         if (token === AppHelpers) return appHelpers;

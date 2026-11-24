@@ -1,8 +1,11 @@
+import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { abortError, isAbortError, throwIfAborted } from '@/common/abort';
 import { getAppDataHostPath, resolveAppDataHostRoot } from '@/common/helpers/app-data-path.helper';
-import { extractAppUrn } from '@/common/helpers/app-helpers';
+import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
+import { securityGrantsFor } from '@/modules/apps/security-grants';
+import { firstLinkOnTheWay, parseComposeConfigBindMounts, segmentsInside } from './bind-mount-guard';
 import {
   DEFAULT_APP_COMPOSE_INACTIVITY_TIMEOUT_MS,
   DEFAULT_APP_COMPOSE_TIMEOUT_MINUTES,
@@ -15,23 +18,64 @@ import {
   HUB_NETWORK_NAMES,
   LEGACY_HUB_CONTAINER_NAME,
   LEGACY_HUB_MANAGED_LABEL,
+  appUrnFromLabels,
   hubContainerName,
 } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable, InternalServerErrorException, Inject } from '@nestjs/common';
+import type { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
 import type { AppUrn } from '@ci-hub/common/types';
 import type Dockerode from 'dockerode';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AppsRepository } from '../apps/apps.repository';
+import { appIdOf } from '../apps/app-id.helpers';
+import { collectComposeOverrideViolations, describeComposeOverrideViolations } from '../apps/compose-override-sandbox';
+import { APPLE_CONTAINER_ENGINE_NOTICE, isSocktainerVersion } from './container-engine';
 import { DOCKERODE } from './constants';
 import { DockerReadFacade, type ManagedAppContainerVerification } from './docker-read.facade';
+import { APP_CAME_UP_TIMING, AppCameUpWatch, type AppCameUpTiming } from './managed-app-containers';
 import { listContainersMatchingAnyLabelSets, managedAppLabelSets } from './hub-container-query';
+import { appComposeEnvironment } from './app-compose-environment';
+import {
+  applyLayerEvent,
+  type DockerPullLayerSnapshot,
+  type DockerPullStage,
+  imageSizeKnown,
+  isDownloadPhase,
+  isLayerEvent,
+  shortLayerId,
+  summarizePullLayers,
+} from './pull-progress';
 import { resolveEdgeHopAddress } from '../network/edge-hops';
-import { DEFAULT_HUB_EDGE_TRAEFIK_IP, HUB_EDGE_NETWORK_NAME, TRAEFIK_CONTAINER_NAME } from '../network/network-constants';
+import { traefikAddressOnAppSubnet } from '../network/app-network-addresses';
+import {
+  APP_LINK_NETWORK_PREFIX,
+  DEFAULT_HUB_EDGE_TRAEFIK_IP,
+  HUB_EDGE_NETWORK_NAME,
+  TAILSCALE_SIDECAR_CONTAINER_NAME,
+  TRAEFIK_CONTAINER_NAME,
+} from '../network/network-constants';
+import { type BindMountRef, describeNestedBindMounts, findNestedBindMounts, HUB_INFRASTRUCTURE_NETWORK_NAMES } from '@ci-hub/common/schemas';
 
 export type { AppContainerRuntimeStats, AppNetworkTarget, ManagedAppContainerVerification } from './docker-read.facade';
+
+/**
+ * Where pre-update snapshots are written, under `<dataDir>/backups/`.
+ *
+ * Not `<dataDir>/snapshots`: the Hub's `/data` is root-owned in the image and only its subfolders are
+ * mounted from the host (see docker-compose.prod.yml), so a Hub running as the host user on native
+ * Linux could not create a new folder directly under it. `backups` is mounted everywhere and owned by
+ * that user. The leading dot keeps the backup lister from reading it as an app store.
+ */
+export const PRE_UPDATE_SNAPSHOT_DIRNAME = '.pre-update-snapshots';
+
+/**
+ * Where the backup or the restore of app data the Hub cannot read is put together for the root helper,
+ * under `<dataDir>/backups/` for the same reasons as {@link PRE_UPDATE_SNAPSHOT_DIRNAME}.
+ */
+export const BACKUP_STAGING_DIRNAME = '.backup-staging';
 
 export interface PreUpdateVolumeSnapshotResult {
   appUrn: AppUrn;
@@ -40,6 +84,12 @@ export interface PreUpdateVolumeSnapshotResult {
   /** The folder holding everything this snapshot wrote, so it can be removed as one. */
   snapshotBaseDir?: string;
   snapshotPath?: string;
+  /**
+   * The data folder was copied by a privileged helper because the Hub could not read it (a database's
+   * files belong to the user its container ran as). The copy keeps those owners, so it is also restored
+   * and removed through a helper, never by the Hub itself.
+   */
+  dataSnapshotCopiedAsRoot?: boolean;
   /** Snapshot of the app's installed dir (docker-compose.yml, config.json, etc.) as it stood before the update overwrote it. */
   appFilesSnapshotPath?: string;
   volumes: Array<{
@@ -70,15 +120,121 @@ export interface ContainerHealthProbeResult {
   healthy: boolean;
   containers: ContainerHealthProbeDetail[];
   message: string;
+  /** Set when the probe stopped because its `signal` was aborted, before it had an answer. */
+  cancelled?: boolean;
 }
 
-const MANAGED_APP_STARTUP_MAX_ATTEMPTS = 6;
-const MANAGED_APP_STARTUP_DELAY_MS = 2_000;
+const HUB_APP_NETWORK_GAP = 'Not attaching the Hub, Traefik and the VPN sidecar to app networks';
+const HUB_APP_NETWORK_CONSEQUENCE =
+  'An app is reachable only from the containers its compose file starts it with, so its services cannot resolve ci-hub and Traefik cannot route to it until the containers are recreated.';
+const SHARED_NETWORK_GAP = 'Not taking app containers off the shared Hub network';
+const SHARED_NETWORK_CONSEQUENCE = 'Each app leaves it at its next start, when its containers are recreated.';
+/** What an app loses while one member is not on its network. */
+const APP_NETWORK_MEMBER_CONSEQUENCE: Record<AppNetworkMember['role'], string> = {
+  hub: `Services of the app cannot resolve ${DEFAULT_HUB_CONTAINER_NAME} until this succeeds.`,
+  traefik: 'Traefik cannot route to the app until this succeeds.',
+  vpn: 'The app is not reachable at its Private VPN address until this succeeds.',
+};
+
+// What Docker uses for a health check that leaves these unset.
+const DOCKER_DEFAULT_HEALTH_INTERVAL_MS = 30_000;
+const DOCKER_DEFAULT_HEALTH_TIMEOUT_MS = 30_000;
+const DOCKER_DEFAULT_HEALTH_RETRIES = 3;
+// The least and the most time a health probe that waits for `starting` containers gives one of them.
+const HEALTH_STARTING_MIN_WAIT_MS = 2 * 60_000;
+const HEALTH_STARTING_MAX_WAIT_MS = 15 * 60_000;
+
+/**
+ * How long a container may report `starting` before a health probe stops waiting for it.
+ *
+ * Docker counts no failed check during the health check's start period. After it, Docker reports the
+ * container `unhealthy` only once `retries` checks in a row have failed. Each check starts an interval
+ * after the one before it ended and may run for up to its timeout. Until then Docker says `starting`,
+ * so an app that declares a start period of three minutes is not broken at ten seconds. The wait is
+ * that start period plus `retries` times an interval and a timeout, at least two minutes (which is
+ * what a health check without a start period gets) and at most fifteen.
+ */
+function healthStartingWaitMs(healthcheck: Dockerode.HealthConfig | undefined): number {
+  // Docker reports these durations in nanoseconds; 0 means "use the default".
+  const toMs = (ns: number | undefined) => (ns && ns > 0 ? ns / 1_000_000 : 0);
+  const startPeriodMs = toMs(healthcheck?.StartPeriod);
+  const intervalMs = toMs(healthcheck?.Interval) || DOCKER_DEFAULT_HEALTH_INTERVAL_MS;
+  const timeoutMs = toMs(healthcheck?.Timeout) || DOCKER_DEFAULT_HEALTH_TIMEOUT_MS;
+  const retries = healthcheck?.Retries && healthcheck.Retries > 0 ? healthcheck.Retries : DOCKER_DEFAULT_HEALTH_RETRIES;
+
+  return Math.min(Math.max(startPeriodMs + retries * (intervalMs + timeoutMs), HEALTH_STARTING_MIN_WAIT_MS), HEALTH_STARTING_MAX_WAIT_MS);
+}
+
+/** Wait `ms`, or less when `signal` is aborted first. */
+function pause(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener('abort', done, { once: true });
+  });
+}
+
+const formatSeconds = (ms: number) => `${Math.round(ms / 100) / 10} s`;
 
 /** Grace period between SIGTERM and SIGKILL for a canceled Compose child process. */
 const COMPOSE_CANCEL_SIGKILL_GRACE_MS = 5_000;
-// Bound privileged uninstall cleanup, including the helper image pull and deletion.
-const PRIVILEGED_CLEANUP_TIMEOUT_MS = 120_000;
+
+/** The compose subcommands that create containers, and so read an app's user config to decide what they run. */
+const CONTAINER_CREATING_COMPOSE_VERBS = new Set(['up', 'create', 'run']);
+
+/**
+ * The compose subcommands that start containers. Docker sets up a container's bind mounts on every
+ * start, following any symbolic link in their sources, so each of these re-checks them first
+ * (`assertBindMountsSafe`).
+ */
+const CONTAINER_STARTING_COMPOSE_VERBS = new Set(['up', 'create', 'run', 'start', 'restart']);
+
+/** Timezone files every app may mount read-only from the host; never another app's folder. */
+const HOST_TIMEZONE_FILES = new Set(['/etc/localtime', '/etc/timezone']);
+
+// Every privileged helper walks a whole data folder (a database, a media library): deleting, copying or
+// archiving it. Uninstall, Reset, a restore and an update rollback all wait on one, so they get the same
+// bound, which also covers pulling the helper image on a Hub that does not have it yet.
+const PRIVILEGED_DATA_TIMEOUT_MS = 30 * 60_000;
+// Checking that the helper image is there, or pulling it, before an app is stopped for a backup.
+const PRIVILEGED_IMAGE_CHECK_TIMEOUT_MS = 120_000;
+// `pre-update-<app>-<epoch ms>`, as createPreUpdateVolumeSnapshot names a snapshot.
+const SNAPSHOT_ID_PATTERN = /^pre-update-[A-Za-z0-9][A-Za-z0-9._-]*-\d+$/;
+// `backup-<app>-<epoch ms>`, as createBackupStagingDir names a staging folder.
+const BACKUP_STAGING_ID_PATTERN = /^backup-[A-Za-z0-9][A-Za-z0-9._-]*-\d+$/;
+// The reserved per-user store every custom app lives in (`RESERVED_APP_STORE_SLUGS`). Its leading `_` fails the
+// segment pattern the privileged helpers apply, so it is accepted by name; no other store is.
+const USER_APP_STORE_SLUG = '_user';
+
+/** A folder under `backups/` that the privileged helpers may write one app's copy into and how its entries are named. */
+type PrivilegedCopyArea = { dirname: string; idPattern: RegExp; tag: string };
+const SNAPSHOT_AREA: PrivilegedCopyArea = { dirname: PRE_UPDATE_SNAPSHOT_DIRNAME, idPattern: SNAPSHOT_ID_PATTERN, tag: '[pre-update-snapshot]' };
+const BACKUP_STAGING_AREA: PrivilegedCopyArea = { dirname: BACKUP_STAGING_DIRNAME, idPattern: BACKUP_STAGING_ID_PATTERN, tag: '[backup]' };
+
+/**
+ * Run as root over a restored data folder: device nodes, pipes and sockets go (the checks refuse them;
+ * a device node owned by a user on the host opens a disk to that user), and setuid and setgid bits come
+ * off files (an uploaded archive could otherwise plant a root-owned setuid program). Sets `status=1`
+ * when a step fails.
+ */
+const STRIP_RESTORED_SPECIAL_FILES = [
+  'find /x/app-data \\( -type b -o -type c -o -type p -o -type s \\) -delete || status=1',
+  'find /x/app-data -type f \\( -perm -4000 -o -perm -2000 \\) -exec chmod ug-s {} + || status=1',
+].join('; ');
+
+/** The image every privileged helper runs. */
+const privilegedHelperImage = () => process.env.CI_HUB_CLEANUP_IMAGE || 'alpine:3.20';
+
+/** A `docker` CLI call that ran past its time limit and was killed. */
+class DockerCliTimeoutError extends Error {}
 
 /**
  * Bounds `docker compose up <service>`.
@@ -95,6 +251,12 @@ const COMPOSE_OP_MAX_ATTEMPTS = 2;
 const PROCESS_EXIT_BACKSTOP_MS = 5_000;
 
 /** Returns whether Docker failed because the container network endpoint is stale. */
+/**
+ * When `ensureTraefikRunning` tries to start a stopped Traefik: at once, then on a backoff to about a
+ * quarter of an hour, for a data folder that is mounted at login or by hand after Docker started.
+ */
+const TRAEFIK_START_RETRY_DELAYS_MS: readonly number[] = [0, 2_000, 5_000, 10_000, 30_000, ...Array<number>(14).fill(60_000)];
+
 function isStaleContainerNetworkError(error: unknown): boolean {
   const msg = error instanceof Error ? error.message : String(error);
   return /network .+ not found/i.test(msg) || /failed to set up container networking/i.test(msg);
@@ -131,18 +293,14 @@ export function describeComposeCliUnavailable(input: { service: string; pluginDe
 interface DockerPullProgressDetail {
   current?: number;
   total?: number;
+  /** Set when the counts are not bytes, such as `s` while the containerd store extracts. */
+  units?: string;
 }
 
 interface DockerPullProgressEventMessage {
   id?: string;
   status?: string;
   progressDetail?: DockerPullProgressDetail;
-}
-
-interface DockerPullLayerSnapshot {
-  current: number;
-  total: number;
-  status: string;
 }
 
 /** How often a running pull logs where its layers are, so a stalled one shows in the log. */
@@ -155,9 +313,14 @@ export interface DockerPullProgressEvent {
   activeImage: string;
   completedBytes: number;
   totalBytes: number;
+  /**
+   * Whether `totalBytes` is final. It is not while some layer has neither reported its size nor
+   * had one read from the manifest. A total shown then only grows (CI-Hub#2177).
+   */
+  totalBytesKnown: boolean;
   completedImages: number;
   totalImages: number;
-  stage: 'downloading' | 'extracting' | 'complete';
+  stage: DockerPullStage;
 }
 
 /** The slice of a Docker network listing this Hub needs to join or leave an app network. */
@@ -167,8 +330,22 @@ interface AppProjectNetwork {
   Labels?: Record<string, string> | null;
 }
 
+/** A container the Hub joins to every app network, with the networks it is on now. */
+interface AppNetworkMember {
+  name: string;
+  role: 'hub' | 'traefik' | 'vpn';
+  aliases: string[];
+  networks: Set<string>;
+}
+
 @Injectable()
 export class DockerService {
+  /** Whether the engine is Apple container, once probed. Fixed for the process: DOCKERODE is built once. */
+  private appleContainerEngine: boolean | undefined;
+  private readonly appNetworkListeners = new Set<(appUrn: AppUrn | null) => Promise<void> | void>();
+  /** Gaps already warned about, so a periodic caller logs each once. */
+  private readonly warnedAppleContainerGaps = new Set<string>();
+
   constructor(
     private readonly logger: LoggerService,
     private readonly config: ConfigurationService,
@@ -217,6 +394,20 @@ export class DockerService {
     return message.includes('is being used') || message.includes('in use') || message.includes('has active endpoints');
   }
 
+  /**
+   * Whether Docker refused to remove an image because something still holds it: a container that uses it, or
+   * another tag of the same image (`must be forced`). Removal is never forced, so these are the refusals to expect.
+   *
+   * @param error Error from Dockerode.
+   */
+  private isImageHeldError(error: unknown): boolean {
+    if (this.isResourceInUseError(error)) {
+      return true;
+    }
+
+    return error instanceof Error && /conflict|must be forced/i.test(error.message);
+  }
+
   public getAppRuntimeStats(...args: Parameters<DockerReadFacade['getAppRuntimeStats']>) {
     return this.dockerReadFacade.getAppRuntimeStats(...args);
   }
@@ -229,43 +420,20 @@ export class DockerService {
     return this.dockerReadFacade.getAppNetworkTarget(...args);
   }
 
+  public getServiceAddressOnAppNetwork(...args: Parameters<DockerReadFacade['getServiceAddressOnAppNetwork']>) {
+    return this.dockerReadFacade.getServiceAddressOnAppNetwork(...args);
+  }
+
   public isContainerRunning(...args: Parameters<DockerReadFacade['isContainerRunning']>) {
     return this.dockerReadFacade.isContainerRunning(...args);
   }
 
-  public getManagedAppContainerVerification(...args: Parameters<DockerReadFacade['getManagedAppContainerVerification']>) {
-    return this.dockerReadFacade.getManagedAppContainerVerification(...args);
+  public getRoutedContainerNames(...args: Parameters<DockerReadFacade['getRoutedContainerNames']>) {
+    return this.dockerReadFacade.getRoutedContainerNames(...args);
   }
 
   public diagnoseAppContainers(...args: Parameters<DockerReadFacade['diagnoseAppContainers']>) {
     return this.dockerReadFacade.diagnoseAppContainers(...args);
-  }
-
-  /**
-   * Captures image IDs from all containers in an app's Compose project.
-   *
-   * Capture these immutable IDs before `compose down` so cleanup can remove
-   * pulled images even if tag or reference resolution changes later.
-   *
-   * @param appUrn App URN to inspect.
-   * @returns Unique Docker image IDs referenced by project containers.
-   */
-  public async snapshotAppImageIds(appUrn: AppUrn): Promise<string[]> {
-    const projectName = this.getComposeProjectName(appUrn);
-
-    try {
-      // Capture concrete IDs before teardown because Compose references can resolve
-      // differently after the containers are removed.
-      const containers = await this.docker.listContainers({
-        all: true,
-        filters: { label: [`com.docker.compose.project=${projectName}`] },
-      });
-
-      return [...new Set(containers.map((container) => container.ImageID).filter(Boolean))];
-    } catch (error) {
-      this.logger.warn(`Failed to snapshot image IDs for ${appUrn}: ${error}`);
-      return [];
-    }
   }
 
   public async forceStopApp(appUrn: AppUrn, graceSeconds = 10): Promise<{ stopped: string[]; killed: string[] }> {
@@ -302,16 +470,23 @@ export class DockerService {
   }
 
   /**
-   * Removes Docker images associated with an uninstalled app.
+   * Removes the images an uninstalled app brought onto this computer, and the images its own compose build made.
    *
-   * Candidates include image IDs captured before teardown and Compose-labeled
-   * images for local builds. Missing or in-use images do not fail the uninstall,
-   * allowing application-level cleanup to finish.
+   * `appImageIds` are the IDs an install, an update, a start or a restart recorded when it brought the image in for
+   * this app, or for an app that handed it over on its way out (`AppFilesManager.readPulledImages`). Nothing else is
+   * removed: an image that was on the computer before any app stays. Removal is never forced, so Docker refuses an image
+   * that a container, running or stopped, still uses. Missing or held images do not fail the uninstall.
+   *
+   * ⚠ DOCKER DOES NOT REFUSE ONE TAG. Removing by ID takes an image with a single tag and its digest names. It asks
+   * nothing about that tag. Store apps pin `name:tag@digest`, which leaves no tag at all, so `docker pull name:tag` by
+   * hand after the install gives the image a tag the app never asked for. So a recorded image with a tag that isn't in
+   * `appImageTags` stays. So does one whose tags can't be read.
    *
    * @param appUrn App URN being uninstalled.
-   * @param snapshotImageIds Image IDs captured before container teardown.
+   * @param appImageIds Image IDs the app's installs, updates, starts and restarts brought in for it and handed-over ones.
+   * @param appImageTags The tags those images had when they arrived.
    */
-  public async removeAppImages(appUrn: AppUrn, snapshotImageIds: string[] = []): Promise<void> {
+  public async removeAppImages(appUrn: AppUrn, appImageIds: string[] = [], appImageTags: string[] = []): Promise<void> {
     const projectName = this.getComposeProjectName(appUrn);
 
     const labeledImages = await this.docker.listImages({ filters: { label: [`com.docker.compose.project=${projectName}`] } }).catch((error) => {
@@ -319,16 +494,33 @@ export class DockerService {
       return [];
     });
 
-    // Combine container IDs with Compose-labeled builds so cleanup covers partial
-    // installation and teardown states.
-    const imageIds = new Set<string>([...snapshotImageIds, ...labeledImages.map((image) => image.Id)].filter(Boolean));
+    const builtImageIds = labeledImages.map((image) => image.Id).filter(Boolean);
+    const ownTags = new Set(appImageTags);
+    const recordedImageIds: string[] = [];
+    for (const imageId of new Set(appImageIds)) {
+      try {
+        const otherTags = (await this.imageTagsLocally(imageId)).filter((tag) => !ownTags.has(tag));
+        if (otherTags.length === 0) {
+          recordedImageIds.push(imageId);
+        } else if (!builtImageIds.includes(imageId)) {
+          this.logger.warn(`Keeping image ${imageId} (${appUrn}): it has a tag this app did not bring in (${otherTags.join(', ')})`);
+        }
+      } catch (error) {
+        if (!this.isResourceMissingError(error)) {
+          this.logger.warn(`Keeping image ${imageId} (${appUrn}): could not read its tags: ${error}`);
+        }
+      }
+    }
+
+    // The app's recorded pulls and its own compose builds. Never forced: an image another container uses stays.
+    const imageIds = new Set<string>([...recordedImageIds, ...builtImageIds]);
 
     for (const imageId of imageIds) {
       try {
-        await this.docker.getImage(imageId).remove({ force: true });
+        await this.docker.getImage(imageId).remove();
       } catch (error) {
-        // Missing or in-use images must not block the remaining uninstall cleanup.
-        if (this.isResourceMissingError(error) || this.isResourceInUseError(error)) {
+        // Missing or held images must not block the remaining uninstall cleanup.
+        if (this.isResourceMissingError(error) || this.isImageHeldError(error)) {
           this.logger.warn(`Skipping image removal for ${imageId} (${appUrn}): ${error}`);
           continue;
         }
@@ -405,7 +597,7 @@ export class DockerService {
    * @returns Whether the helper succeeded. A failure returns `false` so the
    * caller can provide a manual cleanup command.
    */
-  public async removeAppDataDirAsRoot(appUrn: AppUrn): Promise<boolean> {
+  public async removeAppDataDirAsRoot(appUrn: AppUrn, deadline?: AppCommandDeadline): Promise<boolean> {
     const config = this.config.getConfig();
     const inputs = {
       ciHubAppDataPath: process.env.CI_HUB_APP_DATA_PATH,
@@ -419,19 +611,20 @@ export class DockerService {
       hostAppDataDir = getAppDataHostPath(appUrn, inputs);
       appDataRoot = resolveAppDataHostRoot(inputs);
     } catch (err) {
-      this.logger.error(`[uninstall-cleanup] cannot resolve host app-data path for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger.error(`[app-data-cleanup] cannot resolve host app-data path for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
       return false;
     }
 
     const { appName, appStoreId } = extractAppUrn(appUrn);
     const p = path.posix;
     const isSafeSegment = (segment: string) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(segment);
+    const isSafeStoreSegment = (segment: string) => segment === USER_APP_STORE_SLUG || isSafeSegment(segment);
     const expected = p.join(appDataRoot, appStoreId, appName);
 
     // Require the exact `{app-data-root}/{store}/{app}` path to confine the
     // privileged deletion to one app directory.
     if (
-      !isSafeSegment(appStoreId) ||
+      !isSafeStoreSegment(appStoreId) ||
       !isSafeSegment(appName) ||
       p.normalize(appDataRoot) === '/' ||
       p.normalize(hostAppDataDir) !== p.normalize(expected) ||
@@ -439,37 +632,425 @@ export class DockerService {
       p.basename(p.dirname(hostAppDataDir)) !== appStoreId ||
       hostAppDataDir.split('/').filter(Boolean).length < 3
     ) {
-      this.logger.error(`[uninstall-cleanup] refusing privileged delete for ${appUrn}: resolved path ${hostAppDataDir} failed validation`);
+      this.logger.error(`[app-data-cleanup] refusing privileged delete for ${appUrn}: resolved path ${hostAppDataDir} failed validation`);
       return false;
     }
 
-    const image = process.env.CI_HUB_CLEANUP_IMAGE || 'alpine:3.20';
     // Mount only this app directory and preserve the mount point itself.
-    const args = [
-      'run',
-      '--rm',
-      '--network',
-      'none',
-      '--user',
-      '0:0',
-      '-v',
-      `${hostAppDataDir}:/target:rw`,
-      image,
-      'find',
-      '/target',
-      '-mindepth',
-      '1',
-      '-delete',
-    ];
+    return this.runPrivilegedSnapshotHelper(
+      [`${hostAppDataDir}:/target:rw`],
+      ['find', '/target', '-mindepth', '1', '-delete'],
+      PRIVILEGED_DATA_TIMEOUT_MS,
+      `emptying root-owned remnant in ${hostAppDataDir}`,
+      '[app-data-cleanup]',
+      deadline,
+    );
+  }
 
-    this.logger.warn(`[uninstall-cleanup] emptying root-owned remnant in ${hostAppDataDir} via a privileged ${image} helper`);
+  /**
+   * Resolves the two host folders a privileged snapshot helper touches, refusing anything that is not
+   * exactly `{app-data-root}/{store}/{app}` and `{root}/backups/.pre-update-snapshots/{store}/{app}/{snapshotId}`
+   * (or `.backup-staging` for a backup's copy). Both are recomputed from the app URN and the id, never
+   * taken from a caller. Every segment must be a plain name, so the helper can only ever read one
+   * app's data and write one copy of it.
+   *
+   * @returns the host paths, or `null` (already logged) when anything fails validation.
+   */
+  private resolveSnapshotHostPaths(
+    appUrn: AppUrn,
+    snapshotId: string,
+    action: string,
+    area: PrivilegedCopyArea = SNAPSHOT_AREA,
+  ): { hostAppDataDir: string; hostSnapshotDir: string } | null {
+    const config = this.config.getConfig();
+    const inputs = {
+      ciHubAppDataPath: process.env.CI_HUB_APP_DATA_PATH,
+      appDataPath: config.userSettings.appDataPath,
+      rootFolderHost: config.rootFolderHost,
+    };
+    const p = path.posix;
+    const isSafeSegment = (segment: string) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(segment);
+    const isSafeStoreSegment = (segment: string) => segment === USER_APP_STORE_SLUG || isSafeSegment(segment);
+
     try {
-      await this.runDockerCliCommand(args, PRIVILEGED_CLEANUP_TIMEOUT_MS);
+      const { appName, appStoreId } = extractAppUrn(appUrn);
+      const hostAppDataDir = getAppDataHostPath(appUrn, inputs);
+      const appDataRoot = resolveAppDataHostRoot(inputs);
+      const rootFolderHost = inputs.rootFolderHost;
+
+      if (!rootFolderHost || !p.isAbsolute(rootFolderHost) || p.normalize(rootFolderHost) === '/') {
+        throw new Error(`the Hub's root folder on the host is not an absolute path (${rootFolderHost || 'unset'})`);
+      }
+
+      const hostSnapshotDir = p.join(rootFolderHost, 'backups', area.dirname, appStoreId, appName, snapshotId);
+
+      if (
+        !isSafeStoreSegment(appStoreId) ||
+        !isSafeSegment(appName) ||
+        !area.idPattern.test(snapshotId) ||
+        p.normalize(appDataRoot) === '/' ||
+        p.normalize(hostAppDataDir) !== p.normalize(p.join(appDataRoot, appStoreId, appName)) ||
+        hostAppDataDir.split('/').filter(Boolean).length < 3
+      ) {
+        throw new Error(`resolved paths failed validation (${hostAppDataDir}, ${hostSnapshotDir})`);
+      }
+
+      return { hostAppDataDir, hostSnapshotDir };
+    } catch (err) {
+      this.logger.error(`${area.tag} refusing privileged ${action} for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
+  /**
+   * Runs one privileged, no-network, `--rm` helper container as root. The caller supplies the exact
+   * argument list after the image, so no value is ever passed through a shell by this method.
+   *
+   * The container is named, so a helper that outlives its time limit is removed with `docker rm -f`:
+   * killing the CLI alone leaves the container running, still deleting or writing app data that the
+   * caller has already given up on.
+   *
+   * With a `deadline`, the helper gets what is left of the command's budget (at most `timeoutMs`), and
+   * none at all once the budget is used up: the helpers of one restore share it, so the command still
+   * answers the queue in time.
+   */
+  private async runPrivilegedSnapshotHelper(
+    mounts: string[],
+    command: string[],
+    timeoutMs: number,
+    what: string,
+    tag = SNAPSHOT_AREA.tag,
+    deadline?: AppCommandDeadline,
+  ): Promise<boolean> {
+    if (deadline?.expired) {
+      this.logger.error(`${tag} no time left for ${what}: the ${deadline.describe()} its command has for root helpers are used up`);
+      return false;
+    }
+
+    const limitMs = deadline ? Math.min(timeoutMs, deadline.remainingMs()) : timeoutMs;
+    const image = privilegedHelperImage();
+    const name = `ci-hub-helper-${crypto.randomBytes(6).toString('hex')}`;
+    const args = ['run', '--rm', '--name', name, '--network', 'none', '--user', '0:0', ...mounts.flatMap((m) => ['-v', m]), image, ...command];
+
+    this.logger.warn(`${tag} ${what} via a privileged ${image} helper`);
+    try {
+      await this.runDockerCliCommand(args, limitMs);
       return true;
     } catch (err) {
-      this.logger.error(`[uninstall-cleanup] privileged cleanup failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger.error(`${tag} privileged helper failed (${what}): ${err instanceof Error ? err.message : String(err)}`);
+      if (err instanceof DockerCliTimeoutError) {
+        await this.runDockerCliCommand(['rm', '-f', name], PRIVILEGED_IMAGE_CHECK_TIMEOUT_MS).catch((rmErr) =>
+          this.logger.error(
+            `${tag} could not remove the helper container ${name} after its time limit: ${rmErr instanceof Error ? rmErr.message : String(rmErr)}`,
+          ),
+        );
+      }
       return false;
     }
+  }
+
+  /**
+   * Whether a privileged helper can run now: the image is here or can be pulled. Asked before an app is
+   * stopped for a backup that will need one, so a Hub that cannot run it (offline, no image) refuses the
+   * backup while the app is still up instead of after.
+   */
+  public async privilegedHelperAvailable(appUrn?: AppUrn): Promise<boolean> {
+    const image = privilegedHelperImage();
+
+    // The helper mounts host folders worked out from the settings. When they cannot be worked out for this
+    // app (a root folder on the host that is not an absolute path), no image makes the backup possible.
+    if (appUrn && !this.resolveSnapshotHostPaths(appUrn, this.newBackupStagingId(appUrn), 'backup', BACKUP_STAGING_AREA)) {
+      return false;
+    }
+
+    try {
+      await this.runDockerCliCommand(['image', 'inspect', image], PRIVILEGED_IMAGE_CHECK_TIMEOUT_MS);
+      return true;
+    } catch {
+      // Not here yet: what the first helper run would do anyway.
+    }
+
+    try {
+      await this.runDockerCliCommand(['pull', image], PRIVILEGED_IMAGE_CHECK_TIMEOUT_MS);
+      return true;
+    } catch (err) {
+      this.logger.warn(`The privileged helper image ${image} is not available: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
+  /**
+   * Copies an app's data folder into its pre-update snapshot as root, keeping owners and modes, for
+   * data the Hub itself cannot read (a database's files). `cp -a` rather than `fs.cp`, so the copy is
+   * a faithful image that {@link restoreAppDataDirAsRoot} can put back unchanged.
+   *
+   * With a `deadline` (an update's), the copy gets what is left of it instead of its own 30 minutes.
+   */
+  public async copyAppDataDirAsRoot(appUrn: AppUrn, snapshotId: string, deadline?: AppCommandDeadline): Promise<boolean> {
+    const paths = this.resolveSnapshotHostPaths(appUrn, snapshotId, 'copy');
+    if (!paths) return false;
+
+    return this.runPrivilegedSnapshotHelper(
+      [`${paths.hostAppDataDir}:/src:ro`, `${paths.hostSnapshotDir}/app-data:/dest:rw`],
+      ['cp', '-a', '/src/.', '/dest/'],
+      PRIVILEGED_DATA_TIMEOUT_MS,
+      `copying ${paths.hostAppDataDir} into ${paths.hostSnapshotDir}`,
+      SNAPSHOT_AREA.tag,
+      deadline,
+    );
+  }
+
+  /**
+   * Makes a staging folder under `backups/.backup-staging/<store>/<app>/` for a backup whose data the
+   * Hub cannot read. The Hub writes the parts it can read into `stage/` (`app/`, `user-config/`,
+   * `volumes/`, the owners marker), then {@link archiveBackupAsRoot} archives them together with the
+   * app's data. Both folders are made by the Hub, so Docker mounts them instead of creating them as root.
+   *
+   * @returns the staging folder as the Hub sees it and its id, or `null` (already logged).
+   */
+  public async createBackupStagingDir(appUrn: AppUrn): Promise<{ id: string; dir: string } | null> {
+    const id = this.newBackupStagingId(appUrn);
+
+    if (!this.resolveSnapshotHostPaths(appUrn, id, 'backup', BACKUP_STAGING_AREA)) return null;
+
+    const dir = this.backupStagingDir(appUrn, id);
+
+    if (
+      !(await this.filesystem.createDirectory(path.join(dir, 'stage', 'app-data'))) ||
+      !(await this.filesystem.createDirectory(path.join(dir, 'out')))
+    ) {
+      return null;
+    }
+
+    return { id, dir };
+  }
+
+  /**
+   * Archives a staged backup as root, with the app's live data in it as `app-data/`: numeric owners and
+   * modes as the app left them, so a restore of it ({@link extractBackupAppDataAsRoot}) puts back a
+   * database owned by its own user rather than by the Hub. The archive has the layout of every other
+   * backup. Left out of the data, as the Hub's own copy leaves them out: any path with `backups` in it,
+   * and device nodes, pipes and sockets, which hold no data and which a restore refuses. A device node
+   * in particular must never travel: restored, it would open a host disk to its owner.
+   *
+   * Data with hard links fails the backup. tar keeps them as links, which a restore refuses, so the
+   * backup could never be restored. The archive is 600: it holds data its owners kept from other users.
+   *
+   * @returns the archive as the Hub sees it, given to the Hub's user, or `null` (already logged).
+   */
+  public async archiveBackupAsRoot(appUrn: AppUrn, stagingId: string, deadline?: AppCommandDeadline): Promise<string | null> {
+    const owner = this.hubOwner();
+
+    if (!owner) {
+      this.logger.error(`[backup] cannot archive the data of ${appUrn} as root: this platform has no uid for the Hub`);
+      return null;
+    }
+
+    const paths = this.resolveSnapshotHostPaths(appUrn, stagingId, 'backup archive', BACKUP_STAGING_AREA);
+    if (!paths) return null;
+
+    const archive = path.join(this.backupStagingDir(appUrn, stagingId), 'out', 'backup.tar.gz');
+
+    const archived = await this.runPrivilegedSnapshotHelper(
+      [`${paths.hostSnapshotDir}/stage:/stage:ro`, `${paths.hostAppDataDir}:/stage/app-data:ro`, `${paths.hostSnapshotDir}/out:/out:rw`],
+      [
+        'sh',
+        '-c',
+        [
+          'set -e',
+          'cd /stage',
+          'if [ -n "$(find ./app-data -mindepth 1 -path "./app-data/*backups*" -prune -o \\( -type f -o -type l \\) -links +1 -print | head -n 1)" ]; then echo "the data holds hard links, which a restore refuses" >&2; exit 3; fi',
+          '{ find . -path ./app-data -prune -o -print; echo ./app-data; find ./app-data -mindepth 1 -path "./app-data/*backups*" -prune -o ! -type b ! -type c ! -type p ! -type s -print; } > /tmp/entries',
+          'tar -czf /out/backup.tar.gz --numeric-owner --no-recursion -T /tmp/entries',
+          'chown "$1" /out/backup.tar.gz',
+          'chmod 600 /out/backup.tar.gz',
+        ].join('; '),
+        'sh',
+        owner,
+      ],
+      PRIVILEGED_DATA_TIMEOUT_MS,
+      `archiving ${paths.hostAppDataDir} for a backup`,
+      BACKUP_STAGING_AREA.tag,
+      deadline,
+    );
+
+    return archived ? archive : null;
+  }
+
+  /**
+   * Makes a staging folder under `backups/.backup-staging/<store>/<app>/` for restoring a backup made
+   * with its owners. The caller puts the archive it is about to check at `archive`, as a hard link or a
+   * copy, and {@link extractBackupAppDataAsRoot} reads it from there.
+   *
+   * Root reads the archive again only after the live data is gone. Read by its name in the backups
+   * folder, it would not have to be the file the Hub checked: a member can delete that name and upload
+   * another archive under it while the restore runs, and retention can delete it. Here only the Hub writes.
+   *
+   * @returns the staging folder as the Hub sees it, its id and where the archive goes, or `null` (already logged).
+   */
+  public async createRestoreStagingDir(appUrn: AppUrn): Promise<{ id: string; dir: string; archive: string } | null> {
+    const id = this.newBackupStagingId(appUrn);
+
+    if (!this.resolveSnapshotHostPaths(appUrn, id, 'restore', BACKUP_STAGING_AREA)) return null;
+
+    const dir = this.backupStagingDir(appUrn, id);
+
+    if (!(await this.filesystem.createDirectory(path.join(dir, 'in')))) return null;
+
+    return { id, dir, archive: path.join(dir, 'in', 'backup.tar.gz') };
+  }
+
+  /**
+   * Puts the `app-data` of a backup made by {@link archiveBackupAsRoot} into the app's (empty) data
+   * folder as root, with the numeric owners and modes it was archived with. It reads the archive the
+   * caller put in a folder from {@link createRestoreStagingDir}, after the Hub listed and extracted that
+   * same file and it passed every restore check, and extracts only the data member.
+   *
+   * Setuid and setgid bits come off files: an uploaded archive could otherwise plant a root-owned setuid
+   * program in a folder an app container runs things from. Device nodes, pipes and sockets go too, as
+   * a second line behind the checks, which refuse them: a device node owned by a user on the host opens
+   * a disk to that user. Both run even when tar fails part-way, since a failed restore leaves what it
+   * extracted in place. Without `-z`, tar finds out itself whether the file is compressed, as the Hub's
+   * own extract does: an uploaded backup can be a plain tar.
+   *
+   * The data folder itself and its `app.env` are the Hub's files, not the app's, so they go to this Hub's
+   * user whatever the archive says: a backup from a Hub with another uid, or an uploaded one that gives
+   * them to root, would otherwise leave the Hub unable to write the app's env file.
+   *
+   * @param stagingId the id {@link createRestoreStagingDir} returned
+   * @param member the data folder's name exactly as the archive lists it (`app-data` or `./app-data`)
+   */
+  public async extractBackupAppDataAsRoot(appUrn: AppUrn, stagingId: string, member: string, deadline?: AppCommandDeadline): Promise<boolean> {
+    if (!/^(\.\/)*app-data$/.test(member)) {
+      this.logger.error(`[restore] refusing privileged extract for ${appUrn}: ${member} is not the data folder of a backup`);
+      return false;
+    }
+
+    const owner = this.hubOwner();
+
+    if (!owner) {
+      this.logger.error(`[restore] cannot restore the data of ${appUrn} as root: this platform has no uid for the Hub`);
+      return false;
+    }
+
+    const paths = this.resolveSnapshotHostPaths(appUrn, stagingId, 'restore', BACKUP_STAGING_AREA);
+    if (!paths) return false;
+
+    // An extract that never starts (no budget left) writes nothing, so it needs no strip afterwards.
+    const startsInTime = !deadline?.expired;
+    const extracted = await this.runPrivilegedSnapshotHelper(
+      [`${paths.hostSnapshotDir}/in:/in:ro`, `${paths.hostAppDataDir}:/x/app-data:rw`],
+      [
+        'sh',
+        '-c',
+        [
+          'tar -C /x -xpf /in/backup.tar.gz --numeric-owner "$1"; status=$?',
+          STRIP_RESTORED_SPECIAL_FILES,
+          'chown "$2" /x/app-data || status=1',
+          'if [ -f /x/app-data/app.env ] && [ ! -L /x/app-data/app.env ]; then chown "$2" /x/app-data/app.env || status=1; fi',
+          'exit $status',
+        ].join('; '),
+        'sh',
+        member,
+        owner,
+      ],
+      PRIVILEGED_DATA_TIMEOUT_MS,
+      `restoring ${paths.hostAppDataDir} from ${paths.hostSnapshotDir}/in/backup.tar.gz with its owners`,
+      '[restore]',
+      deadline,
+    );
+
+    // Stopped at the budget's end, the extract never reached its own strip, and what it wrote stays until
+    // the next restore. The bits and the special files go now, in a short helper of their own that the
+    // used-up budget does not stop: it runs in the time the budget keeps back for the reply.
+    if (startsInTime && !extracted && deadline?.expired) {
+      await this.runPrivilegedSnapshotHelper(
+        [`${paths.hostAppDataDir}:/x/app-data:rw`],
+        ['sh', '-c', `status=0; ${STRIP_RESTORED_SPECIAL_FILES}; exit $status`],
+        PRIVILEGED_IMAGE_CHECK_TIMEOUT_MS,
+        `removing setuid and setgid bits and special files from the part of ${paths.hostAppDataDir} restored in time`,
+        '[restore]',
+      );
+    }
+
+    return extracted;
+  }
+
+  /** A new staging id, `backup-<app>-<epoch ms>`, the shape {@link BACKUP_STAGING_ID_PATTERN} accepts. */
+  private newBackupStagingId(appUrn: AppUrn): string {
+    return `backup-${extractAppUrn(appUrn).appName}-${Date.now()}`;
+  }
+
+  /** `<dataDir>/backups/.backup-staging/<store>/<app>/<id>`, as the Hub sees it. */
+  private backupStagingDir(appUrn: AppUrn, id: string): string {
+    const { appName, appStoreId } = extractAppUrn(appUrn);
+    return path.join(this.config.get('directories').dataDir, 'backups', BACKUP_STAGING_DIRNAME, appStoreId, appName, id);
+  }
+
+  /** The Hub's own `uid:gid`, for a root helper to hand files back to, or `null` where the platform has none. */
+  private hubOwner(): string | null {
+    const uid = process.getuid?.();
+    const gid = process.getgid?.();
+
+    return uid !== undefined && gid !== undefined && Number.isInteger(uid) && Number.isInteger(gid) ? `${uid}:${gid}` : null;
+  }
+
+  /**
+   * Puts a snapshot made by {@link copyAppDataDirAsRoot} back over the app's data folder, as root, emptying it first.
+   *
+   * ⚠ WITHIN THE UPDATE'S TIME. A rollback passes the update's `deadline`. The helper gets what is
+   * left of it instead of its own 30 minutes: a copy that ran on past the reply went on writing data
+   * after the page already showed the update as failed. Stopped for time, the data folder may be only
+   * partly restored and this says so; the snapshot stays where it is.
+   */
+  public async restoreAppDataDirAsRoot(appUrn: AppUrn, snapshotId: string, deadline?: AppCommandDeadline): Promise<boolean> {
+    const paths = this.resolveSnapshotHostPaths(appUrn, snapshotId, 'restore');
+    if (!paths) return false;
+
+    const restored = await this.runPrivilegedSnapshotHelper(
+      [`${paths.hostSnapshotDir}/app-data:/src:ro`, `${paths.hostAppDataDir}:/dest:rw`],
+      ['sh', '-c', 'find /dest -mindepth 1 -delete && cp -a /src/. /dest/'],
+      PRIVILEGED_DATA_TIMEOUT_MS,
+      `restoring ${paths.hostAppDataDir} from ${paths.hostSnapshotDir}`,
+      SNAPSHOT_AREA.tag,
+      deadline,
+    );
+
+    if (!restored && deadline?.expired) {
+      this.logger.error(
+        `${SNAPSHOT_AREA.tag} ran out of time restoring ${paths.hostAppDataDir} for ${appUrn}: the data folder may be only partly restored. ` +
+          `The snapshot is kept at ${paths.hostSnapshotDir}.`,
+      );
+    }
+
+    return restored;
+  }
+
+  /**
+   * Empties a snapshot folder as root. Its data copy keeps the owners of the original, so the Hub
+   * cannot delete it; the Hub removes the emptied folder itself afterwards.
+   *
+   * With a `deadline` (inside an update), the helper gets what is left of it instead of its own 30
+   * minutes; a snapshot not emptied in time is left where it is and its path logged.
+   */
+  public async removeSnapshotDirAsRoot(appUrn: AppUrn, snapshotId: string, deadline?: AppCommandDeadline): Promise<boolean> {
+    const paths = this.resolveSnapshotHostPaths(appUrn, snapshotId, 'removal');
+    if (!paths) return false;
+
+    const removed = await this.runPrivilegedSnapshotHelper(
+      [`${paths.hostSnapshotDir}:/target:rw`],
+      ['find', '/target', '-mindepth', '1', '-delete'],
+      PRIVILEGED_DATA_TIMEOUT_MS,
+      `emptying ${paths.hostSnapshotDir}`,
+      SNAPSHOT_AREA.tag,
+      deadline,
+    );
+
+    if (!removed && deadline?.expired) {
+      this.logger.warn(`${SNAPSHOT_AREA.tag} no time left to empty ${paths.hostSnapshotDir} for ${appUrn}; it is left on disk`);
+    }
+
+    return removed;
   }
 
   /**
@@ -491,7 +1072,7 @@ export class DockerService {
       };
       const timer = setTimeout(() => {
         child.kill('SIGKILL');
-        finish(() => reject(new Error(`docker ${args[0]} timed out after ${timeoutMs}ms`)));
+        finish(() => reject(new DockerCliTimeoutError(`docker ${args[0]} timed out after ${timeoutMs}ms`)));
       }, timeoutMs);
       child.stderr?.on('data', (chunk) => stderr.push(String(chunk)));
       child.on('error', (err) => finish(() => reject(err)));
@@ -539,6 +1120,182 @@ export class DockerService {
     return { args, isCustomConfig };
   };
 
+  /**
+   * Refuses to create an app's containers from a user config the app sandbox doesn't allow. A save is
+   * checked too, but the files can also arrive from a restore or an older Hub. Stopping and removing an
+   * app are left alone so a refused override can still be cleared up.
+   */
+  private async assertUserConfigInSandbox(appUrn: AppUrn): Promise<void> {
+    const app = await this.appsRepository.getAppByUrn(appUrn);
+    if (!(app?.userConfigEnabled ?? true)) {
+      return;
+    }
+    const [userCompose, userEnv] = await Promise.all([this.appFilesManager.getUserComposeFile(appUrn), this.appFilesManager.getUserEnv(appUrn)]);
+    if (!userCompose.content && !userEnv.content) {
+      return;
+    }
+    const installedApps = await this.appsRepository.getApps();
+    const violations = collectComposeOverrideViolations(userCompose.content ?? '', userEnv.content ?? '', {
+      appUrn,
+      knownAppIds: installedApps.map((installed) => appIdOf(installed.appName, installed.appStoreSlug)),
+    });
+    if (violations.length > 0) {
+      throw new Error(
+        `App "${extractAppUrn(appUrn).appName}" has a user config the app sandbox doesn't allow: ${describeComposeOverrideViolations(violations)}. ` +
+          'Remove the setting, or turn the user config off, and start the app again.',
+      );
+    }
+  }
+
+  /**
+   * Refuses to start an app's containers when a bind mount could be redirected out of the app's own
+   * folders. Docker follows symbolic links in a mount's source on every container start, so:
+   *
+   * - no source may sit inside another source the app can write to (`findNestedBindMounts`): code in
+   *   the container could replace it with a link, and Docker's own restart would mount the target;
+   * - no source in the app's data folder may run through a link already there (a restored backup, or
+   *   a link a store's `data/` folder brought in with the copy);
+   * - a host folder the operator gave this app may not overlap one another installed app can write to,
+   *   for the same reason as the first rule, across apps.
+   *
+   * Read from `docker compose config`, so the user override and every `${...}` are already applied.
+   */
+  public async assertBindMountsSafe(appUrn: AppUrn, signal?: AbortSignal): Promise<void> {
+    const mounts = await this.readAppBindMounts(appUrn, signal);
+    if (mounts.length === 0) {
+      return;
+    }
+    const { appName } = extractAppUrn(appUrn);
+    const grantedHostPaths = securityGrantsFor(appUrn).hostPaths ?? [];
+
+    const nested = findNestedBindMounts(mounts, { grantedHostPaths });
+    if (nested.length > 0) {
+      throw new Error(
+        `App "${appName}" mounts a folder inside another folder it can write to: ${describeNestedBindMounts(nested)}. ` +
+          'Code in the app could replace the inner folder with a link to anywhere on this computer, and Docker would mount that instead. ' +
+          'Give each mount a folder of its own, side by side.',
+      );
+    }
+
+    const hostAppDataDir = this.hostAppDataDirOf(appUrn);
+    const { appDataDir } = this.appFilesManager.getAppPaths(appUrn);
+    const operatorFolders: BindMountRef[] = [];
+    for (const mount of mounts) {
+      const segments = segmentsInside(hostAppDataDir, mount.source);
+      if (segments === null) {
+        if (!HOST_TIMEZONE_FILES.has(mount.source) && !grantedHostPaths.includes(mount.source)) {
+          operatorFolders.push({ ...mount, service: `${appName}/${mount.service}` });
+        }
+        continue;
+      }
+      const link = await firstLinkOnTheWay(appDataDir, segments);
+      if (link !== null) {
+        throw new Error(
+          `App "${appName}" can't start: "${link}" in its data folder is a symbolic link, and the mount of "${mount.source}" (${mount.service}) passes through it. ` +
+            'Docker would mount wherever the link points. Replace the link with a folder, or restore the app, and start it again.',
+        );
+      }
+    }
+
+    if (operatorFolders.length > 0) {
+      await this.assertNoSharedFolderNesting(appUrn, operatorFolders, signal);
+    }
+  }
+
+  /** `assertBindMountsSafe`'s rule across apps: this app's own host folders against every other app's. */
+  private async assertNoSharedFolderNesting(appUrn: AppUrn, own: BindMountRef[], signal?: AbortSignal): Promise<void> {
+    const others: BindMountRef[] = [];
+    for (const installed of await this.appsRepository.getApps()) {
+      const otherUrn = createAppUrn(installed.appName, installed.appStoreSlug);
+      if (otherUrn === appUrn) {
+        continue;
+      }
+      // Refused when another app's mounts can't be read: an app that can't be checked is not cleared.
+      const theirs = await this.readAppBindMounts(otherUrn, signal).catch((error: unknown) => {
+        throw new Error(
+          `App "${extractAppUrn(appUrn).appName}" shares host folders with other apps, and the mounts of "${installed.appName}" could not be read to check them: ${String(error)}`,
+        );
+      });
+      // A host path an app is granted outright already gives it everything under it (`filebrowser-quantum`'s `/`).
+      const granted = new Set(securityGrantsFor(otherUrn).hostPaths ?? []);
+      others.push(
+        ...theirs.filter((mount) => !granted.has(mount.source)).map((mount) => ({ ...mount, service: `${installed.appName}/${mount.service}` })),
+      );
+    }
+    const appOf = (mount: BindMountRef) => mount.service.split('/')[0];
+    const ownSet = new Set(own);
+    const crossing = findNestedBindMounts([...own, ...others]).filter(
+      ({ outer, inner }) => appOf(outer) !== appOf(inner) && (ownSet.has(outer) || ownSet.has(inner)),
+    );
+    if (crossing.length > 0) {
+      throw new Error(
+        `App "${extractAppUrn(appUrn).appName}" mounts a host folder that overlaps one another app can write to: ${describeNestedBindMounts(crossing)}. ` +
+          'Code in one app could replace the inner folder with a link, and Docker would mount the target in the other. Use folders that do not sit inside each other.',
+      );
+    }
+  }
+
+  /** The app's bind mounts as `docker compose config` resolves them. Public so tests can stand it in. */
+  public async readAppBindMounts(appUrn: AppUrn, signal?: AbortSignal): Promise<BindMountRef[]> {
+    const { args } = await this.getBaseComposeArgsApp(appUrn);
+    const composeFile = await this.appFilesManager.getDockerComposeYaml(appUrn);
+    let command: string[];
+    try {
+      await this.assertComposePluginAvailable();
+      command = ['docker', 'compose', ...args, 'config'];
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw error;
+      }
+      command = ['docker-compose', ...args, 'config'];
+    }
+    const output = await this.captureComposeOutput(command, path.dirname(composeFile.path), signal);
+    return parseComposeConfigBindMounts(output);
+  }
+
+  /**
+   * Runs a short compose command and returns its stdout as written. Not `runDockerCompose`: that one
+   * trims each chunk, which can drop a space from a path that falls on a chunk boundary.
+   */
+  private captureComposeOutput(command: string[], cwd: string, signal?: AbortSignal): Promise<string> {
+    const [bin, ...rest] = command;
+    if (!bin) {
+      return Promise.reject(new Error('Command is empty'));
+    }
+    throwIfAborted(signal);
+    return new Promise((resolve, reject) => {
+      const child = spawn(bin, rest, { cwd, env: appComposeEnvironment(), signal });
+      const stdout: Buffer[] = [];
+      const stderr: Buffer[] = [];
+      const timer = globalThis.setTimeout(() => child.kill('SIGKILL'), 120_000);
+      timer.unref?.();
+      child.stdout?.on('data', (chunk: Buffer) => stdout.push(Buffer.from(chunk)));
+      child.stderr?.on('data', (chunk: Buffer) => stderr.push(Buffer.from(chunk)));
+      child.on('error', (error) => {
+        globalThis.clearTimeout(timer);
+        reject(error);
+      });
+      child.on('close', (code) => {
+        globalThis.clearTimeout(timer);
+        if (code === 0) {
+          resolve(Buffer.concat(stdout).toString('utf8'));
+        } else {
+          reject(new Error(`${command.slice(0, 2).join(' ')} config failed (${code}): ${Buffer.concat(stderr).toString('utf8').trim()}`));
+        }
+      });
+    });
+  }
+
+  /** The app's data folder as the host (and so Docker) names it. */
+  private hostAppDataDirOf(appUrn: AppUrn): string {
+    const config = this.config.getConfig();
+    return getAppDataHostPath(appUrn, {
+      ciHubAppDataPath: process.env.CI_HUB_APP_DATA_PATH,
+      appDataPath: config.userSettings.appDataPath,
+      rootFolderHost: config.rootFolderHost,
+    });
+  }
+
   public getBaseComposeArgsHub = async () => {
     const { dataDir } = this.config.get('directories');
     const args: string[] = ['--env-file', path.join(dataDir, '.env')];
@@ -572,6 +1329,12 @@ export class DockerService {
    */
   public async composeApp(appUrn: AppUrn, command: string, signal?: AbortSignal) {
     const verb = command.trim().split(/\s+/)[0];
+    if (verb && CONTAINER_CREATING_COMPOSE_VERBS.has(verb)) {
+      await this.assertUserConfigInSandbox(appUrn);
+    }
+    if (verb && CONTAINER_STARTING_COMPOSE_VERBS.has(verb)) {
+      await this.assertBindMountsSafe(appUrn, signal);
+    }
     // Detach first. `compose down` with the Hub still attached exits 0, logs "Resource is still in
     // use", and leaves the network behind.
     if (verb === 'down') {
@@ -618,6 +1381,7 @@ export class DockerService {
     });
     if (verb === 'up') {
       await this.attachHubToAppNetworks(appUrn);
+      this.notifyAppNetworksSettled(appUrn);
     }
     return result;
   }
@@ -635,48 +1399,31 @@ export class DockerService {
     }
   }
 
-  private summarizePullLayers(layers: Map<string, DockerPullLayerSnapshot>): {
-    completedBytes: number;
-    totalBytes: number;
-    stage: DockerPullProgressEvent['stage'];
-    /** Layers seen so far and how many are done, for the pull's status log. */
-    layersSeen: number;
-    layersDone: number;
-  } {
-    let completedBytes = 0;
-    let totalBytes = 0;
-    let hasExtractingLayer = false;
-    let hasActiveLayer = false;
-    let layersSeen = 0;
-    let layersDone = 0;
-
-    for (const layer of layers.values()) {
-      const total = Math.max(layer.total, layer.current);
-      totalBytes += total;
-
-      const normalizedStatus = layer.status.toLowerCase();
-      const isComplete = normalizedStatus.includes('pull complete') || normalizedStatus.includes('already exists');
-      const isExtracting = normalizedStatus.includes('extract');
-
-      // Docker's "Pulling from <repo>" line carries the tag as its id and is not a layer.
-      if (!normalizedStatus.startsWith('pulling from')) {
-        layersSeen += 1;
-        if (isComplete) layersDone += 1;
+  /**
+   * The ID of the image `image` names on this computer, or `null` when it is not here. Read-only, never pulls.
+   * An install, an update, a start or a restart compares it before and after a pull to tell the images the pull brought in.
+   */
+  async imageIdLocally(image: string): Promise<string | null> {
+    try {
+      const info = await this.docker.getImage(image).inspect();
+      return info.Id || null;
+    } catch (error) {
+      if (this.isResourceMissingError(error)) {
+        return null;
       }
-
-      if (isExtracting) {
-        hasExtractingLayer = true;
-      }
-
-      if (!isComplete) {
-        hasActiveLayer = true;
-      }
-
-      completedBytes += isComplete ? total : Math.min(layer.current, total);
+      throw error;
     }
+  }
 
-    const stage: DockerPullProgressEvent['stage'] = hasActiveLayer ? (hasExtractingLayer ? 'extracting' : 'downloading') : 'complete';
-    return { completedBytes, totalBytes, stage, layersSeen, layersDone };
+  /** The IDs of the images on this computer, under any name. Read-only, never pulls. */
+  async imageIdsLocally(): Promise<Set<string>> {
+    return new Set((await this.docker.listImages()).map((image) => image.Id));
+  }
+
+  /** The tags the image with this ID has. A digest name is not a tag, though the containerd image store lists it among them. */
+  async imageTagsLocally(imageId: string): Promise<string[]> {
+    const info = await this.docker.getImage(imageId).inspect();
+    return (info.RepoTags ?? []).filter((tag) => !tag.includes('@'));
   }
 
   public async pullImages(
@@ -684,6 +1431,13 @@ export class DockerService {
     options: {
       forcePull?: boolean;
       onProgress?: (event: DockerPullProgressEvent) => void;
+      /**
+       * Each image's compressed layer sizes for this Hub's platform, by layer digest, read from its
+       * registry. Asked for once per image as its pull starts and never waited on: until it answers,
+       * or if it answers `null`, sizes come from Docker's events alone. `signal` fires if the pull is
+       * cancelled or times out.
+       */
+      layerSizes?: (image: string, signal: AbortSignal) => Promise<ReadonlyMap<string, number> | null | undefined>;
       signal?: AbortSignal;
       inactivityTimeoutMs?: number;
       firstEventTimeoutMs?: number;
@@ -751,35 +1505,61 @@ export class DockerService {
 
     const completedImages = new Set<string>();
     const layerSnapshots = new Map<string, DockerPullLayerSnapshot>();
+    // Per image being downloaded: the layers Docker announced, whether its downloads have begun and
+    // its layer sizes from the manifest once they arrive. Together they say when the total is final.
+    const downloadingImages = new Set<string>();
+    const imageLayerIds = new Map<string, Set<string>>();
+    const imageDownloadStarted = new Set<string>();
+    const manifestSizes = new Map<string, ReadonlyMap<string, number>>();
+    // Every manifest's sizes in one map, by short layer id, added to as each manifest arrives.
+    const expectedLayerSizes = new Map<string, number>();
     // Set once this call has returned or thrown. When one image fails the others are not aborted,
     // and one still waiting on Docker must not later report a timeout for a pull that is over.
     let pullEnded = false;
 
     const pullStartedAt = Date.now();
     const statusLogTimer = globalThis.setInterval(() => {
-      const { completedBytes, totalBytes, layersDone, layersSeen } = this.summarizePullLayers(layerSnapshots);
+      const { completedBytes, totalBytes, layersDone, layersSeen } = summarizePullLayers(layerSnapshots, expectedLayerSizes);
       this.logger.info(
         `[pull] after ${secondsSince(pullStartedAt)}: ${completedImages.size} of ${uniqueImages.length} images done, ${layersDone} of ${layersSeen} layers, ${megabytes(completedBytes)} of ${megabytes(totalBytes)} MB`,
       );
     }, PULL_STATUS_LOG_INTERVAL_MS);
     statusLogTimer.unref?.();
 
-    const emitProgress = (activeImage: string, stageOverride?: DockerPullProgressEvent['stage']) => {
-      armInactivityTimer();
-
+    const reportProgress = (activeImage: string, stageOverride?: DockerPullProgressEvent['stage']) => {
       if (!options.onProgress) {
         return;
       }
 
-      const summary = this.summarizePullLayers(layerSnapshots);
+      const summary = summarizePullLayers(layerSnapshots, expectedLayerSizes);
+      // An image still being looked for locally may yet need a download, so it isn't known either.
+      const totalBytesKnown = uniqueImages.every(
+        (image) =>
+          completedImages.has(image) ||
+          (downloadingImages.has(image) &&
+            imageSizeKnown({
+              layerIds: imageLayerIds.get(image) ?? new Set(),
+              layers: layerSnapshots,
+              expected: manifestSizes.get(image),
+              downloadStarted: imageDownloadStarted.has(image),
+              complete: false,
+            })),
+      );
       options.onProgress({
         activeImage,
         completedBytes: summary.completedBytes,
         totalBytes: summary.totalBytes,
+        totalBytesKnown,
         completedImages: completedImages.size,
         totalImages: uniqueImages.length,
         stage: stageOverride ?? summary.stage,
       });
+    };
+
+    // An event from Docker: the pull is alive.
+    const emitProgress = (activeImage: string, stageOverride?: DockerPullProgressEvent['stage']) => {
+      armInactivityTimer();
+      reportProgress(activeImage, stageOverride);
     };
 
     try {
@@ -794,6 +1574,36 @@ export class DockerService {
           }
           // An abort during the lookup above has already fired, so the listener below would never hear it.
           throwIfAborted(pullSignal);
+          downloadingImages.add(image);
+
+          // The registry's layer sizes give the download its full size before Docker reports them. Not
+          // waited on, so a slow registry never holds the pull up; and not a sign of life from Docker, so
+          // it doesn't arm the stall timer.
+          if (options.layerSizes) {
+            const lookupStartedAt = Date.now();
+            void Promise.resolve()
+              .then(() => options.layerSizes?.(image, pullSignal))
+              .then(
+                (sizes) => {
+                  if (!sizes || sizes.size === 0 || pullEnded || completedImages.has(image)) {
+                    return;
+                  }
+                  const byLayerId = new Map([...sizes].map(([digest, size]) => [shortLayerId(digest), size]));
+                  manifestSizes.set(image, byLayerId);
+                  for (const [id, size] of byLayerId) expectedLayerSizes.set(id, size);
+                  this.logger.info(`[pull] ${image}: ${sizes.size} layer sizes from the registry after ${secondsSince(lookupStartedAt)}`);
+                  reportProgress(image);
+                },
+                (error) => {
+                  if (!pullEnded && !pullSignal.aborted) {
+                    this.logger.warn(`[pull] ${image}: no layer sizes from the registry (${error instanceof Error ? error.message : String(error)})`);
+                  }
+                },
+              )
+              .catch((error) => {
+                this.logger.warn(`[pull] ${image}: progress update failed (${error instanceof Error ? error.message : String(error)})`);
+              });
+          }
 
           // A pull Docker never starts would otherwise wait out the whole inactivity timeout.
           const imageStartedAt = Date.now();
@@ -882,14 +1692,16 @@ export class DockerService {
                   }
 
                   if (event?.id) {
-                    const snapshot = layerSnapshots.get(event.id) ?? { current: 0, total: 0, status: '' };
-                    const current = Math.max(snapshot.current, event.progressDetail?.current ?? snapshot.current);
-                    const total = Math.max(snapshot.total, event.progressDetail?.total ?? snapshot.total, current);
-                    layerSnapshots.set(event.id, {
-                      current,
-                      total,
-                      status: event.status ?? snapshot.status,
-                    });
+                    const status = event.status ?? '';
+                    if (isLayerEvent(status)) {
+                      const ids = imageLayerIds.get(image) ?? new Set<string>();
+                      ids.add(event.id);
+                      imageLayerIds.set(image, ids);
+                      if (isDownloadPhase(status)) {
+                        imageDownloadStarted.add(image);
+                      }
+                    }
+                    layerSnapshots.set(event.id, applyLayerEvent(layerSnapshots.get(event.id), event));
                   }
 
                   emitProgress(image);
@@ -1026,6 +1838,8 @@ export class DockerService {
     const cmd = spawn(command[0], command.slice(1), {
       cwd, // Set working directory to compose file's directory
       signal: composeSignal,
+      // Only an app's compose comes through here, and it must not expand the Hub's secrets.
+      env: appComposeEnvironment(),
     });
     const stdout: string[] = [];
     const stderr: string[] = [];
@@ -1155,9 +1969,9 @@ export class DockerService {
         this.logger.warn('docker compose plugin not available for logs, falling back to docker-compose binary');
       }
 
-      const logs = canUseDockerComposePlugin
-        ? spawn('docker', ['compose', ...args], { stdio: 'pipe' })
-        : spawn('docker-compose', args, { stdio: 'pipe' });
+      // An app's compose must not expand the Hub's secrets (`appComposeEnvironment`); the Hub's own keeps its environment.
+      const spawnOptions = appUrn ? { stdio: 'pipe' as const, env: appComposeEnvironment() } : { stdio: 'pipe' as const };
+      const logs = canUseDockerComposePlugin ? spawn('docker', ['compose', ...args], spawnOptions) : spawn('docker-compose', args, spawnOptions);
 
       logs.on('error', (error: NodeJS.ErrnoException) => {
         if (error.code === 'ENOEXEC') {
@@ -1211,9 +2025,9 @@ export class DockerService {
         this.logger.warn('docker compose plugin not available for log download, falling back to docker-compose binary');
       }
 
-      const logs = canUseDockerComposePlugin
-        ? spawn('docker', ['compose', ...args], { stdio: 'pipe' })
-        : spawn('docker-compose', args, { stdio: 'pipe' });
+      // An app's compose must not expand the Hub's secrets (`appComposeEnvironment`); the Hub's own keeps its environment.
+      const spawnOptions = appUrn ? { stdio: 'pipe' as const, env: appComposeEnvironment() } : { stdio: 'pipe' as const };
+      const logs = canUseDockerComposePlugin ? spawn('docker', ['compose', ...args], spawnOptions) : spawn('docker-compose', args, spawnOptions);
 
       logs.on('error', (error: NodeJS.ErrnoException) => {
         if (error.code === 'ENOEXEC') {
@@ -1429,43 +2243,101 @@ export class DockerService {
   }
 
   /**
-   * Joins this Hub to an app's own networks after a successful `up`.
+   * Joins the Hub, Traefik and the Private VPN sidecar to an app's own networks after a successful `up`.
    *
-   * Apps are handed inference at `http://ci-hub:<port>/...`. That name exists only on a network the
-   * Hub container is attached to. Compose puts a service on the shared Hub network only when it is
-   * `isMain` or `addToMainNetwork`, so a sibling that calls inference (Companion Memory's `api` and
-   * `summary-service`) cannot resolve `ci-hub`. Joining the Hub to the app network fixes that
-   * without publishing the app's service names on the network every other app shares.
+   * Each app is on a network of its own and on no network another app is on (see "App networks" in
+   * docs/system/backend.md), so these three reach it there:
    *
-   * `GwPriority: -1` keeps the Hub's default route on the network it booted with. A network connected
-   * to a running container otherwise takes the route over when it sorts first (Docker 29.8), and the
-   * Hub's own calls would then leave from the app subnet. No static address: DNS is the whole of
-   * what callers need, and the app subnet is allocated per install.
+   * - The Hub, under the aliases `ci-hub` and `ci-os-hub`, because apps are handed inference and the
+   *   Hub API at `http://ci-hub:<port>/...`, from any of their services.
+   * - Traefik, at the subnet's last host address (`traefikAddressOnAppSubnet`), to route to the app.
+   *   The app is told that address as the one hop it may trust (`HUB_TRUSTED_PROXY_CIDRS`).
+   * - The Private VPN sidecar, when it runs, because `tailscale serve` there proxies to the app's
+   *   container address on this network (`getAppNetworkTarget`).
    *
-   * An `internal` app network is left alone. That flag is complete isolation; joining the Hub would
-   * give those containers a path to the Hub API. `disableMainNetwork` without `internal` is joined:
-   * those services are off the shared network and this is how they reach inference.
+   * None of them looks anything up by name on these networks. On a container with several networks
+   * Docker answers a name from whichever network claims it first, and an app names its own services:
+   * the Hub's own services and the Hub itself are pinned in /etc/hosts (`extra_hosts` in the compose
+   * file), and the Hub reaches an app's services by address (`DockerReadFacade.getAppServiceAddress`).
    *
-   * Never throws. A failed attach leaves the app as it was before this fix, which is the failure
-   * the operator already has, and must not fail the `up` that just succeeded.
+   * `GwPriority: -1` keeps each container's default route on the network it booted with. A network
+   * connected to a running container otherwise takes the route over when it sorts first (Docker 29.8),
+   * and its own calls would then leave from the app subnet.
+   *
+   * An `internal` app network is left alone: that flag is complete isolation, and joining it would give
+   * those containers a path out.
+   *
+   * Never throws. A failed join is logged; it must not fail the `up` that just succeeded.
    */
   public async attachHubToAppNetworks(appUrn: AppUrn): Promise<void> {
-    if (!(await this.runningHubContainerName())) {
+    if (await this.skipsNetworkHotAttach(HUB_APP_NETWORK_GAP, HUB_APP_NETWORK_CONSEQUENCE)) {
       return;
     }
-    await this.joinHubToAppNetworks(await this.listComposeProjectNetworks(appUrn));
+    await this.joinAppNetworkMembers(await this.listComposeProjectNetworks(appUrn));
   }
 
   /**
-   * Re-joins app networks after the Hub container is recreated.
+   * Whether Hub runs on Apple container (socktainer) rather than Docker, read from `GET /version`.
    *
-   * An update that replaces this container drops every network connected in place. Running apps are
-   * not composed again, so without this their off-network services go back to `ENOTFOUND ci-hub`
-   * until the next `up`.
+   * An unreachable daemon is not an answer: this returns false without remembering it, so the next
+   * call asks again instead of pinning the wrong engine for the life of the process.
    */
-  public async ensureHubOnAppNetworks(): Promise<void> {
-    if (!(await this.runningHubContainerName())) {
-      return;
+  public async isAppleContainerEngine(): Promise<boolean> {
+    if (this.appleContainerEngine !== undefined) {
+      return this.appleContainerEngine;
+    }
+    let apple: boolean;
+    try {
+      apple = isSocktainerVersion(await this.docker.version());
+    } catch {
+      return false;
+    }
+    // Two first calls can both reach here; the first to resume records the answer and warns.
+    if (this.appleContainerEngine === undefined) {
+      this.appleContainerEngine = apple;
+      if (apple) {
+        this.logger.warn(APPLE_CONTAINER_ENGINE_NOTICE);
+      }
+    }
+    return this.appleContainerEngine;
+  }
+
+  /**
+   * True, with one warning per `gap`, when the engine cannot attach a running container to a network.
+   *
+   * socktainer answers `network connect` and `disconnect` with success and changes nothing: Apple
+   * container fixes a container's networks when it is created. Calling it anyway would log
+   * "Attached …" for a join that never happened.
+   */
+  private async skipsNetworkHotAttach(gap: string, consequence: string): Promise<boolean> {
+    if (!(await this.isAppleContainerEngine())) {
+      return false;
+    }
+    if (!this.warnedAppleContainerGaps.has(gap)) {
+      this.warnedAppleContainerGaps.add(gap);
+      this.logger.warn(`${gap}: Apple container cannot attach or detach a running container's networks. ${consequence}`);
+    }
+    return true;
+  }
+
+  /**
+   * Re-joins every app network after the Hub, Traefik or the VPN sidecar is recreated, then takes any
+   * app container still on a shared Hub network off it.
+   *
+   * An update that replaces one of those containers drops every network connected in place. Running
+   * apps are not composed again, so without this they would go unreachable, or back to
+   * `ENOTFOUND ci-hub`, until their next `up`. An app container composed before apps stopped sharing a
+   * network is still on `ci-hub_network` until its next `up`; {@link moveAppsOffSharedNetworks} takes
+   * it off now rather than then.
+   *
+   * Returns the apps taken off a shared network. Each must be recreated: its containers still carry the
+   * `traefik.docker.network` label naming the network they left, and Traefik then routes to whichever
+   * network they are on first, which can be a link network Traefik is not on. Their env also still
+   * holds the Memory URL and trusted Traefik hop from the shared network.
+   */
+  public async ensureHubOnAppNetworks(): Promise<AppUrn[]> {
+    if (await this.skipsNetworkHotAttach(HUB_APP_NETWORK_GAP, HUB_APP_NETWORK_CONSEQUENCE)) {
+      return [];
     }
     const [current, legacy] = await Promise.all([
       this.listNetworksSafe({ filters: { label: [`${HUB_MANAGED_LABEL}=true`] } }),
@@ -1477,113 +2349,212 @@ export class DockerService {
         byId.set(network.Id, network);
       }
     }
-    await this.joinHubToAppNetworks([...byId.values()]);
+    await this.joinAppNetworkMembers([...byId.values()]);
+    const moved = await this.moveAppsOffSharedNetworks();
+    this.notifyAppNetworksSettled(null);
+    return moved;
   }
 
   /**
-   * Leaves an app's networks before `down` or before the Hub deletes them.
+   * Called after an app's containers come up and the Hub, Traefik and the VPN sidecar have joined its
+   * network (`appUrn`), or after every app network was re-joined at boot (`null`). `AppLinkService`
+   * listens, to put the app's new containers back on the networks linking it to other apps. A listener
+   * runs in the background; one that throws is logged. Returns the function that stops listening.
+   */
+  public onAppNetworksSettled(listener: (appUrn: AppUrn | null) => Promise<void> | void): () => void {
+    this.appNetworkListeners.add(listener);
+    return () => {
+      this.appNetworkListeners.delete(listener);
+    };
+  }
+
+  private notifyAppNetworksSettled(appUrn: AppUrn | null): void {
+    for (const listener of this.appNetworkListeners) {
+      void Promise.resolve()
+        .then(() => listener(appUrn))
+        .catch((error: unknown) => {
+          this.logger.warn(`App network listener failed for ${appUrn ?? 'every app'}: ${error instanceof Error ? error.message : String(error)}`);
+        });
+    }
+  }
+
+  /**
+   * Disconnects every app container from the shared Hub networks (`ci-hub_network`, `ci-os-hub_network`).
+   *
+   * Every app's main container used to join them, where any other app could reach it without the Hub
+   * login and claim a name other containers looked up. The compose builder no longer puts an app there,
+   * but a container keeps the networks it was created with until its next `up`. The Hub, Traefik and the
+   * VPN sidecar are on the app's own network by now (see {@link ensureHubOnAppNetworks}), so the app
+   * stays reachable; whatever reached it over the shared network from another app no longer does.
+   *
+   * Only containers that carry an app URN label are touched. Returns the apps that had one, to be
+   * recreated (see {@link ensureHubOnAppNetworks}). Never throws.
+   */
+  public async moveAppsOffSharedNetworks(): Promise<AppUrn[]> {
+    const moved = new Set<AppUrn>();
+    if (await this.skipsNetworkHotAttach(SHARED_NETWORK_GAP, SHARED_NETWORK_CONSEQUENCE)) {
+      return [];
+    }
+    for (const networkName of HUB_NETWORK_NAMES) {
+      let containers: Array<{ Id?: string; Names?: string[]; Labels?: Record<string, string> }>;
+      try {
+        containers = await this.docker.listContainers({ all: true, filters: { network: [networkName] } });
+      } catch (error) {
+        this.logger.warn(`Could not list the containers on ${networkName}: ${error instanceof Error ? error.message : String(error)}`);
+        continue;
+      }
+      for (const container of containers ?? []) {
+        const appUrn = appUrnFromLabels(container.Labels) as AppUrn | undefined;
+        if (!container.Id || !appUrn) {
+          continue;
+        }
+        moved.add(appUrn);
+        const name = container.Names?.[0]?.replace(/^\//, '') || container.Id;
+        try {
+          await this.docker.getNetwork(networkName).disconnect({ Container: container.Id, Force: true });
+          this.logger.info(`Took ${name} off ${networkName}: apps no longer share a network`);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (/not connected|no such/i.test(message)) {
+            continue;
+          }
+          this.logger.warn(`Could not take ${name} off ${networkName}: ${message}. Other apps can reach it there until its next start.`);
+        }
+      }
+    }
+    return [...moved];
+  }
+
+  /**
+   * Leaves an app's networks before `down` or before the Hub deletes them, for the Hub, Traefik and the
+   * VPN sidecar alike, a stopped Traefik or sidecar included: one left on a network that is then deleted
+   * cannot be started again (see {@link appNetworkMembers}).
    *
    * Compose treats an extra container on the network as "still in use" and keeps the network.
-   * Infrastructure networks (the shared Hub network, the edge network) are never disconnected:
-   * the Hub belongs there. A network this method did not join is also left, including external
-   * networks a user compose file brought in.
+   * Infrastructure networks (the Hub's own, the edge) are never disconnected. External networks a user
+   * compose file brought in are left too: they were never joined.
    *
    * Never throws.
    */
   public async detachHubFromAppNetworks(appUrn: AppUrn): Promise<void> {
-    const hubName = await this.runningHubContainerName();
-    if (!hubName) {
+    // Nothing was joined on Apple container, so there is nothing to leave. No warning: attach already
+    // said so once, and an uninstall is not the moment to repeat it.
+    if (await this.isAppleContainerEngine()) {
       return;
     }
-
-    const attached = await this.hubNetworkNames(hubName);
-    if (!attached) {
+    const members = await this.appNetworkMembers();
+    if (members.length === 0) {
       return;
     }
 
     for (const network of await this.listComposeProjectNetworks(appUrn)) {
       const id = network.Id;
       const name = network.Name;
-      if (!id || !name || this.isInfrastructureNetwork(name) || !attached.has(name)) {
+      if (!id || !name || this.isInfrastructureNetwork(name) || network.Labels?.['com.docker.compose.network.external'] === 'true') {
         continue;
       }
-      if (network.Labels?.['com.docker.compose.network.external'] === 'true') {
-        continue;
-      }
-
-      try {
-        await this.docker.getNetwork(id).disconnect({ Container: hubName, Force: true });
-        this.logger.info(`Detached ${hubName} from ${name}`);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (/not connected/i.test(message)) {
+      for (const member of members) {
+        if (!member.networks.has(name)) {
           continue;
         }
-        this.logger.warn(
-          `Could not detach ${hubName} from ${name}: ${message}. The app network may survive compose down while this container is still on it.`,
-        );
+        try {
+          await this.docker.getNetwork(id).disconnect({ Container: member.name, Force: true });
+          this.logger.info(`Detached ${member.name} from ${name}`);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (/not connected/i.test(message)) {
+            continue;
+          }
+          this.logger.warn(
+            `Could not detach ${member.name} from ${name}: ${message}. The app network may survive compose down while this container is still on it.`,
+          );
+        }
       }
     }
   }
 
-  private async joinHubToAppNetworks(networks: AppProjectNetwork[]): Promise<void> {
-    const hubName = await this.runningHubContainerName();
-    if (!hubName) {
+  private async joinAppNetworkMembers(networks: AppProjectNetwork[]): Promise<void> {
+    const members = await this.appNetworkMembers();
+    if (!members.some((member) => member.role === 'hub')) {
       this.logger.debug('Hub container is not running; not joining app networks');
-      return;
-    }
-
-    const attached = await this.hubNetworkNames(hubName);
-    if (!attached) {
       return;
     }
 
     for (const network of networks) {
       const id = network.Id;
       const name = network.Name;
-      if (!id || !name || this.isInfrastructureNetwork(name) || attached.has(name)) {
+      if (!id || !name || this.isInfrastructureNetwork(name) || network.Labels?.['com.docker.compose.network.external'] === 'true') {
         continue;
       }
-      if (network.Labels?.['com.docker.compose.network.external'] === 'true') {
+      if (members.every((member) => member.networks.has(name))) {
         continue;
       }
 
-      let internal = false;
+      let inspected: { Internal?: boolean; IPAM?: { Config?: Array<{ Subnet?: string }> | null } } | undefined;
       try {
-        const inspected = await this.docker.getNetwork(id).inspect();
-        internal = inspected?.Internal === true;
+        inspected = await this.docker.getNetwork(id).inspect();
       } catch (error) {
         this.logger.warn(`Could not inspect ${name} before joining it: ${error instanceof Error ? error.message : String(error)}`);
         continue;
       }
-      if (internal) {
+      if (inspected?.Internal === true) {
         this.logger.info(`Not joining ${name}: it is an internal network, so containers on it stay cut off from the Hub`);
         continue;
       }
+      const subnet = inspected?.IPAM?.Config?.find((config) => config.Subnet && !config.Subnet.includes(':'))?.Subnet;
 
-      try {
-        // `GwPriority` is newer than the dockerode typings (Engine API 1.48). Both names are
-        // registered because a legacy compose file still runs this process as `ci-os-hub` while
-        // apps look up `ci-hub`, and the other way around after the rename.
-        const endpoint = { Aliases: [DEFAULT_HUB_CONTAINER_NAME, LEGACY_HUB_CONTAINER_NAME], GwPriority: -1 };
-        await this.docker.getNetwork(id).connect({ Container: hubName, EndpointConfig: endpoint } as never);
-        attached.add(name);
-        this.logger.info(`Attached ${hubName} to ${name} so app containers can resolve ${DEFAULT_HUB_CONTAINER_NAME}`);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (/already exists/i.test(message)) {
+      for (const member of members) {
+        if (member.networks.has(name)) {
           continue;
         }
-        this.logger.warn(
-          `Could not attach ${hubName} to ${name}: ${message}. ` +
-            `Services that are not on the shared Hub network cannot resolve ${DEFAULT_HUB_CONTAINER_NAME} until this succeeds.`,
-        );
+        if (await this.connectAppNetworkMember(id, name, member, subnet)) {
+          member.networks.add(name);
+        }
       }
     }
   }
 
+  /** Connects one member to one app network. True when it is on it afterwards. */
+  private async connectAppNetworkMember(id: string, name: string, member: AppNetworkMember, subnet: string | undefined): Promise<boolean> {
+    const fixed = member.role === 'traefik' ? traefikAddressOnAppSubnet(subnet) : null;
+    // `GwPriority` is newer than the dockerode typings (Engine API 1.48).
+    const endpoint = (address: string | null) => ({
+      ...(address ? { IPAMConfig: { IPv4Address: address } } : {}),
+      Aliases: member.aliases,
+      GwPriority: -1,
+    });
+    try {
+      await this.docker.getNetwork(id).connect({ Container: member.name, EndpointConfig: endpoint(fixed) } as never);
+      this.logger.info(`Attached ${member.name} to ${name}${fixed ? ` at ${fixed}` : ''}`);
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/already exists/i.test(message)) {
+        return true;
+      }
+      if (fixed) {
+        // An app container holds the address (see `traefikAddressOnAppSubnet`). Reachable beats trusted:
+        // join where Docker says, and the app trusts no Traefik hop until its network is recreated.
+        this.logger.warn(
+          `Could not attach ${member.name} to ${name} at ${fixed}: ${message}. Joining at an address Docker picks; ` +
+            'the app will not trust the client address Traefik forwards until its network is recreated (uninstall keeps data; a reinstall does it).',
+        );
+        try {
+          await this.docker.getNetwork(id).connect({ Container: member.name, EndpointConfig: endpoint(null) } as never);
+          this.logger.info(`Attached ${member.name} to ${name}`);
+          return true;
+        } catch (retryError) {
+          this.logger.warn(`Could not attach ${member.name} to ${name}: ${retryError instanceof Error ? retryError.message : String(retryError)}`);
+          return false;
+        }
+      }
+      this.logger.warn(`Could not attach ${member.name} to ${name}: ${message}. ${APP_NETWORK_MEMBER_CONSEQUENCE[member.role]}`);
+      return false;
+    }
+  }
+
   private isInfrastructureNetwork(name: string): boolean {
-    return (HUB_NETWORK_NAMES as readonly string[]).includes(name) || name === HUB_EDGE_NETWORK_NAME;
+    return HUB_INFRASTRUCTURE_NETWORK_NAMES.includes(name) || name.startsWith(APP_LINK_NETWORK_PREFIX);
   }
 
   private async listComposeProjectNetworks(appUrn: AppUrn): Promise<AppProjectNetwork[]> {
@@ -1601,23 +2572,57 @@ export class DockerService {
     }
   }
 
-  /** The names of the networks this container is on, or null when it cannot be inspected. */
-  private async hubNetworkNames(hubName: string): Promise<Set<string> | null> {
+  /**
+   * The containers that join every app network, each with the networks it is on now: the running Hub
+   * (under whichever name this process was started with), and Traefik and the Private VPN sidecar
+   * whether they are running or not.
+   *
+   * Stopped ones count. Docker lets a stopped container join and leave networks; it applies them at its
+   * next start. Counting only running ones left a Traefik that was down (it failed its bind mount at
+   * boot, when the host's data folder mounted a second after Docker started) off every network an app
+   * created meanwhile, and still on the ones `compose down` deleted: Docker then refused to start it
+   * ("network <id> not found"), and every tunnelled hostname stayed dead until it was recreated by hand.
+   *
+   * An image-only update can still run the Hub as `ci-os-hub`. Apps are given the name `hubContainerName`
+   * returns, and the Hub is connected under both names.
+   */
+  private async appNetworkMembers(): Promise<AppNetworkMember[]> {
+    const members: AppNetworkMember[] = [];
+    const hubName = await this.runningHubContainerName();
+    if (hubName) {
+      const networks = await this.containerNetworkNames(hubName);
+      if (networks) {
+        members.push({ name: hubName, role: 'hub', aliases: [DEFAULT_HUB_CONTAINER_NAME, LEGACY_HUB_CONTAINER_NAME], networks });
+      }
+    }
+    for (const [name, role] of [
+      [TRAEFIK_CONTAINER_NAME, 'traefik'],
+      [TAILSCALE_SIDECAR_CONTAINER_NAME, 'vpn'],
+    ] as const) {
+      // Absent is ordinary (no VPN sidecar on most Hubs), so not worth a warning.
+      const networks = await this.containerNetworkNames(name, { absentIsQuiet: true });
+      if (networks) {
+        // No alias: nothing on an app network needs to reach either by name.
+        members.push({ name, role, aliases: [], networks });
+      }
+    }
+    return members;
+  }
+
+  /** The networks a container is on, or null when it cannot be inspected (quietly, with `absentIsQuiet`). */
+  private async containerNetworkNames(name: string, { absentIsQuiet = false }: { absentIsQuiet?: boolean } = {}): Promise<Set<string> | null> {
     try {
-      const info = await this.docker.getContainer(hubName).inspect();
+      const info = await this.docker.getContainer(name).inspect();
       return new Set(Object.keys(info?.NetworkSettings?.Networks ?? {}));
     } catch (error) {
-      this.logger.warn(`Could not inspect ${hubName} to see which app networks it is on: ${error instanceof Error ? error.message : String(error)}`);
+      if (!absentIsQuiet) {
+        this.logger.warn(`Could not inspect ${name} to see which app networks it is on: ${error instanceof Error ? error.message : String(error)}`);
+      }
       return null;
     }
   }
 
-  /**
-   * The running Hub container, under whichever name this process was started with.
-   *
-   * An image-only update can still be `ci-os-hub`. Apps are given the same name `hubContainerName`
-   * returns, and the connect call also registers the other name as an alias.
-   */
+  /** The running Hub container, under whichever name this process was started with. */
   private async runningHubContainerName(): Promise<string | null> {
     const names = [...new Set([hubContainerName(), ...HUB_CONTAINER_NAMES])];
     for (const name of names) {
@@ -1671,6 +2676,18 @@ export class DockerService {
       return 'present';
     }
 
+    // A Traefik created with the edge network by a full `up` is 'present' above. One that predates
+    // it cannot be joined in place here, so say what recreates it rather than log a join that did not happen.
+    if (
+      await this.skipsNetworkHotAttach(
+        `Not attaching ${TRAEFIK_CONTAINER_NAME} to ${HUB_EDGE_NETWORK_NAME}`,
+        'Tunnelled app hostnames cannot reach Traefik until it is recreated from the current compose file ' +
+          "(`cihub up`, or `docker compose up -d traefik` with the stack's env file).",
+      )
+    ) {
+      return 'failed';
+    }
+
     const address = resolveEdgeHopAddress(process.env.HUB_EDGE_TRAEFIK_IP, DEFAULT_HUB_EDGE_TRAEFIK_IP);
     try {
       // `GwPriority` is newer than the dockerode typings (Engine API 1.48).
@@ -1685,6 +2702,112 @@ export class DockerService {
           "(`cihub up`, or `docker compose up -d traefik` with the stack's env file).",
       );
       return 'failed';
+    }
+  }
+
+  /**
+   * Starts Traefik when its container exists but is not running.
+   *
+   * Docker starts an `unless-stopped` container again when the daemon starts, and does not retry one
+   * that fails then. Traefik bind-mounts single files from the Hub's data folder, so when that folder
+   * is mounted after Docker starts (an encrypted home that unlocks at login, an encrypted or external
+   * drive, a network share) its first start fails ("not a directory: Are you trying to mount a
+   * directory onto a file?") and it stays down. The Hub, on named volumes, is healthy meanwhile, and
+   * every tunnelled and LAN app hostname is dead. Tried again on a backoff for about a quarter of an
+   * hour, so a folder that is mounted at login is picked up.
+   *
+   * A start refused for a network that no longer exists is answered by taking Traefik off that network
+   * and trying again; the Hub joins it to the app networks that do exist (see
+   * {@link appNetworkMembers}). Started in place, never recreated (see
+   * {@link ensureTraefikOnEdgeNetwork} on why the Hub does not recreate Traefik).
+   *
+   * `absent` when there is no Traefik container to start. Never throws: a Traefik that still cannot
+   * start is logged with the command that recreates it.
+   */
+  public async ensureTraefikRunning(
+    retryDelaysMs: readonly number[] = TRAEFIK_START_RETRY_DELAYS_MS,
+  ): Promise<'running' | 'started' | 'absent' | 'failed'> {
+    let lastError = 'it was not running';
+    for (const [attempt, delayMs] of retryDelaysMs.entries()) {
+      if (delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+
+      let state: { Running?: boolean; Restarting?: boolean; Status?: string; Error?: string } | undefined;
+      try {
+        state = (await this.docker.getContainer(TRAEFIK_CONTAINER_NAME).inspect())?.State;
+      } catch (error) {
+        if (this.isResourceMissingError(error)) {
+          return 'absent';
+        }
+        lastError = error instanceof Error ? error.message : String(error);
+        continue;
+      }
+      // Running, or started by someone else between two attempts.
+      if (state?.Running || state?.Restarting) {
+        return 'running';
+      }
+      if (attempt === 0) {
+        this.logger.warn(
+          `${TRAEFIK_CONTAINER_NAME} is not running (${state?.Status ?? 'unknown'}${state?.Error ? `: ${state.Error}` : ''}); starting it`,
+        );
+      }
+
+      try {
+        await this.docker.getContainer(TRAEFIK_CONTAINER_NAME).start();
+        this.logger.info(`Started ${TRAEFIK_CONTAINER_NAME}${attempt > 0 ? ` on attempt ${attempt + 1}` : ''}`);
+        return 'started';
+      } catch (error) {
+        if ((error as { statusCode?: number }).statusCode === 304) {
+          return 'running';
+        }
+        lastError = error instanceof Error ? error.message : String(error);
+        if (isStaleContainerNetworkError(error)) {
+          await this.leaveDeletedNetworks(TRAEFIK_CONTAINER_NAME);
+        }
+      }
+    }
+
+    this.logger.error(
+      `Could not start ${TRAEFIK_CONTAINER_NAME}: ${lastError}. App hostnames, tunnelled and on the LAN, do not answer until it runs. ` +
+        "Recreate it from the stack's compose file (`cihub up`, or `docker compose up -d --force-recreate traefik` with the stack's env file).",
+    );
+    return 'failed';
+  }
+
+  /**
+   * Takes a stopped container off each network it is on that no longer exists, so Docker will start it.
+   *
+   * Docker refuses to start a container that names a deleted network ("network <id> not found"), and a
+   * deleted network can still be left by its name with `Force`. One that was deleted and created again
+   * under the same name is not touched: Docker finds it by name at start. Never throws.
+   */
+  private async leaveDeletedNetworks(containerName: string): Promise<void> {
+    let networks: Record<string, { NetworkID?: string } | undefined>;
+    try {
+      networks = (await this.docker.getContainer(containerName).inspect())?.NetworkSettings?.Networks ?? {};
+    } catch {
+      return;
+    }
+    for (const [name, endpoint] of Object.entries(networks)) {
+      try {
+        await this.docker.getNetwork(name).inspect();
+        continue;
+      } catch (error) {
+        if (!this.isResourceMissingError(error)) {
+          continue;
+        }
+      }
+      try {
+        await this.docker.getNetwork(name).disconnect({ Container: containerName, Force: true });
+        // A stopped container's endpoint often carries no network id, so show one only when there is one.
+        const id = endpoint?.NetworkID ? ` (${endpoint.NetworkID.slice(0, 12)})` : '';
+        this.logger.info(`Took ${containerName} off ${name}${id}, a network that no longer exists`);
+      } catch (error) {
+        this.logger.warn(
+          `Could not take ${containerName} off ${name}, a network that no longer exists: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
   }
 
@@ -1935,32 +3058,42 @@ export class DockerService {
   }
 
   /**
-   * Polls after `compose up` until labeled containers reach a stable running
-   * state, or returns the final failed verification.
+   * Whether an app came up after `compose up`: the one check install, retry, start and restart share.
+   * Looks at the containers until {@link AppCameUpWatch} has an answer. A look Docker did not answer
+   * says nothing, so the watch goes on. It throws only once Docker has not answered for its whole window.
    */
   public async waitForManagedAppContainersReady(
     appUrn: AppUrn,
-    options?: { maxAttempts?: number; delayMs?: number },
+    timing: AppCameUpTiming = APP_CAME_UP_TIMING,
   ): Promise<ManagedAppContainerVerification> {
-    const maxAttempts = options?.maxAttempts ?? MANAGED_APP_STARTUP_MAX_ATTEMPTS;
-    const delayMs = options?.delayMs ?? MANAGED_APP_STARTUP_DELAY_MS;
+    const startedAtMs = Date.now();
+    const watch = new AppCameUpWatch(startedAtMs, timing, await this.appFilesManager.getOneShotServiceNames(appUrn));
 
-    let lastVerification: ManagedAppContainerVerification | undefined;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      lastVerification = await this.dockerReadFacade.getManagedAppContainerVerification(appUrn);
-      if (lastVerification.ok) {
-        return lastVerification;
+    for (;;) {
+      const look = await this.dockerReadFacade.lookAtManagedAppContainers(appUrn).catch((error: unknown) => {
+        if (Date.now() - startedAtMs >= timing.settleWithinMs) {
+          throw error;
+        }
+        return null;
+      });
+      const verdict = look && watch.judge(look, Date.now());
+      if (verdict?.outcome === 'up') {
+        if (verdict.failedOneShots.length > 0) {
+          const { message, errorDetail } = await this.dockerReadFacade.describeAppCameUpFailure({
+            outcome: 'failed',
+            kind: 'exited',
+            containers: verdict.failedOneShots,
+            containersSeen: verdict.failedOneShots.length,
+          });
+          this.logger.warn(`[AppDiag] ${appUrn} came up, but a one-shot service failed: ${message}\n${errorDetail ?? ''}`);
+        }
+        return { ok: true, message: 'All containers came up' };
       }
-
-      const shouldRetry = attempt < maxAttempts && (lastVerification.appStatus === 'missing' || lastVerification.appStatus === 'stopped');
-      if (!shouldRetry) {
-        break;
+      if (verdict?.outcome === 'failed') {
+        return this.dockerReadFacade.describeAppCameUpFailure(verdict);
       }
-
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      await new Promise((resolve) => setTimeout(resolve, timing.lookEveryMs));
     }
-
-    return lastVerification ?? (await this.dockerReadFacade.getManagedAppContainerVerification(appUrn));
   }
 
   /**
@@ -1972,18 +3105,22 @@ export class DockerService {
    * @param appUrn App URN to snapshot.
    * @returns Snapshot result including snapshotted paths and volumes.
    */
-  public async createPreUpdateVolumeSnapshot(appUrn: AppUrn, options: { includeData?: boolean } = {}): Promise<PreUpdateVolumeSnapshotResult> {
+  public async createPreUpdateVolumeSnapshot(
+    appUrn: AppUrn,
+    options: { includeData?: boolean; deadline?: AppCommandDeadline } = {},
+  ): Promise<PreUpdateVolumeSnapshotResult> {
     const includeData = options.includeData ?? true;
     const projectName = this.getComposeProjectName(appUrn);
     const { appName, appStoreId } = extractAppUrn(appUrn);
     const timestamp = new Date().toISOString();
     const snapshotId = `pre-update-${appName}-${Date.now()}`;
     let snapshotBaseDir: string | undefined;
+    let dataCopiedAsRoot = false;
 
     try {
       const { appDataDir, appInstalledDir } = this.appFilesManager.getAppPaths(appUrn);
       const { dataDir } = this.config.get('directories');
-      snapshotBaseDir = path.join(dataDir, 'snapshots', appStoreId, appName, snapshotId);
+      snapshotBaseDir = path.join(dataDir, 'backups', PRE_UPDATE_SNAPSHOT_DIRNAME, appStoreId, appName, snapshotId);
 
       const snapshottedVolumes: PreUpdateVolumeSnapshotResult['volumes'] = [];
 
@@ -1996,10 +3133,18 @@ export class DockerService {
         snapshotPath = path.join(snapshotBaseDir, 'app-data');
         this.logger.info(`[pre-update-snapshot] Snapshotting ${appDataDir} to ${snapshotPath}`);
         await this.filesystem.createDirectory(snapshotPath);
-        // `copyDirectory` reports a full disk or a permission error by returning false. A snapshot
-        // that is only part of the data and says it is whole would later be restored over the real thing.
-        if ((await this.filesystem.copyDirectory(appDataDir, snapshotPath)) === false) {
-          throw new Error(`Could not copy ${appDataDir} into the snapshot`);
+        // `copyDirectoryDetailed` reports a full disk or a permission error by returning, not throwing.
+        // A snapshot that is only part of the data and says it is whole would later be restored over the real thing.
+        const copy = await this.filesystem.copyDirectoryDetailed(appDataDir, snapshotPath);
+        if (!copy.copied) {
+          // A database's files belong to the user its container ran as, and the Hub (a plain user on a
+          // native Linux host) cannot read them. Copy as root through the same hardened helper that
+          // uninstall uses; a failure that is not a permission one is not something root would fix.
+          if (copy.permissionDenied && (await this.copyAppDataDirAsRoot(appUrn, snapshotId, options.deadline))) {
+            dataCopiedAsRoot = true;
+          } else {
+            throw new Error(`Could not copy ${appDataDir} into the snapshot`);
+          }
         }
         snapshottedVolumes.push({
           type: 'bind',
@@ -2073,6 +3218,7 @@ export class DockerService {
         timestamp,
         snapshotBaseDir,
         snapshotPath,
+        dataSnapshotCopiedAsRoot: dataCopiedAsRoot || undefined,
         appFilesSnapshotPath,
         volumes: snapshottedVolumes,
         success: true,
@@ -2081,8 +3227,12 @@ export class DockerService {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(`[pre-update-snapshot] Failed to create volume snapshot for ${appUrn}: ${message}`);
 
-      // Whatever was written is not a snapshot, only disk space.
+      // Whatever was written is not a snapshot, only disk space. A data copy made as root keeps its
+      // owners and the Hub cannot delete it, so a helper empties it first.
       if (snapshotBaseDir) {
+        if (dataCopiedAsRoot) {
+          await this.removeSnapshotDirAsRoot(appUrn, snapshotId, options.deadline).catch(() => false);
+        }
         await this.filesystem.removeDirectory(snapshotBaseDir).catch(() => undefined);
       }
 
@@ -2103,17 +3253,39 @@ export class DockerService {
    * Containers with a health check defined in Docker/Compose must be in 'healthy' status.
    * Containers without a health check must be in a 'running' status.
    *
+   * The probe checks up to `maxAttempts` times, `delayMs` apart. It fails if anything is still not
+   * healthy then. With `waitWhileStarting`, a running container whose health check Docker still
+   * reports as `starting` does not count as failing until its own start period has had time to pass
+   * (see {@link healthStartingWaitMs}). The probe goes on checking for as long as every container
+   * that is not healthy yet is such a one. It fails as soon as one turns `unhealthy`, one exits or
+   * that time runs out. Apps without a health check are judged within the attempts, as before.
+   *
+   * `waitUntil` (epoch ms) ends that wait sooner when the caller has to be done by then. An aborted
+   * `signal` stops the probe at once with `cancelled` set.
+   *
    * @param appUrn App URN.
-   * @param options Optional retry options (maxAttempts, delayMs).
+   * @param options Optional retry options (maxAttempts, delayMs, waitWhileStarting, waitUntil, signal).
    */
-  public async verifyContainerHealthProbe(appUrn: AppUrn, options?: { maxAttempts?: number; delayMs?: number }): Promise<ContainerHealthProbeResult> {
+  public async verifyContainerHealthProbe(
+    appUrn: AppUrn,
+    options?: { maxAttempts?: number; delayMs?: number; waitWhileStarting?: boolean; waitUntil?: number; signal?: AbortSignal },
+  ): Promise<ContainerHealthProbeResult> {
     const projectName = this.getComposeProjectName(appUrn);
     const maxAttempts = options?.maxAttempts ?? 1;
     const delayMs = options?.delayMs ?? 1000;
+    const waitWhileStarting = options?.waitWhileStarting ?? false;
+    const signal = options?.signal;
+    const probeStartedAt = Date.now();
+    // How long the caller can let a container stay `starting`, whatever its own health check allows.
+    const callerWaitMs = options?.waitUntil === undefined ? Number.POSITIVE_INFINITY : Math.max(0, options.waitUntil - probeStartedAt);
+    let announcedStartingWait = false;
 
-    let lastResult: ContainerHealthProbeResult | undefined;
+    for (let attempt = 1; ; attempt++) {
+      if (signal?.aborted) {
+        return { ok: false, healthy: false, cancelled: true, containers: [], message: `Health probe for ${appUrn} was cancelled` };
+      }
 
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const elapsedMs = Date.now() - probeStartedAt;
       let containers = await this.docker
         .listContainers({
           all: true,
@@ -2129,20 +3301,21 @@ export class DockerService {
       }
 
       if (containers.length === 0) {
-        lastResult = {
+        const noContainers: ContainerHealthProbeResult = {
           ok: false,
           healthy: false,
           containers: [],
           message: `No containers found for app ${appUrn}`,
         };
-        if (attempt < maxAttempts) {
-          await new Promise((resolve) => setTimeout(resolve, delayMs));
-          continue;
+        if (attempt >= maxAttempts) {
+          return noContainers;
         }
-        return lastResult;
+        await pause(delayMs, signal);
+        continue;
       }
 
       const containerDetails: ContainerHealthProbeDetail[] = [];
+      const startingWaitMs = new Map<string, number>();
 
       for (const container of containers) {
         const dockerContainer = this.docker.getContainer(container.Id);
@@ -2174,13 +3347,23 @@ export class DockerService {
           failingStreak,
           log,
         });
+        startingWaitMs.set(container.Id, Math.min(healthStartingWaitMs(inspect?.Config?.Healthcheck), callerWaitMs));
       }
+
+      // Docker has not made up its mind about a running container whose health check still says
+      // `starting`; while its start period lasts, that is no reason to fail the probe.
+      const isStarting = (c: ContainerHealthProbeDetail) =>
+        waitWhileStarting && c.hasHealthCheck && c.healthStatus === 'starting' && c.state === 'running';
+      const waitingFor = containerDetails.filter((c) => isStarting(c) && elapsedMs < (startingWaitMs.get(c.id) ?? HEALTH_STARTING_MIN_WAIT_MS));
 
       // A container without a health check must be running UNLESS it exited cleanly (code 0) —
       // that's a completed one-shot init job (migrate-database, setup-secrets, fix-db-permissions,
       // etc.), not a crashed long-running service. Mirrors the running+exitZero convention that
       // app-status-sync.service.ts / managed-app-containers.ts already use to decide app status.
       const unhealthyContainers = containerDetails.filter((c) => {
+        if (waitingFor.includes(c)) {
+          return false;
+        }
         if (c.hasHealthCheck) {
           return c.healthStatus !== 'healthy';
         }
@@ -2190,31 +3373,39 @@ export class DockerService {
         return !(c.state === 'exited' && c.exitCode === 0);
       });
 
-      const allHealthy = unhealthyContainers.length === 0;
-
-      lastResult = {
-        ok: allHealthy,
-        healthy: allHealthy,
-        containers: containerDetails,
-        message: allHealthy
-          ? `All containers for ${appUrn} passed health probes`
-          : `Health probe failed for ${appUrn}: ${unhealthyContainers.map((c) => `${c.name} (${c.healthStatus || c.state})`).join(', ')}`,
-      };
-
-      if (allHealthy || attempt >= maxAttempts) {
-        return lastResult;
+      if (unhealthyContainers.length === 0 && waitingFor.length === 0) {
+        return {
+          ok: true,
+          healthy: true,
+          containers: containerDetails,
+          message: `All containers for ${appUrn} passed health probes after ${formatSeconds(elapsedMs)}`,
+        };
       }
 
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      if (attempt >= maxAttempts) {
+        if (unhealthyContainers.length > 0) {
+          const describe = (c: ContainerHealthProbeDetail) =>
+            isStarting(c) ? `${c.name} (still starting after ${formatSeconds(elapsedMs)})` : `${c.name} (${c.healthStatus || c.state})`;
+
+          return {
+            ok: false,
+            healthy: false,
+            containers: containerDetails,
+            message: `Health probe failed for ${appUrn}: ${unhealthyContainers.map(describe).join(', ')}`,
+          };
+        }
+
+        if (!announcedStartingWait) {
+          announcedStartingWait = true;
+          const waitMs = Math.max(...waitingFor.map((c) => startingWaitMs.get(c.id) ?? HEALTH_STARTING_MIN_WAIT_MS));
+          this.logger.info(
+            `${appUrn} is still starting after ${formatSeconds(elapsedMs)} (${waitingFor.map((c) => c.name).join(', ')}); ` +
+              `waiting up to ${formatSeconds(waitMs)} for its health check to pass${waitMs === callerWaitMs ? ', all the time the update has left' : ''}`,
+          );
+        }
+      }
+
+      await pause(delayMs, signal);
     }
-
-    return (
-      lastResult ?? {
-        ok: false,
-        healthy: false,
-        containers: [],
-        message: `Health probe timed out for ${appUrn}`,
-      }
-    );
   }
 }

@@ -25,7 +25,14 @@ describe('MemoryConnectController forwarded identity', () => {
     service = { getStatus: vi.fn().mockResolvedValue({ state: 'connected' }) };
     users = { getUserByUsername: vi.fn().mockResolvedValue({ id: 7 }) };
     appFiles = { getAppEnv: vi.fn() };
-    controller = new MemoryConnectController(service as never, { warn: vi.fn() } as never, users as never, appFiles as never, new EnvUtils());
+    controller = new MemoryConnectController(
+      service as never,
+      { warn: vi.fn() } as never,
+      users as never,
+      appFiles as never,
+      new EnvUtils(),
+      {} as never,
+    );
   });
 
   it("names the person when the headers verify under the app's own key", async () => {

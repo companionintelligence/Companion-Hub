@@ -3,6 +3,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import {
   type BackendHealthStatus,
   type BackendResidency,
+  type CuratedModel,
   type HardwareProfile,
   INFERENCE_BACKEND_TYPES,
   type InferenceBackendType,
@@ -47,9 +48,51 @@ export function modelMemoryCeilingMb(profile: HardwareProfile): number {
     return modelBudgetVramMbFor(profile);
   }
   if (profile.ram.sampledAt) {
-    return Math.max(0, profile.ram.availableMb - SYSTEM_RESERVED_RAM_MB);
+    return liveRamCeilingMb(profile, 0);
   }
   return Math.max(0, profile.effectiveInferenceMemoryMb);
+}
+
+/**
+ * Live MemAvailable less the system reserve, plus `returnedMb` that a resident model gives back when
+ * it reloads, never past what the GPU addresses. With something returned it is also kept under the
+ * RAM the host has. On a CPU host nothing else bounds it and MemAvailable can still count part of a
+ * resident model (reclaimable page cache), which the add-back would then count twice.
+ */
+function liveRamCeilingMb(profile: HardwareProfile, returnedMb: number): number {
+  const ceiling = Math.min(profile.ram.availableMb + returnedMb - SYSTEM_RESERVED_RAM_MB, unifiedGpuLimitMb(profile));
+  const hostMb = returnedMb > 0 && profile.ram.totalMb > 0 ? profile.ram.totalMb - SYSTEM_RESERVED_RAM_MB : Number.POSITIVE_INFINITY;
+  return Math.max(0, Math.min(ceiling, hostMb));
+}
+
+/**
+ * What an app handout sizes a locally served model's window against: the manager's
+ * {@link MemoryManagerService.modelCeilingMb} for that model on its own engine, else the node's
+ * {@link modelMemoryCeilingMb} when no manager is wired or it cannot answer. Never rejects.
+ */
+export async function handoutCeilingMb(
+  manager: Pick<MemoryManagerService, 'modelCeilingMb'> | undefined,
+  profile: HardwareProfile,
+  model: { backend: InferenceBackendType; backendModelId: string },
+): Promise<number> {
+  const nodeCeilingMb = modelMemoryCeilingMb(profile);
+  if (!manager) return nodeCeilingMb;
+  try {
+    const ownMb = await manager.modelCeilingMb(profile, model.backend, model.backendModelId);
+    return typeof ownMb === 'number' && Number.isFinite(ownMb) ? ownMb : nodeCeilingMb;
+  } catch {
+    return nodeCeilingMb;
+  }
+}
+
+/**
+ * The most a unified-memory GPU can address, `vramMb`: on an AMD APU the driver's carve-out plus GTT
+ * (108 GiB of a Ryzen AI Max+ 395's 122.8 GB), on Apple Silicon all of RAM. Models on the RAM pool are never
+ * budgeted past it, whatever RAM is free. No limit off unified memory, or without a figure.
+ */
+function unifiedGpuLimitMb(profile: HardwareProfile): number {
+  const { gpu } = profile;
+  return gpu.available && gpu.unifiedMemory && gpu.vramMb > 0 ? gpu.vramMb : Number.POSITIVE_INFINITY;
 }
 
 /**
@@ -156,7 +199,7 @@ export class MemoryManagerService {
     const appContainerBudgetMb = dockerOverheadMb;
 
     const modelBudgetVramMb = totalVramMb > 0 ? modelBudgetVramMbFor(profile) : 0;
-    const modelBudgetRamMb = Math.max(0, totalRamMb - SYSTEM_RESERVED_RAM_MB - appContainerBudgetMb);
+    const modelBudgetRamMb = Math.max(0, Math.min(totalRamMb - SYSTEM_RESERVED_RAM_MB - appContainerBudgetMb, unifiedGpuLimitMb(profile)));
 
     const pool = modelPoolFor(profile);
     const usage = await this.observeUsage(profile);
@@ -244,6 +287,62 @@ export class MemoryManagerService {
   }
 
   /**
+   * {@link modelMemoryCeilingMb} for sizing `backendModelId`'s own window: what it may occupy here,
+   * not counting the memory that model itself holds right now.
+   *
+   * On a unified-memory or CPU host the ceiling is live MemAvailable, and a model that is resident
+   * is already out of it. Sized that way, a model counted against itself: on core-7 (125 GB, AMD
+   * APU) MiniMax M2 230B got a 32768-token handout while it was not loaded and 4096 once it was.
+   * MemAvailable then no longer held the 54 GB of weights it had loaded and its 63 GB did not fit in
+   * what was left. What the engine holds for it comes back on its next load, so it is added back here.
+   *
+   * A discrete card's ceiling is the card. A card whose memory is unknown is budgeted on RAM, but
+   * what the model holds there is mostly VRAM that never left MemAvailable, so it is not added back.
+   * A host that does not sample its RAM keeps its static figure. None of these counts what is
+   * loaded, so all are answered as before.
+   */
+  async modelCeilingMb(profile: HardwareProfile, backend: InferenceBackendType, backendModelId: string): Promise<number> {
+    const ceiling = modelMemoryCeilingMb(profile);
+    const ramIsTheModelsMemory = profile.gpu.unifiedMemory || !profile.gpu.available;
+    if (!ramIsTheModelsMemory || !profile.ram.sampledAt) {
+      return ceiling;
+    }
+    const heldMb = await this.heldNowMb(profile, backend, backendModelId).catch(() => null);
+    if (!heldMb || heldMb <= 0) {
+      return ceiling;
+    }
+    return liveRamCeilingMb(profile, heldMb);
+  }
+
+  /** What `backendModelId` holds on `backend` now, in the units the budget counted that engine in, or null when it is not resident or cannot be sized. */
+  private async heldNowMb(profile: HardwareProfile, backend: InferenceBackendType, backendModelId: string): Promise<number | null> {
+    const residents = await this.residentsNow(profile);
+    return residentAs(residents.get(backend), backend, backendModelId)?.sizeMb ?? null;
+  }
+
+  /**
+   * What each resident model frees, per engine, in the units the budget counted that engine in (see
+   * {@link residentSharesMb}). `registry` rows are the engine NOT answering: there is nothing live to
+   * unload through it and nothing measured to size a model by.
+   */
+  private async residentsNow(profile: HardwareProfile): Promise<Map<InferenceBackendType, Map<string, number | null>>> {
+    const pool = modelPoolFor(profile);
+    const observation = await this.observe(profile.gpu.vendor);
+    const usage = deriveModelMemoryUsage({ pool, observation, tracked: this.modelRegistry.getLoadedModels() });
+    const catalog = this.modelRegistry.getCatalog();
+    const residents = new Map<InferenceBackendType, Map<string, number | null>>();
+    for (const entry of usage.backends) {
+      if (entry.source === 'registry') continue;
+      const reported = observation.residency.get(entry.backend)?.models ?? [];
+      residents.set(
+        entry.backend,
+        residentSharesMb(entry, reported, pool, (id) => catalogRowFor(catalog, entry.backend, id)?.runtime.memoryFootprintMb ?? null),
+      );
+    }
+    return residents;
+  }
+
+  /**
    * What `backendModelId` was last measured occupying on `backend` here, at what window, or null
    * when it has never been seen resident in a way that can be attributed to it (see
    * {@link attributeSightings}). Measures first, through the same cached observation the budget
@@ -318,35 +417,10 @@ export class MemoryManagerService {
     keep: { backend: InferenceBackendType; backendModelId: string },
     options: EvictionOptions,
   ): Promise<EvictionPlan> {
-    const pool = modelPoolFor(profile);
-    const observation = await this.observe(profile.gpu.vendor);
-    const usage = deriveModelMemoryUsage({ pool, observation, tracked: this.modelRegistry.getLoadedModels() });
+    const residents = await this.residentsNow(profile);
     const tracked = this.modelRegistry.getTrackedModels();
     const catalog = this.modelRegistry.getCatalog();
-    const catalogRow = (backend: InferenceBackendType, backendModelId: string) =>
-      catalog.find((model) => model.backend === backend && sameEngineModelId(backend, model.backendModelId, backendModelId));
-
-    // What each resident model frees, per engine. `registry` rows are the engine NOT answering: there
-    // is nothing live to unload through it, and nothing measured to size a candidate by.
-    const residents = new Map<InferenceBackendType, Map<string, number | null>>();
-    for (const entry of usage.backends) {
-      if (entry.source === 'registry') continue;
-      const reported = observation.residency.get(entry.backend)?.models ?? [];
-      residents.set(
-        entry.backend,
-        residentSharesMb(entry, reported, pool, (id) => catalogRow(entry.backend, id)?.runtime.memoryFootprintMb ?? null),
-      );
-    }
-    /**
-     * The engine's own spelling of `backendModelId` and what unloading it frees, or `undefined` when it
-     * is not resident. The exact spelling wins where the engine lists both, so a Hub load is never
-     * matched to a different resident that only folds to the same name.
-     */
-    const residentAs = (backend: InferenceBackendType, backendModelId: string): { id: string; sizeMb: number | null } | undefined => {
-      const held = [...(residents.get(backend) ?? [])];
-      const found = held.find(([id]) => id === backendModelId) ?? held.find(([id]) => sameEngineModelId(backend, id, backendModelId));
-      return found ? { id: found[0], sizeMb: found[1] } : undefined;
-    };
+    const catalogRow = (backend: InferenceBackendType, backendModelId: string) => catalogRowFor(catalog, backend, backendModelId);
 
     const busy: string[] = [];
     const busyFreesMb: number[] = [];
@@ -375,7 +449,7 @@ export class MemoryManagerService {
     };
 
     for (const model of this.modelRegistry.getEvictionCandidates()) {
-      const resident = residentAs(model.backend, model.backendModelId);
+      const resident = residentAs(residents.get(model.backend), model.backend, model.backendModelId);
       if (!resident) continue;
       add({ backend: model.backend, backendModelId: resident.id, catalogId: model.catalogId, estimatedMb: resident.sizeMb });
     }
@@ -461,7 +535,22 @@ export class MemoryManagerService {
     profile: HardwareProfile,
     memoryFootprintMb: number,
     model?: { backend: InferenceBackendType; backendModelId: string },
-  ): Promise<{ canPin: boolean; reason?: string }> {
+  ): Promise<{ canPin: boolean; reason?: string; final?: true }> {
+    // A pin holds the model for good at the window the Hub picks. With the card's size unknown,
+    // nothing can say that it fits there: sized on RAM, a pin on the 8 GB card in #2078 would load at
+    // the 64K window that ran 70% on the CPU. Loads still go through on RAM (see modelPoolFor). A
+    // pin is refused before anything loads for it.
+    // Plain text: the reason ends up in a toast, which shows markdown as typed.
+    if (discreteVramUnknown(profile)) {
+      const askedBy = profile.gpu.vendor === 'nvidia' ? ' (nvidia-smi on the host)' : '';
+      return {
+        canPin: false,
+        final: true,
+        reason:
+          "The Hub doesn't know this GPU's memory yet (VRAM Unknown), so it can't tell whether a pinned model fits. " +
+          `Restart the desktop app or run cihub up so the Hub can read it${askedBy}, then pin again.`,
+      };
+    }
     const budget = await this.calculateBudget(profile);
     const pinnedMb = (model ? this.sightingOf(model.backend, model.backendModelId)?.footprintMb : undefined) ?? memoryFootprintMb;
 
@@ -642,6 +731,26 @@ export type EvictionPlan = {
   idleWouldFree?: boolean;
 };
 
+/** The catalog row for `backendModelId` on `backend`, however the engine spells it. */
+function catalogRowFor(catalog: readonly CuratedModel[], backend: InferenceBackendType, backendModelId: string): CuratedModel | undefined {
+  return catalog.find((model) => model.backend === backend && sameEngineModelId(backend, model.backendModelId, backendModelId));
+}
+
+/**
+ * The engine's own spelling of `backendModelId` among `held` and what it holds, or `undefined` when
+ * it is not resident. The exact spelling wins where the engine lists both, so a model is never
+ * matched to a different resident that only folds to the same name.
+ */
+function residentAs(
+  held: ReadonlyMap<string, number | null> | undefined,
+  backend: InferenceBackendType,
+  backendModelId: string,
+): { id: string; sizeMb: number | null } | undefined {
+  const entries = [...(held ?? [])];
+  const found = entries.find(([id]) => id === backendModelId) ?? entries.find(([id]) => sameEngineModelId(backend, id, backendModelId));
+  return found ? { id: found[0], sizeMb: found[1] } : undefined;
+}
+
 /** Keyed under {@link engineModelKey}'s folding, so the kept model and a pin match however the engine spells them. */
 function evictionKey(backend: InferenceBackendType, backendModelId: string): string {
   return `${backend}\u0000${engineModelKey(backend, backendModelId)}`;
@@ -762,9 +871,25 @@ function attributeSightings(
   return out;
 }
 
-/** Where models live on this node. Mirrors the branch the budget has always taken. */
+/**
+ * Where models live on this node, as far as the budget can tell. Mirrors the branch the budget has
+ * always taken, with one addition: a discrete card whose memory is unknown ({@link discreteVramUnknown})
+ * is budgeted on system RAM, like a node without a GPU. Budgeted on its 0 MB it refused every load
+ * ("needs 1348 MB but only 0 MB is free") while Ollama, which places what the card cannot take in
+ * RAM, could have served it.
+ */
 export function modelPoolFor(profile: HardwareProfile): 'vram' | 'ram' {
-  return profile.gpu.unifiedMemory || !profile.gpu.available ? 'ram' : 'vram';
+  return profile.gpu.unifiedMemory || !profile.gpu.available || discreteVramUnknown(profile) ? 'ram' : 'vram';
+}
+
+/**
+ * A discrete card the Hub found but could not size: no nvidia-smi figure in the container and no
+ * host probe (`nvidia.json`), which a driver update without a reboot, or any nvidia-smi failure,
+ * leaves missing. The AI tab says "VRAM Unknown"; loads are budgeted on RAM and pins refused.
+ */
+export function discreteVramUnknown(profile: HardwareProfile): boolean {
+  const { gpu } = profile;
+  return gpu.available && !gpu.unifiedMemory && !(gpu.vramMb > 0) && !((gpu.poolVramMb ?? 0) > 0);
 }
 
 /**

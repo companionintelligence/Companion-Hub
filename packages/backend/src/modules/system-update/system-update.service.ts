@@ -1,8 +1,9 @@
 import { spawn } from 'node:child_process';
-import os from 'node:os';
+import { isIPv4 } from 'node:net';
 import path from 'node:path';
 import fs from 'node:fs';
 import axios from 'axios';
+import * as semver from 'semver';
 import {
   BadRequestException,
   ConflictException,
@@ -12,7 +13,15 @@ import {
   type OnApplicationShutdown,
   Optional,
 } from '@nestjs/common';
-import { DATA_DIR, HUB_STACK_IMAGE_REPO, HUB_STACK_REGISTRY_REPO, UPDATE_LISTENER_TOKEN_FILENAME, hubContainerName } from '@/common/constants';
+import {
+  DATA_DIR,
+  DEFAULT_RABBITMQ_PASSWORD,
+  HUB_STACK_IMAGE_REPO,
+  HUB_STACK_REGISTRY_REPO,
+  UPDATE_LISTENER_HOST_FILENAME,
+  UPDATE_LISTENER_TOKEN_FILENAME,
+  selfContainerCandidates,
+} from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { RegistryService } from '@/utils/registry/registry.service';
@@ -31,6 +40,7 @@ import {
   type RunningHubBuild,
   selectReleaseTarget,
 } from './hub-deployment';
+import type { UpdateBlocks } from './dto/update-blocks.dto';
 import { buildStackUpdaterRunArgs, buildStackUpdaterScript, ENV_RESTORE_VARIABLE, stackUpdaterContainerName } from './stack-updater';
 
 export const HOST_LISTENER_PORT = 17400;
@@ -56,6 +66,13 @@ export type UpdateOptions = {
    * may be there to answer.
    */
   includeDesktopApp?: boolean;
+  /**
+   * With `includeDesktopApp: false`, still let the desktop app take the update when the updater
+   * container can't reproduce this Hub's stack, so nothing else can update it: a Windows install, or a
+   * compose layout the updater can't pin. A browser on another computer asks for this, so it can still
+   * update such a Hub. The daily check doesn't, because nobody may be there to answer a password prompt.
+   */
+  desktopAppWhenOnlyWay?: boolean;
 };
 
 /** Hub container probe — `/.dockerenv` plus Podman's containerenv. Not the `/data` heuristic. */
@@ -67,10 +84,35 @@ export function detectHubContainer(): boolean {
   }
 }
 
-/** From inside Docker, the desktop listener is on the host — not this container's loopback. */
+/**
+ * From inside Docker, the desktop listener is on the host, not this container's loopback. That is
+ * host.docker.internal, except on the Docker engine inside WSL, where host.docker.internal is the WSL
+ * VM and the listener runs on Windows. There the desktop app records the Windows host's address on
+ * the WSL adapter in `state/` (CI-Hub#1934).
+ */
 export function resolveHostListenerBaseUrl(inContainer: boolean = detectHubContainer()): string {
-  const host = inContainer ? 'host.docker.internal' : '127.0.0.1';
+  const host = inContainer ? (readRecordedListenerHost() ?? 'host.docker.internal') : '127.0.0.1';
   return `http://${host}:${HOST_LISTENER_PORT}`;
+}
+
+/**
+ * The listener address the desktop app recorded, or null. Whatever answers there gets the listener
+ * token, so it is read like the token, and only a private (RFC 1918) IPv4 address counts.
+ */
+function readRecordedListenerHost(): string | null {
+  const address = readListenerTokenFile(path.join(DATA_DIR, 'state', UPDATE_LISTENER_HOST_FILENAME));
+  return address && isRfc1918Ipv4(address) ? address : null;
+}
+
+/**
+ * The Windows host's address on the WSL adapter is one of these. `isPrivateOrLocalIp` also takes
+ * loopback, link-local (the cloud metadata address among them) and CGNAT (every tailnet peer),
+ * none of which is where the listener runs.
+ */
+function isRfc1918Ipv4(address: string): boolean {
+  if (!isIPv4(address)) return false;
+  const [a, b = -1] = address.split('.').map(Number);
+  return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
 }
 
 /** The desktop app writes a 48-character token; anything much bigger in its place is not one. */
@@ -102,6 +144,16 @@ function readListenerTokenFile(tokenPath: string): string | null {
   }
 }
 
+/** Whether anything sits at `tokenPath`, even a file the Hub can't read or use. Doesn't follow a symlink. */
+function listenerTokenFileExists(tokenPath: string): boolean {
+  try {
+    fs.lstatSync(tokenPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** GHCR tags are unprefixed (`0.2.56`). A leading `v` makes the pull 404. */
 function normalizeHubVersionTag(version: string): string {
   const tag = version.trim();
@@ -109,15 +161,6 @@ function normalizeHubVersionTag(version: string): string {
     throw new BadRequestException(HUB_VERSION_TAG_MESSAGE);
   }
   return tag.replace(/^v/i, '');
-}
-
-/**
- * Where to look for this Hub's own container. The hostname is the container ID unless compose sets
- * `hostname:`, which makes it the one lookup that cannot find a different container; the names cover
- * the rest, legacy topology included.
- */
-function selfContainerCandidates(): string[] {
-  return [...new Set([os.hostname(), hubContainerName(), 'ci-hub', 'ci-os-hub'].filter(Boolean))];
 }
 
 const NOT_IN_CONTAINER_MESSAGE =
@@ -128,21 +171,36 @@ const HELPER_START_DELAY_SECONDS = 3;
 
 type RunningHub = { container: DockerContainerInspect; image: DockerImageInspect | null; build: RunningHubBuild };
 
-export type UpdateCheckResult = {
+/**
+ * `updateBlockedReason` is why this node will not be updated by the Hub, even when a newer release
+ * exists. `autoUpdateBlockedReason` is the same answer for the daily auto-update, which never hands
+ * the update to the desktop app, so it can be set while the other is not: on a Windows desktop
+ * install, for one.
+ */
+export type UpdateCheckResult = UpdateBlocks & {
   current: string;
   latest: string;
   releases: { version: string; body: string }[];
   updateAvailable: boolean;
   /** The image, release and commit this Hub is running, read from Docker. Null when it could not be read. */
   build: { reference: string; version: string | null; revision: string | null; channel: RunningHubBuild['channel']['kind'] } | null;
-  /** Why this node will not be updated by the Hub, even when a newer release exists. */
-  updateBlockedReason: string | null;
 };
+
+/** Every answer is a refusal when the Hub cannot read its own container. */
+function blockedEverywhere(reason: string): UpdateBlocks {
+  return { updateBlockedReason: reason, autoUpdateBlockedReason: reason, desktopAppUpdatesHub: false };
+}
 
 @Injectable()
 export class SystemUpdateService implements OnApplicationBootstrap, OnApplicationShutdown {
   autoUpdateInterval: ReturnType<typeof setInterval> | null = null;
   private static readonly CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+  /**
+   * The release agents were last woken about. A check runs whenever someone presses Check for
+   * updates and whenever an agent calls `hub_check_for_updates`, so without this an agent that looks
+   * into the wake would wake itself again for the same release.
+   */
+  private announcedUpdate: string | null = null;
 
   constructor(
     private readonly logger: LoggerService,
@@ -176,29 +234,34 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
       running = await this.inspectRunningHub();
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      return { current: 'unknown', latest: 'unknown', releases: [], updateAvailable: false, build: null, updateBlockedReason: reason };
+      return { current: 'unknown', latest: 'unknown', releases: [], updateAvailable: false, build: null, ...blockedEverywhere(reason) };
     }
 
     const { build } = running;
     const current = describeRunningBuild(build);
-    let updateBlockedReason = channelUpdateRefusal(build, this.readDeclaredHubImage());
-    // performUpdate refuses a stack it cannot reproduce unless the desktop listener takes the update,
-    // which the daily check never lets it do. Without this the daily timer and Settings would offer it
-    // on core-3 and beta-3-glass (compose read `.env`, the Hub mounts `.env.dev`) and every attempt
-    // would end in a 409.
-    if (updateBlockedReason === null) {
-      const plan = resolveComposeUpdatePlan(running.container, this.composeMountTargets());
-      if (!plan.ok && !(includeDesktopApp && (await this.probeHostListener()))) {
-        updateBlockedReason = plan.reason;
-      }
-    }
+    const blocks = await this.resolveUpdateBlocks(running, includeDesktopApp);
     const tags = build.version ? await this.registryService.getTagsSinceWithHubFallback(HUB_STACK_REGISTRY_REPO, build.version) : [];
     const releases = tags.map((tag) => ({ version: tag, body: `Release ${tag}` }));
     const target = build.version ? selectReleaseTarget(build.version, tags) : null;
-    const updateAvailable = target !== null && updateBlockedReason === null;
+    const updateAvailable = target !== null && blocks.updateBlockedReason === null;
 
-    if (updateAvailable) {
-      this.agentNotifyService?.notify('system.update_available', { current, latest: target }, 'low');
+    // Only a release newer than the announced one wakes agents again. A registry answer that briefly
+    // lists fewer tags (a stale mirror, a pulled release) must not wake them about an older one.
+    const announcing = updateAvailable ? target : null;
+    if (announcing !== null && this.agentNotifyService && (this.announcedUpdate === null || semver.gt(announcing, this.announcedUpdate))) {
+      this.announcedUpdate = announcing;
+      void this.agentNotifyService
+        .notify('system.update_available', { current, latest: announcing }, 'low')
+        .catch((error: unknown) => {
+          this.logger.warn(`Could not wake agents about Hub ${announcing}: ${error instanceof Error ? error.message : String(error)}`);
+          return false;
+        })
+        .then((woken) => {
+          // Nobody heard it (no agent installed yet, below the floor, unreachable): a later check tries again.
+          if (!woken && this.announcedUpdate === announcing) {
+            this.announcedUpdate = null;
+          }
+        });
     }
 
     return {
@@ -207,7 +270,43 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
       releases,
       updateAvailable,
       build: { reference: build.reference, version: build.version, revision: build.revision, channel: build.channel.kind },
-      updateBlockedReason,
+      ...blocks,
+    };
+  }
+
+  /**
+   * Whether an update would be refused here, and why. Settings asks every time it opens, so this skips
+   * what `checkForUpdates` adds on top: the registry lookup and the `system.update_available` wake,
+   * which would otherwise reach every connected agent on each visit.
+   */
+  async getUpdateBlocks(): Promise<UpdateBlocks> {
+    let running: RunningHub;
+    try {
+      running = await this.inspectRunningHub();
+    } catch (error) {
+      return blockedEverywhere(error instanceof Error ? error.message : String(error));
+    }
+    return this.resolveUpdateBlocks(running, true);
+  }
+
+  // performUpdate refuses a stack it cannot reproduce unless the desktop listener takes the update,
+  // which the daily check never lets it do. Without this the daily timer and Settings would offer it
+  // on core-3 and beta-3-glass (compose read `.env`, the Hub mounts `.env.dev`) and every attempt
+  // would end in a 409.
+  private async resolveUpdateBlocks(running: RunningHub, includeDesktopApp: boolean): Promise<UpdateBlocks> {
+    const channelRefusal = channelUpdateRefusal(running.build, this.readDeclaredHubImage());
+    if (channelRefusal !== null) {
+      return { updateBlockedReason: channelRefusal, autoUpdateBlockedReason: channelRefusal, desktopAppUpdatesHub: false };
+    }
+    const plan = resolveComposeUpdatePlan(running.container, this.composeMountTargets());
+    if (plan.ok) {
+      return { updateBlockedReason: null, autoUpdateBlockedReason: null, desktopAppUpdatesHub: false };
+    }
+    const desktopAppTakesIt = includeDesktopApp && (await this.probeHostListener());
+    return {
+      updateBlockedReason: desktopAppTakesIt ? null : plan.reason,
+      autoUpdateBlockedReason: plan.reason,
+      desktopAppUpdatesHub: plan.updatedByDesktopApp === true,
     };
   }
 
@@ -269,6 +368,20 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     let lines = content.split('\n');
     lines = this.upsertEnvLine(lines, 'CI_HUB_IMAGE', imageLine);
     lines = this.upsertEnvLine(lines, 'CI_HUB_VERSION', targetVersion);
+    // Companion-Hub#884: the prod compose either falls back to the shared `admin` (older copies) or
+    // refuses to start (newer ones) when the env file names no broker password. When this Hub runs with
+    // a password other than `admin`, the broker accepts it, so writing it here keeps the recreated Hub
+    // on it. A Hub that runs on `admin` writes nothing: `admin` is never written to the file.
+    const fileRabbitmqPassword = readEnvFileValue(content, 'RABBITMQ_PASSWORD');
+    const runningRabbitmqPassword = process.env.RABBITMQ_PASSWORD;
+    if (
+      (!fileRabbitmqPassword || fileRabbitmqPassword === DEFAULT_RABBITMQ_PASSWORD) &&
+      runningRabbitmqPassword &&
+      runningRabbitmqPassword !== DEFAULT_RABBITMQ_PASSWORD
+    ) {
+      lines = this.upsertEnvLine(lines, 'RABBITMQ_PASSWORD', runningRabbitmqPassword);
+      this.logger.info(`Wrote the broker password this Hub runs with to ${envFile}, which had none or the shared default`);
+    }
     fs.writeFileSync(envFile, lines.join('\n'));
     this.logger.info(`Pinned stack update in ${envFile}: CI_HUB_IMAGE=${imageLine}, CI_HUB_VERSION=${targetVersion}`);
     return content;
@@ -290,8 +403,13 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     return path.join(logsDir, 'hub-stack-update.log');
   }
 
-  async getHostListenerStatus(): Promise<{ reachable: boolean }> {
-    return { reachable: await this.probeHostListener() };
+  /**
+   * `reachable`: the desktop app answers right now. `desktopApp`: a desktop app runs this Hub at all,
+   * open or closed. Only the desktop app writes the listener token, so a `cihub` install has none. A
+   * token the Hub can't read or use is still there, so it counts.
+   */
+  async getHostListenerStatus(): Promise<{ reachable: boolean; desktopApp: boolean }> {
+    return { reachable: await this.probeHostListener(), desktopApp: this.hostListenerTokenPaths().some(listenerTokenFileExists) };
   }
 
   async probeHostListener(): Promise<boolean> {
@@ -340,7 +458,10 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
    * When `includeDesktopApp` allows it and the desktop app's listener answers, the desktop app takes the
    * update instead: it installs its own new version, then recreates the stack on the new pin.
    */
-  async performUpdate(targetVersion?: string, { includeDesktopApp = true }: UpdateOptions = {}): Promise<PerformUpdateResult> {
+  async performUpdate(
+    targetVersion?: string,
+    { includeDesktopApp = true, desktopAppWhenOnlyWay = false }: UpdateOptions = {},
+  ): Promise<PerformUpdateResult> {
     const requested = targetVersion === undefined ? undefined : normalizeHubVersionTag(targetVersion);
 
     const running = await this.inspectRunningHub();
@@ -359,7 +480,8 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     const envFile = mountTargets.envFile;
     const planResult = resolveComposeUpdatePlan(running.container, mountTargets);
 
-    const listenerReachable = includeDesktopApp && (await this.probeHostListener());
+    const desktopAppMayTakeIt = includeDesktopApp || (desktopAppWhenOnlyWay && !planResult.ok);
+    const listenerReachable = desktopAppMayTakeIt && (await this.probeHostListener());
     if (listenerReachable) {
       const previous = this.pinHubStackVersionInEnv(envFile, pinned);
       const host = await this.triggerHostListener();
@@ -615,12 +737,16 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
    * root, which only a Hub running on the host can see, so that file is the fallback.
    */
   private getHostUpdateListenerToken(): string | null {
-    for (const tokenPath of [path.join(DATA_DIR, 'state', UPDATE_LISTENER_TOKEN_FILENAME), path.join(DATA_DIR, UPDATE_LISTENER_TOKEN_FILENAME)]) {
+    for (const tokenPath of this.hostListenerTokenPaths()) {
       const token = readListenerTokenFile(tokenPath);
       if (token) {
         return token;
       }
     }
     return null;
+  }
+
+  private hostListenerTokenPaths(): string[] {
+    return [path.join(DATA_DIR, 'state', UPDATE_LISTENER_TOKEN_FILENAME), path.join(DATA_DIR, UPDATE_LISTENER_TOKEN_FILENAME)];
   }
 }

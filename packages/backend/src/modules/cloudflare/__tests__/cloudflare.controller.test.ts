@@ -86,6 +86,49 @@ describe('CloudflareController', () => {
       expect(result).toEqual(answer);
     });
 
+    /*
+     * Right after a re-pair the Portal still holds the names this Hub had before its reinstall, and the
+     * Hub has not synced yet. Its own old name read "DNS record already exists" for up to two hours (#2133).
+     */
+    describe("a taken name the Portal says is this device's own", () => {
+      const taken = { available: false, reason: 'hostname_taken' as const, message: 'DNS record already exists for game-core-2-acme.ci0.pw' };
+
+      beforeEach(() => {
+        hostnameService.resolvesToExistingAppHostname.mockResolvedValue(false);
+      });
+
+      it("is available when it is this Hub's own from before the pairing", async () => {
+        cfService.checkDnsAvailability.mockResolvedValue({ ...taken, heldByCaller: true });
+        hostnameService.isOwnNameFromBeforePairing.mockResolvedValue(true);
+
+        await expect(controller.checkDnsAvailability('game', 'ci0.pw')).resolves.toEqual({ available: true });
+        expect(hostnameService.isOwnNameFromBeforePairing).toHaveBeenCalledWith('game', undefined);
+      });
+
+      // The app being set up does not count against its own old name.
+      it('asks about the name for the app being set up', async () => {
+        cfService.checkDnsAvailability.mockResolvedValue({ ...taken, heldByCaller: true });
+        hostnameService.isOwnNameFromBeforePairing.mockResolvedValue(true);
+
+        await expect(controller.checkDnsAvailability('game', 'ci0.pw', 'game:ci-marketplace')).resolves.toEqual({ available: true });
+        expect(hostnameService.isOwnNameFromBeforePairing).toHaveBeenCalledWith('game', 'game:ci-marketplace');
+      });
+
+      it('stays taken otherwise, and the forms never see the flag', async () => {
+        cfService.checkDnsAvailability.mockResolvedValue({ ...taken, heldByCaller: true });
+        hostnameService.isOwnNameFromBeforePairing.mockResolvedValue(false);
+
+        await expect(controller.checkDnsAvailability('game', 'ci0.pw')).resolves.toEqual(taken);
+      });
+
+      it("is not asked about a name that is not this device's own", async () => {
+        cfService.checkDnsAvailability.mockResolvedValue(taken);
+
+        await expect(controller.checkDnsAvailability('game', 'ci0.pw')).resolves.toEqual(taken);
+        expect(hostnameService.isOwnNameFromBeforePairing).not.toHaveBeenCalled();
+      });
+    });
+
     it('treats an invalid appUrn query as absent instead of throwing', async () => {
       hostnameService.resolvesToExistingAppHostname.mockResolvedValue(false);
       cfService.checkDnsAvailability.mockResolvedValue({

@@ -162,6 +162,70 @@ describe('scrubEvent transient DB handling', () => {
   });
 });
 
+describe('scrubEvent infrastructure noise', () => {
+  function errorEvent(value: string, type = 'Error', extra: Record<string, unknown> = {}) {
+    return {
+      level: 'error',
+      exception: { values: [{ type, value }] },
+      tags: {},
+      ...extra,
+    } as unknown as ErrorEvent;
+  }
+
+  it('downgrades a Postgres login refusal, which the scrubber has already filtered', () => {
+    const cause = Object.assign(new Error('password authentication failed for user "companion"'), { code: '28P01' });
+    const result = scrubEvent(errorEvent('error: [Filtered] failed for user "companion"'), { originalException: cause });
+
+    expect(result?.level).toBe('warning');
+    expect(result?.fingerprint).toEqual(['database-credentials-rejected']);
+    expect(result?.tags?.error_class).toBe('database-credentials-rejected');
+  });
+
+  it.each([
+    ['AMQPConnectionError', 'AMQPConnectionError: channel creation failed; connection is closing', 'queue-unavailable'],
+    ['a queue command on a closed channel', 'Marketplace app start failed: ci-openclaw:ci-marketplace: channel is closed', 'queue-unavailable'],
+    ['a docker socket the Hub may not open', 'Error: connect EACCES /var/run/docker.sock', 'docker-socket-permission'],
+    ['a host file the Hub may not write', "Error: EACCES: permission denied, open '/home/x/.env'", 'host-permission-denied'],
+    ['a sqlite file on a read-only volume', 'Error: attempt to write a readonly database', 'host-database-file'],
+    ['a tailscale CLI that failed', 'Error: Command failed: /usr/bin/tailscale down', 'tailscale-command-failed'],
+    ['a model that stayed silent', 'Error: No response headers within 801000ms', 'upstream-timeout'],
+    ['a peer that closed the socket mid-fetch', 'SocketError: other side closed', 'upstream-closed'],
+    ['a service behind a certificate the device does not trust', 'TypeError: self-signed certificate', 'upstream-tls-untrusted'],
+  ])('groups %s as warning under its own fingerprint', (_label, message, errorClass) => {
+    const result = scrub(errorEvent(message));
+
+    expect(result.level).toBe('warning');
+    expect(result.fingerprint).toEqual([errorClass]);
+    expect(result.tags?.error_class).toBe(errorClass);
+  });
+
+  it('groups a client that hung up mid-body as warning', () => {
+    const result = scrub(errorEvent('terminated', 'TypeError'));
+
+    expect(result.level).toBe('warning');
+    expect(result.fingerprint).toEqual(['client-aborted']);
+  });
+
+  it('leaves a capture site that already classified its app failure alone', () => {
+    const event = errorEvent('channel is closed', 'Error', {
+      message: 'Marketplace app start failed: ci-openclaw:ci-marketplace: channel is closed',
+      fingerprint: ['app-failure', 'start', 'queue-unavailable'],
+      tags: { error_class: 'queue-unavailable' },
+    });
+
+    const result = scrub(event);
+
+    expect(result.fingerprint).toEqual(['app-failure', 'start', 'queue-unavailable']);
+  });
+
+  it('keeps an ordinary hub defect as an error', () => {
+    const result = scrub(errorEvent("Cannot read properties of undefined (reading 'id')", 'TypeError'));
+
+    expect(result.level).toBe('error');
+    expect(result.fingerprint).toBeUndefined();
+  });
+});
+
 describe('key denylist', () => {
   it('filters hyphenated api-key headers, signatures and identity keys', () => {
     // A bare credential value matches no SECRET_PATTERN, so the KEY is the only

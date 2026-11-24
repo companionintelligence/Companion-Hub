@@ -1,3 +1,4 @@
+import type { ModuleRef } from '@nestjs/core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import type { ConfigurationService } from '@/core/config/configuration.service';
@@ -5,15 +6,17 @@ import type { LoggerService } from '@/core/logger/logger.service';
 import type { AppStoreService } from '@/modules/app-stores/app-store.service';
 import type { AppsRepository } from '@/modules/apps/apps.repository';
 import type { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.service';
+import { PortExposeService } from '@/modules/custom-apps/port-expose.service';
 import type { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import type { RegistrationService } from '@/modules/registration/registration.service';
 import type { AppRehydrationService, RehydrationExecuteResult } from '../app-rehydration.service';
 import type { DeviceKeyRefreshService } from '../device-key-refresh.service';
+import type { OriginHostRefreshService } from '../origin-host-refresh.service';
 import type { ExposureSyncService } from '../exposure-sync.service';
 import { PairingAppRestoreService } from '../pairing-app-restore.service';
 import * as recovery from '../registration-recovery-state';
 import type { PairingAppCheckFile } from '../registration-recovery-state';
-import type { RehydrationStateFile } from '../app-rehydration';
+import { CatalogStillDownloadingError, type RehydrationStateFile } from '../app-rehydration';
 
 vi.mock('../registration-recovery-state', () => ({
   readPairingAppCheck: vi.fn(),
@@ -23,6 +26,7 @@ vi.mock('../registration-recovery-state', () => ({
   writeRestoreIntent: vi.fn(),
   clearRestoreIntent: vi.fn(),
   readRehydrationState: vi.fn(),
+  startRestoreNotice: vi.fn(),
 }));
 
 const portalApp = (name: string) => ({ id: `id-${name}`, name, slug: name, port: 80, publicDomain: null });
@@ -49,6 +53,7 @@ describe('PairingAppRestoreService', () => {
     check: PairingAppCheckFile | null;
     restoreIntent: boolean;
     rehydration: RehydrationStateFile | null;
+    noticeStarted: boolean;
   };
   let registration: MockProxy<RegistrationService>;
   let cloudflare: MockProxy<CloudflareClientService>;
@@ -58,6 +63,9 @@ describe('PairingAppRestoreService', () => {
   let rehydration: MockProxy<AppRehydrationService>;
   let exposureSync: MockProxy<ExposureSyncService>;
   let keyRefresh: MockProxy<DeviceKeyRefreshService>;
+  let originRefresh: MockProxy<OriginHostRefreshService>;
+  let portExpose: MockProxy<PortExposeService>;
+  let moduleRef: MockProxy<ModuleRef>;
   let config: { getConfig: () => { ciHubApiKey: string | null } };
   let service: PairingAppRestoreService;
 
@@ -67,7 +75,10 @@ describe('PairingAppRestoreService', () => {
     vi.clearAllMocks();
 
     // The state files, in memory, so what one pass writes the next one reads.
-    state = { check: { markedAt: pairedAt }, restoreIntent: false, rehydration: null };
+    state = { check: { markedAt: pairedAt }, restoreIntent: false, rehydration: null, noticeStarted: false };
+    vi.mocked(recovery.startRestoreNotice).mockImplementation(async () => {
+      state.noticeStarted = true;
+    });
     vi.mocked(recovery.readPairingAppCheck).mockImplementation(async () => state.check);
     vi.mocked(recovery.writePairingAppCheck).mockImplementation(async (check) => {
       state.check = check ?? { markedAt: new Date().toISOString() };
@@ -102,7 +113,13 @@ describe('PairingAppRestoreService', () => {
     exposureSync.syncExposurePublic.mockResolvedValue(undefined);
     keyRefresh = mock<DeviceKeyRefreshService>();
     keyRefresh.refreshStaleDeviceKeys.mockResolvedValue([]);
+    originRefresh = mock<OriginHostRefreshService>();
+    originRefresh.refreshStaleOriginHosts.mockResolvedValue([]);
     config = { getConfig: () => ({ ciHubApiKey: 'new-device-key' }) };
+    portExpose = mock<PortExposeService>();
+    portExpose.releaseUnrestoredRegistryEntries.mockResolvedValue([]);
+    moduleRef = mock<ModuleRef>();
+    moduleRef.get.mockImplementation(((token: unknown) => (token === PortExposeService ? portExpose : undefined)) as never);
 
     service = new PairingAppRestoreService(
       mock<LoggerService>(),
@@ -115,6 +132,8 @@ describe('PairingAppRestoreService', () => {
       rehydration,
       exposureSync,
       keyRefresh,
+      originRefresh,
+      moduleRef,
     );
   });
 
@@ -154,6 +173,41 @@ describe('PairingAppRestoreService', () => {
       expect(exposureSync.syncExposurePublic).not.toHaveBeenCalled();
     });
 
+    /*
+     * Nobody is signed in while this runs, so the person who signs in next was never on the restore
+     * page. What sent them there was a choice one browser had stored; everyone else got the setup
+     * wizard on a Hub that already had its apps. An app that failed was only in the log.
+     */
+    it('leaves a notice of the restore for whoever signs in next', async () => {
+      await service.runCheck();
+
+      expect(state.noticeStarted).toBe(true);
+      expect(vi.mocked(recovery.startRestoreNotice).mock.invocationCallOrder[0]).toBeLessThan(
+        rehydration.executeRehydrate.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+      );
+    });
+
+    // A factory reset removed the check while the pass waited on the Portal. Written back, it named the old device's apps.
+    it('writes no check back when a forget overtook the pass', async () => {
+      let answer: (value: ReturnType<typeof portalApp>[]) => void = () => undefined;
+      cloudflare.getDeviceApplications.mockReturnValueOnce(
+        new Promise((resolve) => {
+          answer = resolve;
+        }) as never,
+      );
+
+      const pass = service.runCheck();
+      await vi.waitFor(() => expect(cloudflare.getDeviceApplications).toHaveBeenCalled());
+      state.check = null;
+      service.forget();
+      answer([portalApp('wordpress')]);
+
+      await expect(pass).resolves.toBe('none');
+      expect(state.check).toBeNull();
+      expect(state.restoreIntent).toBe(false);
+      expect(rehydration.executeRehydrate).not.toHaveBeenCalled();
+    });
+
     it('lifts the hold and syncs once the restored apps have settled', async () => {
       apps.getApps.mockResolvedValueOnce([]).mockResolvedValue([localApp('wordpress', 'installing')]);
       await service.runCheck();
@@ -168,6 +222,58 @@ describe('PairingAppRestoreService', () => {
       expect(state.restoreIntent).toBe(false);
       expect(exposureSync.syncExposurePublic).toHaveBeenCalledTimes(1);
       expect(keyRefresh.refreshStaleDeviceKeys).toHaveBeenCalled();
+    });
+
+    /*
+     * The sync releases every app the Hub no longer has except the ports exposed This Machine Only or on
+     * the Private VPN, which only the Hub removes. A restore that could not bring one back left its
+     * entry on the Portal for good (#2134).
+     */
+    it('removes the Portal entries for exposed ports the restore did not bring back, before it syncs', async () => {
+      apps.getApps.mockResolvedValueOnce([]).mockResolvedValue([localApp('wordpress', 'installing')]);
+      await service.runCheck();
+      expect(portExpose.releaseUnrestoredRegistryEntries).not.toHaveBeenCalled();
+
+      const afterRestore = [portalApp('wordpress'), { ...portalApp('notes'), pinned: true, port: 8091 }];
+      cloudflare.getDeviceApplications.mockResolvedValue(afterRestore);
+      portExpose.releaseUnrestoredRegistryEntries.mockResolvedValue(['notes']);
+      apps.getApps.mockResolvedValue([localApp('wordpress'), localApp('ci-memory'), localApp('ci-hermes')]);
+
+      await expect(service.runCheck()).resolves.toBe('released');
+
+      // Read again after the restore: a port it put back has registered itself since.
+      expect(portExpose.releaseUnrestoredRegistryEntries).toHaveBeenCalledWith(afterRestore);
+      expect(portExpose.releaseUnrestoredRegistryEntries.mock.invocationCallOrder[0]).toBeLessThan(
+        exposureSync.syncExposurePublic.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+      );
+    });
+
+    it('still lifts the hold when those entries cannot be removed', async () => {
+      apps.getApps.mockResolvedValueOnce([]).mockResolvedValue([localApp('wordpress', 'installing')]);
+      await service.runCheck();
+
+      portExpose.releaseUnrestoredRegistryEntries.mockRejectedValue(new Error('Portal unreachable'));
+      apps.getApps.mockResolvedValue([localApp('wordpress'), localApp('ci-memory'), localApp('ci-hermes')]);
+
+      await expect(service.runCheck()).resolves.toBe('released');
+      expect(exposureSync.syncExposurePublic).toHaveBeenCalledTimes(1);
+    });
+
+    // Removing those entries asks the Portal twice. A factory reset meanwhile owns the next pairing's check.
+    it('does not lift the hold when a forget overtook the removal of those entries', async () => {
+      apps.getApps.mockResolvedValueOnce([]).mockResolvedValue([localApp('wordpress', 'installing')]);
+      await service.runCheck();
+
+      apps.getApps.mockResolvedValue([localApp('wordpress'), localApp('ci-memory'), localApp('ci-hermes')]);
+      portExpose.releaseUnrestoredRegistryEntries.mockImplementation(async () => {
+        service.forget();
+        return [];
+      });
+      const clearsBefore = vi.mocked(recovery.clearPairingAppCheck).mock.calls.length;
+
+      await expect(service.runCheck()).resolves.toBe('none');
+      expect(vi.mocked(recovery.clearPairingAppCheck).mock.calls.length).toBe(clearsBefore);
+      expect(exposureSync.syncExposurePublic).not.toHaveBeenCalled();
     });
 
     it('syncs anyway once an install has held it past the deadline', async () => {
@@ -230,6 +336,91 @@ describe('PairingAppRestoreService', () => {
       await expect(service.runCheck()).resolves.toBe('held');
       expect(rehydration.executeRehydrate).toHaveBeenCalledTimes(1);
     });
+
+    // A factory reset starts a catalog download. The pairing after it came while it ran. A second download wrote the same folders at once.
+    it('starts no second catalog download while one is under way', async () => {
+      rehydration.executeRehydrate.mockRejectedValue(
+        new Error('CI Portal lists 3 app(s) for this device, but the app catalog is still downloading, so they cannot be restored yet'),
+      );
+      marketplace.getAvailableAppUrns.mockResolvedValue([]);
+      appStores.isDownloadingCatalog.mockReturnValue(true);
+
+      await expect(service.runCheck()).resolves.toBe('held');
+
+      expect(appStores.pullRepositories).not.toHaveBeenCalled();
+      expect(state.check).not.toBeNull();
+      expect(exposureSync.syncExposurePublic).not.toHaveBeenCalled();
+    });
+
+    // The reset empties `repos/`. A pairing within ten minutes of the last pairing's download found the catalog empty and fetched none.
+    it('downloads the catalog for the next pairing after forget, inside the last download cooldown', async () => {
+      rehydration.executeRehydrate.mockRejectedValue(
+        new Error('CI Portal lists 3 app(s) for this device, but the app catalog has not been downloaded yet'),
+      );
+      marketplace.getAvailableAppUrns.mockResolvedValue([]);
+      await expect(service.runCheck()).resolves.toBe('held');
+      expect(appStores.pullRepositories).toHaveBeenCalledTimes(1);
+
+      service.forget();
+      state.check = { markedAt: new Date().toISOString() };
+
+      await expect(service.runCheck()).resolves.toBe('held');
+      expect(appStores.pullRepositories).toHaveBeenCalledTimes(2);
+    });
+
+    // A pass still waiting on the Portal when the reset ran found the catalog the reset emptied. Its download
+    // ran before the reset put the store back, fetched nothing and set the cooldown again.
+    it('starts no catalog download from a pass that began before forget', async () => {
+      rehydration.executeRehydrate.mockImplementationOnce(async () => {
+        service.forget();
+        throw new Error('CI Portal lists 3 app(s) for this device, but the app catalog has not been downloaded yet');
+      });
+      marketplace.getAvailableAppUrns.mockResolvedValue([]);
+
+      await expect(service.runCheck()).resolves.toBe('held');
+      expect(appStores.pullRepositories).not.toHaveBeenCalled();
+
+      rehydration.executeRehydrate.mockRejectedValue(
+        new Error('CI Portal lists 3 app(s) for this device, but the app catalog has not been downloaded yet'),
+      );
+      await expect(service.runCheck()).resolves.toBe('held');
+      expect(appStores.pullRepositories).toHaveBeenCalledTimes(1);
+    });
+
+    // The restore can wait a minute on a catalog download. A reset and the next pairing can come meanwhile.
+    it("leaves the next pairing's check alone when a reset came while the restore ran", async () => {
+      const nextPairing = { markedAt: new Date(Date.now() + 1_000).toISOString() };
+      rehydration.executeRehydrate.mockImplementationOnce(async () => {
+        service.forget();
+        state.check = nextPairing;
+        return completedRun();
+      });
+
+      await expect(service.runCheck()).resolves.toBe('none');
+
+      expect(state.check).toBe(nextPairing);
+      expect(exposureSync.syncExposurePublic).not.toHaveBeenCalled();
+    });
+
+    // A download under way ends on its own. Counted as a failure, each pass doubled the wait, up to five minutes.
+    it('asks again at the next pass, without backing off, while the catalog downloads', async () => {
+      vi.useFakeTimers({ now: Date.now() });
+      try {
+        rehydration.executeRehydrate.mockRejectedValue(
+          new CatalogStillDownloadingError('CI Portal lists 3 app(s) for this device, but the app catalog is still downloading'),
+        );
+        appStores.isDownloadingCatalog.mockReturnValue(true);
+
+        for (let pass = 1; pass <= 3; pass++) {
+          await expect(service.runCheck()).resolves.toBe('held');
+          expect(rehydration.executeRehydrate).toHaveBeenCalledTimes(pass);
+          vi.advanceTimersByTime(PairingAppRestoreService.REQUEST_MIN_INTERVAL_MS);
+        }
+        expect(appStores.pullRepositories).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   it('holds app sync and retries when the Portal cannot be asked for the apps', async () => {
@@ -269,6 +460,7 @@ describe('PairingAppRestoreService', () => {
 
     expect(state.check).toBeNull();
     expect(state.restoreIntent).toBe(false);
+    expect(state.noticeStarted).toBe(false);
     expect(rehydration.executeRehydrate).not.toHaveBeenCalled();
     expect(exposureSync.syncExposurePublic).toHaveBeenCalledTimes(1);
   });
@@ -284,6 +476,36 @@ describe('PairingAppRestoreService', () => {
     expect(exposureSync.syncExposurePublic).toHaveBeenCalledTimes(1);
     // Memory stayed installed across the re-pair, so it is handed the key this pairing issued.
     expect(keyRefresh.refreshStaleDeviceKeys).toHaveBeenCalledTimes(1);
+  });
+
+  it('moves running apps onto a new device name, skipping the ones the key refresh already restarted (#2178)', async () => {
+    cloudflare.getDeviceApplications.mockResolvedValue([portalApp('wordpress'), portalApp('ci-memory')]);
+    apps.getApps.mockResolvedValue([localApp('wordpress'), localApp('ci-memory')]);
+    keyRefresh.refreshStaleDeviceKeys.mockResolvedValue(['ci-memory:ci-marketplace'] as never);
+
+    await expect(service.runCheck()).resolves.toBe('released');
+
+    expect(originRefresh.refreshStaleOriginHosts).toHaveBeenCalledWith(['ci-memory:ci-marketplace']);
+  });
+
+  it('moves exposed ports onto a new device name too, since their routes are not in a compose file', async () => {
+    cloudflare.getDeviceApplications.mockResolvedValue([portalApp('wordpress')]);
+    apps.getApps.mockResolvedValue([localApp('wordpress')]);
+
+    await expect(service.runCheck()).resolves.toBe('released');
+
+    expect(portExpose.syncPortExposeRoutes).toHaveBeenCalledTimes(1);
+  });
+
+  it('still moves apps onto a new device name when the key refresh fails', async () => {
+    cloudflare.getDeviceApplications.mockResolvedValue([portalApp('wordpress')]);
+    apps.getApps.mockResolvedValue([localApp('wordpress')]);
+    keyRefresh.refreshStaleDeviceKeys.mockRejectedValue(new Error('env unreadable'));
+
+    await expect(service.runCheck()).resolves.toBe('released');
+
+    expect(originRefresh.refreshStaleOriginHosts).toHaveBeenCalledWith([]);
+    expect(exposureSync.syncExposurePublic).toHaveBeenCalledTimes(1);
   });
 
   it('waits while an app the Portal lists is still installing, so the sync does not leave it out', async () => {
@@ -305,6 +527,31 @@ describe('PairingAppRestoreService', () => {
 
     expect(rehydration.executeRehydrate).toHaveBeenCalledTimes(1);
     expect(state.restoreIntent).toBe(false);
+  });
+
+  // A factory reset removes the check. The backoff stayed, so the next pairing's check waited up to five minutes.
+  it('runs the next pairing check at once after forget, whatever backoff the last one built up', async () => {
+    vi.useFakeTimers({ now: Date.now() });
+    try {
+      cloudflare.getDeviceApplications.mockRejectedValue(new Error('socket hang up'));
+      for (let pass = 0; pass < 5; pass++) {
+        await expect(service.runCheck()).resolves.toBe('held');
+        vi.advanceTimersByTime(PairingAppRestoreService.MAX_RETRY_DELAY_MS);
+      }
+      await expect(service.runCheck()).resolves.toBe('held');
+      // Inside the backoff now: the pass does not ask the Portal.
+      await expect(service.runCheck()).resolves.toBe('held');
+      const asked = cloudflare.getDeviceApplications.mock.calls.length;
+
+      service.forget();
+      state.check = { markedAt: new Date().toISOString() };
+      cloudflare.getDeviceApplications.mockResolvedValue([]);
+
+      await expect(service.runCheck()).resolves.toBe('released');
+      expect(cloudflare.getDeviceApplications).toHaveBeenCalledTimes(asked + 1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('does not hold app sync for a pairing that left no device key to ask with', async () => {
@@ -346,6 +593,24 @@ describe('PairingAppRestoreService', () => {
         vi.useRealTimers();
       }
     });
+
+    it('tries a refused move onto the new name again on the next passes', async () => {
+      vi.useFakeTimers();
+      try {
+        state.check = null;
+        originRefresh.hasRefusedRestarts.mockReturnValueOnce(false).mockReturnValueOnce(true).mockReturnValue(false);
+        service.onApplicationBootstrap();
+
+        await vi.advanceTimersByTimeAsync(PairingAppRestoreService.POLL_MS * 4);
+
+        expect(originRefresh.refreshStaleOriginHosts).toHaveBeenNthCalledWith(1, []);
+        expect(originRefresh.refreshStaleOriginHosts).toHaveBeenNthCalledWith(2, [], { onlyRefused: true });
+        expect(originRefresh.refreshStaleOriginHosts).toHaveBeenCalledTimes(2);
+      } finally {
+        service.onApplicationShutdown();
+        vi.useRealTimers();
+      }
+    });
   });
 
   it('shares one pass between concurrent callers', async () => {
@@ -355,5 +620,25 @@ describe('PairingAppRestoreService', () => {
 
     expect([first, second]).toEqual(['released', 'released']);
     expect(cloudflare.getDeviceApplications).toHaveBeenCalledTimes(1);
+  });
+
+  // The status route asks on every poll of an open restore page, every 2 s per tab.
+  it('runs at most one asked-for pass in each interval, however often a waiting page asks', () => {
+    let now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const run = vi.spyOn(service, 'runCheck').mockResolvedValue('waiting');
+    try {
+      service.requestCheck();
+      service.requestCheck();
+      now += PairingAppRestoreService.REQUEST_MIN_INTERVAL_MS - 1;
+      service.requestCheck();
+      expect(run).toHaveBeenCalledTimes(1);
+
+      now += 1;
+      service.requestCheck();
+      expect(run).toHaveBeenCalledTimes(2);
+    } finally {
+      clock.mockRestore();
+    }
   });
 });

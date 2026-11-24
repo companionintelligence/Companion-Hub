@@ -51,6 +51,70 @@ describe('desktop-release.yml', () => {
     // six 45-minute bundle builds from running against an unpullable image.
     expect(desktopRelease).toMatch(/needs:\s*build-container/);
   });
+
+  it('publishes Homebrew and Scoop only after the installers are on the CDN', () => {
+    // The cask and the Scoop manifest install from dl.ci.computer, and the generator reads that release's
+    // manifest.json, which upload-r2 writes. Without this dependency the two jobs race.
+    const marker = '  publish-package-managers:';
+    const start = desktopRelease.indexOf(marker);
+    expect(start, `${marker} job not found in desktop-release.yml`).toBeGreaterThan(-1);
+    const job = desktopRelease.slice(start, desktopRelease.indexOf('\n\n', start));
+    expect(job).toMatch(/needs:\s*\[[^\]]*\bupload-r2\b[^\]]*\]/);
+  });
+});
+
+/** One job of desktop-release.yml, from its name to the next job. */
+function desktopReleaseJob(name: string) {
+  const marker = `\n  ${name}:\n`;
+  const start = desktopRelease.indexOf(marker);
+  expect(start, `${name} job not found in desktop-release.yml`).toBeGreaterThan(-1);
+  const next = desktopRelease.slice(start + marker.length).search(/\n {2}[a-z0-9-]+:\n/);
+  return next === -1 ? desktopRelease.slice(start) : desktopRelease.slice(start, start + marker.length + next);
+}
+
+describe('desktop-release.yml update manifest', () => {
+  // The desktop app installs only what a manifest signed by a key it pins names. The key and the R2
+  // token sit in different jobs, so holding one of them is not enough to put an installer on desktops.
+  it('signs the manifest in a job that has the signing key and no R2 token', () => {
+    const job = desktopReleaseJob('sign-manifest');
+    expect(job).toContain('secrets.DESKTOP_UPDATE_SIGNING_KEY');
+    expect(job).toContain('sign-desktop-manifest.mjs update-manifest/manifest.json "${{ inputs.environment }}"');
+    expect(job).toMatch(/environment:\s*\$\{\{\s*inputs\.environment\s*\}\}-update-signing\n/);
+    expect(job).not.toContain('CF_R2_DL_API_TOKEN');
+    expect(job).not.toContain('CLOUDFLARE_API_TOKEN');
+  });
+
+  it('uploads the signed manifest in a job that has the R2 token and no signing key', () => {
+    const job = desktopReleaseJob('upload-r2');
+    expect(job).toMatch(/needs:\s*\[[^\]]*\bsign-manifest\b[^\]]*\]/);
+    expect(job).toContain('name: desktop-update-manifest');
+    expect(job).toContain('MANIFEST_DIR: update-manifest');
+    expect(job).not.toContain('DESKTOP_UPDATE_SIGNING_KEY');
+  });
+
+  // Each job has its own GitHub Environment, so the signing key and the R2 token sit behind
+  // separate protection rules.
+  it('runs signing and upload in different GitHub Environments', () => {
+    const environmentOf = (name: string) => desktopReleaseJob(name).match(/\n {4}environment: (.+)\n/)?.[1];
+    expect(environmentOf('sign-manifest')).toBe('${{ inputs.environment }}-update-signing');
+    expect(environmentOf('upload-r2')).toBe('${{ inputs.environment }}');
+  });
+
+  it('stamps the build date the app compares update manifests with', () => {
+    expect(desktopRelease).toContain('echo "CI_HUB_BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)"');
+  });
+
+  it('refuses to build an app that has no update key for its environment, before compiling', () => {
+    const step = desktopRelease.indexOf('- name: Require an update signing key in the app');
+    expect(step).toBeGreaterThan(-1);
+    expect(step).toBeLessThan(desktopRelease.indexOf('tauri-apps/cli@2 build'));
+    expect(desktopRelease.slice(step, step + 900)).toContain('listedKeys(source, list).length === 0');
+  });
+
+  it('gives the signing key to no other job', () => {
+    expect(desktopRelease.split('DESKTOP_UPDATE_SIGNING_KEY').length - 1).toBe(2);
+    expect(desktopReleaseJob('sign-manifest').split('DESKTOP_UPDATE_SIGNING_KEY').length - 1).toBe(2);
+  });
 });
 
 describe('build-container.yml', () => {

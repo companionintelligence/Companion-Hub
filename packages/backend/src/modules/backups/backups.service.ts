@@ -2,6 +2,7 @@ import { TranslatableError } from '@/common/error/translatable-error';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { LifecycleActor } from '@/core/portal/lifecycle-actor';
+import { backupsReadAction } from '@/core/portal/local-app-reads';
 import { SSEService } from '@/core/sse/sse.service';
 import { Injectable, Optional } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -46,6 +47,11 @@ export class BackupsService {
       throw new TranslatableError('SERVER_ERROR_NOT_ALLOWED_IN_DEMO');
     }
 
+    // Refused while the app has another operation under way, as every lifecycle command is.
+    return this.appLifecycle.withOperationClaim(appUrn, 'backup', () => this.dispatchBackup(appUrn));
+  }
+
+  private async dispatchBackup(appUrn: AppUrn) {
     const app = await this.appsRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -61,7 +67,10 @@ export class BackupsService {
     const requestId = crypto.randomUUID();
     this.operationRegistry.register(appUrn, { requestId, command: 'backup', tier: 'non_cancellable' });
 
-    this.appEventsQueue.publish({ appUrn, command: 'backup', requestId, form: app.config }).then(async ({ success, message }) => {
+    this.publishRegistered(appUrn, requestId, { appUrn, command: 'backup', requestId, form: app.config }).then(async (result) => {
+      const { success, message } = result;
+      const rolledBack = 'rolledBack' in result && result.rolledBack === true;
+
       if (success) {
         if (!this.operationRegistry.claimCompletion(appUrn, requestId)) {
           return;
@@ -77,10 +86,12 @@ export class BackupsService {
       } else {
         this.logger.error(`Failed to backup app ${appUrn}: ${message}`);
         if (this.operationRegistry.claimCompletion(appUrn, requestId)) {
-          await this.appsRepository.updateAppById(app.id, { status: 'stopped' });
-          // The DB row moves to 'stopped'; without this the page keeps showing "backing up" and the person is
-          // never told it failed (the client already has a toast for this event, but nothing sent it).
-          this.sseService.emit('app', { event: 'backup_error', appUrn, appStatus: 'stopped' });
+          // A backup refused before the stop left the app as it was. Any other failure stopped it.
+          const status = rolledBack ? appStatusBeforeUpdate : 'stopped';
+          await this.appsRepository.updateAppById(app.id, { status });
+          // Without this the page keeps showing "backing up" and the person is never told it failed
+          // (the client already has a toast for this event, but nothing sent it).
+          this.sseService.emit('app', { event: 'backup_error', appUrn, appStatus: status });
           this.agentNotifyService?.notify('backup_error', { appUrn }, 'high');
         }
       }
@@ -89,11 +100,28 @@ export class BackupsService {
     return { requestId };
   }
 
+  /**
+   * Publish a backup or restore the registry already holds the app for. A publish that rejects (an
+   * event the queue's schema refuses) reaches no worker, so the entry is cleared here or it held the
+   * app for the whole stale window. Logged rather than thrown: the caller already has its answer.
+   */
+  private publishRegistered(appUrn: AppUrn, requestId: string, event: Parameters<AppEventsQueue['publish']>[0]) {
+    return this.appEventsQueue.publish(event).catch((error: unknown) => {
+      this.operationRegistry.clear(appUrn, requestId);
+      this.logger.error(`Could not queue ${event.command} for ${appUrn}: ${error instanceof Error ? error.message : String(error)}`);
+      return { success: false, message: error instanceof Error ? error.message : String(error) };
+    });
+  }
+
   public async restoreApp(params: { appUrn: AppUrn; filename: string; actor: LifecycleActor }) {
     const { appUrn, filename } = params;
 
     await this.appLifecycle.assertActorMay(params.actor, appUrn, 'restore');
 
+    return this.appLifecycle.withOperationClaim(appUrn, 'restore', () => this.dispatchRestore(appUrn, filename));
+  }
+
+  private async dispatchRestore(appUrn: AppUrn, filename: string) {
     const app = await this.appsRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -109,7 +137,8 @@ export class BackupsService {
     const requestId = crypto.randomUUID();
     this.operationRegistry.register(appUrn, { requestId, command: 'restore', tier: 'non_cancellable' });
 
-    this.appEventsQueue.publish({ appUrn, command: 'restore', requestId, filename, form: app.config }).then(async ({ success, message }) => {
+    const restore = { appUrn, command: 'restore' as const, requestId, filename, form: app.config };
+    this.publishRegistered(appUrn, requestId, restore).then(async ({ success, message }) => {
       if (success) {
         if (!this.operationRegistry.claimCompletion(appUrn, requestId)) {
           return;
@@ -160,7 +189,8 @@ export class BackupsService {
   public async getAppBackups(params: { appUrn: AppUrn; page: number; pageSize: number; actor: LifecycleActor }) {
     const { appUrn, page, pageSize } = params;
 
-    await this.appLifecycle.assertActorMay(params.actor, appUrn, 'view');
+    // A custom app's backups are its owner's and admins'; MCP reaches this too (`backupsReadAction`).
+    await this.appLifecycle.assertActorMay(params.actor, appUrn, backupsReadAction(appUrn));
 
     const backups = await this.backupManager.listBackupsByAppId(appUrn);
 

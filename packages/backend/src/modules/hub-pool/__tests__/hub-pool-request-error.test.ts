@@ -69,6 +69,9 @@ describe('classifyRequestError', () => {
       ['Missing \'role\' in message: {"content":"x"}', 'invalid-message', false],
       ["Expected 'content' or 'tool_calls' (ref: https://github.com/ggml-org/llama.cpp/issues/8367)", 'invalid-message', false],
       ['the request exceeds the available context size, try increasing it', 'context-length', false],
+      // llama-server's embedding refusals, as Lemonade's `/api/embed` returns them with a 500.
+      ['input (2286 tokens) is larger than the max context size (2048 tokens). skipping', 'context-length', false],
+      ['input (4021 tokens) is too large to process. increase the physical batch size (current batch size: 512)', 'context-length', false],
       ["This model's maximum context length is 32768 tokens. However, you requested 40000 tokens.", 'context-length', false],
       ['template: :14:7: executing "" at <.ToolCalls>: can\'t evaluate field ToolCalls', 'chat-template', true],
       ['Error rendering the chat template', 'chat-template', true],

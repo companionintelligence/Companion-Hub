@@ -1,15 +1,51 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getAppDataHostPath } from '@/common/helpers/app-data-path.helper';
+import { mergeArchitectureOverrides, oneShotServiceNames } from '@/common/helpers/compose-helpers';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { supportsPosixPermissions } from '@/common/helpers/bind-mount-helpers';
 import { execAsync } from '@/common/helpers/exec-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { AsyncMutex } from '@/utils/mutex/async-mutex';
 import { Injectable } from '@nestjs/common';
-import { appInfoSchema, parseComposeJson } from '@ci-hub/common/schemas';
+import { applyAppDataMoves } from './app-data-moves';
+import { securityGrantsFor } from './security-grants';
+import { parseInstalledAppInfo, parseInstalledComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
+
+const IMAGE_ID_PATTERN = /^sha256:[0-9a-f]{64}$/;
+
+/** What an app's pulls, or those of an app that handed them over, brought onto this computer, as its record holds it. */
+export type PulledImages = {
+  imageIds: string[];
+  /** The tags those images had when they arrived. Any other tag came from something else: see `DockerService.removeAppImages`. */
+  imageTags: string[];
+};
+
+/** What was last logged as left out of each app's installed manifest. */
+const loggedLeftOut = new Map<string, string>();
+
+/** Store folders the Hub could not close, so every prepare of every app in one does not warn again. */
+const storeDirsLeftOpen = new Set<string>();
+
+/**
+ * Logs what `parseInstalledAppInfo` left out of an app's installed manifest, once until that changes.
+ * The manifest is read on every app list, status check and env build, and it says the same thing
+ * until the app is updated.
+ */
+export function warnHubOwnedEnvLeftOut(logger: Pick<LoggerService, 'warn'>, appUrn: AppUrn, leftOut: readonly string[], file: string): void {
+  if (leftOut.length === 0) {
+    return;
+  }
+  const said = leftOut.join(', ');
+  if (loggedLeftOut.get(appUrn) === said) {
+    return;
+  }
+  loggedLeftOut.set(appUrn, said);
+  logger.warn(`App ${appUrn}: its ${file} names values the Hub sets for every app, read without ${said}`);
+}
 
 /** Single-quote a path for `sh`. */
 function shellQuotePath(value: string): string {
@@ -22,18 +58,40 @@ function shellQuotePath(value: string): string {
  * the historical `chmod -Rf a+rwx`; otherwise `find` prunes each excluded
  * path (so a private volume's whole subtree is skipped, not just its root)
  * and chmods the rest. Exported for its tests.
+ *
+ * `hubUid` is the uid the Hub runs as. When it is not root, the sweep only
+ * changes what that uid owns, because chmod refuses everything else. It also
+ * does not walk into a folder that belongs to another user and is closed to
+ * others (`-perm -005` is "others may list and enter"). Those are a
+ * database's own folders (MariaDB keeps its schemas at 700 under uid 999) and
+ * whatever a container running as root made: walking or chmodding them could
+ * only fail. Every such failure made the whole sweep report an error for an
+ * app that works. A root Hub can change everything, so it gets the sweep as
+ * it always was.
+ *
+ * Symbolic links are never handed to chmod (`! -type l`). chmod follows a
+ * link named on its command line, so a link an app's container left in its
+ * data (`data/x -> /data/state/settings.json`) made that file, outside the
+ * app's folder, world-writable. `chmod -R` already skips the links it meets.
  */
-export function buildPermissionsCommand(appDataDir: string, excluded: readonly string[]): string {
+export function buildPermissionsCommand(appDataDir: string, excluded: readonly string[], hubUid?: number): string {
   const dir = shellQuotePath(appDataDir);
-  if (excluded.length === 0) {
+  const ownedOnly = hubUid !== undefined && Number.isInteger(hubUid) && hubUid > 0;
+  if (excluded.length === 0 && !ownedOnly) {
     return `chmod -Rf a+rwx ${dir}`;
   }
-  const prune = excluded.map((target) => `-path ${shellQuotePath(target)}`).join(' -o ');
-  return `find ${dir} \\( ${prune} \\) -prune -o -exec chmod -f a+rwx {} +`;
+  const prune = excluded.map((target) => `-path ${shellQuotePath(target)}`);
+  if (!ownedOnly) {
+    return `find ${dir} \\( ${prune.join(' -o ')} \\) -prune -o ! -type l -exec chmod -f a+rwx {} +`;
+  }
+  prune.push(`-type d ! -user ${hubUid} ! -perm -005`);
+  return `find ${dir} \\( ${prune.join(' -o ')} \\) -prune -o ! -type l -user ${hubUid} -exec chmod -f a+rwx {} +`;
 }
 
 @Injectable()
 export class AppFilesManager {
+  private readonly pulledImagesMutex = new AsyncMutex();
+
   constructor(
     private readonly configuration: ConfigurationService,
     private readonly filesystem: FilesystemService,
@@ -69,7 +127,8 @@ export class AppFilesManager {
         const configFile = await this.filesystem.readTextFile(path.join(appInstalledDir, 'config.json'));
 
         const config = JSON.parse(configFile ?? '{}');
-        const parsedConfig = appInfoSchema.safeParse({ ...config, urn: appUrn });
+        const { parsed: parsedConfig, leftOut } = parseInstalledAppInfo({ ...config, urn: appUrn });
+        warnHubOwnedEnvLeftOut(this.logger, appUrn, leftOut, 'config.json');
 
         if (!parsedConfig.success) {
           this.logger.error(`App ${appUrn} config error:`);
@@ -96,6 +155,24 @@ export class AppFilesManager {
     }
 
     return null;
+  }
+
+  /**
+   * The defaults the installed manifest gave its fields that write `APP_BASE_URL`, by the field's
+   * variable, which `getInstalledAppInfo` reads it without (`parseInstalledAppInfo`). Empty when the
+   * manifest gives none or can't be read.
+   */
+  public async getInstalledBaseUrlDefaults(appUrn: AppUrn): Promise<ReadonlyMap<string, string>> {
+    try {
+      const configPath = path.join(this.getAppPaths(appUrn).appInstalledDir, 'config.json');
+      if (await this.filesystem.pathExists(configPath)) {
+        const config = JSON.parse((await this.filesystem.readTextFile(configPath)) ?? '{}');
+        return new Map(Object.entries(parseInstalledAppInfo({ ...config, urn: appUrn }).baseUrlDefaults));
+      }
+    } catch {
+      // Read as having none, as `getInstalledAppInfo` reads a manifest it can't parse as no manifest.
+    }
+    return new Map();
   }
 
   /**
@@ -150,6 +227,25 @@ export class AppFilesManager {
   }
 
   /**
+   * Which services of the installed app are one-shots (see `oneShotServiceNames`), read as
+   * `compose-preparation.ts` runs them. None when the app has no docker-compose.json or it can't be read:
+   * a failed service then counts as it always has.
+   */
+  public async getOneShotServiceNames(appUrn: AppUrn): Promise<Set<string>> {
+    try {
+      const composeJson = await this.getDockerComposeJson(appUrn);
+      if (!composeJson.content) {
+        return new Set();
+      }
+      const { services, overrides } = parseInstalledComposeJson(composeJson.content, securityGrantsFor(appUrn));
+      return oneShotServiceNames(mergeArchitectureOverrides(services, overrides, this.configuration.get('architecture')));
+    } catch (error) {
+      this.logger.warn(`Could not read which services of ${appUrn} are one-shots: ${error instanceof Error ? error.message : String(error)}`);
+      return new Set();
+    }
+  }
+
+  /**
    * Write the docker-compose.yml file to the installed app folder
    * @param appUrn - The app id
    * @param composeFile - The content of the docker-compose.yml file
@@ -165,6 +261,98 @@ export class AppFilesManager {
   public async deleteAppFolder(appUrn: AppUrn): Promise<boolean> {
     const { appInstalledDir } = this.getAppPaths(appUrn);
     return this.filesystem.removeDirectory(appInstalledDir);
+  }
+
+  /**
+   * The folder holding each app's record of the image IDs its pulls brought in. It sits in `state/` because a
+   * packaged Hub mounts only the folders under `/data`: `/data` itself belongs to root and goes with the container.
+   * So the record can be written and it outlives a Hub update, a reset of the app and an app update, which replaces
+   * the install folder.
+   */
+  private getPulledImagesDir(): string {
+    const { directories } = this.configuration.getConfig();
+
+    return path.resolve(directories.dataDir, 'state', 'pulled-images');
+  }
+
+  private getPulledImagesPath(appUrn: AppUrn): string {
+    const { appStoreId, appName } = extractAppUrn(appUrn);
+
+    return path.join(this.getPulledImagesDir(), appStoreId, `${appName}.json`);
+  }
+
+  /**
+   * What the record holds for the app, or nothing. A record that is missing or unreadable records nothing, so an
+   * uninstall then removes no image rather than one the Hub cannot show it pulled. Only an image ID counts: Docker
+   * takes a name just as well. A name removes whichever image has that name by then.
+   */
+  public async readPulledImages(appUrn: AppUrn): Promise<PulledImages> {
+    return this.parsePulledImages(appUrn, await this.filesystem.readTextFile(this.getPulledImagesPath(appUrn)));
+  }
+
+  private parsePulledImages(appUrn: AppUrn, text: string | null): PulledImages {
+    if (!text) {
+      return { imageIds: [], imageTags: [] };
+    }
+
+    try {
+      const { imageIds, imageTags } = JSON.parse(text) as { imageIds?: unknown; imageTags?: unknown };
+      const entries: unknown[] = Array.isArray(imageIds) ? imageIds : [];
+      const ids = entries.filter((id): id is string => typeof id === 'string' && IMAGE_ID_PATTERN.test(id));
+      if (ids.length !== entries.length) {
+        this.logger.warn(`The record of the images pulled for ${appUrn} holds entries that are not image IDs; they are ignored`);
+      }
+      return { imageIds: ids, imageTags: Array.isArray(imageTags) ? imageTags.filter((tag): tag is string => typeof tag === 'string') : [] };
+    } catch {
+      this.logger.warn(`The record of the images pulled for ${appUrn} is not valid JSON; it records none`);
+      return { imageIds: [], imageTags: [] };
+    }
+  }
+
+  /** Replaces the app's record of the images its pulls brought in. Returns false when it could not be written. */
+  public async writePulledImages(appUrn: AppUrn, { imageIds, imageTags }: PulledImages): Promise<boolean> {
+    const content = JSON.stringify({ imageIds: [...new Set(imageIds)], imageTags: [...new Set(imageTags)] }, null, 2);
+    return this.filesystem.writeTextFile(this.getPulledImagesPath(appUrn), content);
+  }
+
+  /**
+   * Adds to the app's record what its own pull brought in or what another app's uninstall hands over. One at a time for
+   * each record, since these run side by side and a second one reading it before the first writes would lose the first's.
+   * Returns false when it could not be written. A record that exists and can't be read counts as that too: `readTextFile`
+   * answers null for any failure. Writing then would lose what the record holds.
+   */
+  public async addPulledImages(appUrn: AppUrn, added: PulledImages): Promise<boolean> {
+    const release = await this.pulledImagesMutex.acquire(appUrn);
+    try {
+      const recordPath = this.getPulledImagesPath(appUrn);
+      const text = await this.filesystem.readTextFile(recordPath);
+      if (text === null && (await this.filesystem.pathExists(recordPath))) {
+        this.logger.warn(`Could not read the record of the images pulled for ${appUrn}, so it is left as it is`);
+        return false;
+      }
+
+      const { imageIds, imageTags } = this.parsePulledImages(appUrn, text);
+      return await this.writePulledImages(appUrn, { imageIds: [...imageIds, ...added.imageIds], imageTags: [...imageTags, ...added.imageTags] });
+    } finally {
+      release();
+    }
+  }
+
+  /**
+   * Forgets the app's record of the images it pulled. Called once an uninstall has removed what it could. Having no
+   * record is normal, for an app whose images were all here before it or one installed before records were kept, so
+   * only a record that exists is removed and only a failure to remove it is logged as one.
+   */
+  public async deletePulledImages(appUrn: AppUrn): Promise<void> {
+    const recordPath = this.getPulledImagesPath(appUrn);
+    if (await this.filesystem.pathExists(recordPath)) {
+      await this.filesystem.removeFile(recordPath);
+    }
+  }
+
+  /** Forgets every app's record. For a factory reset: a record left behind would claim images for the next Hub's apps. */
+  public async deleteAllPulledImages(): Promise<void> {
+    await this.filesystem.removeDirectory(this.getPulledImagesDir());
   }
 
   /** Returns whether the app's data dir was fully removed (false on a partial/failed delete). */
@@ -197,6 +385,31 @@ export class AppFilesManager {
     });
   }
 
+  /**
+   * Whether the app has data on disk. An uninstall with Delete all data off leaves it for a later install to pick up.
+   * A folder the Hub cannot read counts, because `pathExists` and `listFiles` report that one as missing or empty.
+   */
+  public async hasAppData(appUrn: AppUrn): Promise<boolean> {
+    const { appDataDir } = this.getAppPaths(appUrn);
+    if ((await this.filesystem.findUnreadable(appDataDir, { maxEntries: 1, maxFound: 1 })).length > 0) {
+      return true;
+    }
+    return (await this.filesystem.pathExists(appDataDir)) && (await this.filesystem.listFiles(appDataDir)).length > 0;
+  }
+
+  /**
+   * Whether the store's data folder is still to be copied: the installed app ships `data/` and the
+   * app's data folder has none yet. That is an install that has not reached copyDataDir, or one that
+   * failed before it. A volume folder made then (`data/config.yml` as a directory) would take the
+   * place of the store's file, and copyDataDir skips an app whose `data/` exists (#2198).
+   */
+  public async storeDataCopyPending(appUrn: AppUrn): Promise<boolean> {
+    const { appDataDir, appInstalledDir } = this.getAppPaths(appUrn);
+    return (
+      (await this.filesystem.pathExists(path.join(appInstalledDir, 'data'))) && !(await this.filesystem.pathExists(path.join(appDataDir, 'data')))
+    );
+  }
+
   public async createAppDataDir(appUrn: AppUrn) {
     const { appDataDir } = this.getAppPaths(appUrn);
     await this.filesystem.createDirectory(appDataDir);
@@ -210,31 +423,147 @@ export class AppFilesManager {
    */
   public async getPrivateVolumePaths(appUrn: AppUrn): Promise<string[]> {
     const { appDataDir } = this.getAppPaths(appUrn);
+    const mounts = await this.getAppDataBindMounts(appUrn);
+    const roots = new Set(mounts.filter((mount) => mount.private && mount.target !== appDataDir).map((mount) => mount.target));
+    return [...roots].sort();
+  }
+
+  /** Whether the installed version of the app declares data moves (`data_moves`), done or not. */
+  public async declaresDataMoves(appUrn: AppUrn): Promise<boolean> {
+    return ((await this.getInstalledAppInfo(appUrn))?.data_moves ?? []).length > 0;
+  }
+
+  /**
+   * Carries out the installed version's data moves (see applyAppDataMoves), leaving what holds one of
+   * its mounts where it is. Call it only while none of the app's containers run: a folder moved out
+   * from under a running one leaves it writing to a path that no longer is its data.
+   *
+   * @returns what was moved, as `from → to` lines
+   */
+  public async applyDataMoves(appUrn: AppUrn): Promise<string[]> {
+    const moves = (await this.getInstalledAppInfo(appUrn))?.data_moves ?? [];
+    if (moves.length === 0) {
+      return [];
+    }
+    const { appDataDir } = this.getAppPaths(appUrn);
+    const keepSources = (await this.getAppDataBindMounts(appUrn))
+      .map((mount) => path.relative(appDataDir, mount.target))
+      .filter((relative) => relative !== '' && !relative.startsWith('..'))
+      .map((relative) => relative.split(path.sep).join('/'));
+    const moved = await applyAppDataMoves({ appName: extractAppUrn(appUrn).appName, appDataDir, moves, keepSources });
+    if (moved.length > 0) {
+      this.logger.info(`Moved the data of ${appUrn} to its new layout: ${moved.join(', ')}`);
+    }
+    return moved;
+  }
+
+  /**
+   * The app's bind mounts that point into its data folder (or are that folder), resolved to this
+   * process's view of it. Anything outside it is ignored rather than trusted from the manifest. A
+   * manifest that cannot be read or parsed yields none.
+   */
+  private async getAppDataBindMounts(appUrn: AppUrn): Promise<Array<{ target: string; private: boolean }>> {
+    const { appDataDir } = this.getAppPaths(appUrn);
     const { content } = await this.getDockerComposeJson(appUrn);
     if (!content) {
       return [];
     }
-    let services: ReturnType<typeof parseComposeJson>['services'];
+    let services: ReturnType<typeof parseInstalledComposeJson>['services'];
     try {
-      ({ services } = parseComposeJson(content));
+      ({ services } = parseInstalledComposeJson(content));
     } catch (error) {
-      this.logger.debug(`Could not read private volumes for ${appUrn}: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.debug(`Could not read the volumes of ${appUrn}: ${error instanceof Error ? error.message : String(error)}`);
       return [];
     }
-    const roots = new Set<string>();
+    const mounts: Array<{ target: string; private: boolean }> = [];
     for (const service of services) {
       for (const volume of service.volumes ?? []) {
-        if (volume.private !== true || typeof volume.hostPath !== 'string') {
+        // Named volumes carry no host path.
+        if (typeof volume.hostPath !== 'string') {
           continue;
         }
-        const resolved = path.resolve(volume.hostPath.replace(/\$\{APP_DATA_DIR\}/g, appDataDir));
-        if (resolved === appDataDir || !resolved.startsWith(`${appDataDir}${path.sep}`)) {
-          continue;
+        const target = path.resolve(volume.hostPath.replace(/\$\{APP_DATA_DIR\}/g, appDataDir));
+        if (target === appDataDir || target.startsWith(`${appDataDir}${path.sep}`)) {
+          mounts.push({ target, private: volume.private === true });
         }
-        roots.add(resolved);
       }
     }
-    return [...roots].sort();
+    return mounts;
+  }
+
+  /**
+   * Create the host folders the app's bind mounts point at, as the Hub, before its containers start.
+   *
+   * Docker creates a missing bind-mount source itself, as root:root 755. A Hub that runs as the host
+   * user can then neither open it up for a container of another uid nor delete what the app writes
+   * into it, so every later Reset, restore or backup needed the root helper. Install has always made
+   * these folders first; Reset, a restore and an update rollback delete the data folder, so they make
+   * them again the same way. A folder that exists is left as it is, and so is a file a mount names
+   * (`data/nginx/nginx.conf`). A path outside the app's data folder is ignored, and a `private: true`
+   * one starts at 700 (see {@link setAppDataDirPermissions}).
+   *
+   * Nothing is made at or below the app's own `app.env`. Start, restart, reset and update reach this
+   * through prepareAppComposeDir before generateEnvFile writes that file, so a folder in its place
+   * would fail every compose up of an app that mounts it.
+   */
+  public async createVolumeHostDirs(appUrn: AppUrn): Promise<void> {
+    const { appDataDir } = this.getAppPaths(appUrn);
+    const appEnvPath = path.join(appDataDir, 'app.env');
+
+    for (const mount of await this.getAppDataBindMounts(appUrn)) {
+      if (mount.target === appEnvPath || mount.target.startsWith(`${appEnvPath}${path.sep}`)) {
+        continue;
+      }
+      // The containment check reads the path as written. A link on the way (a restored backup may hold
+      // `data/secrets -> /data/state`) would have the mkdir and the chmod act wherever it points.
+      const found = await this.inspectVolumeTarget(appDataDir, mount.target);
+      if (found === 'file') {
+        continue;
+      }
+      if (found === 'blocked') {
+        this.logger.warn(`Not creating the folder of a volume of ${appUrn}: ${mount.target} runs through a symbolic link or a file`);
+        continue;
+      }
+      await fs.promises.mkdir(mount.target, { recursive: true }).catch(() => {
+        /* a path the app data mount refuses is Docker's to report at compose up */
+      });
+      // A `private: true` mount is the app's own root-written directory (Memory's secrets); it
+      // starts, and stays, unreadable to other local accounts. The permissions sweep prunes it.
+      if (mount.private && process.platform !== 'win32') {
+        await fs.promises.chmod(mount.target, 0o700).catch(() => {
+          /* a mount that rejects chmod is the drvfs case handled elsewhere */
+        });
+      }
+    }
+  }
+
+  /**
+   * What is on the way from `root` to `target`: `blocked` when a part of it that exists is a symbolic
+   * link, or a file before the end; `file` when `target` itself is a regular file (a mount of one file,
+   * nothing to create); `folders` when every part that exists is a folder.
+   */
+  private async inspectVolumeTarget(root: string, target: string): Promise<'blocked' | 'file' | 'folders'> {
+    const segments = path.relative(root, target).split(path.sep).filter(Boolean);
+    let current = root;
+
+    for (const [index, segment] of segments.entries()) {
+      current = path.join(current, segment);
+      const stat = await fs.promises.lstat(current).catch(() => null);
+
+      if (!stat) {
+        return 'folders';
+      }
+
+      if (stat.isFile() && index === segments.length - 1) {
+        return 'file';
+      }
+
+      if (!stat.isDirectory()) {
+        return 'blocked';
+      }
+    }
+
+    return 'folders';
   }
 
   /**
@@ -258,6 +587,16 @@ export class AppFilesManager {
    *    service can still mount and read a subdirectory the root service
    *    created.
    *
+   * Nor may "writable by everyone" reach the other accounts on the computer.
+   * The folder that holds the store's apps (`app-data/<store>`) is set to 0700,
+   * so no other local account can reach any app's data, however open the sweep
+   * leaves it below. That costs the containers nothing, for the reason above:
+   * Docker resolves a bind mount's host path as root, and a container only sees
+   * the folder that is mounted. That takes a Docker whose root is root on the
+   * app-data file system: on an NFS export with root_squash it is not, and no
+   * app in the store could mount its data, as Memory's private folder already
+   * could not.
+   *
    * See {@link buildPermissionsCommand} for the exact shell.
    *
    * Skipped when the app-data mount cannot carry POSIX permissions (a Windows
@@ -275,14 +614,16 @@ export class AppFilesManager {
       return;
     }
 
-    if (!(await supportsPosixPermissions(this.configuration.getConfig().directories.appDataDir))) {
+    const appDataRoot = this.configuration.getConfig().directories.appDataDir;
+    if (!(await supportsPosixPermissions(appDataRoot))) {
       this.logger.debug(`Skipped the permission sweep for ${appUrn}: the app-data mount cannot carry POSIX permissions`);
       return;
     }
 
     const privateRoots = await this.getPrivateVolumePaths(appUrn);
     const appEnvPath = path.join(appDataDir, 'app.env');
-    const { stderr } = await execAsync(buildPermissionsCommand(appDataDir, [...privateRoots, appEnvPath]));
+    const hubUid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+    const { stderr } = await execAsync(buildPermissionsCommand(appDataDir, [...privateRoots, appEnvPath], hubUid));
     if (stderr) {
       this.logger.error(`Error setting permissions for app ${appUrn}: ${stderr}`);
     }
@@ -290,12 +631,36 @@ export class AppFilesManager {
     // Best effort, and only for what exists: a missing app.env is normal before
     // the first env generation, and a mount that rejects chmod (drvfs) is the
     // case `supportsPosixPermissions` already routes around.
-    for (const [target, mode] of [[appEnvPath, 0o600] as const, ...privateRoots.map((root) => [root, 0o700] as const)]) {
+    // The store folder is closed only when it sits directly under the app-data root, so a URN that
+    // resolves elsewhere can never close the root or a folder above it.
+    const storeDir = path.dirname(appDataDir);
+    const closesStore = path.dirname(storeDir) === path.resolve(appDataRoot);
+    const targets = [[appEnvPath, 0o600] as const, ...privateRoots.map((root) => [root, 0o700] as const)];
+    if (closesStore) {
+      targets.push([storeDir, 0o700] as const);
+    }
+    for (const [target, mode] of targets) {
       try {
+        // chmod follows a link, and a container that mounts the whole data folder can put one where
+        // app.env or a private folder was. The store folder is above every mount, so no container can.
+        if (target !== storeDir && (await fs.promises.lstat(target)).isSymbolicLink()) {
+          this.logger.warn(`Not setting mode ${mode.toString(8)} on ${target}: it is a symbolic link`);
+          continue;
+        }
         await fs.promises.chmod(target, mode);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-          this.logger.debug(`Could not set mode ${mode.toString(8)} on ${target}: ${error instanceof Error ? error.message : String(error)}`);
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT') {
+          continue;
+        }
+        const reason = error instanceof Error ? error.message : String(error);
+        if (target === storeDir && !storeDirsLeftOpen.has(storeDir)) {
+          storeDirsLeftOpen.add(storeDir);
+          this.logger.warn(
+            `Could not close ${storeDir} to other local accounts (${reason}). The data of every app in it stays reachable by them until the Hub's user owns the folder.`,
+          );
+        } else {
+          this.logger.debug(`Could not set mode ${mode.toString(8)} on ${target}: ${reason}`);
         }
       }
     }

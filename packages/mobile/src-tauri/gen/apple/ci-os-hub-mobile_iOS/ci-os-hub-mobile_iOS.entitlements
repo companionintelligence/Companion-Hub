@@ -5,7 +5,6 @@
 	<key>com.apple.developer.associated-domains</key>
 	<array>
 		<string>applinks:hub.ci.computer</string>
-		<string>applinks:hub.companionintelligence.com</string>
 	</array>
 </dict>
 </plist>

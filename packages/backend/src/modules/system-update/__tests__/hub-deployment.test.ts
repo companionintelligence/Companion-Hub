@@ -16,6 +16,7 @@ import {
   core6Appliance,
   core6RecreatedFromInsideContainer,
   RELEASE_0_2_71_IMAGE_LABELS,
+  windowsDesktopWslEngine,
 } from './fleet-hub-inspect.fixtures';
 
 const MOUNT_TARGETS = { envFile: '/data/.env', composeFile: '/data/docker-compose.yml' };
@@ -214,6 +215,7 @@ describe('compose identity (c) and absolute env files (e), from the recorded fle
     const result = resolveComposeUpdatePlan(core3EnvLabelDiffersFromMount(), MOUNT_TARGETS);
     expect(result.ok).toBe(false);
     expect(!result.ok && result.reason).toContain('/home/ci/.local/share/companion-hub/.env.dev');
+    expect(!result.ok && result.updatedByDesktopApp).toBeUndefined();
   });
 
   it('refuses when compose interpolates from a different env file than the one the Hub can pin', () => {
@@ -225,6 +227,17 @@ describe('compose identity (c) and absolute env files (e), from the recorded fle
     const result = resolveComposeUpdatePlan(container, MOUNT_TARGETS);
     expect(result.ok).toBe(false);
     expect(!result.ok && result.reason).toContain('/home/ci/devel/CI-Hub/.env.dev');
+  });
+
+  // The env file check used to answer first, with "Compose started this Hub with --env-file C:\…\.env,
+  // but the Hub's /data/.env is /mnt/c/…/.env": the same file under two names, and not the reason.
+  it('says a Windows desktop install is updated by the desktop app, not that its env files differ', () => {
+    const result = resolveComposeUpdatePlan(windowsDesktopWslEngine(), MOUNT_TARGETS);
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.reason).toContain('started on Windows');
+    expect(!result.ok && result.reason).toContain('desktop app');
+    expect(!result.ok && result.reason).not.toContain('--env-file');
+    expect(!result.ok && result.updatedByDesktopApp).toBe(true);
   });
 
   it('refuses a Hub with no /data/.env bind', () => {

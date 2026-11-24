@@ -25,10 +25,12 @@ import { sameModelId } from '@/common/helpers/hub-pool';
  * The order, and why each key sits where it does:
  *
  *   1. **The operator's Settings → Inference model**, wherever in the pool it is served. The one
- *      signal that is a decision, so it beats every heuristic below — a tiny or tool-less model the
- *      operator chose is still honoured, and so is a `:cloud` tag, which was looked at. The only
- *      thing it cannot override is the chat filter: an embedding model set there is a
- *      misconfiguration, and running a chat turn on it fails anyway.
+ *      signal that is a decision, so it beats every heuristic below. A tiny model the operator chose
+ *      is still honoured, and so is a `:cloud` tag, which was looked at. It cannot override the chat
+ *      filter (an embedding model set there is a misconfiguration, and a chat turn on it fails
+ *      anyway), and it gives way for a request that sends tools or asks to think when the catalog
+ *      says it can't do that and another model in the pool can (#2311): the engine would refuse
+ *      the turn outright. A plain chat still goes to it.
  *   2. **Tool calling**: known yes, then unknown, then known no. Agents are the traffic `auto`
  *      carries, and a model the catalog says has no tool support (`gemma3:1b`) breaks every agent
  *      turn that uses one. Unknown (an uncatalogued tag) sits between, because it may well have them.
@@ -88,6 +90,56 @@ export interface AutoModelPreference {
 export interface AutoModelChoice {
   model: string;
   reason: 'preferred' | 'ranked';
+  /** The Settings > Inference model, when it was passed over because the catalog says it can't take this request, and every need it fails. */
+  passedOver?: { model: string; lacks: AutoModelNeed[] };
+}
+
+/** A capability a request needs from whatever `auto` stands for. */
+export type AutoModelNeed = 'tools' | 'thinking';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** An OpenAI-dialect reasoning effort that turns thinking on: any value but empty or `none`. */
+function asksForEffort(effort: unknown): boolean {
+  return typeof effort === 'string' && effort !== '' && effort !== 'none';
+}
+
+/**
+ * What an `auto` request needs, read off its body: tool definitions, or a request to think (Ollama's
+ * `think`, the OpenAI dialect's `reasoning_effort` or `reasoning.effort`). OpenClaw sends both on every turn.
+ */
+export function autoModelNeeds(body: unknown): AutoModelNeed[] {
+  if (!isRecord(body)) {
+    return [];
+  }
+  const needs: AutoModelNeed[] = [];
+  if (Array.isArray(body.tools) && body.tools.length > 0) {
+    needs.push('tools');
+  }
+  const think = body.think;
+  const thinks = think === true || (typeof think === 'string' && think !== '' && think !== 'false');
+  if (thinks || asksForEffort(body.reasoning_effort) || (isRecord(body.reasoning) && asksForEffort(body.reasoning.effort))) {
+    needs.push('thinking');
+  }
+  return needs;
+}
+
+/**
+ * Every need the catalog says the model behind `entry` can't meet. An uncatalogued model is given
+ * the benefit of the doubt.
+ *
+ * Thinking is only judged on Ollama rows. Ollama refuses `think` for a model without the capability
+ * ("does not support thinking"); llama-server, vLLM and the engines built on them ignore a reasoning
+ * effort they can't use. The non-Ollama tables are also wrong about it: Lemonade's labels leave
+ * `reasoning` off Qwen 3.5/3.6 and Gemma 4, which think from the same weights (see `curated-models.ts`).
+ */
+function unmetNeeds(entry: CuratedModel | undefined, needs: readonly AutoModelNeed[]): AutoModelNeed[] {
+  const capabilities = entry?.metadata?.capabilities;
+  return needs.filter((need) =>
+    need === 'tools' ? capabilities?.tools === false : entry?.backend === 'ollama' && capabilities?.reasoning === false,
+  );
 }
 
 /**
@@ -169,6 +221,7 @@ export function parameterScaleFromTag(model: string): number | undefined {
 
 interface RankKeys {
   offer: PoolModelOffer;
+  entry: CuratedModel | undefined;
   tools: number;
   tiny: number;
   intelligence: number;
@@ -180,6 +233,7 @@ function rankKeys(offer: PoolModelOffer, entry: CuratedModel | undefined): RankK
   const params = entry?.parameterScale ?? parameterScaleFromTag(offer.model);
   return {
     offer,
+    entry,
     tools: tools === true ? 0 : tools === undefined ? 1 : 2,
     tiny: params !== undefined && params < AUTO_MIN_PARAMS_B ? 1 : 0,
     intelligence: entry?.metadata?.intelligenceIndex ?? 0,
@@ -199,32 +253,56 @@ function compareRankKeys(a: RankKeys, b: RankKeys): number {
   );
 }
 
-/** Every chat-capable offer, best first, by keys 2–7 of the order described at the top of this file. Exported for tests and diagnostics. */
-export function rankAutoModelOffers(offers: readonly PoolModelOffer[], catalog: readonly CuratedModel[]): PoolModelOffer[] {
+/** {@link rankAutoModelOffers} with each offer's catalog row kept, so a caller reads it without a second catalog scan. */
+function rankAutoModelCandidates(offers: readonly PoolModelOffer[], catalog: readonly CuratedModel[]): RankKeys[] {
   return offers
     .map((offer) => ({ offer, entry: catalogEntryFor(offer, catalog) }))
     .filter(({ offer, entry }) => isAutoChatCandidate(offer, entry))
     .map(({ offer, entry }) => rankKeys(offer, entry))
-    .sort(compareRankKeys)
-    .map((keys) => keys.offer);
+    .sort(compareRankKeys);
 }
 
-/** The model `auto` stands for, or `undefined` when nothing in the pool can chat. */
+/** Every chat-capable offer, best first, by keys 2–7 of the order described at the top of this file. Exported for tests and diagnostics. */
+export function rankAutoModelOffers(offers: readonly PoolModelOffer[], catalog: readonly CuratedModel[]): PoolModelOffer[] {
+  return rankAutoModelCandidates(offers, catalog).map((keys) => keys.offer);
+}
+
+/**
+ * The model `auto` stands for, or `undefined` when nothing in the pool can chat.
+ *
+ * `needs` (from {@link autoModelNeeds}) is what this request asks of the model. The operator's model
+ * gives way only when the catalog says it can't meet them and some other model in the pool can:
+ * `gemma3:1b` has neither tool calling nor thinking, and every OpenClaw turn sent to it failed in
+ * 5 ms with "does not support thinking" (#2311). When nothing in the pool meets them, switching
+ * gains nothing, so the operator's model still stands.
+ */
 export function chooseAutoModel(
   offers: readonly PoolModelOffer[],
-  options: { preferred?: AutoModelPreference | null; catalog: readonly CuratedModel[] },
+  options: { preferred?: AutoModelPreference | null; catalog: readonly CuratedModel[]; needs?: readonly AutoModelNeed[] },
 ): AutoModelChoice | undefined {
-  const { preferred, catalog } = options;
+  const { preferred, catalog, needs = [] } = options;
+  let preferredMatch: { model: string; lacks: AutoModelNeed[] } | undefined;
   if (preferred) {
-    const match = offers.find(
-      (offer) =>
-        sameModelId(offer.model, preferred.engineId) &&
-        (preferred.backend === undefined || offer.backends.includes(preferred.backend)) &&
-        // Not `isAutoChatCandidate`: an operator who names a cloud tag in Settings has looked at it.
-        isChatModel(offer, catalogEntryFor(offer, catalog)),
-    );
-    if (match) return { model: match.model, reason: 'preferred' };
+    for (const offer of offers) {
+      if (!sameModelId(offer.model, preferred.engineId)) continue;
+      if (preferred.backend !== undefined && !offer.backends.includes(preferred.backend)) continue;
+      const entry = catalogEntryFor(offer, catalog);
+      // Not `isAutoChatCandidate`: an operator who names a cloud tag in Settings has looked at it.
+      if (!isChatModel(offer, entry)) continue;
+      const lacks = unmetNeeds(entry, needs);
+      if (lacks.length === 0) return { model: offer.model, reason: 'preferred' };
+      preferredMatch = { model: offer.model, lacks };
+      break;
+    }
   }
-  const best = rankAutoModelOffers(offers, catalog)[0];
-  return best ? { model: best.model, reason: 'ranked' } : undefined;
+  const ranked = rankAutoModelCandidates(offers, catalog);
+  const capable = ranked.find((keys) => unmetNeeds(keys.entry, needs).length === 0);
+  if (capable) {
+    return preferredMatch
+      ? { model: capable.offer.model, reason: 'ranked', passedOver: preferredMatch }
+      : { model: capable.offer.model, reason: 'ranked' };
+  }
+  if (preferredMatch) return { model: preferredMatch.model, reason: 'preferred' };
+  const best = ranked[0];
+  return best ? { model: best.offer.model, reason: 'ranked' } : undefined;
 }

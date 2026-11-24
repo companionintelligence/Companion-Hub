@@ -22,7 +22,19 @@ Create a key one of two ways:
 
 `cihub mcp setup` only toggles `MCP_ENABLED`; it does not mint or install a credential.
 
-At **app install**, when `hub_integration.mcp_client: true`, the Hub injects:
+An app asks for the Hub's MCP tools with `hub_integration.mcp_client: true`. Asking isn't enough: any
+store can publish that manifest, and the key reaches the apps beside it. A person answers first, at
+install or later in the app's **Settings → Hub access**: **No access**, or the level the app's key works
+at (`read`, `write` or `full`, described below). Only someone who may manage the Hub can give access, and
+`full` takes an organization owner or admin. The answer is stored on the app (`app.mcp_access`), never in
+its settings form, which the app's own key may change. Until someone answers, the app holds no MCP key.
+An app installed by a key, through `hub_install_app`, is never answered by that key.
+
+Apps installed before the Hub asked: an official-store app (`ci-marketplace`) that already held an MCP key
+keeps it at its level, and that is recorded as the answer. Any other app loses its key at its next start,
+until a person grants access. Taking access away deletes the key at once and restarts a running app.
+
+Once access is granted, the Hub injects:
 
 | Env var           | Purpose                                                                         |
 | ----------------- | ------------------------------------------------------------------------------- |
@@ -48,16 +60,16 @@ every call, so a change applies from the agent's next call:
 
 | Level | On an app that is not its own |
 | --- | --- |
-| `read` | Read the app: status, logs, config, backups, skill, tools, OpenAPI spec, and operation status. |
-| `write` (what a managed key is provisioned with) | Also start, stop, or restart it, and call its MCP tools (`hub_call_app_tool`) and its API with any method (`hub_call_app_api`). |
-| `full` | Everything it may do on its own app. Only an organization owner or admin can give a key `full`. |
+| `read` | Read the app: status, logs, backups, skill, tools, OpenAPI spec, and operation status. Not what a person entered in its settings: the stored install form is left out of `hub_get_app` and `hub_list_installed_apps`, and `hub_get_user_config` is refused (`MCP_SETTING_VALUES_FULL_REQUIRED`). |
+| `write` | Also start, stop, or restart it, and call its MCP tools (`hub_call_app_tool`) and its API with any method (`hub_call_app_api`). |
+| `full` | Everything it may do on its own app, settings values included. Only an organization owner or admin can give a key `full`. |
 
 Below `full`, the rest is refused with `APP_ACTION_GRANT_DENIED`: installing the app; changing its
 configuration (user config, ignored versions, custom-app compose or metadata, availability repair, and
 app config); uninstalling, resetting, or updating it; cancelling its operation in progress; and taking,
 restoring, or deleting a backup. Cancelling and taking a backup sit with `full` because both can lose
-data: cancelling an install undoes it down to the data it was installing onto, and each backup's
-retention cleanup deletes the app's oldest backups.
+data: cancelling an install deletes what that install wrote to an app with no earlier data. Each
+backup's retention cleanup deletes the app's oldest backups.
 
 These are grant rules, and the key's capability still gates each tool on top of them, on its own app
 too. At `write` the destructive tools stay refused: `hub_call_app_tool`; a `hub_call_app_api` call that
@@ -71,6 +83,15 @@ the key's own app. If an agent must change other apps, give it an operator key c
 **Settings → Security**, which acts with the grants and role of the person who created it. A key from
 `cihub api-key create` records no creator, so no one's grants bound it: it may act on every app, up to
 its capability, though it cannot change which custom domain an app serves.
+
+The tools that change the whole Hub, or read its log, take a key whose creator is an organization owner
+or admin, or the operator who claimed the Hub, asked on every call. They are the model pull, load,
+unload, pin and unpin tools, `hub_set_cloud_provider`, `hub_set_auto_updates`, `hub_perform_update`, the
+app store add, update, delete and pull tools and `hub_get_hub_logs`. A managed key and a key from
+`cihub api-key create` have no such person, so Hermes and OpenClaw don't see these tools. On a 2025-era
+session their call gets `HUB_MANAGE_KEY_REISSUE_REQUIRED`. A key a member created gets
+`HUB_MANAGE_ROLE_REQUIRED` there. A 2026-07-28 client never has these tools registered for such a key,
+so its call fails as an unknown tool (`Tool <name> not found`).
 
 ## CI-Hermes path
 

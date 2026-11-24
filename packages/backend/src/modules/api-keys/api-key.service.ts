@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { TRANSIENT_DB_RETRY_DELAYS_MS, withTransientDbRetry } from '@/core/database/transient-db-retry';
-import { ApiKeyStoreUnavailableError, isTransientDbError } from './api-key.errors';
+import { ApiKeyStoreUnavailableError, isDatabaseCredentialError, isTransientDbError } from './api-key.errors';
 import { type ApiKeyListRow, type ApiKeyRow, ApiKeyRepository } from './api-key.repository';
 import { API_KEY_SCOPES, type ApiKeyScope } from './api-key.scopes';
 import { type ApiKeyCapability, DEFAULT_API_KEY_CAPABILITY, coerceApiKeyCapability } from './api-key.capabilities';
@@ -154,8 +154,9 @@ export class ApiKeyService {
       });
     } catch (err) {
       // Non-transient query bugs must keep their original type. Exhausted transient
-      // failures become ApiKeyStoreUnavailableError so guards can answer 503.
-      if (!isTransientDbError(err)) {
+      // failures, and a login Postgres refuses (the Hub's own credentials, which no retry
+      // fixes), become ApiKeyStoreUnavailableError so guards can answer 503.
+      if (!isTransientDbError(err) && !isDatabaseCredentialError(err)) {
         throw err;
       }
       throw new ApiKeyStoreUnavailableError(err);
@@ -321,6 +322,33 @@ export class ApiKeyService {
   }
 
   /**
+   * Revoke every unmanaged key a person created, for when the Hub revokes that person. A key acts
+   * with its creator's grants, so a creator who is no longer allowed in leaves keys that should not
+   * work either. Managed app keys are left alone: they act for their app, not for whoever was signed
+   * in when it was installed.
+   */
+  async revokeCreatedBy(userId: number): Promise<number> {
+    const removed = await this.repo.deleteUnmanagedByCreator(userId);
+    if (removed > 0) {
+      this.logger.info('API keys revoked with their creator', userId, removed);
+    }
+    return removed;
+  }
+
+  /**
+   * {@link revokeCreatedBy} for everyone whose access is revoked right now, in one statement. The
+   * check-in sweep runs it to catch keys a failed delete left behind. It also catches the keys of
+   * people revoked before keys went with them.
+   */
+  async revokeCreatedByRevokedPeople(): Promise<number> {
+    const removed = await this.repo.deleteUnmanagedOfRevokedCreators();
+    if (removed > 0) {
+      this.logger.info('API keys revoked with their revoked creators', removed);
+    }
+    return removed;
+  }
+
+  /**
    * Provision a companion app's managed key with exactly the given scopes. If the app's existing
    * key still validates as its own managed key, it is preserved (mirrors how HUB_WAKE_SECRET is
    * preserved across reinstalls) and only its scope set is reconciled in place — a scope change
@@ -332,8 +360,19 @@ export class ApiKeyService {
    * decision on the app's next restart, which is exactly when nobody is looking. Only a fresh key
    * (there was none to preserve) starts at the default.
    */
-  async provisionManagedKey(params: { appUrn: string; appName: string; existingRawKey?: string; scopes: ApiKeyScope[] }): Promise<string> {
-    const { appUrn, appName, existingRawKey } = params;
+  async provisionManagedKey(params: {
+    appUrn: string;
+    appName: string;
+    existingRawKey?: string;
+    scopes: ApiKeyScope[];
+    /**
+     * The level a person granted the app's MCP access at (`app.mcp_access`). It applies when the key
+     * is minted and when an existing key gains the `mcp` scope, which is the moment that answer is
+     * given effect; otherwise the key's level is left as an operator set it (see above).
+     */
+    mcpCapability?: ApiKeyCapability;
+  }): Promise<string> {
+    const { appUrn, appName, existingRawKey, mcpCapability } = params;
     const scopes = normalizeScopes(params.scopes);
     if (existingRawKey) {
       const row = await this.repo.findByHash(this.hash(existingRawKey));
@@ -342,12 +381,17 @@ export class ApiKeyService {
         if (current.length !== scopes.length || !scopes.every((scope) => current.includes(scope))) {
           await this.repo.updateScopes(row.id, scopes);
           this.logger.info('Managed key scopes updated', appUrn, `[${scopes.join(',')}]`);
+          if (mcpCapability && scopes.includes('mcp') && !current.includes('mcp') && row.capability !== mcpCapability) {
+            await this.repo.updateCapability(row.id, mcpCapability);
+            this.logger.info('Managed key level set for its MCP access', appUrn, mcpCapability);
+          }
         }
         return existingRawKey; // still valid — preserve it (no churn, no restart needed)
       }
     }
     await this.repo.deleteByOwnerAppUrn(appUrn); // clear any stale managed key(s) for this app
-    const created = await this.create(appName, { scopes, managed: true, ownerAppUrn: appUrn });
+    const capability = scopes.includes('mcp') ? mcpCapability : undefined;
+    const created = await this.create(appName, { scopes, managed: true, ownerAppUrn: appUrn, ...(capability ? { capability } : {}) });
     this.logger.info('Managed key provisioned', appUrn, `[${scopes.join(',')}]`);
     return created.key;
   }

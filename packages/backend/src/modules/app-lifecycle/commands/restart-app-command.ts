@@ -1,19 +1,27 @@
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { getEffectiveExposureMode } from '@/modules/apps/app-exposure.helpers';
 import { AppHelpers } from '@/modules/apps/app.helpers';
 import { DockerService } from '@/modules/docker/docker.service';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
+import type { HostPortMove } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { AppLifecycleCommand } from './command';
+import { hostPortMoveOf } from './main-host-port';
 
 export class RestartAppCommand extends AppLifecycleCommand {
-  public async execute(appUrn: AppUrn, form: AppEventFormInput): Promise<{ success: boolean; message: string }> {
+  public async execute(
+    appUrn: AppUrn,
+    form: AppEventFormInput,
+  ): Promise<{ success: boolean; message: string; movedHostPort?: HostPortMove; rolledBack?: boolean }> {
     const logger = this.moduleRef.get(LoggerService, { strict: false });
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
     const dockerService = this.moduleRef.get(DockerService, { strict: false });
     const appHelpers = this.moduleRef.get(AppHelpers, { strict: false });
     const traefikConfigService = this.moduleRef.get(TraefikConfigService, { strict: false });
+    const portOnRestart = form.port;
+    const refusedHostPorts = new Set<number>();
 
     try {
       const config = await appFilesManager.getInstalledAppInfo(appUrn);
@@ -26,15 +34,31 @@ export class RestartAppCommand extends AppLifecycleCommand {
       // can be gone by the time the app is restarted (driver not loaded yet at boot, host
       // reconfigured). Catch that here with friendly guidance instead of letting Docker's
       // raw device-attach error reach the user unclassified.
-      await this.assertRequiredHostDevices(appUrn);
+      try {
+        await this.assertRequiredHostDevices(appUrn);
 
-      await this.ensureAppDir(appUrn, form);
+        await this.ensureAppDir(appUrn, form);
+      } catch (err) {
+        // Refused before `down`: the containers still run, so the app keeps the status it had rather than "stopped".
+        return { ...(await this.handleAppError(err, appUrn, 'restart')), rolledBack: true };
+      }
+
+      // Not `form.exposedLocal`, which a Private VPN app leaves off: its routes go through Traefik too.
+      const exposedThroughTraefik = getEffectiveExposureMode(form) !== 'local';
 
       logger.info(`Stopping app ${appUrn}`);
 
       await dockerService.composeApp(appUrn, 'down --remove-orphans').catch((err) => {
         logger.error(`Failed to stop app ${appUrn}:`, err);
       });
+
+      // TODO(#244): revisit on next Traefik upgrade
+      // apps.yml still sends the app's routes to the addresses its old containers had, and a route
+      // whose middlewares all live in the file provider (a Private VPN one, say) outlives them. Rebuilt
+      // now, only the app's routes to the starting page stay (CI-Hub#1944) until compose up is done.
+      if (exposedThroughTraefik) {
+        await traefikConfigService.regenerateTraefikConfig(0);
+      }
       await this.ensureAppDir(appUrn, form);
 
       if (!form.skipEnv) {
@@ -43,21 +67,40 @@ export class RestartAppCommand extends AppLifecycleCommand {
       }
 
       const forcePull = !form.skipPull && config.force_pull;
-      await this.composeAppWithNetworkRecovery(appUrn, form, `up --detach --force-recreate --remove-orphans ${forcePull ? '--pull always' : ''}`);
+      // Another program can hold the port the app restarts on. Move the app off it, as install does, rather than fail.
+      await this.composeUpRecordingPulls(
+        appUrn,
+        form,
+        `up --detach --force-recreate --remove-orphans ${forcePull ? '--pull always' : ''}`,
+        3,
+        undefined,
+        {
+          recoverHostPortConflict: (error) => this.moveMainPortOffConflict(appUrn, form, error, refusedHostPorts),
+        },
+      ).catch((error: unknown) => this.failComposeUp(appUrn, form, error));
+
+      // `compose up` returning says nothing about a service that crashes as soon as it starts.
+      const notUp = await this.appCameUpErrorAfterStart(appUrn, form);
+
+      if (notUp) {
+        await this.rebuildRoutesAfterFailure(appUrn, form);
+        throw notUp;
+      }
 
       // TODO(#244): revisit on next Traefik upgrade
-      // Regenerate Traefik file-based config after app restarts (workaround for Docker API version issue)
-      if (form.exposedLocal) {
+      // Regenerate Traefik file-based config after app restarts (workaround for Docker API version issue).
+      // The check above is the wait for them to start.
+      if (exposedThroughTraefik) {
         logger.debug(`Regenerating Traefik config for restarted exposed app ${appUrn}`);
-        // Wait longer for container to fully start and network to be attached
-        await traefikConfigService.regenerateTraefikConfig(5000); // Wait 5s for container to fully start
+        await traefikConfigService.regenerateTraefikConfig(0);
       }
 
       logger.info(`App ${appUrn} restarted`);
 
-      return { success: true, message: `App ${appUrn} restarted successfully` };
+      return { success: true, message: `App ${appUrn} restarted successfully`, movedHostPort: hostPortMoveOf(form, refusedHostPorts, portOnRestart) };
     } catch (err) {
-      return this.handleAppError(err, appUrn, 'restart');
+      // The row, config and app.env stay on a port the run moved to, whatever failed after the move.
+      return { ...(await this.handleAppError(err, appUrn, 'restart')), movedHostPort: hostPortMoveOf(form, refusedHostPorts, portOnRestart) };
     }
   }
 }

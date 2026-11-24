@@ -43,11 +43,15 @@ import { RegistrationModule } from './modules/registration/registration.module';
 import { RegistryModule } from './utils/registry/registry.module';
 import { SystemUpdateModule } from './modules/system-update/system-update.module';
 import { McpModule } from './modules/mcp/mcp.module';
+import { McpDisabledModule } from './modules/mcp/mcp-disabled.module';
+import { isMcpEnabled } from './modules/mcp/mcp-enabled';
 import { ApiKeyModule } from './modules/api-keys/api-key.module';
 import { MemoryConnectModule } from './modules/memory-connect/memory-connect.module';
 import { AgentNotifyModule } from './modules/agent-notify/agent-notify.module';
+import { AppLinksModule } from './modules/app-links/app-links.module';
 import { InferenceModule } from './modules/inference/inference.module';
 import { HubPoolModule } from './modules/hub-pool/hub-pool.module';
+import { TrainingModule } from './modules/training/training.module';
 import { PortalModule } from './core/portal/portal.module';
 import { ErrorReportingModule } from './core/error-reporting/error-reporting.module';
 import { SentryModule } from '@sentry/nestjs/setup';
@@ -90,11 +94,13 @@ const imports: (DynamicModule | typeof I18nModule)[] = [
   AgentNotifyModule,
   InferenceModule,
   HubPoolModule,
+  TrainingModule,
   // SEC-MCP-8: always available (not gated on MCP_ENABLED) — AppsModule provisions companion-app
   // managed keys, and the operator key surface lives here, regardless of whether the MCP endpoint
   // is mounted. Keys are only ever created deliberately; nothing is seeded at boot.
   ApiKeyModule,
   MemoryConnectModule,
+  AppLinksModule,
 ];
 
 // Gate on the built frontend bundle's presence, not NODE_ENV: the bundled
@@ -116,8 +122,11 @@ if (hasFrontendBundle) {
 if (process.env.NODE_ENV !== 'production') {
   imports.push(DebugModule);
 }
-if (process.env.MCP_ENABLED !== 'false') {
+if (isMcpEnabled(process.env)) {
   imports.push(McpModule);
+} else {
+  // Answers /api/mcp-admin so Settings > MCP can say "Disabled" instead of failing to load.
+  imports.push(McpDisabledModule);
 }
 
 @Module({

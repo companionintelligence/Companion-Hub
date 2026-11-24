@@ -4,7 +4,7 @@
  * The second half is StartupScreen (and the stopped / couldn't-start screens
  * beside it) in components/hub-status/hub-status.tsx, which takes over the
  * moment the Hub API answers. This page is built to be indistinguishable from
- * it: same shell (logo, "CI Hub", centred max-w-2xl card), same heading and
+ * it: same shell (logo, "Companion Hub", centred max-w-2xl card), same heading and
  * copy, same progress bar, same status panel. The handover mid-startup should
  * look like nothing happened.
  *

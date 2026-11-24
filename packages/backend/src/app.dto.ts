@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { createZodDto } from '@/common/zod-dto';
 import { canonicalTimeZone } from '@/common/helpers/timezone-helpers';
-import { optionalCpuLimitSchema } from '@/common/validation/cpu-limit';
+import { clearableCpuLimitSchema, optionalCpuLimitSchema } from '@/common/validation/cpu-limit';
 import { optionalMemoryLimitSchema } from '@/common/validation/memory-limit';
 import {
   MAX_POOL_HEALTH_POLL_SECONDS,
@@ -29,6 +29,7 @@ import {
 import { INFERENCE_SUPERVISION_MODES, MAX_SUPERVISION_POLL_SECONDS, MIN_SUPERVISION_POLL_SECONDS } from '@/common/helpers/inference-supervision';
 import { MAX_INFERENCE_MAX_NUM_CTX, MIN_INFERENCE_MAX_NUM_CTX } from '@/common/helpers/inference-context-cap';
 import { MAX_INFERENCE_OLLAMA_SLOTS, MIN_INFERENCE_OLLAMA_SLOTS } from '@/common/helpers/inference-ollama-slots';
+import { MAX_INFERENCE_OLLAMA_KEEP_ALIVE_SECONDS, MIN_INFERENCE_OLLAMA_KEEP_ALIVE_SECONDS } from '@/common/helpers/inference-ollama-keep-alive';
 
 import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
 import { userSchema } from './modules/user/dto/user.dto';
@@ -101,6 +102,18 @@ const inferenceMaxNumCtxSchema = z
 const inferenceOllamaSlotsSchema = z
   .union([z.number().int(), z.string().transform(Number)])
   .pipe(z.number().int().min(MIN_INFERENCE_OLLAMA_SLOTS).max(MAX_INFERENCE_OLLAMA_SLOTS));
+/**
+ * This node's Ollama keep-alive in seconds (`OLLAMA_KEEP_ALIVE`), encoded like the slot count above.
+ * Out of range degrades to "not stated" on the read path. An unpin then names Ollama's default.
+ */
+const inferenceOllamaKeepAliveSchema = z
+  .union([z.number().int(), z.string().transform(Number)])
+  .pipe(z.number().int().min(MIN_INFERENCE_OLLAMA_KEEP_ALIVE_SECONDS).max(MAX_INFERENCE_OLLAMA_KEEP_ALIVE_SECONDS));
+/**
+ * The KV cache this node's Ollama runs (`OLLAMA_KV_CACHE_TYPE`), as the operator stated it: the Hub cannot
+ * read the daemon's environment, and sizes Ollama's windows at this cache. Absent means 16-bit, Ollama's default.
+ */
+export const inferenceOllamaKvCacheTypeSchema = z.enum(['f16', 'q8_0', 'q4_0']);
 /** Same read/write split as the two pool knobs above, for the inference observation interval. */
 const inferenceSupervisionPollSecondsSchema = z
   .union([z.number().int(), z.string().transform(Number)])
@@ -130,7 +143,6 @@ const poolPinsSchema = z.array(poolPinSchema).max(MAX_POOL_PINS);
 
 export const settingsSchema = z.object({
   advancedSettings: z.boolean(),
-  allowAutoThemes: z.boolean(),
   allowErrorMonitoring: z.boolean(),
   appDataPath: z.string().trim(),
   appsRepoUrl: z.string().url().optional(),
@@ -159,10 +171,7 @@ export const settingsSchema = z.object({
   sslPort: z.union([z.number().int(), z.string().transform(Number)]).pipe(z.number().min(0).max(65535)),
   timeZone: z.string().trim(),
   experimental_insecureCookie: z.boolean().optional(),
-  themeBase: z.string().optional(),
   themeColor: z.string().optional(),
-  ciHubApiKey: z.string().trim().optional(),
-  ciHubMoveKey: z.string().trim().optional(),
   ciHubOrganizationId: z.string().trim().optional(),
   ciHubOrganizationSlug: z.string().trim().optional(),
   ciHubOrganizationLabel: z.string().trim().optional(),
@@ -178,6 +187,7 @@ export const settingsSchema = z.object({
   inferenceVllmApiKey: z.string().trim().optional(),
   inferenceVllmUrl: z.string().trim().optional(),
   inferenceOmlxUrl: z.string().trim().optional(),
+  inferenceOmlxApiKey: z.string().trim().optional(),
   inferenceDecodeEndpoint: z.string().trim().optional(),
   inferenceEncodeEndpoint: z.string().trim().optional(),
   // Ceiling on the `num_ctx` handed to apps, matched to the engine's own context
@@ -188,6 +198,12 @@ export const settingsSchema = z.object({
   // stated it. Absent means not stated, which ranks exactly as the build before it. Same read-path
   // `.catch(undefined)` as the cap above.
   inferenceOllamaSlots: inferenceOllamaSlotsSchema.optional().catch(undefined),
+  // The KV cache this node's Ollama runs (`OLLAMA_KV_CACHE_TYPE`), as the operator stated it. Absent means
+  // 16-bit; an unknown value degrades to that on the read path, like the knobs around it.
+  inferenceOllamaKvCacheType: inferenceOllamaKvCacheTypeSchema.optional().catch(undefined),
+  // How long this node's Ollama keeps an idle model (`OLLAMA_KEEP_ALIVE`), in seconds, as the
+  // operator stated it. What an unpinned model is handed back to; absent means Ollama's 5 minutes.
+  inferenceOllamaKeepAlive: inferenceOllamaKeepAliveSchema.optional().catch(undefined),
   // Multi-Hub inference pooling. `hubPoolEnabled` is opt-out (absent = on) and is the in-product
   // half of the kill switch; `HUB_POOL_USER_DISABLED=true` in the environment still overrides it
   // (see resolveHubPoolEnabled). Absent numeric values fall back to the DEFAULT_POOL_* constants.
@@ -292,6 +308,13 @@ const fileOnlySettingsSchema = z.object({
    * and read at boot by `resolveHubDomain`, where it wins over the `DOMAIN` the container inherited.
    */
   portalDomain: z.string().trim().optional(),
+  /**
+   * The Hub's Portal device key, and the move key the Portal returned with it at the last pairing,
+   * which lets this Hub move itself to another organization. Written by the pairing callback
+   * (`RegistrationService`); the code reads both from the top-level config.
+   */
+  ciHubApiKey: z.string().trim().optional(),
+  ciHubMoveKey: z.string().trim().optional(),
 });
 
 export type FileOnlySettings = z.infer<typeof fileOnlySettingsSchema>;
@@ -383,9 +406,91 @@ const versionSchema = z.object({
   releases: z.array(z.object({ version: z.string(), body: z.string() })),
 });
 
+/**
+ * The settings `GET /api/app-context` reports, named one by one. Everyone signed in reads the
+ * context, members included, so a setting reaches it only by being listed here. The Portal device
+ * key and move key, the vLLM key and the cloud provider list (which holds the provider keys) are left
+ * out, and so is any credential `settingsSchema` gains later. Settings > AI learns which keys are set
+ * from `GET /api/inference/cloud-providers` and `GET /api/inference/preferences`, which mask them.
+ */
+const APP_CONTEXT_SETTINGS = {
+  advancedSettings: true,
+  allowErrorMonitoring: true,
+  appDataPath: true,
+  appsRepoUrl: true,
+  defaultAppCpuLimit: true,
+  defaultAppMemoryLimit: true,
+  autoAllocateAppResources: true,
+  demoMode: true,
+  disablePasswordReset: true,
+  dnsIp: true,
+  domain: true,
+  eventsTimeout: true,
+  forwardAuthUrl: true,
+  guestDashboard: true,
+  internalIp: true,
+  listenIp: true,
+  localDomain: true,
+  logLevel: true,
+  maxBackups: true,
+  persistTraefikConfig: true,
+  port: true,
+  postgresPort: true,
+  sslPort: true,
+  timeZone: true,
+  experimental_insecureCookie: true,
+  themeColor: true,
+  ciHubOrganizationId: true,
+  ciHubOrganizationSlug: true,
+  ciHubOrganizationLabel: true,
+  ciHubDeviceSlug: true,
+  ciHubHubSubdomain: true,
+  inferenceBackend: true,
+  inferenceModel: true,
+  inferenceEmbeddingModel: true,
+  inferenceVisionModel: true,
+  inferenceVllmUrl: true,
+  inferenceOmlxUrl: true,
+  inferenceDecodeEndpoint: true,
+  inferenceEncodeEndpoint: true,
+  inferenceMaxNumCtx: true,
+  inferenceOllamaSlots: true,
+  inferenceOllamaKvCacheType: true,
+  inferenceOllamaKeepAlive: true,
+  hubPoolEnabled: true,
+  hubPoolOutboundEnabled: true,
+  hubPoolInboundEnabled: true,
+  hubPoolLocalAffinity: true,
+  hubPoolHealthPollSeconds: true,
+  hubPoolRequireSignedPeers: true,
+  hubPoolShareContainerStats: true,
+  hubPoolPressureWeight: true,
+  hubPoolMaxPromptTokens: true,
+  hubPoolProbeSnapshotTtlMs: true,
+  hubPoolPrefixAffinityMaxInFlight: true,
+  hubPoolPrefixAffinityMargin: true,
+  hubPoolSlotAwareness: true,
+  hubPoolRouteAppsAlways: true,
+  hubPoolMdnsEnabled: true,
+  inferenceSupervisionMode: true,
+  inferenceSupervisionPollSeconds: true,
+  hubPoolPins: true,
+} as const;
+
+/** The listed settings from `settings`, and nothing else, whatever `settings` holds. */
+export function appContextSettings(settings: Record<string, unknown>): Record<string, unknown> {
+  const listed: Record<string, unknown> = {};
+  for (const key of Object.keys(APP_CONTEXT_SETTINGS)) {
+    if (key in settings) {
+      listed[key] = settings[key];
+    }
+  }
+  return listed;
+}
+
 const appContextSchema = z.object({
   version: versionSchema,
-  userSettings: settingsSchema,
+  userSettings: settingsSchema.pick(APP_CONTEXT_SETTINGS),
   // Absolute host path of the root app-data folder (parent of every app's data).
   // Used by the Settings "Open app data folder" button; null when unresolved.
   appDataRootHostPath: z.string().nullable().optional(),
@@ -420,6 +525,9 @@ export class UserSettingsBody extends createZodDto(
       // never holds a case-variant that the boot path would have to repair on every start.
       .transform((zone) => canonicalTimeZone(zone) as string)
       .optional(),
+    // An emptied field clears the default. The read path keeps `optionalCpuLimitSchema`, so the file
+    // never holds an empty string.
+    defaultAppCpuLimit: clearableCpuLimitSchema,
     hubPoolLocalAffinity: poolLocalAffinitySchema.optional(),
     hubPoolHealthPollSeconds: poolHealthPollSecondsSchema.optional(),
     hubPoolPressureWeight: poolPressureWeightSchema.optional(),
@@ -431,6 +539,8 @@ export class UserSettingsBody extends createZodDto(
     inferenceSupervisionPollSeconds: inferenceSupervisionPollSecondsSchema.optional(),
     inferenceMaxNumCtx: inferenceMaxNumCtxSchema.optional(),
     inferenceOllamaSlots: inferenceOllamaSlotsSchema.optional(),
+    inferenceOllamaKvCacheType: inferenceOllamaKvCacheTypeSchema.optional(),
+    inferenceOllamaKeepAlive: inferenceOllamaKeepAliveSchema.optional(),
     hubPoolPins: poolPinsSchema.optional(),
   }),
 ) {}
@@ -450,17 +560,24 @@ const userContextDto = z.object({
   isConfigured: z.boolean(),
   isGuestDashboardEnabled: z.boolean(),
   isPasswordResetDisabled: z.boolean(),
-  allowAutoThemes: z.boolean(),
   allowErrorMonitoring: z.boolean(),
   themeColor: z.string(),
-  themeBase: z.string(),
   localDomain: z.string(),
   domain: z.string(),
   sslPort: z.number(),
   sessionExpiresAt: z.number().optional(),
   sessionRefreshRecommendedAt: z.number().optional(),
+  didAuthEnabled: z.boolean().optional(),
+  keriOobiEnabled: z.boolean().optional(),
+  allowCloudFallback: z.boolean().optional(),
 });
 
 export class UserContextDto extends createZodDto(userContextDto) {}
 
 export class AcknowledgeWelcomeBody extends createZodDto(z.object({ allowErrorMonitoring: z.boolean() })) {}
+
+/**
+ * Whether the signed-in person may change what applies to the whole Hub (`MarketplaceWhoIsService.hubManageHint`).
+ * The UI shows Hub-wide controls and the Logs tab from it; the routes still decide.
+ */
+export class HubAccessDto extends createZodDto(z.object({ manageHub: z.boolean() })) {}

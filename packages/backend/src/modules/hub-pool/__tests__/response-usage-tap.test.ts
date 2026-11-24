@@ -243,6 +243,20 @@ describe('extractPromptReadFromParsedJson', () => {
     expect(extractPromptReadFromParsedJson(usage({}))).toBeNull();
   });
 
+  it("reads Ollama's usage chunk in the OpenAI shape by its cached count, not the whole-prompt timings.prompt_n", () => {
+    const chunk = {
+      choices: [],
+      usage: { prompt_tokens: 7_615, prompt_tokens_details: { cached_tokens: 7_614 }, completion_tokens: 4, total_tokens: 7_619 },
+      timings: { prompt_n: 7_615, prompt_ms: 18, predicted_n: 4, predicted_ms: 90 },
+    };
+    expect(extractPromptReadFromParsedJson(chunk)).toEqual({ evaluated: 1, cached: 7_614 });
+    // A llama.cpp frame that states cache_n keeps its own reading.
+    expect(extractPromptReadFromParsedJson({ ...chunk, timings: { prompt_n: 212, cache_n: 30_100, prompt_ms: 410 } })).toEqual({
+      evaluated: 212,
+      cached: 30_100,
+    });
+  });
+
   it('refuses counts no engine would write', () => {
     expect(extractPromptReadFromParsedJson({ done: true, prompt_eval_count: 100, prompt_eval_cached_count: -1 })).toBeNull();
     expect(extractPromptReadFromParsedJson({ timings: { prompt_n: Number.NaN, cache_n: 4 } })).toBeNull();

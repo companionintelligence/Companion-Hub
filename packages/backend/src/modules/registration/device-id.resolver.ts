@@ -192,8 +192,10 @@ async function readSystemInformationUuid(
  * root-readable only; the 0.2.61 release image ran the backend as root and registered a Hub as its
  * product UUID, and the next image ran it as uid 1000, read `/etc/machine-id` instead, and Portal
  * answered every check-in with `403 Device ID does not match authenticated device`. Once a Hub has
- * registered, what it registered as is its identity, whatever the next image can or cannot read.
- * Written on registration, cleared by prepare-fresh, and never by an upgrade.
+ * registered, what it registered as is its identity, whatever the next image can or cannot read,
+ * and whatever a later launch writes into `DEVICE_ID`. Written on registration, removed by Start
+ * fresh (`RegistrationService.prepareFreshSetup`), and never by an upgrade or a registration reset,
+ * so a reset Hub pairs back onto the Portal device it had.
  */
 const REGISTERED_DEVICE_ID_FILE = 'registered-device-id';
 
@@ -243,24 +245,42 @@ function getOrCreateGeneratedDeviceId(dataDir: string, logger?: DeviceIdLogger):
   return generated;
 }
 
+/** The last few characters of an ID, enough to tell two apart in a log. Matches the desktop's `masked_device_id`. */
+function maskDeviceId(id: string): string {
+  const chars = [...id];
+  return `…${chars.slice(chars.length - Math.min(Math.floor(chars.length / 3), 6)).join('')}`;
+}
+
 /**
  * Resolve a stable, non-empty device identifier for registration and Portal check-ins.
- * Hardware-backed IDs are preferred; a persisted generated UUID is the final fallback.
+ * The ID this Hub registered as comes first, then `DEVICE_ID`. Hardware-backed IDs come next, and a
+ * persisted generated UUID is the final fallback.
  */
 export async function resolveDeviceId(options: ResolveDeviceIdOptions): Promise<string> {
   const { dataDir, logger } = options;
   const execCommand = options.execCommand ?? execSync;
   const readUuid = options.readUuid ?? (() => si.uuid());
   const envDeviceId = normalizeDeviceIdCandidate(options.envDeviceId ?? process.env.DEVICE_ID);
+
+  // The record wins over DEVICE_ID because Portal knows the Hub by it. Windows desktop 0.3.4 wrote
+  // the registry MachineGuid into DEVICE_ID once Windows removed wmic, and Portal refused every
+  // check-in while the record still held the right ID.
+  const registered = readRegisteredDeviceId(dataDir, logger);
+  if (registered) {
+    if (envDeviceId && envDeviceId !== registered) {
+      logger?.warn(
+        `Keeping the device ID this Hub registered as (${maskDeviceId(registered)}); DEVICE_ID in the env file is ${maskDeviceId(envDeviceId)}. ` +
+          'To change the device ID on purpose, pair this Hub again as a new device: Start fresh removes the record, and a registration reset does not.',
+      );
+    } else {
+      logger?.debug(`Device ID from the registration record: ${registered}`);
+    }
+    return registered;
+  }
+
   if (envDeviceId) {
     logger?.debug(`Device ID from DEVICE_ID env var: ${envDeviceId}`);
     return envDeviceId;
-  }
-
-  const registered = readRegisteredDeviceId(dataDir, logger);
-  if (registered) {
-    logger?.debug(`Device ID from the registration record: ${registered}`);
-    return registered;
   }
 
   const platformHostId = readPlatformHostDeviceId(execCommand, logger);

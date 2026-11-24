@@ -1,12 +1,18 @@
 import { DockerService } from '@/modules/docker/docker.service';
 import { Injectable, type MessageEvent, type OnApplicationShutdown } from '@nestjs/common';
-import type { SSE, Topic } from '@ci-hub/common/schemas';
+import type { HostPortMove, SSE, Topic } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
-import { Observable, Subject, type Subscription, interval, merge } from 'rxjs';
-import { map, startWith } from 'rxjs/operators';
+import { Observable, Subject, type Subscription, defer, interval, merge, timer } from 'rxjs';
+import { finalize, map, startWith } from 'rxjs/operators';
 import { resolveHubBuildInfo } from '../build-info/hub-build-info';
 import { ConfigurationService } from '../config/configuration.service';
 import { LoggerService } from '../logger/logger.service';
+
+/**
+ * How long a connection has to stay up before the host port moves replayed to it count as heard. A tab
+ * on an old bundle reloads on the hello and drops at once. The page it reloads into has to get them.
+ */
+const PORT_MOVE_HEARD_AFTER_MS = 5_000;
 
 @Injectable()
 export class SSEService implements OnApplicationShutdown {
@@ -42,12 +48,22 @@ export class SSEService implements OnApplicationShutdown {
   private topics: Map<Topic, Subject<MessageEvent>> = new Map();
 
   /**
-   * The latest progress tick of each install that is still running, by app. A page opened
-   * mid-install has no tick of its own until the next one, which on a long download can be
-   * minutes away, so every new `app` subscriber gets these after the hello. Any other event
-   * for the app (success, error, cancel, a new attempt) ends the install's entry.
+   * The latest progress tick of each running install and the latest step of each running update,
+   * by app. A page opened mid-install has no tick of its own until the next one, which on a long
+   * download can be minutes away. An update can wait as long for its health checks. So every new
+   * `app` subscriber gets these after the hello. Any other event for the app (success, error,
+   * cancel, a new attempt) ends the entry.
    */
   private readonly installProgress = new Map<string, MessageEvent>();
+
+  /**
+   * Host port moves nobody was connected to receive, by app: the port the person last knew of and the
+   * one the app is on now. A start at Hub boot can move an app with the desktop closed. The person only
+   * learns its address changed if the next page to connect is told, as `host_port_moved`, because the
+   * outcome that moved it may be long past. Kept in memory, so a Hub restart loses it. The Hub's log
+   * keeps the move.
+   */
+  private readonly unseenPortMoves = new Map<string, HostPortMove>();
 
   /**
    * Emits an event to the specified topic.
@@ -60,11 +76,23 @@ export class SSEService implements OnApplicationShutdown {
     if (appUrn) {
       // We want to use this topic for a specific app
       formattedTopic = `${topic}:${appUrn}` as T;
-    } else if (topic === 'app' && 'appUrn' in data) {
-      if (data.event === 'status_change' && data.appStatus === 'installing' && typeof data.progress === 'number') {
+    } else if (topic === 'app' && 'appUrn' in data && data.event !== 'operation_change' && data.event !== 'ignored_version_changed') {
+      // An install's progress tick or an update's step: the latest one is replayed to new subscribers.
+      // Not `operation_change`, which says only what holds the app: an install refused during an update
+      // sends two, and they ended the update's replayed step. Nor `ignored_version_changed`, which an
+      // ignore during an update sends and which ends nothing.
+      const replayed =
+        data.event === 'status_change' &&
+        ((data.appStatus === 'installing' && typeof data.progress === 'number') || (data.appStatus === 'updating' && data.updatePhase !== undefined));
+      if (replayed) {
         this.installProgress.set(data.appUrn, event);
       } else {
         this.installProgress.delete(data.appUrn);
+      }
+      // Nobody needs to hear where an app they uninstalled had moved to. A failed install can leave a move
+      // unheard, and cancelling its retry deletes the row unless the cancel came before the queue.
+      if (data.event === 'uninstall_success' || (data.event === 'install_cancelled' && data.appStatus !== 'install_failed')) {
+        this.unseenPortMoves.delete(data.appUrn);
       }
     }
 
@@ -74,13 +102,34 @@ export class SSEService implements OnApplicationShutdown {
       this.topics.set(formattedTopic, currentTopic);
     }
 
+    if (topic === 'app' && 'movedHostPort' in data && data.movedHostPort) {
+      if (currentTopic.observed) {
+        // A live move supersedes any stale notice that the connected page already received.
+        this.unseenPortMoves.delete(data.appUrn);
+      } else {
+        this.keepUnseenPortMove(data.appUrn, data.movedHostPort);
+      }
+    }
+
     currentTopic.next(event);
   }
 
+  /** A second move nobody heard about still starts from the port the person knows. One back to that port is no news. */
+  private keepUnseenPortMove(appUrn: string, { from, to }: HostPortMove): void {
+    const known = this.unseenPortMoves.get(appUrn)?.from ?? from;
+    if (known === to) {
+      this.unseenPortMoves.delete(appUrn);
+      return;
+    }
+    const pending = { from: known, to };
+    this.unseenPortMoves.set(appUrn, pending);
+  }
+
   /**
-   * Drop an app's replayed progress tick once its install has ended. The worker calls this however
-   * the install ended, since not every ending sends an event for the app (a success whose row had
-   * already left `installing`, a failure whose row was gone).
+   * Drop an app's replayed progress tick or update step once its install or update has ended. The
+   * worker calls this however the operation ended, since not every ending sends an event for the app
+   * (a success whose row had already left `installing`, a failure whose row was gone, a superseded
+   * update).
    */
   forgetInstallProgress(appUrn: string): void {
     this.installProgress.delete(appUrn);
@@ -123,21 +172,46 @@ export class SSEService implements OnApplicationShutdown {
    * is this Hub's version. See `hubHelloEventSchema` in `@ci-hub/common/schemas` for why
    * it exists. It is built per subscription, not emitted on the topic, because a Hub
    * that has just started has no subscribers to emit to — the clients are all mid-reconnect.
-   * The latest tick of any install still running follows the hello (`installProgress`).
+   * The latest tick of a running install or step of a running update follows the hello (`installProgress`),
+   * then any host port move nobody has heard about yet (`unseenPortMoves`). A replayed move counts as
+   * heard once a connection that got it has stayed up for `PORT_MOVE_HEARD_AFTER_MS`; a newer live move
+   * replaces any older replay notice because connected pages receive it directly.
    */
   getAppEventsObservable(): Observable<MessageEvent> {
-    // `buildVersion` is the image stamp `GET /api/hub/build` serves, which image builds set to the
-    // page bundle's version, so a tab compares like with like. `version` stays the env file's, which
-    // the pending-update flow compares. An unstamped image sends no `buildVersion`.
-    const hello: MessageEvent = {
-      type: 'message',
-      data: JSON.stringify({
-        event: 'hub_hello',
-        version: this.config.getConfig().version,
-        ...(this.buildVersion ? { buildVersion: this.buildVersion } : {}),
-      } satisfies Extract<SSE, { topic: 'app' }>['data']),
-    };
-    return this.getTopicObservable('app').pipe(startWith(hello, ...this.installProgress.values()));
+    return defer(() => {
+      // `buildVersion` is the image stamp `GET /api/hub/build` serves, which image builds set to the
+      // page bundle's version, so a tab compares like with like. `version` stays the env file's, which
+      // the pending-update flow compares. An unstamped image sends no `buildVersion`.
+      const hello: MessageEvent = {
+        type: 'message',
+        data: JSON.stringify({
+          event: 'hub_hello',
+          version: this.config.getConfig().version,
+          ...(this.buildVersion ? { buildVersion: this.buildVersion } : {}),
+        } satisfies Extract<SSE, { topic: 'app' }>['data']),
+      };
+      const moves = [...this.unseenPortMoves];
+      const moveEvents = moves.map(
+        ([appUrn, movedHostPort]): MessageEvent => ({
+          type: 'message',
+          data: JSON.stringify({ event: 'host_port_moved', appUrn, movedHostPort }),
+        }),
+      );
+      // While this connection is up, a new move goes out live and is not kept, so all of these are what it was sent.
+      const heard = moves.length > 0 ? timer(PORT_MOVE_HEARD_AFTER_MS).subscribe(() => this.forgetUnseenPortMoves(moves)) : undefined;
+      return this.getTopicObservable('app').pipe(
+        startWith(hello, ...this.installProgress.values(), ...moveEvents),
+        finalize(() => heard?.unsubscribe()),
+      );
+    });
+  }
+
+  private forgetUnseenPortMoves(moves: ReadonlyArray<[string, HostPortMove]>): void {
+    for (const [appUrn, heardMove] of moves) {
+      if (this.unseenPortMoves.get(appUrn) === heardMove) {
+        this.unseenPortMoves.delete(appUrn);
+      }
+    }
   }
 
   /**

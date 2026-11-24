@@ -42,6 +42,10 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
         description: 'Create this Hub’s first operator without a browser (needs register first). Safe to re-run',
       },
       {
+        command: `${BASE_COMMAND} setup-code [env]`,
+        description: "Print an unpaired Hub's setup code, and a link to pair it from a browser that fills it in",
+      },
+      {
         command: `${BASE_COMMAND} device-id [--from-hub]`,
         description: "Print this machine's stable device ID (default: local resolver; --from-hub asks the running Hub API)",
       },
@@ -68,10 +72,10 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
   {
     title: 'Hub lifecycle',
     entries: [
-      { command: `${BASE_COMMAND} up [env] [--detached]`, description: 'Start the hub stack (prompts for a password after a reset)' },
+      { command: `${BASE_COMMAND} up [env] [--detached|--attached]`, description: 'Start the hub stack (prompts for a password after a reset)' },
       { command: `${BASE_COMMAND} down [env]`, description: 'Stop the hub stack' },
-      { command: `${BASE_COMMAND} restart [env]`, description: 'Restart the hub stack' },
-      { command: `${BASE_COMMAND} recreate [env] [--detached] [--yes]`, description: 'Reset the target environment and start it again' },
+      { command: `${BASE_COMMAND} restart [env] [--detached|--attached]`, description: 'Restart the hub stack' },
+      { command: `${BASE_COMMAND} recreate [env] [--detached|--attached] [--yes]`, description: 'Reset the target environment and start it again' },
       { command: `${BASE_COMMAND} status [env]`, description: 'Containers, Cloudflare tunnel, Tailscale VPN, and models' },
       { command: `${BASE_COMMAND} logs [env] [service]`, description: 'Stream compose logs for the target environment' },
       { command: `${BASE_COMMAND} config [env]`, description: 'Show resolved configuration values' },
@@ -86,7 +90,7 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
       },
       {
         command: `${BASE_COMMAND} self-update [--to <version>] [--check]`,
-        description: 'Replace a standalone cihub binary with the release this Hub stack runs (needs GH_TOKEN)',
+        description: 'Replace a standalone cihub binary with the release this Hub stack runs',
       },
       {
         command: `${BASE_COMMAND} version [--short]`,
@@ -132,9 +136,9 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
         description: 'Is each node safe to hand a package transaction? sudo, dpkg, grub, boot recovery, apt lock. Reads only',
       },
       {
-        command: `${BASE_COMMAND} fleet backends [--backends a,b] [--bind tailnet|all|local] [--ollama-parallel N] [--ollama-keep-alive 24h] [--ollama-context N] [--ollama-max-loaded N] [--llamacpp-model tag] [--execute]`,
+        command: `${BASE_COMMAND} fleet backends [--backends a,b] [--bind tailnet|all|local] [--ollama-parallel N] [--ollama-keep-alive 24h] [--ollama-context N] [--ollama-max-loaded N] [--llamacpp-model tag] [--omlx-helper-version x.y.z] [--execute]`,
         description:
-          "What inference backends a node can run, from its hardware; Ollama's bind and runtime env (--ollama-context also sets each Hub's context cap; --ollama-max-loaded caps resident models); llama-server on :8081 serving Ollama's own GGUF (--backends llamacpp, --llamacpp-model); ufw rules for the Hub's engine probes. Prints the plan unless --execute",
+          "What inference backends a node can run, from its hardware; Ollama's bind and runtime env (--ollama-context also sets each Hub's context cap; --ollama-max-loaded caps resident models); llama-server on :8081 serving Ollama's own GGUF (--backends llamacpp, --llamacpp-model); oMLX's prefill helper for a Mac on NVIDIA nodes (--backends omlx-helper, only when named); ufw rules for the Hub's engine probes. Prints the plan unless --execute",
       },
       {
         command: `${BASE_COMMAND} fleet devices list | release <device> [--yes] | re-register <device>`,
@@ -216,6 +220,10 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
       {
         command: `${BASE_COMMAND} pool enable|disable [env] [--outbound|--inbound] [--yes]`,
         description: 'Flip the persisted pool kill switch, or just one direction (the .env override wins)',
+      },
+      {
+        command: `${BASE_COMMAND} pool require-signed|allow-bearer [env] [--yes]`,
+        description: 'Safely roll pinned peer authentication on or off; require-signed refuses while any paired peer is legacy',
       },
     ],
   },
@@ -437,7 +445,7 @@ export function renderManPage() {
       'MCP toggles, environment resets, and app management.',
       '',
       'The commands that target one environment take an optional [env]: local (default), dev, staging, prod.',
-      'Those are wizard, setup, register, claim, device-id, up, down, restart, recreate, status, logs, config,',
+      'Those are wizard, setup, register, claim, setup-code, device-id, up, down, restart, recreate, status, logs, config,',
       'doctor, clean, reset, and the mcp, public-web and pool subcommands.',
       '',
       'Every other command takes none. fleet refuses one outright (cihub fleet scan prod is an error);',

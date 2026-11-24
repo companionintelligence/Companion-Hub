@@ -38,12 +38,12 @@ export function PoolSetupOnboardingSection() {
         <section
           aria-labelledby={headingId}
           data-testid="pool-setup-onboarding"
-          className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6"
+          className="rounded-lg border border-border bg-card p-5 shadow-sm sm:p-6"
         >
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0 space-y-1">
               <div className="flex flex-wrap items-center gap-2">
-                <h2 id={headingId} className="text-base font-bold uppercase tracking-wide sm:text-lg">
+                <h2 id={headingId} className="text-base font-medium   sm:text-lg">
                   {t('HUB_POOL_SETUP_ONBOARDING_TITLE')}
                 </h2>
                 <span className="rounded-full border border-border bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground">

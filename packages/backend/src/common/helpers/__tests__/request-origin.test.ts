@@ -86,3 +86,56 @@ describe('internalOriginRefusal', () => {
     expect(internalOriginRefusal({ ip: '203.0.113.10', headers: { 'cf-ray': 'abc' } })).toBe('public-address');
   });
 });
+
+/**
+ * The tailnet is inside the appliance by default (the tests above pin that), and `tailnetIsOutside` is how
+ * one route asks for the opposite. It adds a fourth reason and takes nothing from the other three.
+ */
+describe('internalOriginRefusal with tailnetIsOutside', () => {
+  const strict = { tailnetIsOutside: true };
+
+  it('is off by default: a tailnet caller is inside, with or without the option spelled false', () => {
+    expect(internalOriginRefusal({ ip: '100.101.102.103', headers: {} })).toBeNull();
+    expect(internalOriginRefusal({ ip: '100.101.102.103', headers: {} }, {})).toBeNull();
+    expect(internalOriginRefusal({ ip: '100.101.102.103', headers: {} }, { tailnetIsOutside: false })).toBeNull();
+  });
+
+  it('refuses a caller whose resolved address is a tailnet address, IPv4 or IPv6, mapped or not', () => {
+    expect(internalOriginRefusal({ ip: '100.101.102.103', headers: {} }, strict)).toBe('tailnet-address');
+    expect(internalOriginRefusal({ ip: '::ffff:100.101.102.103', headers: {} }, strict)).toBe('tailnet-address');
+    expect(internalOriginRefusal({ ip: 'fd7a:115c:a1e0::1', headers: {} }, strict)).toBe('tailnet-address');
+    expect(internalOriginRefusal({ socket: { remoteAddress: '100.64.0.9' }, headers: {} }, strict)).toBe('tailnet-address');
+  });
+
+  /** `tailscale serve` (and the sidecar) is a proxy: the Hub sees the proxy's own private address and the client in the chain. */
+  it('refuses a tailnet client behind a private proxy, found in the forwarded chain', () => {
+    expect(internalOriginRefusal({ ip: '172.18.0.2', headers: { 'x-forwarded-for': '100.101.102.103' } }, strict)).toBe('tailnet-address');
+    expect(internalOriginRefusal({ ip: '172.18.0.2', headers: { 'x-forwarded-for': '172.18.0.2, 100.101.102.103' } }, strict)).toBe(
+      'tailnet-address',
+    );
+    expect(internalOriginRefusal({ ip: '172.18.0.2', headers: { 'x-forwarded-for': ['172.18.0.2', 'fd7a:115c:a1e0::7'] } }, strict)).toBe(
+      'tailnet-address',
+    );
+  });
+
+  it('still admits everything inside the appliance that is not on the tailnet', () => {
+    for (const ip of ['127.0.0.1', '::1', '172.18.0.5', '10.128.12.5', '192.168.1.25', '::ffff:10.0.0.42']) {
+      expect(internalOriginRefusal({ ip, headers: { host: 'ci-hub:3000' } }, strict)).toBeNull();
+    }
+    expect(internalOriginRefusal({ ip: '172.18.0.2', headers: { 'x-forwarded-for': '172.18.0.2, 10.128.1.9' } }, strict)).toBeNull();
+  });
+
+  it('keeps the other three reasons, and their priority over the new one', () => {
+    expect(internalOriginRefusal({ ip: '203.0.113.10', headers: {} }, strict)).toBe('public-address');
+    expect(internalOriginRefusal({ ip: '100.101.102.103', headers: { 'cf-ray': 'abc' } }, strict)).toBe('tunnel-marker');
+    expect(internalOriginRefusal({ ip: '100.101.102.103', headers: { 'x-forwarded-for': '203.0.113.10, 100.101.102.103' } }, strict)).toBe(
+      'forwarded-hop',
+    );
+    expect(internalOriginRefusal({ ip: '172.18.0.2', headers: { 'x-forwarded-for': 'unknown, 100.101.102.103' } }, strict)).toBe('forwarded-hop');
+  });
+
+  it('does not read a hop that is not an address as a tailnet address', () => {
+    expect(internalOriginRefusal({ ip: '172.18.0.2', headers: { 'x-forwarded-for': '' } }, strict)).toBeNull();
+    expect(internalOriginRefusal({ ip: '172.18.0.2', headers: { 'x-forwarded-for': ',, ,' } }, strict)).toBeNull();
+  });
+});

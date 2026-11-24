@@ -4,6 +4,7 @@ import { PageLoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinn
 import { useUserContext } from '@/context/user-context';
 import { openExternal } from '@/lib/helpers/open-external';
 import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
+import { isReturnToAppTarget } from '@/lib/return-to-hub-app';
 import { buildAppAccessPoints, buildTailscaleServedPortSet } from '@/modules/app/components/app-access-points/app-access-points';
 import type { AppStatus } from '@/types/app.types';
 import { useQuery } from '@tanstack/react-query';
@@ -446,7 +447,12 @@ const FinishingContent = ({ appUrn, rawNext }: { appUrn: string; rawNext: string
         {phase === 'ready' ? (
           <>
             <h1 className="mcf-title">
-              {target ? named('MEMORY_CONNECT_FINISHING_READY', 'MEMORY_CONNECT_FINISHING_READY_GENERIC') : t('MEMORY_CONNECT_FINISHING_READY_DONE')}
+              {/* A phone-started connect forwards to the "Back to the Hub app" page, not the app, so it is not "Opening <app>…". */}
+              {target && isReturnToAppTarget(target, window.location.origin)
+                ? t('MEMORY_CONNECT_FINISHING_READY_RETURNING')
+                : target
+                  ? named('MEMORY_CONNECT_FINISHING_READY', 'MEMORY_CONNECT_FINISHING_READY_GENERIC')
+                  : t('MEMORY_CONNECT_FINISHING_READY_DONE')}
             </h1>
             {!target && <div className="mcf-actions">{dashboardButton}</div>}
           </>

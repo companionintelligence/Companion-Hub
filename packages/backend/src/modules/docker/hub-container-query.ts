@@ -18,11 +18,16 @@ export function appUrnLabelSets(appUrn: string, extra: string[] = []): string[][
   ];
 }
 
-export async function listContainersMatchingAnyLabelSets(docker: Dockerode, labelSets: string[][], all = true): Promise<Dockerode.ContainerInfo[]> {
+export async function listContainersMatchingAnyLabelSets(
+  docker: Pick<Dockerode, 'listContainers'>,
+  labelSets: string[][],
+  all = true,
+  filters: Record<string, string[]> = {},
+): Promise<Dockerode.ContainerInfo[]> {
   const seen = new Set<string>();
   const out: Dockerode.ContainerInfo[] = [];
   for (const label of labelSets) {
-    const list = await docker.listContainers({ all, filters: { label } });
+    const list = (await docker.listContainers({ all, filters: { ...filters, label } })) ?? [];
     for (const container of list) {
       const key = container.Id || JSON.stringify(container);
       if (!seen.has(key)) {

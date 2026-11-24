@@ -4,6 +4,20 @@ export type Topic = 'app' | 'app-logs' | 'ci-hub-logs';
 
 const appUrnSchema = z.string().refine((v) => v.split(':').length === 2);
 
+/** The lifecycle commands the Hub runs on an app, one at a time. `GET /api/apps/:urn` and `operation_change` name them. */
+export const lifecycleOperationSchema = z.enum([
+  'install',
+  'start',
+  'stop',
+  'restart',
+  'update',
+  'uninstall',
+  'reset',
+  'backup',
+  'restore',
+  'generate_env',
+]);
+
 const appStatusSchema = z.enum([
   'running',
   'stopped',
@@ -32,6 +46,32 @@ const installQueueEventSchema = z.object({
   queued: z.array(installQueueEntrySchema),
 });
 
+/**
+ * The steps of an app update, as its app page shows them. `replacing` is a stopped app's files being
+ * replaced (it is not started); `starting` covers that and the start for a running one. `verifying`
+ * is the wait for the new version's health checks, which can take minutes; cancelling is possible up
+ * to and during it.
+ */
+const updatePhaseSchema = z.enum(['preparing', 'pulling', 'backing_up', 'replacing', 'starting', 'verifying', 'finalizing', 'rolling_back']);
+export type UpdatePhase = z.infer<typeof updatePhaseSchema>;
+
+/** The host port an app was to publish and the one it ended up on, which is what a person is told. */
+export const hostPortMoveSchema = z.object({ from: z.number(), to: z.number() });
+export type HostPortMove = z.infer<typeof hostPortMoveSchema>;
+
+/**
+ * Why an app's containers did not come up, in pieces the client can word in the person's language.
+ * `service` is the first one that failed, `others` how many more did.
+ */
+export const appServiceFailureSchema = z.object({
+  kind: z.enum(['restarting', 'exited', 'none_running']),
+  service: z.string().optional(),
+  others: z.number().int().nonnegative().optional(),
+  exitCode: z.number().int().optional(),
+  logLine: z.string().optional(),
+});
+export type AppServiceFailure = z.infer<typeof appServiceFailureSchema>;
+
 const appScopedEventSchema = z.object({
   event: z.enum([
     'status_change',
@@ -44,6 +84,8 @@ const appScopedEventSchema = z.object({
     'reset_error',
     'update_success',
     'update_error',
+    // The person cancelled an update and it put the previous version back.
+    'update_cancelled',
     'start_success',
     'start_error',
     'stop_success',
@@ -65,18 +107,32 @@ const appScopedEventSchema = z.object({
     // CI-Cloud published the app on another domain than the one it asked for,
     // and the Hub moved the app there. `hostname` is where it is served now.
     'public_domain_changed',
+    // An install call for the app began or ended its checks, which run before the app has a row.
+    // Carries no status, but `operation`: what the Hub has under way for the app now.
+    'operation_change',
+    // Sent to the next page to connect when no page was connected for the outcome that moved the app
+    // off a host port. Carries `movedHostPort` and no status, since that outcome may be long past.
+    'host_port_moved',
+    // The app's ignored update version was set or cleared. Carries no status: the update count and the
+    // app's update buttons changed, so the client refetches them.
+    'ignored_version_changed',
   ]),
   appUrn: appUrnSchema,
   appStatus: appStatusSchema.optional(),
+  // `operation_change` only: the lifecycle command under way for the app, `null` for none.
+  operation: lifecycleOperationSchema.nullable().optional(),
   error: z.string().optional(),
   errorCode: z.string().optional(),
   errorDetail: z.string().optional(),
   settingsPath: z.string().optional(),
+  serviceFailure: appServiceFailureSchema.optional(),
   hostname: z.string().optional(),
   progress: z.number().min(0).max(99).optional(),
   // An install's image download so far, beside `progress`, once Docker has reported layer sizes.
   downloadedBytes: z.number().nonnegative().optional(),
   totalBytes: z.number().nonnegative().optional(),
+  // What an update is doing, on a `status_change` with `appStatus: 'updating'`.
+  updatePhase: updatePhaseSchema.optional(),
   // Identifier for a non-fatal caveat on an otherwise-successful op (e.g. uninstall
   // completed but a root-owned path could not be fully removed). The client maps it
   // to a warning toast — a discriminator like errorCode, not rendered as a raw key.
@@ -84,6 +140,10 @@ const appScopedEventSchema = z.object({
   // Optional detail for the caveat (e.g. the host path of an uninstall remnant), so the
   // client can render an actionable message such as a manual cleanup command.
   warningDetail: z.string().optional(),
+  // On a start, restart or install outcome: the app could not have the host port it was to publish
+  // (`from`) so it is on `to` now. The client says so, in place of a plain success, because its local address changed.
+  // A start, restart or install can fail after the move. The app stays on `to` then too.
+  movedHostPort: hostPortMoveSchema.optional(),
 });
 
 /**

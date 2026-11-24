@@ -229,10 +229,9 @@ export function resolveBridgeServices(envFileName: string): BridgeServiceSpec[] 
     { label: 'Ollama', port: port(portFromUrl(vars.OLLAMA_URL), 11434) },
     // Compose hands the Hub a host default for vLLM and Lemonade, so both are dialed even when unset.
     { label: 'vLLM', port: port(portFromUrl(vars.VLLM_URL), 8000) },
-    ...ifSet('MTPLX', vars.MTPLX_URL, 8000),
-    ...ifSet('Speculative inference', vars.DSPARK_URL, 8080),
+    // oMLX's default port is vLLM's, which is already dialed above; only an address the operator set elsewhere adds a check.
+    ...ifSet('oMLX', vars.OMLX_URL, 8000),
     { label: 'Lemonade', port: port(portFromUrl(vars.LEMONADE_URL), 13305) },
-    ...ifSet('Speculative inference', vars.SPECULATIVE_INFERENCE_URL, 8000),
   ];
 }
 

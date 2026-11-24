@@ -38,6 +38,7 @@ function makeService() {
     config: { demoMode: boolean; userSettings: Record<string, unknown> };
     mergeSettingsToDisk: ReturnType<typeof vi.fn>;
     setUserSettings: (s: Record<string, unknown>) => Promise<void>;
+    setFileOnlySettings: (s: Record<string, unknown>) => Promise<void>;
   };
   svc.logger = { warn: vi.fn(), error: vi.fn(), info: vi.fn() };
   svc.config = { demoMode: false, userSettings: { themeColor: 'red' } };
@@ -57,6 +58,27 @@ describe('ConfigurationService.setUserSettings', () => {
     expect(svc.mergeSettingsToDisk.mock.calls[0][0]).toEqual({ themeColor: 'green' });
     expect(svc.config.userSettings.themeColor).toBe('green');
     expect(svc.logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('keeps the organization ID the pairing callback saves in userSettings and the top-level config', async () => {
+    await svc.setUserSettings({ ciHubOrganizationId: 'org-1' });
+
+    expect(svc.mergeSettingsToDisk.mock.calls[0][0]).toEqual({ ciHubOrganizationId: 'org-1' });
+    expect(svc.config).toMatchObject({ ciHubOrganizationId: 'org-1' });
+    expect(svc.config.userSettings).toMatchObject({ ciHubOrganizationId: 'org-1', themeColor: 'red' });
+  });
+});
+
+describe('ConfigurationService.setFileOnlySettings', () => {
+  it('writes the Portal device key and move key to disk and the top-level config, never to userSettings', async () => {
+    // The pairing callback saves both through here, and the UI's context is built from userSettings.
+    const svc = makeService();
+
+    await svc.setFileOnlySettings({ ciHubApiKey: 'device-key', ciHubMoveKey: 'move-key' });
+
+    expect(svc.mergeSettingsToDisk.mock.calls[0][0]).toEqual({ ciHubApiKey: 'device-key', ciHubMoveKey: 'move-key' });
+    expect(svc.config).toMatchObject({ ciHubApiKey: 'device-key', ciHubMoveKey: 'move-key' });
+    expect(svc.config.userSettings).toEqual({ themeColor: 'red' });
   });
 });
 
@@ -266,8 +288,7 @@ describe('ConfigurationService Hub Pool preferences', () => {
   it('does not rewrite settings.json for a PATCH that changes nothing', async () => {
     const svc = makePoolService();
 
-    // Every write is a read-modify-write of the whole file with no locking, so an empty one can
-    // still clobber a concurrent inference-preferences save.
+    // Every write rewrites the whole file and holds up the saves queued behind it, for nothing here.
     await svc.setHubPoolPreferences({});
 
     expect(svc.mergeSettingsToDisk).not.toHaveBeenCalled();
@@ -505,6 +526,59 @@ describe('ConfigurationService inference preferences — Ollama slots', () => {
   });
 });
 
+describe('ConfigurationService inference preferences: Ollama keep-alive', () => {
+  function makeService(userSettings: Record<string, unknown>) {
+    const svc = Object.create(ConfigurationService.prototype) as unknown as {
+      config: { demoMode: boolean; userSettings: Record<string, unknown> };
+      mergeSettingsToDisk: ReturnType<typeof vi.fn>;
+      logger: { warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn>; info: ReturnType<typeof vi.fn> };
+      getInferencePreferences: () => { ollamaKeepAlive: number | null };
+      setInferencePreferences: (...args: unknown[]) => Promise<{ ollamaKeepAlive: number | null }>;
+    };
+    svc.logger = { warn: vi.fn(), error: vi.fn(), info: vi.fn() };
+    svc.config = { demoMode: false, userSettings };
+    svc.mergeSettingsToDisk = vi.fn().mockResolvedValue(undefined);
+    return svc;
+  }
+
+  it("is null until an operator states one; an unpin then names Ollama's 5 minutes", () => {
+    expect(makeService({}).getInferencePreferences().ollamaKeepAlive).toBeNull();
+  });
+
+  it('reads 24 h, forever (-1) and 0 as stated; a value past a year or a fraction reads as not stated', () => {
+    expect(makeService({ inferenceOllamaKeepAlive: 86_400 }).getInferencePreferences().ollamaKeepAlive).toBe(86_400);
+    expect(makeService({ inferenceOllamaKeepAlive: -1 }).getInferencePreferences().ollamaKeepAlive).toBe(-1);
+    expect(makeService({ inferenceOllamaKeepAlive: 0 }).getInferencePreferences().ollamaKeepAlive).toBe(0);
+    expect(makeService({ inferenceOllamaKeepAlive: 366 * 86_400 }).getInferencePreferences().ollamaKeepAlive).toBeNull();
+    expect(makeService({ inferenceOllamaKeepAlive: 1.5 }).getInferencePreferences().ollamaKeepAlive).toBeNull();
+  });
+
+  it('sets, leaves alone and clears the keep-alive through setInferencePreferences', async () => {
+    const svc = makeService({ inferenceOllamaKeepAlive: 86_400 });
+    const untouched = [undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined];
+
+    expect((await svc.setInferencePreferences('ollama')).ollamaKeepAlive).toBe(86_400);
+    expect(svc.mergeSettingsToDisk).toHaveBeenLastCalledWith({ inferenceBackend: 'ollama' });
+
+    expect((await svc.setInferencePreferences('ollama', ...untouched, 3600)).ollamaKeepAlive).toBe(3600);
+    expect(svc.mergeSettingsToDisk).toHaveBeenLastCalledWith({ inferenceBackend: 'ollama', inferenceOllamaKeepAlive: 3600 });
+
+    expect((await svc.setInferencePreferences('ollama', ...untouched, null)).ollamaKeepAlive).toBeNull();
+    expect(svc.mergeSettingsToDisk).toHaveBeenLastCalledWith({ inferenceBackend: 'ollama', inferenceOllamaKeepAlive: undefined });
+  });
+});
+
+describe('settingsSchema: inference Ollama keep-alive', () => {
+  it('accepts seconds as a string, as a form would submit them; an out-of-range value degrades to "not stated"', () => {
+    expect(settingsSchema.partial().safeParse({ inferenceOllamaKeepAlive: '86400' }).data).toEqual({ inferenceOllamaKeepAlive: 86_400 });
+    for (const persisted of [{ inferenceOllamaKeepAlive: -2 }, { inferenceOllamaKeepAlive: 366 * 86_400 }, { inferenceOllamaKeepAlive: '24h' }]) {
+      const parsed = settingsSchema.partial().safeParse(persisted);
+      expect(parsed.success).toBe(true);
+      expect(parsed.success && parsed.data).toEqual({});
+    }
+  });
+});
+
 describe('ConfigurationService.readPersistedSettings', () => {
   function makeReader() {
     const svc = Object.create(ConfigurationService.prototype) as unknown as {
@@ -650,12 +724,10 @@ const APPLIANCE_ENV: Record<string, string> = {
   CI_HUB_FORWARD_AUTH_URL: 'http://auth',
   DEMO_MODE: 'false',
   GUEST_DASHBOARD: 'false',
-  ALLOW_AUTO_THEMES: 'true',
   PERSIST_TRAEFIK_CONFIG: 'false',
   TZ: 'UTC',
   ROOT_FOLDER_HOST: '/host',
   ADVANCED_SETTINGS: 'false',
-  THEME_BASE: 'gray',
   THEME_COLOR: 'blue',
   EXPERIMENTAL_INSECURE_COOKIE: 'false',
 };
@@ -808,5 +880,63 @@ describe('ConfigurationService.setDomain', () => {
     expect(process.env.DOMAIN).toBe('ci0.pw');
     expect(svc.mergeSettingsToDisk).toHaveBeenCalledWith({ portalDomain: 'ci0.pw' });
     expect(svc.logger.error).toHaveBeenCalled();
+  });
+});
+
+describe('ConfigurationService.forgetPersistedUserSettings', () => {
+  /** The service as boot leaves it with `settings` in settings.json, from the same environment each time. */
+  function bootWith(settings: Record<string, unknown>) {
+    const svc = Object.create(ConfigurationService.prototype) as ConfigurationService & {
+      getEnvMap: () => Map<string, string>;
+      readPersistedSettings: () => Record<string, unknown>;
+      configure: () => { userSettings: Record<string, unknown> };
+      config: { userSettings: Record<string, unknown> };
+    };
+    svc.getEnvMap = () => new Map(Object.entries({ ...APPLIANCE_ENV, ALLOW_ERROR_MONITORING: 'false' }));
+    svc.readPersistedSettings = () => settings;
+    svc.config = svc.configure();
+    return svc;
+  }
+
+  it('leaves the user settings as a boot with an empty settings.json has them', () => {
+    const svc = bootWith({
+      defaultAppCpuLimit: '2',
+      autoAllocateAppResources: false,
+      inferenceBackend: 'vllm',
+      inferenceVllmApiKey: 'vllm-key',
+      inferenceCloudProviders: [{ provider: 'openai', apiKey: 'sk-test', enabled: true, defaultModel: 'gpt-4o' }],
+      hubPoolMdnsEnabled: true,
+      hubPoolPins: [{ scope: 'all', targetKind: 'local' }],
+      inferenceSupervisionMode: 'observe',
+    });
+    // As the pairing callback leaves it: `setUserSettings` copies what it saves into `userSettings`.
+    svc.config.userSettings = { ...svc.config.userSettings, ciHubApiKey: 'device-key', ciHubMoveKey: 'move-key', ciHubOrganizationId: 'org-1' };
+
+    svc.forgetPersistedUserSettings();
+
+    expect(svc.get('userSettings')).toEqual(bootWith({}).get('userSettings'));
+  });
+
+  it('forgets the pairing as a boot with an empty settings.json has none: the device key, the move key and the organization id', () => {
+    const svc = bootWith({ ciHubApiKey: 'device-key', ciHubMoveKey: 'move-key', ciHubOrganizationId: 'org-1' });
+    expect(svc.get('ciHubApiKey')).toBe('device-key');
+
+    svc.forgetPersistedUserSettings();
+
+    expect(svc.get('ciHubApiKey')).toBeNull();
+    expect(svc.get('ciHubMoveKey')).toBeNull();
+    expect(svc.get('ciHubOrganizationId')).toBeNull();
+  });
+
+  it('tells settings-change listeners, so the mDNS socket closes when the old settings had it open', () => {
+    const svc = bootWith({ hubPoolMdnsEnabled: true });
+    const seen: Array<{ mdnsKey: boolean; mdns: boolean }> = [];
+    svc.onUserSettingsChanged((keys) =>
+      seen.push({ mdnsKey: keys.includes('hubPoolMdnsEnabled'), mdns: svc.getHubPoolPreferences().poolMdnsEnabled }),
+    );
+
+    svc.forgetPersistedUserSettings();
+
+    expect(seen).toEqual([{ mdnsKey: true, mdns: false }]);
   });
 });

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { Button } from '@/components/ui/Button';
-import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
+import { Alert, AlertDescription, AlertIcon } from '@/components/ui/Alert/Alert';
 import { QrCode } from '@/components/ui/qr-code';
 import { AlertCircle, CheckCircle2, ChevronRight, Copy, Loader2, QrCode as QrCodeIcon } from 'lucide-react';
 import {
@@ -10,6 +10,11 @@ import {
   fetchRegistrationStatusResult,
   markRegistrationRestoreIntentDetailed,
   pairWithCode,
+  adoptSetupCodeFromDesktop,
+  adoptSetupCodeFromUrl,
+  getRegistrationSetupCode,
+  setRegistrationSetupCode,
+  SETUP_CODE_REQUIRED,
   prepareFreshRegistrationDetailed,
   probeRegistrationDomain,
 } from '@/lib/registration-api';
@@ -26,7 +31,7 @@ import {
   REGISTRATION_PROVISIONING_HINT,
 } from '@/components/hub-status/hub-status-tooltips';
 import { forgetPendingPairingCode, normalizePairingCode, resolvePendingPairingCode, stashPendingPairingCode } from '@/lib/deep-link-pair';
-import { captureHubWarning, setHubSentryDeviceId } from '@/lib/sentry';
+import { addHubBreadcrumb, setHubSentryDeviceId } from '@/lib/sentry';
 import { getStoredDriftChoice, storeDriftChoice, type RegistrationDriftChoice, type RegistrationStateDrift } from '@/lib/registration-state-drift';
 import {
   RegistrationFreshBanner,
@@ -35,6 +40,7 @@ import {
   RegistrationStateDriftDialog,
 } from '@/modules/auth/components/registration-state-drift-dialog';
 import { useTranslation } from 'react-i18next';
+import { RegistrationLinkCodeDialog } from '@/modules/auth/components/registration-link-code-dialog';
 import { RegistrationMoveDialog } from '@/modules/auth/components/registration-move-dialog';
 
 const DEFAULT_PORTAL_URL = (
@@ -221,6 +227,8 @@ export default function DeviceRegistrationPage() {
   }, []);
   /** A pairing the Portal will only finish as a move, waiting for the person's yes. */
   const [moveConfirmation, setMoveConfirmation] = useState<{ code: string; organizationName: string | null } | null>(null);
+  // A code a `cihub://pair` link brought, waiting for the person's yes (RegistrationLinkCodeDialog).
+  const [linkCode, setLinkCode] = useState<string | null>(null);
   const [redirectStatusKey, setRedirectStatusKey] = useState('DEVICE_REGISTRATION_SETTING_UP_HUB_ELLIPSIS');
   /** True while this page is checking the public URL after pairing, which can take several minutes. */
   const [followingPublicUrl, setFollowingPublicUrl] = useState(false);
@@ -242,20 +250,25 @@ export default function DeviceRegistrationPage() {
   const [portalHasDevice, setPortalHasDevice] = useState(false);
   const [driftChoice, setDriftChoice] = useState<RegistrationDriftChoice | null>(() => getStoredDriftChoice());
   const [isPreparingFresh, setIsPreparingFresh] = useState(false);
+  // An unpaired Hub asks for its setup code before it pairs from anywhere but its own machine. The
+  // link `cihub setup-code` prints carries it, and so does the desktop app; otherwise it is typed in.
+  const [setupCodeInput, setSetupCodeInput] = useState(() => adoptSetupCodeFromUrl() ?? getRegistrationSetupCode() ?? '');
+  const [setupCodeRequired, setSetupCodeRequired] = useState(false);
+  // Once the Hub has asked, the field stays, and says so when the Hub accepts the code. Hiding it
+  // then read as the field vanishing. A code from the link or the desktop app is never asked for.
+  const [setupCodeAsked, setSetupCodeAsked] = useState(false);
+  /** The Hub turned down the code in the field; it is not sent again until the person edits it. */
+  const setupCodeRejectedRef = useRef(false);
+  /** What is wrong with the setup code, shown at its own field rather than at the pairing code's. */
+  const [setupCodeError, setSetupCodeError] = useState<string | null>(null);
   const isTauri = '__TAURI_INTERNALS__' in window;
-  const canAutoPairFromDeepLink = isTauri && !isLoading && (!registrationStatus || requiresDeviceRegistration(registrationStatus));
+  const canOfferDeepLinkCode = isTauri && !isLoading && (!registrationStatus || requiresDeviceRegistration(registrationStatus));
 
   const loadDeviceInfo = useCallback(async () => {
     try {
       const deviceResult = await fetchDeviceRegistrationInfoResult();
       if (!deviceResult.ok) {
-        captureHubWarning(
-          'Device registration page could not load device info',
-          {
-            status: deviceResult.status,
-          },
-          { dedupeKey: `device-registration-device-info:${deviceResult.status}` },
-        );
+        addHubBreadcrumb('Device registration page could not load device info', { status: deviceResult.status });
         setDeviceInfoError(t('DEVICE_REGISTRATION_DEVICE_INFO_FAILED'));
         return;
       }
@@ -264,7 +277,22 @@ export default function DeviceRegistrationPage() {
         device_id?: string;
         ci_cloud_url?: string;
         registration_url?: string | null;
+        setup_code_required?: boolean;
       };
+      const required = deviceData.setup_code_required === true;
+      setSetupCodeRequired(required);
+      if (required) {
+        setSetupCodeAsked(true);
+        if (getRegistrationSetupCode()) {
+          // The Hub turned the code down. Stop sending it: this page asks again every few seconds,
+          // and each ask with a wrong code counts towards the Hub's lockout.
+          setRegistrationSetupCode(null);
+          setupCodeRejectedRef.current = true;
+          setSetupCodeError(t('DEVICE_REGISTRATION_SETUP_CODE_WRONG'));
+        }
+      } else {
+        setSetupCodeError(null);
+      }
       setDeviceId(deviceData.device_id ?? null);
       setHubSentryDeviceId(deviceData.device_id);
       const base = deviceData.ci_cloud_url?.trim();
@@ -277,13 +305,7 @@ export default function DeviceRegistrationPage() {
       setDeviceInfoError(null);
     } catch (error) {
       console.error(error);
-      captureHubWarning(
-        'Device registration page could not load device info',
-        {
-          error: error instanceof Error ? error.message : String(error),
-        },
-        { dedupeKey: 'device-registration-device-info:exception' },
-      );
+      addHubBreadcrumb('Device registration page could not load device info', { error: error instanceof Error ? error.message : String(error) });
       setDeviceInfoError(t('DEVICE_REGISTRATION_DEVICE_INFO_FAILED'));
     }
   }, [t]);
@@ -308,13 +330,7 @@ export default function DeviceRegistrationPage() {
     try {
       const statusResult = await fetchRegistrationStatusResult();
       if (!statusResult.ok) {
-        captureHubWarning(
-          'Device registration status temporarily unavailable',
-          {
-            status: statusResult.status,
-          },
-          { dedupeKey: `device-registration-status:${statusResult.status}` },
-        );
+        addHubBreadcrumb('Device registration status temporarily unavailable', { status: statusResult.status });
         throw new Error(t('DEVICE_REGISTRATION_FETCH_STATUS_FAILED'));
       }
 
@@ -369,13 +385,7 @@ export default function DeviceRegistrationPage() {
     } catch (error) {
       console.error(error);
       lastStatusFetchSucceededRef.current = false;
-      captureHubWarning(
-        'Device registration status temporarily unavailable',
-        {
-          error: error instanceof Error ? error.message : String(error),
-        },
-        { dedupeKey: 'device-registration-status:exception' },
-      );
+      addHubBreadcrumb('Device registration status temporarily unavailable', { error: error instanceof Error ? error.message : String(error) });
       setStatusError(t('DEVICE_REGISTRATION_STATUS_TEMPORARY_UNAVAILABLE'));
       setRegistrationStatus((previous) => {
         if (!previous) {
@@ -548,6 +558,7 @@ export default function DeviceRegistrationPage() {
       pairingInProgressRef.current = true;
       setIsPairing(true);
       setPairingError(null);
+      setSetupCodeError(null);
       setStatusError(null);
       setDeviceInfoError(null);
       completionStartedRef.current = false;
@@ -563,6 +574,17 @@ export default function DeviceRegistrationPage() {
           setRedirectStatusKey('DEVICE_REGISTRATION_PROVISIONING_STATUS');
           toast.success(t('DEVICE_REGISTRATION_PAIRING_ACCEPTED'));
           await refreshRegistrationStatus();
+        } else if (data.code === SETUP_CODE_REQUIRED) {
+          setMoveConfirmation(null);
+          setSetupCodeRequired(true);
+          setSetupCodeAsked(true);
+          setSetupCodeError(
+            t(
+              getRegistrationSetupCode() || setupCodeRejectedRef.current
+                ? 'DEVICE_REGISTRATION_SETUP_CODE_WRONG'
+                : 'DEVICE_REGISTRATION_SETUP_CODE_NEEDED',
+            ),
+          );
         } else if (data.code === DEVICE_MOVE_CONFIRMATION_REQUIRED && !confirmMove) {
           // Nothing changed on the Portal, and the code is still good: ask before taking this Hub
           // from the organization that holds it.
@@ -591,6 +613,18 @@ export default function DeviceRegistrationPage() {
     },
     [refreshRegistrationStatus, setPairingError, t],
   );
+
+  useEffect(() => {
+    if (!isTauri || getRegistrationSetupCode()) {
+      return;
+    }
+    void adoptSetupCodeFromDesktop().then((code) => {
+      if (code) {
+        setSetupCodeInput(code);
+        void loadDeviceInfo();
+      }
+    });
+  }, [isTauri, loadDeviceInfo]);
 
   useEffect(() => {
     if (!isTauri) {
@@ -622,7 +656,7 @@ export default function DeviceRegistrationPage() {
   }, [isTauri]);
 
   useEffect(() => {
-    if (!canAutoPairFromDeepLink) {
+    if (!canOfferDeepLinkCode) {
       return;
     }
 
@@ -644,13 +678,14 @@ export default function DeviceRegistrationPage() {
       deepLinkPairAttemptRef.current = pendingCode;
       setPendingDeepLinkCode(null);
       setPairingCode(pendingCode);
-      await doPair(pendingCode);
+      // Asked, never submitted on arrival: anyone can write a link (RegistrationLinkCodeDialog).
+      setLinkCode(pendingCode);
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [canAutoPairFromDeepLink, doPair, pendingDeepLinkCode]);
+  }, [canOfferDeepLinkCode, pendingDeepLinkCode]);
 
   const handleSetupNewDevice = async () => {
     setIsPreparingFresh(true);
@@ -712,7 +747,13 @@ export default function DeviceRegistrationPage() {
     await refreshRegistrationStatus();
   };
 
+  // The Hub is asking for its setup code and has not accepted one, so a pairing could only be refused.
+  const waitingForSetupCode = setupCodeRequired;
+
   const handlePair = async () => {
+    if (waitingForSetupCode) {
+      return;
+    }
     const code = pairingCode.trim().toUpperCase();
     if (code.length !== 6) {
       setPairingError(t('DEVICE_REGISTRATION_PAIRING_CODE_LENGTH'));
@@ -747,7 +788,7 @@ export default function DeviceRegistrationPage() {
       <div className="flex flex-col items-center gap-4 py-4 text-center">
         <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-primary" />
         <div>
-          <h2 className="text-xl font-semibold text-foreground">{t('DEVICE_REGISTRATION_CHECKING_STATUS')}</h2>
+          <h2 className="text-xl font-medium text-foreground">{t('DEVICE_REGISTRATION_CHECKING_STATUS')}</h2>
           <p className="mt-1 text-sm text-muted-foreground">{t('DEVICE_REGISTRATION_PLEASE_WAIT')}</p>
         </div>
       </div>
@@ -776,12 +817,12 @@ export default function DeviceRegistrationPage() {
                 id={`reg-progress-${registrationStatus?.phase}`}
                 hint={progressCopy.hint}
                 as="h2"
-                className="text-xl font-semibold text-foreground"
+                className="text-xl font-medium text-foreground"
               >
                 {progressCopy.title}
               </HintText>
             ) : (
-              <h2 className="text-xl font-semibold text-foreground">{progressCopy.title}</h2>
+              <h2 className="text-xl font-medium text-foreground">{progressCopy.title}</h2>
             )}
           </div>
           <p className="mt-3 text-sm text-muted-foreground">{progressCopy.description}</p>
@@ -789,15 +830,15 @@ export default function DeviceRegistrationPage() {
 
         {statusError && (
           <Alert variant="warning" className="w-full text-left">
+            <AlertIcon>
+              <AlertCircle role="img" aria-label={t('COMMON_WARNING')} />
+            </AlertIcon>
             <AlertDescription>
-              <div className="flex items-start gap-2">
-                <AlertCircle role="img" aria-label={t('COMMON_WARNING')} className="mt-0.5 h-4 w-4 shrink-0" />
-                <span>
-                  {registrationStatus?.phase === 'paired' || registrationStatus?.phase === 'provisioning'
-                    ? t('DEVICE_REGISTRATION_PROGRESS_CONTACT_LOST')
-                    : statusError}
-                </span>
-              </div>
+              <span>
+                {registrationStatus?.phase === 'paired' || registrationStatus?.phase === 'provisioning'
+                  ? t('DEVICE_REGISTRATION_PROGRESS_CONTACT_LOST')
+                  : statusError}
+              </span>
             </AlertDescription>
           </Alert>
         )}
@@ -814,7 +855,7 @@ export default function DeviceRegistrationPage() {
       <div className="mx-auto flex max-w-md flex-col items-center gap-4 py-4 text-center">
         <AlertCircle role="img" aria-label={t('COMMON_ERROR')} className="h-12 w-12 text-destructive" />
         <div>
-          <h2 className="text-xl font-semibold text-foreground">{t('DEVICE_REGISTRATION_STATUS_UNAVAILABLE')}</h2>
+          <h2 className="text-xl font-medium text-foreground">{t('DEVICE_REGISTRATION_STATUS_UNAVAILABLE')}</h2>
           <p className="mt-3 text-sm text-muted-foreground">{statusError}</p>
         </div>
         <Button onClick={() => void handleRetryStatus()}>{t('DEVICE_REGISTRATION_RETRY_STATUS_CHECK')}</Button>
@@ -833,7 +874,7 @@ export default function DeviceRegistrationPage() {
       <div className="mx-auto flex max-w-md flex-col items-center gap-4 py-4 text-center">
         <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-primary" />
         <div>
-          <h2 className="text-xl font-semibold text-foreground">{t('DEVICE_REGISTRATION_COMPLETE')}</h2>
+          <h2 className="text-xl font-medium text-foreground">{t('DEVICE_REGISTRATION_COMPLETE')}</h2>
           <p className="mt-1 text-sm text-muted-foreground">{t('DEVICE_REGISTRATION_LOADING_HUB')}</p>
         </div>
       </div>
@@ -842,6 +883,22 @@ export default function DeviceRegistrationPage() {
 
   return (
     <div className="space-y-6">
+      <RegistrationLinkCodeDialog
+        code={linkCode}
+        isPairing={isPairing}
+        onPair={() => {
+          if (linkCode) {
+            const code = linkCode;
+            setLinkCode(null);
+            void doPair(code);
+          }
+        }}
+        onCancel={() => {
+          setLinkCode(null);
+          setPairingCode('');
+        }}
+      />
+
       <RegistrationMoveDialog
         open={moveConfirmation !== null}
         organizationName={moveConfirmation?.organizationName ?? null}
@@ -866,11 +923,11 @@ export default function DeviceRegistrationPage() {
 
       {registrationStatus && requiresPortalRePairing(registrationStatus) && (
         <Alert variant="warning">
+          <AlertIcon>
+            <AlertCircle role="img" aria-label={t('COMMON_WARNING')} />
+          </AlertIcon>
           <AlertDescription>
-            <div className="flex items-start gap-2">
-              <AlertCircle role="img" aria-label={t('COMMON_WARNING')} className="mt-0.5 h-4 w-4 shrink-0" />
-              <span>{t('DEVICE_REGISTRATION_REPAIR_NOTICE_MESSAGE')}</span>
-            </div>
+            <span>{t('DEVICE_REGISTRATION_REPAIR_NOTICE_MESSAGE')}</span>
           </AlertDescription>
         </Alert>
       )}
@@ -886,7 +943,7 @@ export default function DeviceRegistrationPage() {
               id="reg-account"
               hint={t(REGISTRATION_ACCOUNT_HINT)}
               as="h2"
-              className="text-lg font-semibold leading-snug text-foreground md:text-xl"
+              className="text-lg font-medium leading-snug text-foreground md:text-xl"
             >
               {t('DEVICE_REGISTRATION_STEP_1_TITLE')}
             </HintText>
@@ -901,7 +958,7 @@ export default function DeviceRegistrationPage() {
               &nbsp;
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <Button asChild className="h-10 flex-1 text-sm font-semibold md:h-11 md:text-base" intent="primary">
+              <Button asChild className="h-10 flex-1 text-sm font-medium md:h-11 md:text-base" intent="primary">
                 <a href={loginUrl} target="_blank" rel="noopener noreferrer">
                   {t('DEVICE_REGISTRATION_LOGIN_TO_COMPANION')}
                 </a>
@@ -912,7 +969,7 @@ export default function DeviceRegistrationPage() {
           <div className="mt-3 space-y-2 border-t border-border/60 pt-2">
             <p className="text-sm text-muted-foreground">{t('DEVICE_REGISTRATION_NO_ACCOUNT_YET')}</p>
             <div className="flex flex-wrap items-center gap-2">
-              <Button asChild variant="outline" className="h-10 flex-1 text-sm font-semibold md:h-11 md:text-base">
+              <Button asChild variant="outline" className="h-10 flex-1 text-sm font-medium md:h-11 md:text-base">
                 <a href={signupUrl} target="_blank" rel="noopener noreferrer">
                   {t('DEVICE_REGISTRATION_CREATE_ACCOUNT')}
                 </a>
@@ -931,7 +988,7 @@ export default function DeviceRegistrationPage() {
         </div>
 
         <section className="flex flex-col rounded-lg border border-border/60 bg-muted/20 p-6 md:p-8">
-          <h2 className="text-lg font-semibold leading-snug text-foreground md:text-xl">{t('DEVICE_REGISTRATION_STEP_2_TITLE')}</h2>
+          <h2 className="text-lg font-medium leading-snug text-foreground md:text-xl">{t('DEVICE_REGISTRATION_STEP_2_TITLE')}</h2>
 
           <div className="mt-6 space-y-4">
             <div className="space-y-2">
@@ -956,6 +1013,57 @@ export default function DeviceRegistrationPage() {
                 </Button>
               </div>
             </div>
+
+            {(setupCodeRequired || setupCodeAsked) && (
+              <div className="space-y-2">
+                <label htmlFor="setup-code" className="block text-sm text-muted-foreground">
+                  <HintText id="reg-setup-code" hint={t('DEVICE_REGISTRATION_SETUP_CODE_HINT')}>
+                    {t('DEVICE_REGISTRATION_SETUP_CODE_LABEL')}
+                  </HintText>
+                </label>
+                <input
+                  id="setup-code"
+                  placeholder="XXXX-XXXX"
+                  value={setupCodeInput}
+                  autoComplete="off"
+                  spellCheck={false}
+                  onChange={(event) => {
+                    const value = event.target.value
+                      .toUpperCase()
+                      .replace(/[^A-Z0-9-]/g, '')
+                      .slice(0, 9);
+                    const complete = value.replace(/-/g, '').length === 8;
+                    setSetupCodeInput(value);
+                    // Only a whole code is sent: this page asks the Hub every few seconds, and a
+                    // half-typed one would count as a wrong code towards the Hub's lockout.
+                    setRegistrationSetupCode(complete ? value : null);
+                    setupCodeRejectedRef.current = false;
+                    setSetupCodeError(null);
+                    // Not accepted until the Hub says so for this code.
+                    setSetupCodeRequired(true);
+                    // A complete code fetches the Portal link the Hub withheld without one.
+                    if (complete) {
+                      void loadDeviceInfo();
+                    }
+                  }}
+                  disabled={isPairing}
+                  aria-invalid={setupCodeError ? true : undefined}
+                  aria-describedby={setupCodeError ? 'setup-code-error' : undefined}
+                  className={`h-10 w-full rounded-md border bg-background/60 px-3 py-1 text-base font-mono shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:h-11 md:text-sm ${setupCodeError ? 'border-destructive focus-visible:ring-destructive' : 'border-input'}`}
+                />
+                {setupCodeError && (
+                  <p id="setup-code-error" role="alert" className="text-[0.8rem] font-medium text-destructive">
+                    {setupCodeError}
+                  </p>
+                )}
+                {setupCodeAsked && !setupCodeRequired && (
+                  <p role="status" className="flex items-center gap-1.5 text-[0.8rem] text-muted-foreground">
+                    <CheckCircle2 className="h-3.5 w-3.5 text-primary" />
+                    {t('DEVICE_REGISTRATION_SETUP_CODE_ACCEPTED')}
+                  </p>
+                )}
+              </div>
+            )}
 
             <div className="space-y-2">
               <label htmlFor="pairing-code" className="block text-sm text-muted-foreground">
@@ -982,25 +1090,31 @@ export default function DeviceRegistrationPage() {
                     setPairingError(null);
                   }}
                   onKeyDown={(event) => {
-                    if (event.key === 'Enter' && pairingCode.length === 6 && !isPairing) {
+                    if (event.key === 'Enter' && pairingCode.length === 6 && !isPairing && !waitingForSetupCode) {
                       void handlePair();
                     }
                   }}
                   maxLength={6}
                   disabled={isPairing}
-                  className={`h-10 min-w-0 flex-1 rounded-md border bg-background/60 px-3 py-1 text-base font-mono tracking-widest shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:h-11 md:text-sm ${pairingError ? 'border-destructive focus-visible:ring-destructive' : 'border-input'}`}
+                  aria-invalid={pairingError ? true : undefined}
+                  aria-describedby={pairingError ? 'pairing-code-error' : undefined}
+                  className={`h-10 min-w-0 flex-1 rounded-md border bg-background/60 px-3 py-1 text-base font-mono  shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:h-11 md:text-sm ${pairingError ? 'border-destructive focus-visible:ring-destructive' : 'border-input'}`}
                 />
                 <Button
                   intent="primary"
                   onClick={() => void handlePair()}
-                  disabled={pairingCode.length !== 6 || isPairing}
+                  disabled={pairingCode.length !== 6 || isPairing || waitingForSetupCode}
                   loading={isPairing}
                   className="h-10 w-full shrink-0 sm:w-40 md:h-11"
                 >
                   {isPairing ? t('DEVICE_REGISTRATION_REGISTERING') : t('DEVICE_REGISTRATION_REGISTER')}
                 </Button>
               </div>
-              {pairingError && <p className="text-[0.8rem] font-medium text-destructive">{pairingError}</p>}
+              {pairingError && (
+                <p id="pairing-code-error" role="alert" className="text-[0.8rem] font-medium text-destructive">
+                  {pairingError}
+                </p>
+              )}
             </div>
           </div>
         </section>
@@ -1009,11 +1123,11 @@ export default function DeviceRegistrationPage() {
       {statusError && (
         <div className="space-y-3">
           <Alert variant="warning">
+            <AlertIcon>
+              <AlertCircle role="img" aria-label={t('COMMON_WARNING')} />
+            </AlertIcon>
             <AlertDescription>
-              <div className="flex items-start gap-2">
-                <AlertCircle role="img" aria-label={t('COMMON_WARNING')} className="mt-0.5 h-4 w-4 shrink-0" />
-                <span>{statusError}</span>
-              </div>
+              <span>{statusError}</span>
             </AlertDescription>
           </Alert>
           <Button variant="outline" onClick={() => void handleRetryStatus()}>
@@ -1024,11 +1138,11 @@ export default function DeviceRegistrationPage() {
 
       {deviceInfoError && (
         <Alert variant="danger">
+          <AlertIcon>
+            <AlertCircle role="img" aria-label={t('COMMON_ERROR')} />
+          </AlertIcon>
           <AlertDescription>
-            <div className="flex items-start gap-2">
-              <AlertCircle role="img" aria-label={t('COMMON_ERROR')} className="mt-0.5 h-4 w-4 shrink-0" />
-              <span>{deviceInfoError}</span>
-            </div>
+            <span>{deviceInfoError}</span>
           </AlertDescription>
         </Alert>
       )}

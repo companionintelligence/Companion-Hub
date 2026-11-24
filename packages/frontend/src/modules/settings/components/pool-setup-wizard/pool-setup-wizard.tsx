@@ -38,7 +38,7 @@ export function PoolSetupWizard({ open, onOpenChange, startAt }: PoolSetupWizard
           gutter on each side leaves too little room for a Hub's name, chips and a 44px button. */}
       <DialogContent
         size="xl"
-        className="gap-4 overflow-y-auto pb-0 sm:max-h-[calc(100dvh-3rem)] sm:max-w-2xl sm:pb-0 max-sm:top-0 max-sm:left-0 max-sm:h-dvh max-sm:grid-rows-[auto_1fr] max-sm:max-h-none max-sm:w-screen max-sm:max-w-none! max-sm:translate-x-0 max-sm:translate-y-0 max-sm:rounded-none"
+        className="gap-4 overflow-y-auto pb-0 sm:max-h-[calc(var(--app-height)-3rem)] sm:max-w-2xl sm:pb-0 max-sm:top-0 max-sm:left-0 max-sm:h-dvh max-sm:grid-rows-[auto_1fr] max-sm:max-h-none max-sm:w-screen max-sm:max-w-none! max-sm:translate-x-0 max-sm:translate-y-0 max-sm:rounded-none"
         data-testid="pool-setup-wizard"
       >
         <DialogHeader className="pr-8 text-left">

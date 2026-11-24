@@ -40,28 +40,28 @@ describe('AppStoreSidebar', () => {
 
     const { rerender } = render(<AppStoreSidebar />);
 
-    expect(screen.getByPlaceholderText('Search apps...')).toHaveValue('from page');
+    expect(screen.getByPlaceholderText('Search apps')).toHaveValue('from page');
 
     mockStoreState.search = 'changed externally';
     rerender(<AppStoreSidebar />);
 
-    expect(screen.getByPlaceholderText('Search apps...')).toHaveValue('changed externally');
+    expect(screen.getByPlaceholderText('Search apps')).toHaveValue('changed externally');
   });
 
   it('updates the shared search state when typing', () => {
     render(<AppStoreSidebar />);
 
-    fireEvent.change(screen.getByPlaceholderText('Search apps...'), { target: { value: 'router' } });
+    fireEvent.change(screen.getByPlaceholderText('Search apps'), { target: { value: 'router' } });
 
     expect(mockStoreState.setSearch).toHaveBeenCalledWith('router');
-    expect(screen.getByPlaceholderText('Search apps...')).toHaveValue('router');
+    expect(screen.getByPlaceholderText('Search apps')).toHaveValue('router');
   });
 
   it('switches from featured to all when searching', () => {
     mockStoreState.category = 'featured';
     render(<AppStoreSidebar />);
 
-    fireEvent.change(screen.getByPlaceholderText('Search apps...'), { target: { value: 'docs' } });
+    fireEvent.change(screen.getByPlaceholderText('Search apps'), { target: { value: 'docs' } });
 
     expect(mockStoreState.setCategory).toHaveBeenCalledWith(undefined);
     expect(mockStoreState.setSearch).toHaveBeenCalledWith('docs');
@@ -74,7 +74,7 @@ describe('AppStoreSidebar', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
 
     expect(mockStoreState.setSearch).toHaveBeenCalledWith('');
-    expect(screen.getByPlaceholderText('Search apps...')).toHaveValue('');
+    expect(screen.getByPlaceholderText('Search apps')).toHaveValue('');
   });
 
   it('keeps the desktop sidebar elevated and sized to the store row, not the viewport', () => {

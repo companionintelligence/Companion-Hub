@@ -11,13 +11,15 @@ import type {
   InferenceModelInfo,
   InferenceStatus,
   TrackedModel,
+  ModelContextPlan,
 } from '@ci-hub/common/types';
 import { clampContextCap } from '@/common/helpers/inference-context-cap';
 import { inventoryListsModel, sameModelId } from '@/common/helpers/hub-pool';
+import { omlxModelsMatch, servedOmlxId } from '@/common/helpers/omlx-model-id';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { appInferenceRequirements, checkModelRequirements } from './app-inference-requirements';
 import { handoutContextLength, visionReserveMbFor } from './app-model-handout';
-import { kvSequencesFor, probeContextCost } from './context-cost.util';
+import { kvSequencesFor, probeContextCost, scaleCacheCost } from './context-cost.util';
 import { estimateLoadedFootprintMb, FLOOR_CONTEXT, largestFittingWindow, type ModelMemoryInput } from './context-length.util';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { ModelRegistryService } from './model-registry.service';
@@ -27,17 +29,17 @@ import {
   type EvictionPlan,
   type EvictionScope,
   MemoryManagerService,
-  modelMemoryCeilingMb,
   modelPoolFor,
 } from './memory-manager.service';
-import { CloudFallbackService, speaksOpenAiCompletions } from './cloud-fallback.service';
+import { CloudFallbackService, isCloudFallbackAllowed, speaksOpenAiCompletions } from './cloud-fallback.service';
 import { ModelPullerService } from './model-puller.service';
 import { InferenceBackendRegistry } from './backends/backend-registry';
 import type { InferenceBackend } from './backends/backend.interface';
+import { type KvCacheChoice, KvCacheLoadError, kvCacheScaleFor, QUANTIZED_KV_CACHE_TYPES } from './backends/lemonade-kv-cache.util';
 import { isCatalogModelInstalled, isServedModelForCatalog, resolveInstalledCatalogIds, trackedPullCounts } from './model-availability.util';
 import { InferenceRouteError, modelNotFound } from './inference-error-reply';
-import { firstByteBudgetMs, forwardBudgetMs } from '@/modules/hub-pool/hub-pool-budget';
-import { HubPoolLoadService } from '@/modules/hub-pool/hub-pool-load.service';
+import { firstByteBudgetMs, forwardBudgetMs, lastLocalBudgetMs } from '@/modules/hub-pool/hub-pool-budget';
+import { HubPoolLoadService, type LocalMediaWork } from '@/modules/hub-pool/hub-pool-load.service';
 import { BUDGET_SETTINGS_HINT, postStreamUnderHeaderDeadline } from './upstream-stream';
 
 /** How long {@link InferenceRouterService.loadTrackedModel} waits for evicted memory to show as free: 10 × 1 s. */
@@ -98,6 +100,11 @@ export type LoadOptions = ({ origin: 'operator' | 'agent' } | { origin: 'request
    * must not go on to evict and load for nobody.
    */
   signal?: AbortSignal;
+  /**
+   * Plan for the 16-bit KV cache whatever an installed app's floor asks: the one retry after a load
+   * with a quantized cache failed (see {@link KvCacheLoadError}).
+   */
+  kvCacheFallback?: true;
 };
 
 /** What a load from `origin` may unload: only a signed-in operator may clear a model an app loaded. */
@@ -149,6 +156,12 @@ type LoadPlan = {
    * request's or an agent's load (see {@link LoadOrigin}).
    */
   unmeasured?: { ceilingMb: number };
+  /**
+   * The KV cache the window was sized for, on an engine that sets it per model (Lemonade): `q8_0` when
+   * the 16-bit cache cannot reach an installed app's floor even on an empty card and the engine offers
+   * q8_0 for the model, `f16` otherwise. Absent on other engines.
+   */
+  kvCacheType?: KvCacheChoice;
 };
 
 /**
@@ -200,10 +213,18 @@ function describeFloorShortfall(shortfall: FloorShortfall | null, wanted: number
  */
 @Injectable()
 export class InferenceRouterService implements OnApplicationBootstrap {
+  /**
+   * How long the factory reset's unloads wait for the model loads ahead of them. A queued Ollama load can
+   * take 120 s, and its evictions 30 s each, so this covers a few of them without leaving the old Hub's
+   * models in memory for good when a load hangs.
+   */
+  static readonly FACTORY_RESET_LOCK_WAIT_MS = 5 * 60_000;
   /** The tail of {@link loadTrackedModel}'s queue: every load on this node waits for the one before it. */
   private loadQueue: Promise<void> = Promise.resolve();
   /** Whether {@link warnSlotsUnstated} has spoken yet. */
   private warnedSlotsUnstated = false;
+  /** The catalog ids of the pins asked for and not finished yet, for {@link forgetPinnedModels}. */
+  private readonly pinsUnderWay = new Map<string, number>();
 
   constructor(
     readonly _logger: LoggerService,
@@ -234,6 +255,152 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     void this.readoptPinnedModels().catch((err) => {
       this._logger.warn(`[Inference] Could not re-mark the pinned models after a restart: ${err instanceof Error ? err.message : String(err)}`);
     });
+  }
+
+  /**
+   * Unpin every model and unload each one its engine still holds, for a factory reset. The Hub loads a
+   * model at `keep_alive: -1`, so an unpin alone left the old Hub's pinned models in memory for good.
+   *
+   * - The pins still under way go too. The reset refuses them once their load ends (`pinTrackedModel`).
+   *   Their model is then in memory at `keep_alive: -1` like any pinned one.
+   * - The unloads run under the load lock, so a load under way ends first: a model still loading is
+   *   resident only once it has loaded. They run after this resolves, in the background, because a load
+   *   ahead of them can hold the lock for minutes and the reset must answer the page before that. They
+   *   wait {@link InferenceRouterService.FACTORY_RESET_LOCK_WAIT_MS} at most, then unload what is in
+   *   memory without the lock.
+   * - Only a model the engine lists under its own name, or `<name>:latest`, is unloaded. Ollama's usual
+   *   match takes a prefix, which reads `nomic-embed-text-v2-moe` as `nomic-embed-text`. An unload of a
+   *   model that is not in memory can make Ollama load it first.
+   * - The engine is asked only at the address the Hub is configured with. When that does not answer,
+   *   nothing is unloaded: a fallback address can be another engine, whose models are not the Hub's.
+   *
+   * Resolves once the pins are forgotten. `unloads` settles when the unloads are done. It never
+   * rejects: a failed unload costs a warning, never the reset.
+   */
+  async forgetPinnedModels(): Promise<{ unloads: Promise<void> }> {
+    const underWay = [...this.pinsUnderWay.keys()];
+    const unpinned = await this.modelRegistry.forgetPins();
+    const catalogIds = [...new Set([...unpinned, ...underWay])];
+    const unloads = this.unloadAfterFactoryReset(catalogIds).catch((err: unknown) => {
+      this._logger.warn(`[Inference] Factory reset could not unload the pinned models: ${err instanceof Error ? err.message : String(err)}`);
+    });
+    return { unloads };
+  }
+
+  /** Takes the load lock, or stops waiting for it after {@link InferenceRouterService.FACTORY_RESET_LOCK_WAIT_MS}, then unloads. */
+  private async unloadAfterFactoryReset(catalogIds: string[]): Promise<void> {
+    if (catalogIds.length === 0) return;
+
+    // A turn in the load queue that holds the lock until `release`. One given up on still comes round
+    // later and lets go at once, so the queue never runs these unloads twice.
+    let release: () => void = () => undefined;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const locked = new Promise<boolean>((resolve) => {
+      void this.withLoadLock(async () => {
+        resolve(true);
+        await released;
+      });
+    });
+    let timer: NodeJS.Timeout | undefined;
+    const gaveUp = new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), InferenceRouterService.FACTORY_RESET_LOCK_WAIT_MS);
+      timer.unref?.();
+    });
+
+    try {
+      if (!(await Promise.race([locked, gaveUp]))) {
+        this._logger.warn(
+          `[Inference] Factory reset waited ${InferenceRouterService.FACTORY_RESET_LOCK_WAIT_MS / 60_000} min for a model load ahead of it; unloading what is in memory now`,
+        );
+      }
+      for (const catalogId of catalogIds) {
+        await this.unloadForFactoryReset(catalogId);
+      }
+    } finally {
+      clearTimeout(timer);
+      release();
+    }
+  }
+
+  private async unloadForFactoryReset(catalogId: string): Promise<void> {
+    const target = this.loadTarget(catalogId);
+    if (!target) return;
+    const backend = this.backends.get(target.backendType);
+    if (!backend.residentAtConfiguredEndpoint || !backend.unloadAtConfiguredEndpoint) return;
+
+    const resident = await backend.residentAtConfiguredEndpoint().catch(() => null);
+    if (resident === null) {
+      this._logger.warn(
+        `[Inference] Factory reset left ${catalogId} as it was: ${target.backendType} did not answer at the address the Hub is configured with`,
+      );
+      return;
+    }
+    const names = new Set([backend.engineModelId?.(target.backendModelId) ?? target.backendModelId, target.backendModelId]);
+    const held = resident.find((name) => names.has(name) || [...names].some((own) => name === `${own}:latest`));
+    if (!held) return;
+
+    try {
+      await backend.unloadAtConfiguredEndpoint(held, { embedding: target.curated?.modality === 'embedding' });
+      this.modelRegistry.updateModelState(catalogId, 'pulled');
+      this._logger.info(`[Inference] Factory reset unloaded ${catalogId} (${held})`);
+    } catch (err) {
+      this._logger.warn(`[Inference] Factory reset could not unload ${catalogId}: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      this.memoryManager.invalidateObservation();
+    }
+  }
+
+  /**
+   * Unpin a catalog model: the registry's pin and the persisted one, then the engine's hold on it.
+   * The REST unpin (which the AI tab's save calls for each model it unpins) and MCP `hub_unpin_model`
+   * both take this path.
+   *
+   * The pin loaded the model at Ollama's `keep_alive: -1`. Clearing the registry alone left it in
+   * memory with Forever until something unloaded it. An unpin hands it back to the engine's usual
+   * expiry instead of unloading it, since an app may be using it: this node's stated Ollama
+   * keep-alive (`inferenceOllamaKeepAlive`, which `cihub fleet backends --ollama-keep-alive` writes)
+   * when there is one, else Ollama's built-in 5 minutes, because the daemon's `OLLAMA_KEEP_ALIVE`
+   * cannot be read. It does so only when the engine holds it: see `InferenceBackend.setResidentKeepAlive`. An
+   * engine without that setting (Lemonade, vLLM, oMLX) has nothing to change. A model that was not
+   * pinned is only unpinned in the registry.
+   *
+   * Under the load lock, like the pin: a pin of the same model queued ahead finishes first, so its
+   * pin is not written back after this unpin.
+   */
+  async unpinTrackedModel(catalogId: string): Promise<{ engine: 'set' | 'not-resident' | 'unreachable' | 'none' }> {
+    return this.withLoadLock(async () => {
+      const wasPinned = this.modelRegistry.isPinned(catalogId);
+      this.modelRegistry.unpinModel(catalogId);
+      return { engine: wasPinned ? await this.setEngineKeepAlive(catalogId, 'default') : 'none' };
+    });
+  }
+
+  /**
+   * {@link InferenceBackend.setResidentKeepAlive} for a catalog model, never throwing: a pin or unpin
+   * stands in the registry whatever the engine answered. A failure is logged. `none` when the
+   * model's engine has no such setting.
+   */
+  private async setEngineKeepAlive(catalogId: string, keep: 'pinned' | 'default'): Promise<'set' | 'not-resident' | 'unreachable' | 'none'> {
+    const target = this.loadTarget(catalogId);
+    const backend = target ? this.backends.tryGet(target.backendType) : undefined;
+    if (!target || !backend?.setResidentKeepAlive) {
+      return 'none';
+    }
+    try {
+      const outcome = await backend.setResidentKeepAlive(target.backendModelId, keep, {
+        embedding: target.curated?.modality === 'embedding',
+        defaultSeconds: keep === 'default' ? (this.configuration?.getInferencePreferences()?.ollamaKeepAlive ?? null) : null,
+      });
+      if (outcome === 'set') this.memoryManager.invalidateObservation();
+      return outcome;
+    } catch (err) {
+      this._logger.warn(
+        `[Inference] ${keep === 'pinned' ? 'Pinned' : 'Unpinned'} ${catalogId}, but could not set its keep_alive on ${target.backendType}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return 'unreachable';
+    }
   }
 
   /**
@@ -353,6 +520,7 @@ export class InferenceRouterService implements OnApplicationBootstrap {
       const curated = this.modelRegistry.getCuratedModel(tracked.catalogId);
       models.push({
         id: tracked.catalogId,
+        backend_model_id: tracked.backendModelId,
         object: 'model',
         created: now,
         owned_by: `local:${tracked.backend}`,
@@ -442,7 +610,9 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     for (const [backendType, , health] of await probe()) {
       if (!health.running || !health.healthy) continue;
       if (curated && curated.backend !== backendType) continue;
-      if (health.modelsLoaded.includes(engineId)) return engineId;
+      // As oMLX lists it: not the catalog's `mlx-community/<name>`, which it does not list.
+      const listed = backendType === 'omlx' ? servedOmlxId(engineId, health.modelsLoaded) : engineId;
+      if (listed && health.modelsLoaded.includes(listed)) return listed;
     }
     return undefined;
   }
@@ -532,13 +702,13 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     const resolvedModel = requestedModel === 'auto' ? await this.resolveAutoModel(probeOnce) : requestedModel;
 
     if (!resolvedModel) {
-      // No local model, try cloud
-      const provider = this.cloudFallback.getEnabledProviders()[0];
+      // Fail closed by default: only fall back to cloud when explicitly opted in.
+      const provider = isCloudFallbackAllowed() ? this.cloudFallback.getEnabledProviders()[0] : undefined;
       if (provider) {
         const result = await this.cloudFallback.proxyChatCompletion(provider, { ...body, model: provider.defaultModel }, clientClosed);
         return { data: result.data, stream: result.stream, headers: result.headers, backend: `cloud:${provider.provider}` };
       }
-      throw new Error('No models available — no local models loaded and no cloud providers configured');
+      throw new Error('No local models available — automatic cloud fallback is disabled');
     }
 
     // 2 + 3. A tracked model: serve it if loaded, else make room and load it. Shared with the pool
@@ -641,28 +811,29 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     throw modelNotFound(`Model ${resolvedModel} not found or not available for completions`);
   }
 
-  /** Route TTS request */
+  /** Route TTS request across audio-capable backends (lemonade, localai), then cloud */
   async routeTts(body: Record<string, unknown>): Promise<{ data: Buffer; backend: string }> {
-    const lemonadeBackend = this.backends.tryGet('lemonade');
-    if (lemonadeBackend) {
-      const lemonadeHealth = await lemonadeBackend.healthCheck().catch(() => ({ running: false, healthy: false }));
-      if (lemonadeHealth.running && lemonadeHealth.healthy) {
+    const audioBackendTypes: readonly InferenceBackendType[] = ['lemonade', 'localai'];
+    for (const backendType of audioBackendTypes) {
+      const backend = this.backends.tryGet(backendType);
+      if (!backend) continue;
+      const health = await backend.healthCheck().catch(() => ({ running: false, healthy: false, modelsLoaded: [] }));
+      if (health.running && health.healthy) {
         try {
-          const response = await axios.post(`${lemonadeBackend.getBaseUrl()}/v1/audio/speech`, body, {
-            headers: backendAuthHeaders(lemonadeBackend),
+          const response = await axios.post(`${backend.getBaseUrl()}/v1/audio/speech`, body, {
+            headers: backendAuthHeaders(backend),
             responseType: 'arraybuffer',
             timeout: 60000,
           });
-          return { data: Buffer.from(response.data), backend: 'lemonade' };
+          return { data: Buffer.from(response.data), backend: backendType };
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          this._logger.error(`[Inference] TTS request to Lemonade failed: ${msg}`);
-          throw err;
+          this._logger.error(`[Inference] TTS request to ${backendType} failed: ${msg}`);
         }
       }
     }
 
-    const provider = this.cloudFallback.getEnabledProviders()[0];
+    const provider = isCloudFallbackAllowed() ? this.cloudFallback.getEnabledProviders()[0] : undefined;
     if (provider) {
       const data = await this.cloudFallback.proxyTts(provider, body);
       return { data, backend: `cloud:${provider.provider}` };
@@ -671,33 +842,86 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     throw new Error('No TTS backend available');
   }
 
-  /** Route STT request */
+  /** Route STT request across audio-capable backends (lemonade, localai), then cloud */
   async routeStt(formData: FormData): Promise<{ data: unknown; backend: string }> {
-    const lemonadeBackend = this.backends.tryGet('lemonade');
-    if (lemonadeBackend) {
-      const lemonadeHealth = await lemonadeBackend.healthCheck().catch(() => ({ running: false, healthy: false }));
-      if (lemonadeHealth.running && lemonadeHealth.healthy) {
+    const audioBackendTypes: readonly InferenceBackendType[] = ['lemonade', 'localai'];
+    for (const backendType of audioBackendTypes) {
+      const backend = this.backends.tryGet(backendType);
+      if (!backend) continue;
+      const health = await backend.healthCheck().catch(() => ({ running: false, healthy: false, modelsLoaded: [] }));
+      if (health.running && health.healthy) {
         try {
-          const response = await axios.post(`${lemonadeBackend.getBaseUrl()}/v1/audio/transcriptions`, formData, {
-            headers: backendAuthHeaders(lemonadeBackend),
+          const response = await axios.post(`${backend.getBaseUrl()}/v1/audio/transcriptions`, formData, {
+            headers: backendAuthHeaders(backend),
             timeout: 120000,
           });
-          return { data: response.data, backend: 'lemonade' };
+          return { data: response.data, backend: backendType };
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          this._logger.error(`[Inference] STT request to Lemonade failed: ${msg}`);
-          throw err;
+          this._logger.error(`[Inference] STT request to ${backendType} failed: ${msg}`);
         }
       }
     }
 
-    const provider = this.cloudFallback.getEnabledProviders()[0];
+    const provider = isCloudFallbackAllowed() ? this.cloudFallback.getEnabledProviders()[0] : undefined;
     if (provider) {
       const data = await this.cloudFallback.proxyStt(provider, formData);
       return { data, backend: `cloud:${provider.provider}` };
     }
 
     throw new Error('No STT backend available');
+  }
+
+  /** Route image generation request across image/media-capable backends (localai), then cloud */
+  async routeImageGen(body: Record<string, unknown>, clientClosed?: AbortSignal): Promise<{ data: unknown; backend: string }> {
+    const mediaBackendTypes: readonly InferenceBackendType[] = ['localai'];
+    for (const backendType of mediaBackendTypes) {
+      const backend = this.backends.tryGet(backendType);
+      if (!backend) continue;
+      const health = await backend.healthCheck().catch(() => ({ running: false, healthy: false, modelsLoaded: [] }));
+      if (health.running && health.healthy) {
+        this.poolLoad?.acquireMedia({ kind: 'image', model: typeof body.model === 'string' ? body.model : undefined });
+        try {
+          const response = await axios.post(`${backend.getBaseUrl()}/v1/images/generations`, body, {
+            headers: {
+              ...backendAuthHeaders(backend),
+              'Content-Type': 'application/json',
+            },
+            timeout: 180000,
+            signal: clientClosed,
+          });
+          return { data: response.data, backend: backendType };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this._logger.error(`[Inference] Image generation request to ${backendType} failed: ${msg}`);
+        } finally {
+          this.poolLoad?.releaseMedia({ kind: 'image', model: typeof body.model === 'string' ? body.model : undefined });
+        }
+      }
+    }
+
+    const provider = isCloudFallbackAllowed() ? this.cloudFallback.getEnabledProviders()[0] : undefined;
+    if (provider) {
+      const res = await this.cloudFallback.proxyImageGeneration(provider, body);
+      return { data: res.data, backend: `cloud:${provider.provider}` };
+    }
+
+    throw new Error('No image generation backend available');
+  }
+
+  /** Record media generation work on this host (e.g. ComfyUI or diffusion) to reflect GPU occupancy in the pool queue. */
+  acquireMediaWork(work?: LocalMediaWork): void {
+    this.poolLoad?.acquireMedia(work);
+  }
+
+  /** Release previously acquired media generation work. */
+  releaseMediaWork(work?: LocalMediaWork): void {
+    this.poolLoad?.releaseMedia(work);
+  }
+
+  /** Total active media generation jobs running on this host. */
+  activeMediaWork(): number {
+    return this.poolLoad?.activeMediaWork() ?? 0;
   }
 
   /**
@@ -738,7 +962,7 @@ export class InferenceRouterService implements OnApplicationBootstrap {
       }
     }
 
-    const provider = this.cloudFallback.getEnabledProviders()[0];
+    const provider = isCloudFallbackAllowed() ? this.cloudFallback.getEnabledProviders()[0] : undefined;
     if (provider) {
       const baseUrl = provider.baseUrl || 'https://api.openai.com/v1';
       try {
@@ -791,9 +1015,13 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     options: { numCtx?: number | null; signal?: AbortSignal } = {},
   ): Promise<{ backend: InferenceBackendType; backendModelId: string } | null> {
     // Folded like every other engine-id comparison on this path: an app may send `nomic-embed-text`
-    // or `nomic-embed-text:latest` for the one model.
+    // or `nomic-embed-text:latest` for the one model, and an app handed oMLX's name for a model
+    // (`Qwen3-8B-4bit`) sends that, where the registry holds the catalog's `mlx-community/Qwen3-8B-4bit`.
     const tracked =
-      this.modelRegistry.getTrackedModel(model) ?? this.modelRegistry.getTrackedModels().find((entry) => sameModelId(entry.backendModelId, model));
+      this.modelRegistry.getTrackedModel(model) ??
+      this.modelRegistry
+        .getTrackedModels()
+        .find((entry) => sameModelId(entry.backendModelId, model) || (entry.backend === 'omlx' && omlxModelsMatch(entry.backendModelId, model)));
     if (!tracked) {
       return null;
     }
@@ -966,16 +1194,47 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     try {
       await this.modelPuller.loadModel(
         catalogId,
-        contextLength === null ? undefined : { contextLength, ...(plan.provisionalWindow ? { provisionalWindow: true } : {}) },
+        contextLength === null && !plan.kvCacheType
+          ? undefined
+          : {
+              ...(contextLength !== null && { contextLength }),
+              ...(plan.provisionalWindow ? { provisionalWindow: true } : {}),
+              ...(plan.kvCacheType && { kvCacheType: plan.kvCacheType }),
+            },
       );
       return { loaded: true };
     } catch (err) {
+      if (err instanceof KvCacheLoadError && !options.kvCacheFallback) {
+        return this.retryWithoutQuantizedCache(catalogId, options, curated, backend, err);
+      }
       const msg = err instanceof Error ? err.message : String(err);
       return { loaded: false, reason: `Loading ${catalogId} failed: ${msg}` };
     } finally {
       // The next plan must see this model's memory, not the 5 s-old reading from before it loaded.
       this.memoryManager.invalidateObservation();
     }
+  }
+
+  /**
+   * A load with a quantized KV cache failed, and the engine took the flags back out: the same load again,
+   * planned for 16-bit — a smaller window, re-checked against what is free. Only when THAT loads was the
+   * cache the cause, so only then is the model marked to stay 16-bit (`markKvCacheUnsupported`). When it
+   * fails too, the cause was something else and nothing is marked; both reasons are reported.
+   */
+  private async retryWithoutQuantizedCache(
+    catalogId: string,
+    options: LoadOptions,
+    curated: CuratedModel | undefined,
+    backend: InferenceBackend,
+    err: KvCacheLoadError,
+  ): Promise<LoadOutcome> {
+    this._logger.warn(`[Inference] ${catalogId}: ${err.message}; loading it again with the 16-bit KV cache`);
+    const retry = await this.loadTrackedModelLocked(catalogId, { ...options, kvCacheFallback: true });
+    if (retry.loaded && curated) {
+      backend.markKvCacheUnsupported?.(curated);
+      return retry;
+    }
+    return retry.loaded ? retry : { loaded: false, reason: `${err.message}; at 16-bit: ${retry.reason}` };
   }
 
   /**
@@ -1105,7 +1364,10 @@ export class InferenceRouterService implements OnApplicationBootstrap {
    * then mark pinned a model that is no longer in memory.
    */
   async pinTrackedModel(catalogId: string, options: { origin: 'operator' | 'agent' }): Promise<{ pinned: true } | { pinned: false; reason: string }> {
-    return this.withLoadLock(async () => {
+    // Read before the lock, so a pin waiting behind another load when a factory reset runs is refused too.
+    const pinGeneration = this.modelRegistry.currentPinGeneration();
+    this.pinsUnderWay.set(catalogId, (this.pinsUnderWay.get(catalogId) ?? 0) + 1);
+    return this.withLoadLock<{ pinned: true } | { pinned: false; reason: string }>(async () => {
       const curated = this.modelRegistry.getCuratedModel(catalogId);
       const served = this.modelRegistry.getTrackedModel(catalogId) ?? curated;
       const model = served ? { backend: served.backend, backendModelId: served.backendModelId } : undefined;
@@ -1114,8 +1376,8 @@ export class InferenceRouterService implements OnApplicationBootstrap {
       const profile = await this.hardwareInspector.getProfile();
       const first = await this.memoryManager.canPinModel(profile, catalogMb, model);
       if (!first.canPin) {
-        const measured = model ? await this.memoryManager.footprintSighting(profile, model.backend, model.backendModelId) : null;
-        if (measured || !model) {
+        const measured = first.final || !model ? null : await this.memoryManager.footprintSighting(profile, model.backend, model.backendModelId);
+        if (first.final || measured || !model) {
           return { pinned: false, reason: first.reason ?? `${catalogId} does not fit this node's pinned-model budget` };
         }
       }
@@ -1137,8 +1399,33 @@ export class InferenceRouterService implements OnApplicationBootstrap {
         }
       }
 
+      // A factory reset that ran while this pin waited or loaded refuses it, and leaves the model's
+      // keep_alive to the reset's unload. Asked again after the keep_alive call or the load below.
+      const overtaken = () => pinGeneration !== this.modelRegistry.currentPinGeneration();
+      const refusal = { pinned: false as const, reason: `${catalogId} is loaded, but not pinned: a factory reset ran before this pin finished` };
+      if (overtaken()) {
+        return refusal;
+      }
+
+      // A model the pin found in memory was not loaded by it, so it still has whatever keep_alive it
+      // had: Ollama's usual expiry after an unpin, or for a model an app loaded through Ollama itself.
+      // The registry's `loaded` can outlive the model: an unpinned one expires on Ollama's keep_alive
+      // without the registry hearing of it. Then the pin loads it, so it never pins a model that is gone.
+      if ((await this.setEngineKeepAlive(catalogId, 'pinned')) === 'not-resident') {
+        const outcome = await this.loadTrackedModelLocked(catalogId, { origin: options.origin });
+        if (!outcome.loaded) {
+          return { pinned: false, reason: outcome.reason };
+        }
+      }
+      if (overtaken()) {
+        return refusal;
+      }
       this.modelRegistry.pinModel(catalogId);
       return { pinned: true };
+    }).finally(() => {
+      const left = (this.pinsUnderWay.get(catalogId) ?? 1) - 1;
+      if (left > 0) this.pinsUnderWay.set(catalogId, left);
+      else this.pinsUnderWay.delete(catalogId);
     });
   }
 
@@ -1146,9 +1433,9 @@ export class InferenceRouterService implements OnApplicationBootstrap {
    * The window to load a model at, and what it will then occupy — the figure the fit check and any
    * eviction are sized to. `contextLength` null sends the engine no window.
    *
-   * Everything is sized against the budget the fit check itself uses (`modelMemoryCeilingMb`, and
-   * `loadHeadroomMb` for what is free now), from the engine's own measurements where it has them:
-   * the per-token cost, the slot count it multiplies by, and what the model was last seen occupying
+   * Everything is sized against `modelCeilingMb` (the node's ceiling, without what this model holds
+   * now) and the fit check's own `loadHeadroomMb` for what is free now, from the engine's own
+   * measurements where it has them: the per-token cost, the slot count it multiplies by, and what the model was last seen occupying
    * here (`MemoryManagerService.footprintSighting`), which replaces the catalog's figure.
    *
    * - **An app's request on Ollama** (`origin: 'request'`) runs at its own window whatever the Hub
@@ -1191,28 +1478,53 @@ export class InferenceRouterService implements OnApplicationBootstrap {
       return { contextLength: null, footprintMb: catalogFootprint };
     }
     const backend = this.backends.get(target.backend);
-    const [cost, sighting, availableMb] = await Promise.all([
-      probeContextCost(backend, { ...curated, backendModelId: target.backendModelId }),
+    const [cost, sighting, availableMb, ceilingMb] = await Promise.all([
+      // Lemonade's cache is this plan's to choose (below), so it starts from the 16-bit cost.
+      probeContextCost(backend, { ...curated, backendModelId: target.backendModelId }, target.backend === 'lemonade' ? 'f16' : undefined),
       this.memoryManager.footprintSighting(profile, target.backend, target.backendModelId),
       this.memoryManager.loadHeadroomMb(profile),
+      // Not counting what the model itself holds now: a resident model is not its own competition.
+      // Read beside the headroom so both come from one observation.
+      this.memoryManager.modelCeilingMb(profile, target.backend, target.backendModelId),
     ]);
     const slots = this.statedSlots(target.backend, backend);
     this.warnSlotsUnstated(target.backend, slots, profile);
+    const floor = target.backend === 'lemonade' ? await this.installedAppFloor(curated) : null;
+    const kvCacheType = this.chooseKvCacheType(backend, curated, {
+      floor,
+      ceilingMb,
+      fallback: options.kvCacheFallback === true,
+      sizing: {
+        modelFootprintMb: catalogFootprint,
+        kvMbPerToken: cost?.kvMbPerToken ?? null,
+        fixedKvMb: cost?.fixedKvMb ?? null,
+        weightMb: cost?.weightMb ?? null,
+        visionReserveMb: visionReserveMbFor(curated),
+        kvSlots: kvSequencesFor(target.backend, cost, slots),
+        sighting,
+      },
+      windowCap: Math.min(
+        curated.runtime.contextWindow > 0 ? Math.floor(curated.runtime.contextWindow) : Number.POSITIVE_INFINITY,
+        this.localContextCap() ?? Number.POSITIVE_INFINITY,
+      ),
+    });
+    const kvScale = kvCacheScaleFor(kvCacheType);
     const sizing: ModelMemoryInput = {
       modelFootprintMb: catalogFootprint,
-      kvMbPerToken: cost?.kvMbPerToken ?? null,
+      kvMbPerToken: cost?.kvMbPerToken == null ? null : cost.kvMbPerToken * kvScale,
+      fixedKvMb: cost?.fixedKvMb == null ? null : cost.fixedKvMb * kvScale,
       weightMb: cost?.weightMb ?? null,
       visionReserveMb: visionReserveMbFor(curated),
       kvSlots: kvSequencesFor(target.backend, cost, slots),
       sighting,
     };
-    const ceilingMb = modelMemoryCeilingMb(profile);
     const localCap = this.localContextCap();
     const handout = handoutContextLength({
       model: curated,
       servedLocally: true,
       effectiveInferenceMemoryMb: ceilingMb,
       kvMbPerToken: sizing.kvMbPerToken,
+      fixedKvMb: sizing.fixedKvMb,
       weightMb: sizing.weightMb,
       kvSlots: sizing.kvSlots,
       sighting,
@@ -1233,7 +1545,6 @@ export class InferenceRouterService implements OnApplicationBootstrap {
       return { contextLength: request.numCtx, footprintMb: estimateLoadedFootprintMb({ ...sizing, numCtx: window }) };
     }
 
-    const floor = target.backend === 'lemonade' ? await this.installedAppFloor(curated) : null;
     let wanted = floor ? Math.max(handout, floor.minContextLength) : handout;
     if (modelWindow !== null) wanted = Math.min(wanted, modelWindow);
     if (localCap !== null) wanted = Math.min(wanted, localCap);
@@ -1299,12 +1610,192 @@ export class InferenceRouterService implements OnApplicationBootstrap {
           (provisionalWindow ? '; a larger window Lemonade already has saved for it is kept for its next load.' : '.'),
       );
     }
+    if (target.backend === 'ollama') void this.adviseOllamaKvCache(curated, profile);
     return {
       contextLength,
       footprintMb,
       ...(unmeasured ? { unmeasured } : {}),
       ...(provisionalWindow ? { provisionalWindow: true as const } : {}),
+      ...(kvCacheType ? { kvCacheType } : {}),
     };
+  }
+
+  /** Models and settings {@link adviseOllamaKvCache} has already logged, so it says each once per process. */
+  private readonly ollamaKvAdviceLogged = new Set<string>();
+
+  /**
+   * Off the load path: when an installed app's floor is out of this Ollama model's reach at the cache the
+   * server runs, and another server setting would reach it ({@link contextPlanFor}'s `kvCacheAdvice`),
+   * says which, once per model and setting. The Hub cannot set `OLLAMA_KV_CACHE_TYPE` itself.
+   */
+  private async adviseOllamaKvCache(curated: CuratedModel, profile: HardwareProfile): Promise<void> {
+    try {
+      const plan = await this.contextPlanFor(curated, profile);
+      const advice = plan?.kvCacheAdvice;
+      if (!plan || !advice || !plan.floor) return;
+      const key = `${curated.id}:${advice.type}`;
+      if (this.ollamaKvAdviceLogged.has(key)) return;
+      this.ollamaKvAdviceLogged.add(key);
+      const bits = advice.type === 'q8_0' ? '8-bit' : '4-bit';
+      this._logger.warn(
+        `[Inference] ${curated.backendModelId} reaches ${plan.window ?? 'no'} tokens on this node with Ollama's ${plan.kvCacheType} KV cache, short of the ` +
+          `${plan.floor.minContextLength} ${plan.floor.apps.join(', ')} needs. With Ollama's ${bits} cache it would reach ${advice.window}: set ` +
+          `${advice.setting} and OLLAMA_FLASH_ATTENTION=1 in the Ollama service's environment, restart it, then tell the Hub with ` +
+          `PATCH /api/inference/preferences {"ollamaKvCacheType":"${advice.type}"}. It applies to every model this Ollama serves` +
+          (advice.type === 'q4_0' ? ', and 4-bit can change long structured outputs noticeably.' : '.'),
+      );
+    } catch (err) {
+      this._logger.debug(`[Inference] Could not work out Ollama cache advice for ${curated.id}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * What a load of `curated` would get on this node's EMPTY card, for the model picker: the window, the
+   * KV cache it would use, and the installed apps' floor it could serve. The same steps as
+   * {@link planLoad} — 16-bit cost first, {@link chooseKvCacheType}, the handout, the floor, the largest
+   * window that fits — against the card's ceiling rather than what is free now, so it answers "what
+   * does this model get here", not "what would it get this second". Null for anything but a text model
+   * on a local engine this node runs (Ollama, Lemonade).
+   */
+  async contextPlanFor(curated: CuratedModel, profile: HardwareProfile): Promise<ModelContextPlan | null> {
+    if (curated.modality !== 'llm' || (curated.backend !== 'ollama' && curated.backend !== 'lemonade')) return null;
+    const backend = this.backends.get(curated.backend);
+    const [cost16, sighting, ceilingMb, floor] = await Promise.all([
+      probeContextCost(backend, curated, 'f16'),
+      this.memoryManager.footprintSighting(profile, curated.backend, curated.backendModelId),
+      this.memoryManager.modelCeilingMb(profile, curated.backend, curated.backendModelId),
+      this.installedAppFloor(curated),
+    ]);
+    const localCap = this.localContextCap();
+    const modelWindow = curated.runtime.contextWindow > 0 ? Math.floor(curated.runtime.contextWindow) : null;
+    const sizingAt = (choice: KvCacheChoice): ModelMemoryInput => {
+      const cost = cost16 ? scaleCacheCost(cost16, kvCacheScaleFor(choice)) : null;
+      return {
+        modelFootprintMb: curated.runtime.memoryFootprintMb || 0,
+        kvMbPerToken: cost?.kvMbPerToken ?? null,
+        fixedKvMb: cost?.fixedKvMb ?? null,
+        weightMb: cost?.weightMb ?? null,
+        visionReserveMb: visionReserveMbFor(curated),
+        kvSlots: kvSequencesFor(curated.backend, cost16, this.statedSlots(curated.backend, backend)),
+        sighting,
+      };
+    };
+    /** The window a load at `choice` would get: the handout, raised to the floor, fitted to an empty card. */
+    const windowAt = (choice: KvCacheChoice): number | null => {
+      const sizing = sizingAt(choice);
+      const handout = handoutContextLength({
+        model: curated,
+        servedLocally: true,
+        effectiveInferenceMemoryMb: ceilingMb,
+        kvMbPerToken: sizing.kvMbPerToken,
+        fixedKvMb: sizing.fixedKvMb,
+        weightMb: sizing.weightMb,
+        kvSlots: sizing.kvSlots,
+        sighting,
+        maxContextLength: localCap,
+      });
+      let wanted = floor ? Math.max(handout, floor.minContextLength) : handout;
+      if (modelWindow !== null) wanted = Math.min(wanted, modelWindow);
+      if (localCap !== null) wanted = Math.min(wanted, localCap);
+      return largestFittingWindow({ ...sizing, from: wanted, budgetMb: ceilingMb });
+    };
+
+    // Lemonade: the Hub picks the cache per model. Ollama: the server runs one cache for every model, the
+    // one the operator stated (`inferenceOllamaKvCacheType`), and the Hub can only recommend another.
+    const kvCacheType: KvCacheChoice =
+      curated.backend === 'ollama'
+        ? this.statedOllamaKvCacheType()
+        : (this.chooseKvCacheType(backend, curated, {
+            floor,
+            ceilingMb,
+            fallback: false,
+            sizing: sizingAt('f16'),
+            windowCap: Math.min(modelWindow ?? Number.POSITIVE_INFINITY, localCap ?? Number.POSITIVE_INFINITY),
+          }) ?? 'f16');
+    const window = windowAt(kvCacheType);
+    const met = floor !== null && window !== null && window >= floor.minContextLength;
+    return {
+      window,
+      kvCacheType,
+      kvCacheSetBy: curated.backend === 'ollama' ? 'server' : 'hub',
+      kvCacheAdvice: curated.backend === 'ollama' && floor && !met ? this.ollamaKvCacheAdvice(kvCacheType, floor.minContextLength, windowAt) : null,
+      // Computed from the file rather than seen loaded: the cache is exact, the catalog's weights figure may not be.
+      basis: cost16?.kvMbPerToken == null || (cost16.source === 'gguf' && !curated.runtime.footprintMeasured) ? 'estimated' : 'measured',
+      kvCacheMeasured: kvCacheType !== 'f16' && curated.runtime.kvCacheType === kvCacheType,
+      floor: floor ? { ...floor, met } : null,
+    };
+  }
+
+  /**
+   * The cache this node's Ollama runs, as the operator stated it (`inferenceOllamaKvCacheType`, the
+   * daemon's `OLLAMA_KV_CACHE_TYPE`): 16-bit, Ollama's default, when not stated.
+   */
+  private statedOllamaKvCacheType(): KvCacheChoice {
+    try {
+      return this.configuration?.getInferencePreferences()?.ollamaKvCacheType ?? 'f16';
+    } catch {
+      return 'f16';
+    }
+  }
+
+  /**
+   * The Ollama cache setting that would let a model reach an installed app's floor here, when the one the
+   * server runs does not: q8_0, else q4_0, the same order and the same reasons as Lemonade's per-model
+   * choice (see `QUANTIZED_KV_CACHE_TYPES`), only more compact than what runs now. It is server-wide, so
+   * it is advice for the operator, not something the Hub applies. Null when neither reaches the floor.
+   */
+  private ollamaKvCacheAdvice(
+    current: KvCacheChoice,
+    floor: number,
+    windowAt: (choice: KvCacheChoice) => number | null,
+  ): ModelContextPlan['kvCacheAdvice'] {
+    const currentScale = kvCacheScaleFor(current);
+    for (const type of QUANTIZED_KV_CACHE_TYPES) {
+      if (!(kvCacheScaleFor(type) < currentScale)) continue;
+      const window = windowAt(type);
+      if (window !== null && window >= floor) return { type, window, setting: `OLLAMA_KV_CACHE_TYPE=${type}` };
+    }
+    return null;
+  }
+
+  /**
+   * The KV cache a Lemonade load plans for: quantized only when it is needed — the 16-bit cache cannot
+   * hold an installed app's floor (Hermes' 64000) even on an empty card here — and then q8_0, or q4_0
+   * when only q4_0 reaches the floor (see `QUANTIZED_KV_CACHE_TYPES` for what each costs in quality);
+   * the engine must offer the type for
+   * the model (`InferenceBackend.kvCacheTypesFor`: a llama.cpp model on a Lemonade that can save it,
+   * not one that failed with it before). 16-bit otherwise, so a model that fits its floor keeps the
+   * cache measured to extract a little more from long multi-record prompts (2026-11-10). Decided
+   * against an empty card rather than what is free now: it is a property of the model and the card,
+   * and a cache that flipped with every idle model would reload the model to flip back.
+   *
+   * Undefined for other engines, which leave the cache to their own settings (Ollama's is the
+   * server-wide `OLLAMA_KV_CACHE_TYPE`).
+   */
+  private chooseKvCacheType(
+    backend: InferenceBackend,
+    model: CuratedModel,
+    input: { floor: { minContextLength: number } | null; ceilingMb: number; fallback: boolean; sizing: ModelMemoryInput; windowCap: number },
+  ): KvCacheChoice | undefined {
+    if (model.backend !== 'lemonade' || model.modality !== 'llm') return undefined;
+    if (input.fallback || !input.floor || input.sizing.kvMbPerToken == null) return 'f16';
+    const offered = backend.kvCacheTypesFor?.(model) ?? [];
+    if (offered.length === 0) return 'f16';
+    const floorWindow = Math.min(input.floor.minContextLength, input.windowCap);
+    const reaches = (choice: KvCacheChoice) => {
+      const scale = kvCacheScaleFor(choice);
+      const sizing = {
+        ...input.sizing,
+        kvMbPerToken: (input.sizing.kvMbPerToken as number) * scale,
+        fixedKvMb: input.sizing.fixedKvMb == null ? null : input.sizing.fixedKvMb * scale,
+      };
+      const window = largestFittingWindow({ ...sizing, from: floorWindow, budgetMb: input.ceilingMb });
+      return window !== null && window >= floorWindow;
+    };
+    if (reaches('f16')) return 'f16';
+    // Most precise first; when none reaches the floor, the first (q8_0) as before: q4_0 is worth its cost
+    // only for the window it wins.
+    return offered.find(reaches) ?? offered[0] ?? 'f16';
   }
 
   /**
@@ -1467,7 +1958,12 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     const backend = this.backends.get(backendType);
     const url = `${backend.getBaseUrl()}${endpointPath}`;
 
-    const requestBody: Record<string, unknown> = { ...body, model: backendModelId };
+    // oMLX only: it answers the catalog's `mlx-community/<name>` with a 404 when it serves the model
+    // from the Hugging Face cache, where the name is `mlx-community--<name>` (or, with its
+    // `model_fallback` on, from its default model). The other engines keep the id the registry holds;
+    // Lemonade's own spelling is applied where the Hub registers a model.
+    const requestModel = backendType === 'omlx' ? (backend.engineModelId?.(backendModelId) ?? backendModelId) : backendModelId;
+    const requestBody: Record<string, unknown> = { ...body, model: requestModel };
 
     // Find catalog ID for recording usage
     const allTracked = this.modelRegistry.getTrackedModels();
@@ -1495,7 +1991,8 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     // The pool's own budgets (`hub-pool-budget.ts`), not a copy of their formula: a request must wait
     // as long on this node whether or not the Hub has peers. A local 120 s floor cut a streamed 19 KB
     // prompt on a CPU-bound node (27–37 tok/s prefill), or any cold load past two minutes, where the
-    // pool would have waited 300 s for the very same engine.
+    // pool would have waited 300 s for the very same engine. This node's engine is the only candidate
+    // here, so it gets the pool's last-candidate budget (`lastLocalBudgetMs`, #2310).
     const bodyBytes = Buffer.byteLength(JSON.stringify(requestBody));
 
     if (stream) {
@@ -1506,9 +2003,9 @@ export class InferenceRouterService implements OnApplicationBootstrap {
         requestBody,
         headers,
         {
-          budgetMs: firstByteBudgetMs(bodyBytes),
+          budgetMs: lastLocalBudgetMs(firstByteBudgetMs(bodyBytes)),
           upstream: backendType,
-          hint: ` — it may still be loading the model or reading a long prompt ${BUDGET_SETTINGS_HINT}`,
+          hint: ` — it may still be loading the model or reading a long prompt ${BUDGET_SETTINGS_HINT}, times HUB_POOL_LAST_LOCAL_BUDGET_FACTOR on this node's own engine`,
         },
         clientClosed,
       );
@@ -1520,7 +2017,7 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     // `clientClosed` here too: an engine that is still generating a whole answer for a client that
     // left holds its sequence slot for nobody until the budget runs out.
     const response = await axios.post(url, requestBody, {
-      timeout: forwardBudgetMs(false, bodyBytes),
+      timeout: lastLocalBudgetMs(forwardBudgetMs(false, bodyBytes)),
       headers,
       signal: clientClosed,
     });

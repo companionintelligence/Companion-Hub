@@ -5,22 +5,38 @@ import type { AppUrn } from '@ci-hub/common/types';
 import type Dockerode from 'dockerode';
 import { DOCKERODE } from '../docker/constants';
 import { DockerReadFacade } from '../docker/docker-read.facade';
+import { AppFilesManager } from '../apps/app-files-manager';
 import { AppsRepository } from '../apps/apps.repository';
 import { InstallPipelineTracker } from '../apps/install-pipeline.tracker';
 import type { AppStatus } from '@/core/database/drizzle/types';
 import { StatusReportService } from '../status-report/status-report.service';
 import { SystemEventsQueue } from '../queue/entities/system-events';
-import { appUrnFromLabels, DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES } from '@/common/constants';
+import { appUrnFromLabels } from '@/common/constants';
 import { listContainersMatchingAnyLabelSets, managedAppLabelSets } from '../docker/hub-container-query';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
 import { NetworkDiagnosticsService } from '../network/network-diagnostics.service';
 import { isPortExposeApp } from '@ci-hub/common/schemas';
-import { AppOperationRegistry } from './app-operation-registry';
+import { AppOperationRegistry, operationStaleAfterMs } from './app-operation-registry';
 import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
 
 const LONG_RUNNING_TRANSITIONAL_STATES: AppStatus[] = ['installing', 'updating'];
+
+interface DockerAppStatus {
+  running: number;
+  exitZero: number;
+  total: number;
+  startedJustNow: boolean;
+  /** The compose services of the containers that exited with an error. */
+  failedServices: string[];
+}
+
+/**
+ * Docker's `Status` for a container that started under a minute ago. A service that crashes every few
+ * seconds reads `running` between crashes and always reads like this.
+ */
+const STARTED_UNDER_A_MINUTE_AGO = /^Up (less than a second|\d+ seconds?)/i;
 
 const TRANSITIONAL_STATES: AppStatus[] = [
   'installing',
@@ -33,6 +49,21 @@ const TRANSITIONAL_STATES: AppStatus[] = [
   'backing_up',
   'restoring',
 ];
+
+/** The Docker socket is missing, refusing connections, or not readable by the Hub's user. */
+function isDockerSocketUnavailable(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const { code, address, message } = error as { code?: unknown; address?: unknown; message?: unknown };
+  const names = [address, message].some((value) => typeof value === 'string' && value.includes('docker.sock'));
+  return names && ['EACCES', 'EPERM', 'ENOENT', 'ECONNREFUSED'].includes(String(code));
+}
+
+/** A Docker call the read-only proxy in front of the socket refused: docker-modem's "(HTTP code 403) ..." error, with the status as `statusCode`. */
+function isReadOnlyDockerProxyRefusal(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const { statusCode, message } = error as { statusCode?: unknown; message?: unknown };
+  return statusCode === 403 && typeof message === 'string' && message.includes('blocked by the read-only test proxy');
+}
 
 @Injectable()
 export class AppStatusSyncService {
@@ -53,6 +84,7 @@ export class AppStatusSyncService {
     @Optional() private readonly networkDiagnostics?: NetworkDiagnosticsService,
     @Optional() private readonly dockerReadFacade?: DockerReadFacade,
     @Optional() private readonly statusReportService?: StatusReportService,
+    @Optional() private readonly appFilesManager?: AppFilesManager,
   ) {
     if (this.configuration.get('userSettings').eventsTimeout > 5) {
       const eventsTimeout = this.configuration.get('userSettings').eventsTimeout;
@@ -100,6 +132,15 @@ export class AppStatusSyncService {
     });
   }
 
+  /** How many of an app's containers that exited with an error are one-shots, which don't make the app stopped. */
+  private async failedOneShotCount(appUrn: AppUrn, { failedServices }: Pick<DockerAppStatus, 'failedServices'>): Promise<number> {
+    if (failedServices.length === 0) {
+      return 0;
+    }
+    const oneShots = await this.appFilesManager?.getOneShotServiceNames(appUrn);
+    return failedServices.filter((service) => oneShots?.has(service)).length;
+  }
+
   async syncAllAppStatuses() {
     try {
       this.logger.debug('Starting app status sync');
@@ -107,33 +148,50 @@ export class AppStatusSyncService {
       const apps = await this.appRepository.getApps();
       const containers = await listContainersMatchingAnyLabelSets(this.docker, managedAppLabelSets());
 
-      const dockerStatusMap = new Map<string, { running: number; exitZero: number; total: number }>();
+      const dockerStatusMap = new Map<string, DockerAppStatus>();
 
       for (const container of containers) {
         const appUrn = appUrnFromLabels(container.Labels);
         if (!appUrn) continue;
 
         if (!dockerStatusMap.has(appUrn)) {
-          dockerStatusMap.set(appUrn, { running: 0, exitZero: 0, total: 0 });
+          dockerStatusMap.set(appUrn, { running: 0, exitZero: 0, total: 0, startedJustNow: false, failedServices: [] });
         }
 
         const status = dockerStatusMap.get(appUrn);
         if (status) {
           status.total++;
-          if (container.State === 'running') status.running++;
-          if (container.State === 'exited' && /Exited \(0\)/.test(container.Status)) status.exitZero++;
+          if (container.State === 'running') {
+            status.running++;
+            status.startedJustNow ||= STARTED_UNDER_A_MINUTE_AGO.test(container.Status);
+          }
+          if (container.State === 'exited') {
+            if (/Exited \(0\)/.test(container.Status)) status.exitZero++;
+            else status.failedServices.push(container.Labels?.['com.docker.compose.service'] ?? '');
+          }
         }
       }
 
       let syncedCount = 0;
       let skippedCount = 0;
+      const { eventsTimeoutMs, queueTimeoutMs } = this.getGraceWindowsMs();
 
       for (const app of apps) {
         const appUrn: AppUrn = `${app.appName}:${app.appStoreSlug}` as AppUrn;
 
         const isTransitional = TRANSITIONAL_STATES.includes(app.status);
-        const transitionalGraceMs = this.getTransitionalGraceMs(app.status);
+        const transitionalGraceMs = LONG_RUNNING_TRANSITIONAL_STATES.includes(app.status) ? queueTimeoutMs : eventsTimeoutMs;
         if (isTransitional) {
+          // A restart, backup, or restore takes the containers down before it brings them back, so
+          // Docker cannot say whether one is still running. The registry can, for as long as the queue
+          // waits for the command. Past that the caller has given up on it, and an entry that never
+          // clears, such as a force stop hung on Docker, must not hold the app forever.
+          const operation = this.operationRegistry.get(appUrn);
+          if (operation && Date.now() - operation.createdAt < queueTimeoutMs) {
+            this.logger.debug(`Skipping ${appUrn} - '${app.status}' operation still in progress`);
+            skippedCount++;
+            continue;
+          }
           const timeSinceUpdate = Date.now() - parseDbTimestampMs(app.updatedAt);
           if (timeSinceUpdate < transitionalGraceMs) {
             this.logger.debug(`Skipping ${appUrn} - in recent transitional state '${app.status}'`);
@@ -170,6 +228,7 @@ export class AppStatusSyncService {
 
         const dockerStatus = dockerStatusMap.get(appUrn);
         let newStatus: AppStatus;
+        let everyContainerExitedCleanly = false;
 
         if (!dockerStatus || dockerStatus.total === 0) {
           if (app.status === 'install_failed') {
@@ -213,10 +272,30 @@ export class AppStatusSyncService {
           // not uninstalled. Keep "missing" for install verification / SSE uninstall
           // events — never as the durable status of an installed app.
           newStatus = 'stopped';
-        } else if (dockerStatus.running + dockerStatus.exitZero === dockerStatus.total) {
+        } else if (
+          dockerStatus.running > 0 &&
+          dockerStatus.running + dockerStatus.exitZero + (await this.failedOneShotCount(appUrn, dockerStatus)) === dockerStatus.total
+        ) {
+          // An app that failed to come up gets back to `running` by itself once its containers do, but
+          // one look at a crash loop can land between two crashes. It waits for the next sync then.
+          if ((app.status === 'install_failed' || app.status === 'stopped') && dockerStatus.startedJustNow) {
+            skippedCount++;
+            continue;
+          }
+          // A clean exit counts only beside a running container: that is a one-shot init service
+          // that finished. Every container exited 0 is an app stopped with `docker stop`, such as
+          // by the desktop's Stop Hub. A one-shot that exited with an error counts here too: the app is
+          // running and the page shows Needs attention for that container.
           newStatus = 'running';
+        } else if (app.status === 'install_failed') {
+          // Containers left by a failed install, crash-looping or stuck in `Created`, do not make it a
+          // stopped app. `stopped` lost the failure message and Retry install. It also sent the next
+          // try through Start, past install's port handling (#2041).
+          skippedCount++;
+          continue;
         } else {
           newStatus = 'stopped';
+          everyContainerExitedCleanly = dockerStatus.exitZero === dockerStatus.total;
           if (dockerStatus.running > 0) {
             this.logger.warn(`App ${appUrn} has mixed container states: ${dockerStatus.running}/${dockerStatus.total} running`);
             this.errorReportingService?.captureWarning(
@@ -239,7 +318,9 @@ export class AppStatusSyncService {
           this.logger.info(`Synced ${appUrn}: '${app.status}' -> '${newStatus}'`);
 
           // Detect crash: running → stopped (containers gone or unhealthy)
-          if (app.status === 'running' && newStatus === 'stopped') {
+          // Not when every container exited 0: something stopped the app on purpose, such as
+          // `docker stop` or the desktop's Stop Hub, and a stop from the Hub reports no crash either.
+          if (app.status === 'running' && newStatus === 'stopped' && !everyContainerExitedCleanly) {
             this.agentNotifyService?.notify('app.crashed', { appUrn, previousStatus: app.status, newStatus }, 'high');
             await this.reportAppCrash(appUrn, app.status, newStatus);
           }
@@ -259,10 +340,28 @@ export class AppStatusSyncService {
         totalApps: apps.length,
       };
     } catch (error) {
-      this.logger.error('Error during app status sync:', error);
-      // Status sync is what detects app crashes. If the loop itself dies and we
-      // only log locally, crash detection goes dark with no Sentry signal.
-      this.errorReportingService?.captureException(error, { surface: 'app-status-sync' });
+      if (isDockerSocketUnavailable(error)) {
+        // Every pass fails the same way until the socket is readable, so one warning an hour says so.
+        this.logger.warn(`App status sync skipped: the Docker socket is not reachable. ${String(error)}`);
+        this.errorReportingService?.captureWarning(
+          'App status sync cannot reach the Docker socket',
+          { surface: 'app-status-sync' },
+          { debounceKey: 'app-status-sync:docker-socket', debounceMs: 60 * 60_000 },
+        );
+      } else if (isReadOnlyDockerProxyRefusal(error)) {
+        // The proxy refuses the same listing on every pass, so one warning an hour says so.
+        this.logger.warn(`App status sync refused by the read-only Docker proxy. ${String(error)}`);
+        this.errorReportingService?.captureWarning(
+          'App status sync was refused by the read-only Docker proxy',
+          { surface: 'app-status-sync' },
+          { debounceKey: 'app-status-sync:docker-proxy-refused', debounceMs: 60 * 60_000 },
+        );
+      } else {
+        this.logger.error('Error during app status sync:', error);
+        // Status sync is what detects app crashes. If the loop itself dies and we
+        // only log locally, crash detection goes dark with no Sentry signal.
+        this.errorReportingService?.captureException(error, { surface: 'app-status-sync' });
+      }
 
       return {
         success: false,
@@ -312,9 +411,9 @@ export class AppStatusSyncService {
   }
 
   /**
-   * Report a marketplace app crash with the same container-log trail post_start
-   * already attaches. Without logs, Sentry only said "transitioned from running
-   * to stopped" — useless for figuring out why the app died.
+   * Report a marketplace app crash. The report names the unhealthy containers and their states.
+   * Container logs are not attached: app-controlled output can carry private data, so the report
+   * says which containers failed and how, and nothing from inside them.
    */
   private async reportAppCrash(appUrn: AppUrn, previousStatus: AppStatus, newStatus: AppStatus): Promise<void> {
     let containers: Array<{ name: string; state: string; logs?: string }> | undefined;
@@ -324,12 +423,12 @@ export class AppStatusSyncService {
       try {
         const diag = await this.dockerReadFacade.diagnoseAppContainers(appUrn);
         if (diag.unhealthy.length > 0) {
-          containers = diag.unhealthy;
-          const logSummary = diag.unhealthy.map((container) => `${container.name} (${container.state}): ${container.logs || '(no logs)'}`).join('\n');
-          message = `${message}\n${logSummary}`;
+          containers = diag.unhealthy.map(({ name, state }) => ({ name, state }));
+          const containerSummary = diag.unhealthy.map((container) => `${container.name} (${container.state})`).join('\n');
+          message = `${message}\n${containerSummary}`;
         }
       } catch (diagError) {
-        this.logger.warn(`Failed to capture container logs for crashed app ${appUrn}: ${String(diagError)}`);
+        this.logger.warn(`Failed to diagnose containers for crashed app ${appUrn}: ${String(diagError)}`);
       }
     }
 
@@ -341,11 +440,19 @@ export class AppStatusSyncService {
     });
   }
 
-  private getTransitionalGraceMs(status: AppStatus): number {
+  /**
+   * How long an app in a transitional state is left alone. While the registry lists its operation,
+   * the app-events queue's own timeout for a command (see QueueModule), counted from the entry's
+   * creation. A row the registry does not list, as after a backend restart, gets `eventsTimeout`
+   * from its last update, or the queue timeout for `installing` and `updating`, whose image pulls
+   * take longer. Apart from an install, a command RabbitMQ hands to the new process writes no status
+   * when it ends, so this sync is what settles that row, and a longer window only keeps it spinning.
+   */
+  private getGraceWindowsMs(): { eventsTimeoutMs: number; queueTimeoutMs: number } {
     const eventsTimeoutMinutes = this.configuration.get('userSettings').eventsTimeout;
-    const minutes = LONG_RUNNING_TRANSITIONAL_STATES.includes(status)
-      ? Math.max(eventsTimeoutMinutes, Number(DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES))
-      : eventsTimeoutMinutes;
-    return minutes * 60 * 1000;
+    return {
+      eventsTimeoutMs: eventsTimeoutMinutes * 60 * 1000,
+      queueTimeoutMs: operationStaleAfterMs(eventsTimeoutMinutes),
+    };
   }
 }

@@ -14,13 +14,16 @@ import {
   Res,
   ServiceUnavailableException,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { ModuleRef } from '@nestjs/core';
 import { ApiTags } from '@nestjs/swagger';
 import { INFERENCE_BACKEND_TYPES, type InferenceBackendType } from '@ci-hub/common/types';
 import { AuthGuard } from '@/modules/auth/auth.guard';
+import { HubManagerGuard } from '@/modules/auth/hub-manager.guard';
 import { InferenceAccessGuard } from '@/modules/auth/inference-access.guard';
+import { TunnelErrorStatusInterceptor } from '@/modules/inference/tunnel-error-status.interceptor';
 import { ObservabilityRead, ObservabilityReadGuard } from '@/modules/auth/observability-read.guard';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -145,7 +148,7 @@ export class HubPoolController {
    * membership watcher, a minute later, and as an automatic refresh that declines to restart an app
    * into a config with no model, which is exactly what switching the pool off can produce.
    */
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Patch('settings')
   async updatePoolSettings(@Body() body: UpdateHubPoolPreferencesBody) {
     const before = this.configuration.getHubPoolPreferences();
@@ -196,7 +199,7 @@ export class HubPoolController {
    *
    * Takes effect on the very next pooled request, like every other pool setting, with no app restart.
    */
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Post('pins')
   async upsertPoolPin(@Body() body: UpsertPoolPinBody) {
     return { pins: await this.pinService.upsert(body) };
@@ -209,7 +212,7 @@ export class HubPoolController {
    * a path param on. Removing a pin that is not there succeeds: the operator asked for a state, and
    * that state now holds.
    */
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Delete('pins')
   async deletePoolPin(@Query() query: DeletePoolPinQuery) {
     return { pins: await this.pinService.remove(query.scope, query.model) };
@@ -269,7 +272,7 @@ export class HubPoolController {
    * does not name the node — see `identify` above for why — so the operator's next step is to mint a
    * PIN on that Hub and `POST peers/pair { address, pin }`, which is where the name is learned.
    */
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Post('peers/probe')
   async probePeerAddress(@Body() body: ProbePeerAddressBody) {
     return this.discoveryService.probeAddress(body.address);
@@ -284,7 +287,7 @@ export class HubPoolController {
    * reply to a request carrying the PIN minted on its own screen. The DTO enforces exactly one of
    * the two, and a PIN alongside `address`.
    */
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Post('peers/pair')
   async pairPeer(@Body() body: PairPeerBody) {
     const peer = body.address
@@ -300,7 +303,7 @@ export class HubPoolController {
    * one is outstanding and when it expires, never its value, so the UI can render a countdown
    * without the PIN becoming re-servable to anyone who can poll.
    */
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Post('pairing-pin')
   async mintPairingPin() {
     const minted = this.peerService.mintPairingPin();
@@ -309,7 +312,7 @@ export class HubPoolController {
     return { ...minted, ...(await this.peerService.identitySummary()) };
   }
 
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Delete('pairing-pin')
   async cancelPairingPin() {
     this.peerService.cancelPairingPin();
@@ -317,7 +320,7 @@ export class HubPoolController {
   }
 
   /** Run the bearer→signed exchange for one peer now, rather than waiting for the health poll to reach it. */
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Post('peers/:id/upgrade')
   async upgradePeer(@Param('id') id: string) {
     return toPublicPeer(await this.peerService.upgradePeerToSigned(id));
@@ -328,19 +331,19 @@ export class HubPoolController {
    * and there is no signed-rotation message in this protocol. The response names the peers that
    * could not be reached, which are the ones an operator has to clear by hand on the far side.
    */
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Post('identity/rotate')
   async rotateIdentity() {
     return this.peerService.rotateIdentity();
   }
 
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Post('peers/:id/approve')
   async approvePeer(@Param('id') id: string) {
     return toPublicPeer(await this.peerService.approvePairing(id));
   }
 
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Post('peers/:id/reject')
   async rejectPeer(@Param('id') id: string) {
     await this.peerService.rejectPairing(id);
@@ -356,19 +359,19 @@ export class HubPoolController {
    * tokens survive, so re-enabling needs no approval from the other side. Unpair is still the only
    * thing that revokes a credential.
    */
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Post('peers/:id/enable')
   async enablePeer(@Param('id') id: string) {
     return toPublicPeer(await this.peerService.setPeerEnabled(id, true));
   }
 
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Post('peers/:id/disable')
   async disablePeer(@Param('id') id: string) {
     return toPublicPeer(await this.peerService.setPeerEnabled(id, false));
   }
 
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Delete('peers/:id')
   async removePeer(@Param('id') id: string) {
     await this.peerService.removePeer(id);
@@ -494,36 +497,42 @@ export class HubPoolController {
   // ── App-facing proxy (InferenceAccessGuard: apps inside the appliance by origin; editors and SDKs anywhere with an `inference` key) ──
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Post('v1/chat/completions')
   async proxyChatCompletions(@Body() body: Record<string, unknown>, @Res() res: Response, @Headers(POOL_SESSION_HEADER) session?: string | string[]) {
     await this.proxyToPool('/v1/chat/completions', body, res, session);
   }
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Post('v1/completions')
   async proxyCompletions(@Body() body: Record<string, unknown>, @Res() res: Response, @Headers(POOL_SESSION_HEADER) session?: string | string[]) {
     await this.proxyToPool('/v1/completions', body, res, session);
   }
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Post('v1/embeddings')
   async proxyEmbeddings(@Body() body: Record<string, unknown>, @Res() res: Response, @Headers(POOL_SESSION_HEADER) session?: string | string[]) {
     await this.proxyToPool('/v1/embeddings', body, res, session);
   }
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Post('api/generate')
   async proxyOllamaGenerate(@Body() body: Record<string, unknown>, @Res() res: Response, @Headers(POOL_SESSION_HEADER) session?: string | string[]) {
     await this.proxyToPool('/api/generate', body, res, session);
   }
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Post('api/chat')
   async proxyOllamaChat(@Body() body: Record<string, unknown>, @Res() res: Response, @Headers(POOL_SESSION_HEADER) session?: string | string[]) {
     await this.proxyToPool('/api/chat', body, res, session);
   }
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Post('api/embeddings')
   async proxyOllamaEmbeddings(
     @Body() body: Record<string, unknown>,
@@ -534,18 +543,21 @@ export class HubPoolController {
   }
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Post('api/embed')
   async proxyOllamaEmbed(@Body() body: Record<string, unknown>, @Res() res: Response, @Headers(POOL_SESSION_HEADER) session?: string | string[]) {
     await this.proxyToPool('/api/embed', body, res, session);
   }
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Get('v1/models')
   async proxyOpenAiModelsList(@Res() res: Response) {
     await this.proxyService.proxyLocalOnlyRequest('/v1/models', 'GET', undefined, res);
   }
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Get('api/tags')
   async proxyOllamaTags(@Res() res: Response) {
     await this.proxyService.proxyLocalOnlyRequest('/api/tags', 'GET', undefined, res);
@@ -556,18 +568,21 @@ export class HubPoolController {
   // /api/show falls back to a peer that holds the model when no local engine does — see
   // `PoolProxyService.describeFromPeer`.
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Get('api/ps')
   async proxyOllamaPs(@Res() res: Response) {
     await this.proxyService.proxyLocalOnlyRequest('/api/ps', 'GET', undefined, res);
   }
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Get('api/version')
   async proxyOllamaVersion(@Res() res: Response) {
     await this.proxyService.proxyLocalOnlyRequest('/api/version', 'GET', undefined, res);
   }
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Post('api/show')
   async proxyOllamaShow(@Body() body: Record<string, unknown>, @Res() res: Response) {
     await this.proxyService.proxyLocalOnlyRequest('/api/show', 'POST', body, res);

@@ -21,7 +21,7 @@ export function McpSetupPanel({ info, installSchema }: Props) {
 
   return (
     <div className="mb-4 rounded-md border border-violet-500/30 bg-violet-500/5 p-4">
-      <h3 className="mb-2 flex items-center gap-2 text-sm font-semibold">
+      <h3 className="mb-2 flex items-center gap-2 text-sm font-medium">
         <Plug className="h-4 w-4 text-violet-500" />
         {t('APP_MCP_SETUP_TITLE', { defaultValue: 'MCP setup' })}
       </h3>
@@ -36,7 +36,7 @@ export function McpSetupPanel({ info, installSchema }: Props) {
             <Server className="h-3.5 w-3.5" />
             {t('APP_MCP_SETUP_TRANSPORT', { defaultValue: 'Transport' })}
           </dt>
-          <dd className="font-mono text-xs uppercase">{schema.transport}</dd>
+          <dd className="font-mono text-xs ">{schema.transport}</dd>
         </div>
         {schema.fields.length > 0 && (
           <div>

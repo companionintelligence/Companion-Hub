@@ -1,4 +1,4 @@
-import { render, screen, userEvent } from '@/tests/test-utils';
+import { render, screen, userEvent, waitFor } from '@/tests/test-utils';
 import { MemoryRouter } from 'react-router';
 import { describe, expect, it, vi } from 'vitest';
 import { LoginForm } from './login-form';
@@ -25,6 +25,25 @@ vi.mock('react-tooltip', () => ({
 }));
 
 describe('LoginForm', () => {
+  it('says in words that the email address is not valid, instead of the validator message', async () => {
+    const onSubmit = vi.fn();
+    render(
+      <MemoryRouter>
+        <LoginForm loading={false} loginType="your local admin account" onSubmit={onSubmit} />
+      </MemoryRouter>,
+    );
+
+    // The browser accepts an address without a dot in its domain; the form's own check does not.
+    await userEvent.type(screen.getByLabelText('AUTH_FORM_EMAIL'), 'admin@localhost');
+    await userEvent.type(screen.getByLabelText('COMMON_PASSWORD'), 'secret');
+    await userEvent.click(screen.getByRole('button', { name: 'COMMON_LOGIN' }));
+
+    expect(await screen.findByText('SETTINGS_SECURITY_CHANGE_USERNAME_FORM_INVALID_USERNAME')).toBeInTheDocument();
+    // Zod's own wording ("Invalid email address") is English only.
+    expect(screen.queryByText(/invalid email/i)).not.toBeInTheDocument();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it('toggles the password field visibility', async () => {
     render(
       <MemoryRouter>
@@ -51,7 +70,7 @@ describe('LoginForm', () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByRole('link', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON' })).toHaveClass('h-10', 'w-full', 'font-semibold');
+    expect(screen.getByRole('link', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON' })).toHaveClass('h-10', 'w-full', 'font-medium');
     // This is the <a href> branch — browser-hub-sso, a plain browser already on
     // the Hub, which navigates in place — so the hint must be the in-app one and
     // not the "opens in your browser" line that belongs to the native shells.
@@ -136,7 +155,12 @@ describe('LoginForm', () => {
     const button = screen.getByRole('button', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON_AS' });
     expect(button).toBeEnabled();
     await userEvent.click(button);
-    expect(openAuthSession).toHaveBeenCalledWith('https://hub.example.com/api/auth/portal/start?desktop=1');
+    // The start URL, plus the challenge that binds the code it ends with to this app (deep-link-app-binding).
+    await waitFor(() =>
+      expect(openAuthSession).toHaveBeenCalledWith(
+        expect.stringMatching(/^https:\/\/hub\.example\.com\/api\/auth\/portal\/start\?desktop=1&app_challenge=[A-Za-z0-9_-]{43}$/),
+      ),
+    );
   });
 
   it('opens Companion Account SSO through openAuthSession so the native webview stays mounted', async () => {
@@ -155,7 +179,12 @@ describe('LoginForm', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON' }));
 
-    expect(openAuthSession).toHaveBeenCalledWith('http://localhost:5005/api/auth/portal/start?desktop=1');
+    // The start URL, plus the challenge that binds the code it ends with to this app (deep-link-app-binding).
+    await waitFor(() =>
+      expect(openAuthSession).toHaveBeenCalledWith(
+        expect.stringMatching(/^http:\/\/localhost:5005\/api\/auth\/portal\/start\?desktop=1&app_challenge=[A-Za-z0-9_-]{43}$/),
+      ),
+    );
     expect(screen.queryByRole('link', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON' })).not.toBeInTheDocument();
   });
 });

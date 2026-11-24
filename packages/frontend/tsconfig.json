@@ -7,7 +7,8 @@
     "resolveJsonModule": true,
     "lib": ["ESNext", "DOM", "DOM.Iterable"],
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@companionintelligence/auth/*": ["./src/vendor/ci-common/auth/*"]
     },
     "types": ["@testing-library/jest-dom/vitest"],
     "rootDirs": [".", "./.react-router/types"]

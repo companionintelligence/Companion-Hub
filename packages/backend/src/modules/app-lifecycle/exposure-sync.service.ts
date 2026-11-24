@@ -6,6 +6,7 @@ import { SSEService } from '@/core/sse/sse.service';
 import { Injectable, Optional, type OnModuleDestroy } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
+import type { AppStatus } from '@/core/database/drizzle/types';
 import {
   buildOriginServerName,
   buildPublicWebIdentity,
@@ -30,8 +31,15 @@ import {
   resolveRoutingSubdomain,
   type AppPublicRoutingSnapshot,
 } from '../apps/app-public-routing.helpers';
-import { isPortExposeApp } from '@ci-hub/common/schemas';
-import { CloudflareClientService, AppInfo, type PublicDnsFailure, type PublicDnsFailureReason } from '../cloudflare/cloudflare-client.service';
+import { ADDRESS_KEPT_STATUSES } from '../apps/app-starting-page';
+import { isPortExposeApp, PORT_EXPOSE_KIND } from '@ci-hub/common/schemas';
+import {
+  CloudflareClientService,
+  AppInfo,
+  type PublicDnsFailure,
+  type PublicDnsFailureReason,
+  isTransientAppFailure,
+} from '../cloudflare/cloudflare-client.service';
 import { DockerReadFacade } from '../docker/docker-read.facade';
 import { RegistrationService } from '../registration/registration.service';
 import { isServePermissionDenied, servePermissionRemedy, TailscaleService, type TailscaleServeEntry } from '../tailscale/tailscale.service';
@@ -60,6 +68,11 @@ export interface ExposureSyncOptions {
    * container twice.
    */
   skipAutoRestartAppUrns?: AppUrn[];
+  /**
+   * This pass exists to report bindings an earlier pass wrote. It schedules no report pass of its
+   * own, so two passes can never keep each other going. See `scheduleCustomDomainReport`.
+   */
+  customDomainReportFollowUp?: boolean;
 }
 
 function buildPublicHostname(params: { appSubdomain: string; hubSubdomain?: string | null; orgSlug?: string | null; publicDomainRoot: string }) {
@@ -95,6 +108,21 @@ type PublicDomainMove = {
 
 /** Why an app is recreated for its public identity; see `restartRevertedApps`. */
 type PublicIdentityRestart = 'revert' | 'apply' | 'public-domain-move';
+
+/**
+ * The states in which an app on Public Web is in the payload, and so keeps its public DNS record.
+ *
+ * Companion Portal deletes the record of every app a sync leaves out. With the record gone the
+ * app's address gave a DNS error (Cloudflare 1016, or NXDOMAIN) until a later sync brought it back,
+ * and resolvers keep that miss for up to 30 minutes. So the app stays in while it is stopped or
+ * while an update, reset, backup or restore has its containers down. Those are the states in which
+ * Traefik keeps its route to the Hub's page (`ADDRESS_KEPT_STATUSES`). A first install is the exception:
+ * it is published once it runs. An app being uninstalled, one whose install failed and one whose
+ * containers went missing drop out.
+ */
+const CLOUDFLARE_PUBLISHED_STATUSES: ReadonlySet<AppStatus> = new Set<AppStatus>(
+  [...ADDRESS_KEPT_STATUSES].filter((status) => status !== 'installing'),
+);
 
 /**
  * Refusals that come from the user's own plan or naming. The Portal refuses every
@@ -222,11 +250,40 @@ const HELD_BY_ANOTHER_HUB_BIND_REFUSAL = 'DOMAIN_BOUND_TO_ANOTHER_DEVICE';
 /** Where a domain another Hub holds is moved, named by every log line that gives one up. */
 const MOVE_IN_PORTAL_REMEDY = 'To serve it here, move it to this Hub from the portal: organization settings → domains.';
 
+/**
+ * The Hub's own entry in a sync. Include it in every sync so Companion Portal preserves its tunnel
+ * route. `device_registration.hubSubdomain` is the canonical route identity. `DOMAIN` and
+ * `userSettings.domain` provide the app-hostname root, not the Hub prefix. None when older records
+ * have no `hubSubdomain`.
+ */
+function hubSyncEntry(orgInfo: { hubSubdomain?: string | null; slug: string }, defaultPublicDomain: string | null | undefined): AppInfo | null {
+  const hubSub = orgInfo.hubSubdomain;
+  if (!hubSub || !defaultPublicDomain) {
+    return null;
+  }
+  const orgSuffix = `-${orgInfo.slug}`;
+  const deviceName = hubSub.endsWith(orgSuffix) ? hubSub.slice(0, -orgSuffix.length) : hubSub;
+  const hubListenPort = Number.parseInt(process.env.API_PORT || '5002', 10) || 5002;
+  return {
+    name: 'OS Hub',
+    subdomain: deviceName,
+    publicDomain: defaultPublicDomain,
+    localPort: 80,
+    protocol: 'http' as const,
+    hostname: 'traefik',
+    originServerName: `${hubSub}.${defaultPublicDomain}`,
+    privilegedKind: 'hub',
+    hubListenPort,
+  };
+}
+
 @Injectable()
 export class ExposureSyncService implements OnModuleDestroy {
   private lastPublicDnsFailureReportAt = 0;
   private readonly lastPublicDnsToastAt = new Map<string, number>();
   private static readonly PUBLIC_DNS_FAILURE_COOLDOWN_MS = 5 * 60_000;
+  /** A Portal outage repeats every pass; Sentry gets one warning for it per interval, not one per pass. */
+  private static readonly PUBLIC_DNS_TRANSIENT_REPORT_INTERVAL_MS = 60 * 60_000;
   /**
    * The refusal each app's toast last reported, for refusals that stand until someone acts.
    *
@@ -236,12 +293,20 @@ export class ExposureSyncService implements OnModuleDestroy {
    * refusal is then news again.
    */
   private readonly toastedStandingRefusals = new Map<AppUrn, PublicDnsFailureReason>();
+  /**
+   * The standing refusal the last answered sync gave each app, toasted or not. The app page reads it
+   * through {@link publicDnsRefusalFor} so it can say why an app has no public address instead of
+   * calling the missing record "DNS propagating" for as long as the refusal stands (#2312).
+   */
+  private currentStandingRefusals: ReadonlyMap<AppUrn, PublicDnsFailureReason> = new Map();
 
   private readonly lastTailscaleServeToastAt = new Map<string, number>();
   private static readonly TAILSCALE_SERVE_FAILURE_COOLDOWN_MS = 5 * 60_000;
   /** Set once the operator refusal has been logged; cleared by the next Serve write that succeeds. */
   private servePermissionDeniedReported = false;
   private tailscaleServeDisabledReported = false;
+  /** This process has sent Companion Portal its This Machine Only and Private VPN ports (`refreshPortExposeRegistryOnce`). */
+  private portExposeRegistryRefreshed = false;
   /** `<port> <old name> <new name>` of each rename already logged at info. */
   private readonly reportedRenames = new Set<string>();
   /** The node name last warned about as unpublished while opted out; cleared once it is served. */
@@ -303,6 +368,30 @@ export class ExposureSyncService implements OnModuleDestroy {
   private static readonly CLOUDFLARE_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000, 120_000];
   private cloudflareRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private cloudflareRetryAttempt = 0;
+
+  /**
+   * Counts the custom-domain bindings `reconcileCustomDomains` has written, and the count the last
+   * report Companion Portal took was built from. The report goes out BEFORE the reconcile, so a
+   * pass that binds a domain tells the Portal nothing about it. Until a later report does, the
+   * Portal shows "Waiting for your Hub" and no Restart button. See {@link scheduleCustomDomainReport}.
+   */
+  private customDomainBindingGeneration = 0;
+  private reportedCustomDomainGeneration = 0;
+
+  /**
+   * How soon after a pass that changed a binding the pass that reports it goes out. Without it the
+   * report waited for the 5-minute poll. Short, since a person is usually looking at the Portal
+   * right then; long enough to let the restarts that pass dispatched get going.
+   */
+  private static readonly CUSTOM_DOMAIN_REPORT_DELAY_MS = 2_000;
+  /** How many times the report waits out another pass before leaving it to the poll. */
+  private static readonly CUSTOM_DOMAIN_REPORT_MAX_WAITS = 30;
+  private customDomainReportTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The apps whose restart a caller owns, carried into the reporting pass. */
+  private readonly customDomainReportSkips = new Set<AppUrn>();
+
+  /** Factory resets under way. No Cloudflare pass goes out while one runs; see {@link holdForFactoryReset}. */
+  private factoryResetHolds = 0;
 
   /**
    * Reserves HTTPS port 443 for the Hub on the tailnet.
@@ -598,18 +687,29 @@ export class ExposureSyncService implements OnModuleDestroy {
    * and toast floods when availability remediation repeats the sync for an app
    * that remains unavailable. A refusal that stands until someone acts is toasted
    * once instead, and `reportError: false` keeps a sync with no Hub fault out of
-   * Sentry.
+   * Sentry. A `transient` failure is a warning, and Sentry hears of it once per
+   * interval, because the Portal is usually back on the next pass.
    */
   private surfacePublicDnsFailure(
     message: string,
     failedAppNames: string[],
     toastTargets: PublicDnsToastTarget[] = [],
-    { reportError = true }: { reportError?: boolean } = {},
+    { reportError = true, transient = false }: { reportError?: boolean; transient?: boolean } = {},
   ): void {
-    this.logger.error(message);
+    if (transient) {
+      this.logger.warn(message);
+    } else {
+      this.logger.error(message);
+    }
 
     const now = Date.now();
-    if (reportError && now - this.lastPublicDnsFailureReportAt >= ExposureSyncService.PUBLIC_DNS_FAILURE_COOLDOWN_MS) {
+    if (reportError && transient) {
+      this.errorReportingService?.captureWarning(
+        message,
+        { failedApps: failedAppNames },
+        { debounceKey: 'cloudflare:public-dns:transient', debounceMs: ExposureSyncService.PUBLIC_DNS_TRANSIENT_REPORT_INTERVAL_MS },
+      );
+    } else if (reportError && now - this.lastPublicDnsFailureReportAt >= ExposureSyncService.PUBLIC_DNS_FAILURE_COOLDOWN_MS) {
       this.lastPublicDnsFailureReportAt = now;
       this.errorReportingService?.captureMessage(message, 'error', { failedApps: failedAppNames });
     }
@@ -750,6 +850,32 @@ export class ExposureSyncService implements OnModuleDestroy {
   }
 
   /**
+   * Sends Companion Portal this Hub's This Machine Only and Private VPN ports once per start, after the
+   * first sync it answered (#2131). The registry is otherwise written only when such a port is created
+   * or changed, so one exposed before it carried the port's kind and mode would never get them. A
+   * reinstall could not put it back. A failure is tried again after the next sync.
+   *
+   * Looked up when needed, as `AppLifecycleService` does: `PortExposeService` lives in a module that
+   * imports this one.
+   */
+  private refreshPortExposeRegistryOnce(): void {
+    if (this.portExposeRegistryRefreshed) {
+      return;
+    }
+    this.portExposeRegistryRefreshed = true;
+
+    void (async () => {
+      const { PortExposeService } = await import('../custom-apps/port-expose.service');
+      await this.moduleRef.get(PortExposeService, { strict: false })?.syncAllPortalRegistryEntries();
+    })().catch((error) => {
+      this.portExposeRegistryRefreshed = false;
+      this.logger.warn(
+        `[Portal] Could not send CI Portal this Hub's This Machine Only and Private VPN ports: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+  }
+
+  /**
    * Whether a Cloudflare pass — and so a custom-domain reconcile — is running.
    *
    * Lets the background poll stand down while any other trigger is mid-pass,
@@ -759,8 +885,61 @@ export class ExposureSyncService implements OnModuleDestroy {
     return this.cloudflareSyncDepth > 0;
   }
 
+  /** Why the last answered sync refused `appUrn` a public address, for a refusal that stands until someone acts. */
+  public publicDnsRefusalFor(appUrn: AppUrn): PublicDnsFailureReason | null {
+    return this.currentStandingRefusals.get(appUrn) ?? null;
+  }
+
   onModuleDestroy() {
     this.clearCloudflareRetry();
+    if (this.customDomainReportTimer) {
+      clearTimeout(this.customDomainReportTimer);
+      this.customDomainReportTimer = null;
+    }
+  }
+
+  /**
+   * Sends one more pass shortly, so Companion Portal hears about a binding this Hub just wrote.
+   *
+   * The report rides on a sync and is built before the request, while the reconcile that writes
+   * the binding runs after the answer. Left alone, a domain connected in the Portal reached the
+   * Hub at one poll and was reported at the next, 5 minutes later, with the Portal saying "Waiting
+   * for your Hub" in between and offering no Restart. The pass sent here reports it within seconds.
+   *
+   * Nothing goes out when a later pass has already reported the binding, and nothing overlaps a
+   * pass still running: the timer waits it out, up to {@link CUSTOM_DOMAIN_REPORT_MAX_WAITS} times,
+   * and then leaves the report to the poll. The pass it sends is marked as a follow-up and books
+   * none of its own, so a binding that keeps changing costs one extra pass per change, not a loop.
+   */
+  private scheduleCustomDomainReport(skipAutoRestartAppUrns: Iterable<AppUrn> = [], waited = 0) {
+    for (const appUrn of skipAutoRestartAppUrns) {
+      this.customDomainReportSkips.add(appUrn);
+    }
+    if (this.customDomainReportTimer) {
+      return;
+    }
+
+    this.customDomainReportTimer = setTimeout(() => {
+      this.customDomainReportTimer = null;
+      if (this.reportedCustomDomainGeneration >= this.customDomainBindingGeneration) {
+        this.customDomainReportSkips.clear();
+        return;
+      }
+      if (this.isCloudflareSyncInFlight()) {
+        if (waited < ExposureSyncService.CUSTOM_DOMAIN_REPORT_MAX_WAITS) {
+          this.scheduleCustomDomainReport([], waited + 1);
+        } else {
+          this.customDomainReportSkips.clear();
+        }
+        return;
+      }
+
+      const skips = [...this.customDomainReportSkips];
+      this.customDomainReportSkips.clear();
+      this.logger.debug('[Cloudflare] Reporting the custom-domain binding this Hub just wrote');
+      void this.triggerCloudflareSync({ customDomainReportFollowUp: true, ...(skips.length > 0 ? { skipAutoRestartAppUrns: skips } : {}) });
+    }, ExposureSyncService.CUSTOM_DOMAIN_REPORT_DELAY_MS);
+    this.customDomainReportTimer.unref?.();
   }
 
   private clearCloudflareRetry() {
@@ -799,9 +978,73 @@ export class ExposureSyncService implements OnModuleDestroy {
     this.cloudflareRetryTimer.unref?.();
   }
 
+  /**
+   * Hold every Cloudflare pass until the returned function is called. A factory reset deletes each
+   * app's row as it tears the app down but keeps the device registration until it wipes the database.
+   * A pass in between (the 5-minute poll, a retry) named only the apps left. The Portal released the
+   * rest, though the person had chosen to keep them listed for the next pairing to reinstall.
+   * `releaseAllAppsFromPortal` doesn't go through this hold.
+   */
+  public holdForFactoryReset(): () => void {
+    this.factoryResetHolds += 1;
+    let resumed = false;
+    return () => {
+      if (resumed) return;
+      resumed = true;
+      this.factoryResetHolds -= 1;
+    };
+  }
+
+  /**
+   * Tell Companion Portal this Hub serves no apps, so it releases every app it lists for the device.
+   * Their rows and DNS records go. A custom domain bound to one of them is parked, kept by the
+   * organization until it is bound again. A factory reset sends this when the person asks for the
+   * apps to come off the Portal too. Otherwise the list stays and pairing this Hub again reinstalls
+   * them (`PairingAppRestoreService`).
+   *
+   * Not `triggerCloudflareSync`: that one names the apps in the table and waits while a pairing check
+   * or a restore holds it. Both holds exist to stop this very release. Only the Hub's own entry goes
+   * out, so its tunnel route stays. No custom-domain report, which the Portal reads as no news.
+   *
+   * The tunnel sync leaves the ports exposed This Machine Only or on the Private VPN, whose rows the
+   * registry pins. Only the Hub removes those (`PortExposeService.releaseUnrestoredRegistryEntries`),
+   * so they are removed here too. Left, the next pairing put them back.
+   *
+   * Throws when the Portal didn't take it, so the caller can say the apps are still listed.
+   */
+  public async releaseAllAppsFromPortal(): Promise<'released' | 'not_paired'> {
+    const orgInfo = await this.registrationService.getDeviceRegistrationInfo();
+    if (!orgInfo?.tunnelId) {
+      return 'not_paired';
+    }
+
+    const hubEntry = hubSyncEntry(orgInfo, resolveHubPublicDomainRoot(this.config.getConfig()));
+    const result = await this.cloudflareClientService.syncState(orgInfo.id, hubEntry ? [hubEntry] : [], orgInfo.tunnelId);
+    if (!result.ok) {
+      throw new Error(result.errorMessage ?? `Companion Portal answered ${result.errorStatus ?? 'with an error'}`);
+    }
+
+    const { PortExposeService } = await import('../custom-apps/port-expose.service');
+    const portExpose = this.moduleRef.get(PortExposeService, { strict: false });
+    if (portExpose) {
+      const released = await portExpose.releaseUnrestoredRegistryEntries(await this.cloudflareClientService.getDeviceApplications());
+      if (released.length > 0) {
+        this.logger.info(`[Portal] Removed Companion Portal's entries for ${released.length} exposed port(s): ${released.join(', ')}`);
+      }
+    }
+
+    this.logger.info(`[Cloudflare] Told Companion Portal this Hub serves no apps; it releases every app it listed for organization ${orgInfo.id}`);
+    return 'released';
+  }
+
   public async triggerCloudflareSync(options?: ExposureSyncOptions) {
     this.cloudflareSyncDepth += 1;
     try {
+      if (this.factoryResetHolds > 0) {
+        this.logger.debug('[Cloudflare] Skipping sync while a factory reset runs');
+        return;
+      }
+
       /*
        * ⚠ THE FIRST SYNC AFTER A PAIRING CAN RELEASE EVERY APP ON THE DEVICE. Companion Portal releases
        * each app on the device that a sync leaves out, and a Hub reinstalled and paired back onto its
@@ -824,17 +1067,22 @@ export class ExposureSyncService implements OnModuleDestroy {
       const orgInfo = await this.registrationService.getDeviceRegistrationInfo();
 
       if (!orgInfo) {
+        // No organization, no plan: a refusal from the one this Hub left no longer stands.
+        this.currentStandingRefusals = new Map();
         this.logger.debug('[Cloudflare] Skipping sync: Organization not registered');
         return;
       }
 
       if (!orgInfo.tunnelId) {
+        this.currentStandingRefusals = new Map();
         this.logger.warn(
           `[Cloudflare] Skipping sync: Organization ${orgInfo.id} exists but has no tunnelId. Please complete device registration to provision tunnel.`,
         );
         return;
       }
 
+      // Every binding written before these rows are read is in the report built from them.
+      const generationInReport = this.customDomainBindingGeneration;
       const apps = await this.appRepository.getApps();
       const cfg = this.config.getConfig();
       const defaultPublicDomain = resolveHubPublicDomainRoot(cfg);
@@ -849,8 +1097,7 @@ export class ExposureSyncService implements OnModuleDestroy {
           return false;
         }
         return (
-          publishesCloudflarePublicRoute(publicRoutingSnapshotOf(app as AppPublicRoutingSnapshot)) &&
-          ['running', 'starting', 'restarting'].includes(app.status)
+          publishesCloudflarePublicRoute(publicRoutingSnapshotOf(app as AppPublicRoutingSnapshot)) && CLOUDFLARE_PUBLISHED_STATUSES.has(app.status)
         );
       });
 
@@ -860,16 +1107,40 @@ export class ExposureSyncService implements OnModuleDestroy {
        * Do not key this set by `appName`. The `app` table is unique on
        * `(app_name, app_store_slug)`, so two stores can ship an app named
        * `comfyui`, while the sync entries below carry only the name. A name-keyed
-       * set would let a running app represent a stopped app from another store.
-       * Custom-domain reconciliation would then treat the stopped app as queried
-       * but absent from the response and incorrectly remove its binding.
+       * set would let a running app represent an app from another store that this
+       * payload leaves out (a failed install, say). Custom-domain reconciliation
+       * would then treat the left-out app as queried but absent from the response
+       * and incorrectly remove its binding.
        */
       const syncedAppUrns = new Set(syncedDbApps.map((app: AppFromDb) => createAppUrn(app.appName, app.appStoreSlug)));
+
+      /*
+       * Whether a row is a port made with "Expose a port". Its stored form says so, but a save through the
+       * generic config route rewrites the form without `kind`, so a `_user` app's config.json is asked too,
+       * as the uninstall path does.
+       */
+      let appFilesManager: AppFilesManager | null | undefined;
+      const installedInfoOf = async (app: AppFromDb) => {
+        if (appFilesManager === undefined) {
+          try {
+            appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false }) ?? null;
+          } catch {
+            // `ModuleRef.get` throws for a provider it cannot resolve. Not knowing must not fail the sync.
+            appFilesManager = null;
+          }
+        }
+        return appFilesManager?.getInstalledAppInfo(createAppUrn(app.appName, app.appStoreSlug)).catch(() => null);
+      };
+      const isExposedPort = async (app: AppFromDb): Promise<boolean> =>
+        isPortExposeApp(app.config) || (app.appStoreSlug === '_user' && isPortExposeApp(await installedInfoOf(app)));
 
       const exposedApps: AppInfo[] = await Promise.all(
         syncedDbApps.map(async (app: AppFromDb) => {
           const subdomain = app.localSubdomain || `${app.appName}-${app.appStoreSlug}`;
+          // An exposed port says so, with the port it forwards to, so a reinstalled Hub can put it back (#2131).
+          const exposedPort = app.port && (await isExposedPort(app)) ? { kind: PORT_EXPOSE_KIND, upstreamPort: app.port } : {};
           return {
+            ...exposedPort,
             name: app.appName,
             subdomain,
             publicDomain: app.publicDomain || defaultPublicDomain,
@@ -886,29 +1157,9 @@ export class ExposureSyncService implements OnModuleDestroy {
         }),
       );
 
-      // Include the Hub in every sync so Companion Portal preserves its tunnel
-      // route. `device_registration.hubSubdomain` is the canonical route identity.
-      // `DOMAIN` and `userSettings.domain` provide the app-hostname root, not the
-      // Hub prefix. Omit the Hub entry when older records have no `hubSubdomain`.
-      const hubSub = orgInfo.hubSubdomain;
-      if (hubSub && defaultPublicDomain) {
-        const orgSlug = orgInfo.slug;
-        const orgSuffix = `-${orgSlug}`;
-        const deviceName = hubSub.endsWith(orgSuffix) ? hubSub.slice(0, -orgSuffix.length) : hubSub;
-        const hubHostname = `${hubSub}.${defaultPublicDomain}`;
-
-        const hubListenPort = Number.parseInt(process.env.API_PORT || '5002', 10) || 5002;
-        exposedApps.unshift({
-          name: 'OS Hub',
-          subdomain: deviceName,
-          publicDomain: defaultPublicDomain,
-          localPort: 80,
-          protocol: 'http' as const,
-          hostname: 'traefik',
-          originServerName: hubHostname,
-          privilegedKind: 'hub',
-          hubListenPort,
-        });
+      const hubEntry = hubSyncEntry(orgInfo, defaultPublicDomain);
+      if (hubEntry) {
+        exposedApps.unshift(hubEntry);
       }
 
       // Derive each public record name from its database row in one place so the
@@ -924,20 +1175,30 @@ export class ExposureSyncService implements OnModuleDestroy {
 
       /*
        * Built from EVERY app row, not from `syncedDbApps`: the publish payload
-       * leaves stopped apps out on purpose, and a stopped app is exactly the one
-       * Portal must not offer to restart. See `CustomDomainApplyReport`.
+       * leaves some apps out (one being uninstalled, a failed install) but the
+       * report still covers them. It also says a stopped app is not running,
+       * since that is the one Portal must not offer to restart. See
+       * `CustomDomainApplyReport`.
        */
       const customDomainApps = await this.buildCustomDomainApplyReport(apps, toPublicHostname);
 
       const result = await this.cloudflareClientService.syncState(orgInfo.id, exposedApps, orgInfo.tunnelId || undefined, customDomainApps);
       this.settleCloudflareRetry(result.ok, options);
+      if (result.ok && customDomainApps !== undefined) {
+        this.reportedCustomDomainGeneration = Math.max(this.reportedCustomDomainGeneration, generationInReport);
+      }
+      if (result.ok) {
+        this.refreshPortExposeRegistryOnce();
+      }
 
       const appEntries = exposedApps.filter((entry) => entry.privilegedKind !== 'hub');
 
       // The partial-failure branch maps app names to database rows, exposed entries,
       // and failure reasons. Index once to avoid a full scan for every failure on
       // Hubs that run many apps.
-      const dbAppByName = indexByFirst(apps, (candidate: AppFromDb) => candidate.appName);
+      // The synced rows come first: a failed name is one this payload sent, and another store's app of
+      // the same name (a failed install, say) must not take its refusal.
+      const dbAppByName = indexByFirst([...syncedDbApps, ...apps], (candidate: AppFromDb) => candidate.appName);
 
       const toToastTarget = (dbApp: AppFromDb): PublicDnsToastTarget => ({
         appUrn: createAppUrn(dbApp.appName, dbApp.appStoreSlug),
@@ -970,6 +1231,8 @@ export class ExposureSyncService implements OnModuleDestroy {
             cause ? ` Cause: ${cause}.` : ''
           }`,
           appEntries.map((entry) => entry.name),
+          [],
+          { transient: result.transient === true },
         );
       } else if (refusedNames.length > 0) {
         // Map Companion Portal's failed app names to URNs and hostnames so the
@@ -1015,6 +1278,12 @@ export class ExposureSyncService implements OnModuleDestroy {
         // fault, so a sync refused only for those reports nothing to Sentry. Any
         // other failure in the same sync, including one with no reason, still does.
         const onlyUserActionRefusals = refusedNames.every((name) => isUserActionRefusal(failureByApp.get(name)?.reason));
+        // Every refusal passes on its own (the sync already retried it): a warning, on the hourly interval.
+        // An app whose failure carries no reason (an older Portal) is not known to be transient, so it stays an error.
+        const onlyTransientRefusals = refusedNames.every((name) => {
+          const failure = failureByApp.get(name);
+          return failure !== undefined && isTransientAppFailure(failure);
+        });
 
         this.surfacePublicDnsFailure(
           `[Cloudflare] Public DNS records were NOT created for ${refusedNames.length} app(s): ${failedLabels.join(', ')}. ` +
@@ -1023,7 +1292,7 @@ export class ExposureSyncService implements OnModuleDestroy {
             )}`,
           refusedNames,
           toastTargets,
-          { reportError: !onlyUserActionRefusals },
+          { reportError: !onlyUserActionRefusals, transient: onlyTransientRefusals },
         );
       } else if (appEntries.length > 0) {
         // Log success only after the request and every per-app operation complete.
@@ -1063,6 +1332,7 @@ export class ExposureSyncService implements OnModuleDestroy {
       if (result.ok) {
         // Only a sync the Portal answered says which apps it stopped refusing.
         this.forgetSettledRefusals(standingRefusals);
+        this.currentStandingRefusals = standingRefusals;
 
         const skipAutoRestartAppUrns = new Set(options?.skipAutoRestartAppUrns ?? []);
 
@@ -1080,6 +1350,7 @@ export class ExposureSyncService implements OnModuleDestroy {
         }
 
         let deferredRevertAppUrns: AppUrn[] = [];
+        const generationBeforeReconcile = this.customDomainBindingGeneration;
         try {
           deferredRevertAppUrns = await this.reconcileCustomDomains({
             // Re-read only when a row moved, so the join sees the served hostname.
@@ -1092,6 +1363,11 @@ export class ExposureSyncService implements OnModuleDestroy {
           });
         } catch (error) {
           this.logger.error(`[Cloudflare] Custom-domain reconcile failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+
+        // The report this pass sent was built before these writes, so the Portal has not heard of them.
+        if (this.customDomainBindingGeneration !== generationBeforeReconcile && !options?.customDomainReportFollowUp) {
+          this.scheduleCustomDomainReport(options?.skipAutoRestartAppUrns);
         }
 
         /*
@@ -1940,8 +2216,9 @@ export class ExposureSyncService implements OnModuleDestroy {
    *
    * One sync late for a domain bound DURING this pass: the report is built before
    * the request, and the binding is written by `reconcileCustomDomains` after the
-   * response. The next sync reports it. Portal reads the gap as "waiting for your
-   * Hub" rather than guessing.
+   * response. So a pass that writes a binding books one more pass a couple of
+   * seconds later (`scheduleCustomDomainReport`), and that one reports it. Portal
+   * reads the gap as "waiting for your Hub" rather than guessing.
    */
   private async buildCustomDomainApplyReport(
     apps: Awaited<ReturnType<AppsRepository['getApps']>>,
@@ -2057,10 +2334,11 @@ export class ExposureSyncService implements OnModuleDestroy {
      * publicly routed loses its binding because of its own settings, whatever
      * CI-Cloud says, and still does so on the first pass.
      *
-     * ⚠ AND ONLY THE APPS THIS ANSWER IS ABOUT COUNT. A stopped app is left out
-     * of the payload, so CI-Cloud rightly delivers nothing for it. Counting it
-     * would start the minute on every poll while it is stopped, and the first
-     * bad answer after it starts again would read as already confirmed.
+     * ⚠ AND ONLY THE APPS THIS ANSWER IS ABOUT COUNT. An app this payload leaves
+     * out (a failed install or one excluded for a release pass) gets nothing
+     * delivered, rightly. Counting it would start the minute on every poll while
+     * it is left out. The first bad answer after it is back would then read as
+     * already confirmed.
      */
     const holdsDomains = params.apps.some(
       (candidate) =>
@@ -2144,11 +2422,11 @@ export class ExposureSyncService implements OnModuleDestroy {
       /*
        * Attribute the delivered target before deciding whether to apply it. The
        * unmatched warning below means Companion Portal wired a hostname that no
-       * app on this Hub answers. A stopped app, an app excluded from this pass, or
-       * an app using an open host port still has a matching identity even though
-       * it declines the binding. Recording matches only in the binding branch
-       * would warn on every release pass and for every stopped app despite valid
-       * settings.
+       * app on this Hub answers. An app this payload leaves out (excluded from
+       * this pass or a failed install) or an app using an open host port still
+       * has a matching identity even though it declines the binding. Recording
+       * matches only in the binding branch would warn on every release pass and
+       * for every left-out app despite valid settings.
        *
        * Lowercase both sides because DNS is case-insensitive. The Hub composes
        * hostnames from organization slugs stored verbatim, and a rename can leave
@@ -2222,15 +2500,16 @@ export class ExposureSyncService implements OnModuleDestroy {
         cloudDrivenChange = true;
       } else {
         /*
-         * The app is published but absent from this payload because it is stopped
-         * or deliberately excluded during a release pass. Companion Portal
-         * reports a domain as delivered only after producing an ingress rule, and
-         * it cannot produce one for an omitted app. Absence therefore means "not
-         * queried," not "unbound."
+         * The app is published but absent from this payload: it is still being
+         * installed, its install failed or it is deliberately excluded during a
+         * release pass. Companion Portal reports a domain as delivered only after
+         * producing an ingress rule. It cannot produce one for an omitted app.
+         * Absence therefore means "not queried," not "unbound."
          *
-         * Clearing here would cause a flap: stopping would remove the binding,
-         * starting would generate an environment without the custom hostname, and
-         * the following sync would restore the binding and require another restart.
+         * Clearing here would cause a flap. The release pass would remove the
+         * binding and the restart after it would generate an environment without
+         * the custom hostname. The following sync would then restore the binding
+         * and require another restart.
          */
         continue;
       }
@@ -2320,6 +2599,7 @@ export class ExposureSyncService implements OnModuleDestroy {
         this.logger.debug(`[Cloudflare] Deferred custom-domain write for ${appUrn}: a lifecycle command claimed it during this sync`);
         continue;
       }
+      this.customDomainBindingGeneration += 1;
 
       /*
        * R2-HUBREGISTRATION-2: this write is what moves an app's public identity —

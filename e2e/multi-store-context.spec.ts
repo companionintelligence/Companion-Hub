@@ -12,7 +12,7 @@ test.describe('Multi-Store Context', () => {
     await page.goto('/store?store=ci-apps');
     await expect(page.getByRole('heading', { name: 'App Store' })).toBeVisible({ timeout: 30000 });
     await expect(page).toHaveURL(/\/store\?store=ci-apps/, { timeout: 30000 });
-    await expect(page.getByPlaceholder('Search apps...').first()).toBeVisible({ timeout: 30000 });
+    await expect(page.getByPlaceholder('Search apps').first()).toBeVisible({ timeout: 30000 });
   });
 
   test('redirects store-specific path routing into explicit query-param context', async ({ page }) => {

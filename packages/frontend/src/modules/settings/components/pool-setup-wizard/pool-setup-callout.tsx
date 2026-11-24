@@ -17,7 +17,7 @@ export function PoolSetupCallout({ onOpen, disabled = false }: { onOpen: () => v
       className="flex flex-col gap-3 rounded-md border border-primary/30 bg-primary/10 px-3 py-3 sm:flex-row sm:items-center sm:justify-between"
     >
       <div className="min-w-0 space-y-1">
-        <h3 id={headingId} className="text-sm font-semibold">
+        <h3 id={headingId} className="text-sm font-medium">
           {t('HUB_POOL_SETUP_CALLOUT_TITLE')}
         </h3>
         <p className="text-xs text-muted-foreground">{t('HUB_POOL_SETUP_CALLOUT_BODY')}</p>

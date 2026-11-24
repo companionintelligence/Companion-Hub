@@ -16,7 +16,7 @@ export const TotpForm = (props: Props) => {
 
   return (
     <>
-      <h2 className="text-xl font-semibold text-center mb-4">{t('COMMON_TWO_FACTOR_AUTHENTICATION')}</h2>
+      <h2 className="text-xl font-medium text-center mb-4">{t('COMMON_TWO_FACTOR_AUTHENTICATION')}</h2>
       <form
         onSubmit={(e) => {
           e.preventDefault();

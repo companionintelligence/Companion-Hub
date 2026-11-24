@@ -96,7 +96,14 @@ test.describe('app backend regression', () => {
         result.httpStatus = status;
 
         // 4) Backend-in-container health: served, and NOT a gateway/error page
-        const body = (await appPage.evaluate(() => document.body?.innerText ?? '').catch(() => '')).slice(0, 2000);
+        const body = (
+          await appPage
+            .evaluate(() => {
+              // biome-ignore lint/performance/useDomNodeTextContent: inspect the rendered response users see.
+              return document.body?.innerText ?? '';
+            })
+            .catch(() => '')
+        ).slice(0, 2000);
         const gatewayError = GATEWAY_ERRORS.some((re) => re.test(body));
         result.backendServing = status > 0 && status < 500 && !gatewayError;
         expect(status, `app did not serve (HTTP ${status})`).toBeGreaterThan(0);

@@ -74,7 +74,21 @@ export interface StatusSystem {
   disk: { totalBytes: number; usedBytes: number; freeBytes: number; percent: number } | null;
   dockerVersion: string | null;
   containerCount: { running: number; stopped: number; total: number } | null;
-  gpu: { vendor: string | null; model: string | null; vramMb: number | null; driverWorking: boolean } | null;
+  gpu: {
+    vendor: string | null;
+    model: string | null;
+    vramMb: number | null;
+    /**
+     * Something on the node drives the card: the Hub container's own runtime, or the host's driver.
+     * `null` when nothing checks this card's driver (Intel), so the report says nothing about it.
+     */
+    driverWorking: boolean | null;
+    /**
+     * The Hub container itself can reach the card. False on every Linux AMD box, where the Hub
+     * runs without device passthrough while the host's engine uses the GPU — not a fault.
+     */
+    visibleToHubContainer: boolean;
+  } | null;
   hardwareTier: string | null;
 }
 

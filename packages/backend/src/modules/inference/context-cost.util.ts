@@ -3,6 +3,8 @@ import { clampOllamaSlots } from '@/common/helpers/inference-ollama-slots';
 import type { InferenceBackend } from './backends/backend.interface';
 import type { FootprintSighting } from './context-length.util';
 import type { ContextCost } from './model-geometry.util';
+import { KV_CACHE_SCALE, type KvCacheChoice } from './backends/lemonade-kv-cache.util';
+import { GGUF_KV_GEOMETRY } from './catalog/kv-geometry.generated';
 
 /**
  * What a token of context costs `model` on `backend`, from the best source there is: the engine's
@@ -18,19 +20,99 @@ import type { ContextCost } from './model-geometry.util';
  * its weights, encoders and runtime hold 4,046-4,357 MiB, so the file would put back the refusal the
  * measurement fixed.
  *
+ * Both sources are 16-bit figures. `kvCacheType` asks for the cost with a given cache: `f16` is the base
+ * the load planner decides from, `q8_0` scales it by 34/64. Absent, the cost is the cache the engine
+ * has set for the model now (`InferenceBackend.kvCacheScale`), which is what app handouts must size: a
+ * Lemonade model the planner saved with q8_0 holds 65536 tokens of Qwen 3.8 27B on a 24 GiB card where
+ * 16-bit holds 32768, and Hermes is told so.
+ *
  * Only meaningful for a model this node serves; a peer's engine cannot be asked from here.
  * Never throws: a probe that fails costs only the measurement.
  */
-export async function probeContextCost(backend: InferenceBackend, model: CuratedModel): Promise<ContextCost | null> {
+export async function probeContextCost(backend: InferenceBackend, model: CuratedModel, kvCacheType?: KvCacheChoice): Promise<ContextCost | null> {
   const cost = await probeEngineAndCatalog(backend, model);
-  return cost && model.runtime.footprintMeasured ? { ...cost, weightMb: null } : cost;
+  if (!cost) return null;
+  const scale = kvCacheType === undefined ? kvCacheScaleOf(backend, model) : kvCacheType === 'f16' ? 1 : KV_CACHE_SCALE[kvCacheType];
+  const scaled = scaleCacheCost(cost, scale);
+  return model.runtime.footprintMeasured ? { ...scaled, weightMb: null } : scaled;
+}
+
+/**
+ * `cost` with its cache at `scale` of the 16-bit size: the per-token cache and the fixed sliding-window
+ * cache shrink, the non-cache share of the per-token cost (`extraMbPerToken`, Ollama's buffers) does not.
+ */
+export function scaleCacheCost(cost: ContextCost, scale: number): ContextCost {
+  if (!(scale < 1)) return cost;
+  const extra = cost.extraMbPerToken ?? 0;
+  return {
+    ...cost,
+    kvMbPerToken: (cost.kvMbPerToken - extra) * scale + extra,
+    ...(cost.fixedKvMb !== undefined && { fixedKvMb: cost.fixedKvMb * scale }),
+  };
+}
+
+/** The engine's {@link InferenceBackend.kvCacheScale} for `model`, kept to (0, 1]; 1 when it says nothing usable. */
+function kvCacheScaleOf(backend: InferenceBackend, model: CuratedModel): number {
+  let scale: number | undefined;
+  try {
+    scale = backend.kvCacheScale?.(model);
+  } catch {
+    return 1;
+  }
+  return typeof scale === 'number' && Number.isFinite(scale) && scale > 0 && scale < 1 ? scale : 1;
+}
+
+/**
+ * What Ollama holds per token of context beyond the cache: buffers that grow with the window. Measured
+ * 2026-11-10 on a 7900 XTX (Ollama 0.34.1, ROCm, flash attention on, one slot), card VRAM from 4096 to
+ * 65536 tokens against the cache from each file's header, MB a token: qwen3.8:27b 0.0674 vs 0.0664,
+ * gpt-oss:20b 0.0271 vs 0.0234, gemma4:e4b 0.0196 vs 0.0156, gemma3:1b 0.0081 vs 0.0039, llama3.2:3b
+ * 0.1167 vs 0.1094, qwen3.5:9b 0.0396 vs 0.0313, gemma3:4b 0.0303 vs 0.0195, qwen3:8b 0.1527 vs 0.1406.
+ * The excess is not a multiple of the cache but about constant, 0.001-0.012; this covers all eight.
+ */
+export const OLLAMA_EXTRA_MB_PER_TOKEN = 0.0125;
+
+/** Tokens llama.cpp keeps in a sliding-window layer's cache beyond the window: one batch (`n_ubatch`, 512 by default). */
+const SLIDING_CACHE_BATCH_TOKENS = 512;
+
+/**
+ * The cache computed from the model file's header (`catalog/kv-geometry.generated.ts`), for a Lemonade
+ * or Ollama model with no measured `kvMbPerToken` (Ollama adds {@link OLLAMA_EXTRA_MB_PER_TOKEN}). Exact for the cache llama.cpp allocates — Qwen 3.8 27B: 0.0664 computed,
+ * 0.0667 measured — where the context ladder's fallback charged every model 0.25 MB a token, so Qwen 3.5
+ * 27B (16 of 64 layers cached, 0.0625) was offered 8k on a card that holds it at 32k.
+ */
+export function ggufContextCost(model: Pick<CuratedModel, 'id'>): Pick<ContextCost, 'kvMbPerToken' | 'fixedKvMb' | 'architecture'> | null {
+  const geometry = GGUF_KV_GEOMETRY[model.id];
+  if (!geometry || !(geometry.kvBytesPerToken > 0)) return null;
+  const MIB = 1024 ** 2;
+  const sliding = (geometry.slidingKvBytesPerToken ?? 0) * ((geometry.slidingWindow ?? 0) + SLIDING_CACHE_BATCH_TOKENS);
+  return {
+    kvMbPerToken: geometry.kvBytesPerToken / MIB,
+    ...(sliding > 0 && geometry.slidingWindow ? { fixedKvMb: sliding / MIB } : {}),
+    architecture: geometry.architecture,
+  };
 }
 
 async function probeEngineAndCatalog(backend: InferenceBackend, model: CuratedModel): Promise<ContextCost | null> {
   const measured = await Promise.resolve(backend.contextCostForModel?.(model.backendModelId) ?? null).catch(() => null);
   const catalogKv = model.runtime.kvMbPerToken;
   if (typeof catalogKv !== 'number' || !Number.isFinite(catalogKv) || catalogKv <= 0) {
-    return measured;
+    const header = model.backend === 'lemonade' || model.backend === 'ollama' ? ggufContextCost(model) : null;
+    if (!header) return measured;
+    const gguf =
+      model.backend === 'ollama'
+        ? { ...header, kvMbPerToken: header.kvMbPerToken + OLLAMA_EXTRA_MB_PER_TOKEN, extraMbPerToken: OLLAMA_EXTRA_MB_PER_TOKEN }
+        : header;
+    if (measured) {
+      // A cost calibrated from what the engine was seen holding wins when smaller: it is this model on this
+      // engine. Ollama's own geometry does not: it is the same cache arithmetic with less to go on — it
+      // loses a per-layer head count (gemma4), counts sliding layers at the full window, and has no
+      // allowance for the buffers that grow beside the cache. Lemonade reports no geometry.
+      const engineWins = measured.source === 'calibrated' || model.backend !== 'ollama';
+      if (engineWins && measured.kvMbPerToken <= gguf.kvMbPerToken) return measured;
+    }
+    const weightMb = measured ? measured.weightMb : await Promise.resolve(backend.weightsOnDiskMb?.(model.backendModelId) ?? null).catch(() => null);
+    return { ...gguf, weightMb, source: 'gguf' };
   }
   if (measured) {
     return catalogKv < measured.kvMbPerToken ? { ...measured, kvMbPerToken: catalogKv, source: 'catalog' } : measured;
@@ -91,13 +173,21 @@ export function kvSequencesFor(backendType: InferenceBackendType, cost: ContextC
   if (slots === null || slots <= 1) return 1;
   if (cost?.source === 'calibrated') return 1;
   if (cost?.architecture && OLLAMA_SINGLE_SLOT_ARCHITECTURES.has(cost.architecture)) return 1;
-  if (cost?.source === 'geometry' && cost.architecture && GEOMETRY_COVERS_EVERY_SLOT_ARCHITECTURES.has(cost.architecture)) return 1;
+  if (
+    (cost?.source === 'geometry' || cost?.source === 'gguf') &&
+    cost.architecture &&
+    GEOMETRY_COVERS_EVERY_SLOT_ARCHITECTURES.has(cost.architecture)
+  ) {
+    return 1;
+  }
   return slots;
 }
 
 /** What the handouts read to size a model this node serves; see {@link probeLocalSizing}. */
 export interface LocalContextSizing {
   kvMbPerToken: number | null;
+  /** `ContextCost.fixedKvMb`: sliding-window cache that does not grow with the window. */
+  fixedKvMb: number | null;
   weightMb: number | null;
   kvSlots: number;
   sighting: FootprintSighting | null;
@@ -132,6 +222,7 @@ export async function probeLocalSizing(input: {
   const statedSlots = backend.engineCapabilities?.()?.slots ?? (backendType === 'ollama' ? input.statedOllamaSlots : null);
   return {
     kvMbPerToken: cost?.kvMbPerToken ?? null,
+    fixedKvMb: cost?.fixedKvMb ?? null,
     weightMb: cost?.weightMb ?? null,
     kvSlots: kvSequencesFor(backendType, cost, statedSlots),
     sighting: sighting ?? null,

@@ -26,7 +26,6 @@ export function usePortalCatalog(listingsParams: PortalStoreListingsParams = {},
     isLoading:
       (enableConfig && configQuery.isLoading) || (enableListings && listingsQuery.isLoading) || (enableAlternatives && alternativesQuery.isLoading),
     isError: (enableConfig && configQuery.isError) || (enableListings && listingsQuery.isError) || (enableAlternatives && alternativesQuery.isError),
-    alternativesError: enableAlternatives ? alternativesQuery.error : undefined,
     listingsError: enableListings ? listingsQuery.error : undefined,
     refetchListings: listingsQuery.refetch,
     refetchAlternatives: alternativesQuery.refetch,

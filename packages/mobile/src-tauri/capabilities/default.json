@@ -1,35 +1,10 @@
 {
   "$schema": "../gen/schemas/mobile-schema.json",
   "identifier": "default",
-  "description": "Default capabilities for the Companion Hub mobile app. remote.urls is required in ios:dev because the webview is http://localhost:5005 (not tauri://); without it event.listen / opener / invoke are denied and Sign in spins forever.",
+  "description": "Default capabilities for the Companion Hub mobile app. The app's own pages are bundled (tauri:// on iOS, http://tauri.localhost on Android) and hold every permission below without any remote.urls entry. remote.urls names the one remote origin that may use them, the local dev server: in ios:dev the webview is http://localhost:5005 (not tauri://), and without it event.listen / opener / invoke are denied and Sign in spins forever. It deliberately names no Hub zone. remote.urls decides which REMOTE pages may call native commands; it has no part in the app reaching a Hub, which goes through http:default and the CSP connect-src (mobile-store-readiness.test.ts checks both). Naming the Hub zones gave the session store, native HTTP and the opener to any page on them that loaded in this window, and installed apps are published on those same zones. src/webview_navigation.rs keeps remote pages out of the window as well. Keep this list to one pattern: Tauri compiles every pattern into regexes at each launch, for every allowed command.",
   "windows": ["main"],
   "remote": {
-    "urls": [
-      "http://localhost:*",
-      "http://127.0.0.1:*",
-      "http://lvh.me:*",
-      "https://*.ci.computer",
-      "https://ci.computer",
-      "https://*.companionintelligence.com",
-      "https://companionintelligence.com",
-      "https://*.ci0.pw",
-      "https://*.ci1.pw",
-      "https://*.ci2.pw",
-      "https://*.ci3.pw",
-      "https://*.ci4.pw",
-      "https://*.ci5.pw",
-      "https://*.ci6.pw",
-      "https://*.ci8.pw",
-      "https://*.ci9.pw",
-      "https://*.companionintel.com",
-      "https://*.chimera.engineer",
-      "https://*.chimeracompute.com",
-      "https://*.chimeracomputer.com",
-      "https://*.companionintelligence.io",
-      "https://*.companionintelligence.org",
-      "https://*.lifescope.io",
-      "https://*.mysticalengine.com"
-    ]
+    "urls": ["http://(localhost|127\\.0\\.0\\.1|lvh\\.me):*"]
   },
   "permissions": [
     "core:default",

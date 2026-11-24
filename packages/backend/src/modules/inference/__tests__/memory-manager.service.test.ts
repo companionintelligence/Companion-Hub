@@ -1,7 +1,8 @@
 import { Test, type TestingModule } from '@nestjs/testing';
-import { MemoryManagerService, modelMemoryCeilingMb } from '../memory-manager.service';
+import { handoutCeilingMb, MemoryManagerService, modelMemoryCeilingMb } from '../memory-manager.service';
 import { readFootprintSightings } from '../footprint-sighting-record';
 import { CURATED_MODELS } from '../catalog/curated-models';
+import { handoutContextLength } from '../app-model-handout';
 import { ModelRegistryService } from '../model-registry.service';
 import { ModelResidencyService } from '../model-residency.service';
 import { GpuProcessSamplerService } from '../gpu-process-sampler.service';
@@ -634,6 +635,151 @@ describe('MemoryManagerService', () => {
       expect((await service.canFitModel(unified(live(61440)), 30000)).fits).toBe(false);
     });
 
+    it("never budgets an APU past what its GPU addresses (the driver's VRAM plus GTT), however much RAM is free", async () => {
+      // A Ryzen AI Max+ 395: 125780 MB of RAM with 115712 free. amdgpu gives the GPU 512 MiB + 107.5 GiB = 110592 MB.
+      const strixHalo: HardwareProfile = {
+        ...unified(live(115_712)),
+        gpu: { ...unified(live(115_712)).gpu, vramMb: 110_592 },
+        ram: { totalMb: 125_780, availableMb: 115_712, usedMb: 10_068, sampledAt: '2026-10-20T12:00:00.000Z' },
+      };
+
+      const budget = await service.calculateBudget(strixHalo);
+
+      expect(budget.modelBudgetRamMb).toBe(110_592);
+      expect(modelMemoryCeilingMb(strixHalo)).toBe(110_592);
+      expect((await service.canFitModel(strixHalo, 112_000)).fits).toBe(false);
+      expect((await service.canFitModel(strixHalo, 100_000)).fits).toBe(true);
+    });
+
+    describe("a model's own ceiling (modelCeilingMb)", () => {
+      // core-7, a Ryzen AI Max+ 395: MiniMax M2 230B resident, its runner holding 56 GB of the 125 GB.
+      const coreSeven = (availableMb: number): HardwareProfile => ({
+        ...unified(live(availableMb)),
+        gpu: { ...unified(live(availableMb)).gpu, vramMb: 110_570 },
+        ram: { totalMb: 125_780, availableMb, usedMb: 125_780 - availableMb, sampledAt: '2026-10-26T08:24:22.811Z' },
+      });
+      const minimax = 'gabegoodhart/minimax-m2:230b';
+      const minimaxResident = () =>
+        reportResidency([
+          { backend: 'ollama', source: 'measured', models: [resident(minimax, { totalBytes: 56_000 * MiB })] },
+          ...nothingResident().filter((entry) => entry.backend !== 'ollama'),
+        ]);
+
+      it('adds back what the model itself holds, so a resident model is not sized against itself', async () => {
+        minimaxResident();
+        const profile = coreSeven(50_000);
+
+        // The node's ceiling counts the 56 GB the model holds as gone: 50000 - 2048.
+        expect(modelMemoryCeilingMb(profile)).toBe(47_952);
+        expect(await service.modelCeilingMb(profile, 'ollama', minimax)).toBe(50_000 + 56_000 - 2048);
+      });
+
+      it('gives a resident MiniMax M2 230B the window it was handed before it loaded, not 4096', async () => {
+        // Measured on core-7: 0.2421875 MB a token from /api/show, 53,759 MB of weights, two Ollama slots.
+        const model = CURATED_MODELS.find((candidate) => candidate.id === 'minimax-m2-community-230b');
+        if (!model) throw new Error('catalog lost MiniMax M2 230B');
+        const handout = (ceilingMb: number) =>
+          handoutContextLength({
+            model,
+            servedLocally: true,
+            effectiveInferenceMemoryMb: ceilingMb,
+            kvMbPerToken: 0.2421875,
+            weightMb: 53_759,
+            kvSlots: 2,
+          });
+
+        // Not loaded: 92428 MB free. 65536 since its footprint is its registry files plus the runner (32768 on
+        // the TOON's download size plus 10 %).
+        const unloaded = handout(await service.modelCeilingMb(coreSeven(92_428), 'ollama', minimax));
+        expect(unloaded).toBe(65_536);
+
+        // Loaded: the same host with its 56 GB out of MemAvailable.
+        minimaxResident();
+        service.invalidateObservation();
+        const loaded = coreSeven(92_428 - 56_000);
+        expect(handout(modelMemoryCeilingMb(loaded))).toBe(4_096);
+        expect(handout(await service.modelCeilingMb(loaded, 'ollama', minimax))).toBe(unloaded);
+      });
+
+      it("never goes past what the APU's GPU addresses", async () => {
+        minimaxResident();
+
+        expect(await service.modelCeilingMb(coreSeven(80_000), 'ollama', minimax)).toBe(110_570);
+      });
+
+      it('is the node ceiling for a model that is not resident, or one resident on another engine', async () => {
+        minimaxResident();
+        const profile = coreSeven(50_000);
+
+        expect(await service.modelCeilingMb(profile, 'ollama', 'qwen3.6:35b')).toBe(47_952);
+        expect(await service.modelCeilingMb(profile, 'lemonade', minimax)).toBe(47_952);
+      });
+
+      it('is the node ceiling on a discrete card, which never counted what is loaded', async () => {
+        reportResidency([
+          {
+            backend: 'ollama',
+            source: 'measured',
+            models: [resident('qwen3-coder:30b', { engineGpuBytes: 18_000 * MiB, totalBytes: 18_000 * MiB })],
+          },
+          ...nothingResident().filter((entry) => entry.backend !== 'ollama'),
+        ]);
+        const profile = makeProfile({ ram: { totalMb: 65536, availableMb: 4096, usedMb: 61440, sampledAt: '2026-09-20T12:00:00.000Z' } });
+
+        expect(await service.modelCeilingMb(profile, 'ollama', 'qwen3-coder:30b')).toBe(modelMemoryCeilingMb(profile));
+      });
+
+      it('is the node ceiling on a card whose memory is unknown: what the model holds there is VRAM, not MemAvailable', async () => {
+        reportResidency([
+          { backend: 'ollama', source: 'measured', models: [resident('gemma4:e4b', { totalBytes: 7_000 * MiB })] },
+          ...nothingResident().filter((entry) => entry.backend !== 'ollama'),
+        ]);
+        const profile = makeProfile({
+          gpu: { available: true, vendor: 'nvidia', model: 'RTX 3060', vramMb: 0, unifiedMemory: false, driverVersion: '', runtimeAvailable: true },
+          ram: { totalMb: 32_768, availableMb: 20_000, usedMb: 12_768, sampledAt: '2026-10-26T08:00:00.000Z' },
+        });
+
+        expect(await service.modelCeilingMb(profile, 'ollama', 'gemma4:e4b')).toBe(20_000 - 2048);
+      });
+
+      it('never goes past the RAM a CPU host has, however much MemAvailable still counts of the model', async () => {
+        // 100 GB resident on a 128 GB host with 60 GB available: part of the model is reclaimable page cache.
+        reportResidency([
+          { backend: 'ollama', source: 'measured', models: [resident('qwen3.6:35b', { totalBytes: 100_000 * MiB })] },
+          ...nothingResident().filter((entry) => entry.backend !== 'ollama'),
+        ]);
+        const cpuOnly = makeProfile({
+          gpu: { available: false, vendor: 'none', model: '', vramMb: 0, unifiedMemory: false, driverVersion: '', runtimeAvailable: false },
+          ram: { totalMb: 131_072, availableMb: 61_440, usedMb: 69_632, sampledAt: '2026-10-26T08:00:00.000Z' },
+        });
+
+        expect(await service.modelCeilingMb(cpuOnly, 'ollama', 'qwen3.6:35b')).toBe(131_072 - 2048);
+      });
+
+      it('handoutCeilingMb falls back to the node ceiling when no manager answers', async () => {
+        const profile = coreSeven(50_000);
+
+        expect(await handoutCeilingMb(undefined, profile, { backend: 'ollama', backendModelId: minimax })).toBe(47_952);
+        expect(
+          await handoutCeilingMb({ modelCeilingMb: async () => undefined as unknown as number }, profile, {
+            backend: 'ollama',
+            backendModelId: minimax,
+          }),
+        ).toBe(47_952);
+        expect(
+          await handoutCeilingMb(
+            {
+              modelCeilingMb: () => {
+                throw new Error('boom');
+              },
+            },
+            profile,
+            { backend: 'ollama', backendModelId: minimax },
+          ),
+        ).toBe(47_952);
+      });
+    });
+
     it('does not cap on a host-probe snapshot (no sampledAt): macOS/Windows keep the budget arithmetic', async () => {
       // The desktop probe's vm_stat free+inactive at app start on a busy Mac; it never refreshes,
       // and macOS would hand the memory over on demand. Capping on it would refuse loads that
@@ -675,6 +821,60 @@ describe('MemoryManagerService', () => {
       expect(result.canStart).toBe(true);
       expect(result.modelsToEvict).toEqual(['model-a']);
       expect(result.warning).toContain('evict');
+    });
+  });
+
+  // ─── A discrete card the Hub could not size ────────────────────────
+  // No nvidia-smi in the container and no nvidia.json from the host (a driver update without a
+  // reboot, or any nvidia-smi failure): the AI tab says VRAM Unknown and the profile carries 0.
+
+  describe('discrete card with unknown VRAM', () => {
+    const unknownCard = makeProfile({
+      gpu: { available: true, vendor: 'nvidia', model: 'GA104M', vramMb: 0, unifiedMemory: false, driverVersion: '', runtimeAvailable: true },
+      ram: { totalMb: 63_134, availableMb: 33_616, sampledAt: '2026-10-22T00:00:00.000Z' },
+      effectiveInferenceMemoryMb: 0,
+    });
+
+    it('lets a load through on system RAM instead of refusing it against 0 MB, so Ollama can place the model', async () => {
+      const fit = await service.canFitModel(unknownCard, 1348);
+
+      expect(fit.fits).toBe(true);
+      expect(fit.availableMb).toBe(33_616 - 2048);
+      expect(modelMemoryCeilingMb(unknownCard)).toBe(33_616 - 2048);
+    });
+
+    it('still budgets a card of known size on its VRAM, as before', async () => {
+      const known = makeProfile({
+        gpu: { ...unknownCard.gpu, vramMb: 8192 },
+        ram: unknownCard.ram,
+        effectiveInferenceMemoryMb: 8192,
+      });
+
+      expect(modelMemoryCeilingMb(known)).toBe(8192 - 512);
+      await expect(service.canFitModel(known, 9000)).resolves.toMatchObject({ fits: false, availableMb: 7680 });
+      await expect(service.canFitModel(known, 1348)).resolves.toMatchObject({ fits: true, availableMb: 7680 });
+    });
+
+    it('refuses a pin up front, with a reason that says what to do in plain text, since toasts show no markdown', async () => {
+      const result = await service.canPinModel(unknownCard, 1348);
+
+      expect(result).toMatchObject({ canPin: false, final: true });
+      expect(result.reason).toContain("doesn't know this GPU's memory yet");
+      expect(result.reason).toContain('VRAM Unknown');
+      expect(result.reason).toContain('run cihub up');
+      expect(result.reason).toContain('nvidia-smi');
+      expect(result.reason).not.toContain('`');
+    });
+
+    it('words the refusal for an AMD card without naming nvidia-smi', async () => {
+      const amd = makeProfile({ ...unknownCard, gpu: { ...unknownCard.gpu, vendor: 'amd', model: 'Radeon RX 7900 XTX' } });
+
+      const result = await service.canPinModel(amd, 1348);
+
+      expect(result).toMatchObject({ canPin: false, final: true });
+      expect(result.reason).toContain("doesn't know this GPU's memory yet");
+      expect(result.reason).not.toContain('nvidia-smi');
+      expect(result.reason).not.toContain('`');
     });
   });
 

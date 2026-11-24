@@ -20,7 +20,7 @@ import {
 import { ModuleRef } from '@nestjs/core';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
-import { ApiHeader, ApiTags } from '@nestjs/swagger';
+import { ApiHeader, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { PoolProxyService } from '@/modules/hub-pool/hub-pool-proxy.service';
 import { POOL_SESSION_HEADER } from '@/modules/hub-pool/hub-pool-prefix-affinity';
 import { HubPoolPeerService } from '@/modules/hub-pool/hub-pool-peer.service';
@@ -28,23 +28,29 @@ import { TranslatableError } from '@/common/error/translatable-error';
 import { DemoModeGuard } from '@/common/guards/demo-mode.guard';
 import { InferenceRouterService } from './inference-router.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
-import { MemoryManagerService } from './memory-manager.service';
+import { MemoryManagerService, modelPoolFor } from './memory-manager.service';
 import { ModelRegistryService } from './model-registry.service';
 import { ModelResidencyService } from './model-residency.service';
 import { reconcileTrackedWithResidency, trackedPullsNotListed } from './tracked-residency';
 import { ModelPullerService } from './model-puller.service';
-import { CloudFallbackService } from './cloud-fallback.service';
+import { CloudFallbackService, isCloudFallbackAllowed } from './cloud-fallback.service';
+import { cloudProviderStatus } from './cloud-provider-status';
 import { OllamaInstallerService } from './ollama-installer.service';
 import { RocmInstallerService } from './rocm-installer.service';
 import { AppContainerOriginGuard } from './app-container-origin.guard';
 import { AppCredentialsService } from './app-credentials.service';
+import { onboardingTier, recommendedInferenceBackend } from './default-chat-model-handout';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AuthGuard } from '@/modules/auth/auth.guard';
 import { InferenceAccessGuard } from '@/modules/auth/inference-access.guard';
+import { HubManagerGuard } from '@/modules/auth/hub-manager.guard';
 import { ConfigurationService } from '@/core/config/configuration.service';
-import type { CloudProviderType, HardwareProfile, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
+import type { CloudProviderStatus, CloudProviderType, ModelContextPlan } from '@ci-hub/common/types';
 import {
+  CloudFallbackPolicyDto,
+  LoadModelBody,
+  UnloadModelBody,
   RuntimeModelsQueryDto,
   UpdateInferencePreferencesBody,
   UpdateRocmInstallStateBody,
@@ -52,14 +58,23 @@ import {
   VllmStatusQueryDto,
   OmlxStatusQueryDto,
   ManualEndpointStatusQueryDto,
+  isMaskedApiKey,
+  maskInferencePreferences,
 } from './inference.dto';
 import { InferenceBackendRegistry } from './backends/backend-registry';
 import { OllamaBackend } from './backends/ollama.backend';
-import { buildVllmRemediation, resolveVllmProbeUrl, VLLM_PROBE_API_KEY_HEADER, VllmBackend } from './backends/vllm.backend';
+import { buildVllmRemediation, resolveVllmProbeUrl, VLLM_PROBE_API_KEY_HEADER, VllmBackend, vllmBaseUrl } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
 import { buildLemonadeRemediation, classifyLemonadeFailure } from './backends/lemonade-remediation';
 import { resolveBridgeTopology, resolveHostPlatform } from './backends/ollama-host-bridge';
-import { buildOmlxRemediation, OMLX_PROBE_API_KEY_HEADER, OmlxBackend, resolveOmlxProbeUrl } from './backends/omlx.backend';
+import {
+  buildOmlxCudaHelperRemediation,
+  buildOmlxRemediation,
+  OMLX_PROBE_API_KEY_HEADER,
+  OmlxBackend,
+  omlxBaseUrl,
+  resolveOmlxProbeUrl,
+} from './backends/omlx.backend';
 import { OpenAiCompatibleClient } from './backends/openai-compatible.client';
 import {
   resolveInstalledCatalogIds,
@@ -68,8 +83,10 @@ import {
   trackedPullCounts,
 } from './model-availability.util';
 import { BackendObserverService } from './supervision/backend-observer.service';
+import { isSameServer } from './engine-credential-scope';
 import { buildTranscriptionForm, MAX_TRANSCRIPTION_BYTES, speechContentType, type UploadedAudio } from './audio-proxy.util';
 import { sendRouteError } from './inference-error-reply';
+import { TunnelErrorStatusInterceptor } from './tunnel-error-status.interceptor';
 import { abortWhenClientCloses, relayStream } from './upstream-stream';
 
 /** The transcription `response_format`s that are a plain-text transcript, and the type each goes out under. */
@@ -116,33 +133,6 @@ export class InferenceController {
     @Inject(forwardRef(() => HubPoolPeerService)) private readonly poolPeers: HubPoolPeerService,
   ) {}
 
-  private getRecommendedBackend(profile: HardwareProfile): InferenceBackendType {
-    // NVIDIA with a usable runtime: vLLM. Apple Silicon: oMLX. An NPU: Lemonade.
-    // Everything else, including AMD without a cited vLLM ROCm path: Ollama.
-    return profile.npu.available
-      ? 'lemonade'
-      : profile.gpu.vendor === 'nvidia' && profile.gpu.runtimeAvailable
-        ? 'vllm'
-        : profile.gpu.vendor === 'apple'
-          ? 'omlx'
-          : 'ollama';
-  }
-
-  private getOnboardingTier(profile: HardwareProfile, recommendedBackend: InferenceBackendType): HardwareTier {
-    if (
-      recommendedBackend === 'ollama' &&
-      profile.gpu.available &&
-      !profile.gpu.unifiedMemory &&
-      !profile.gpu.runtimeAvailable &&
-      (profile.gpu.vendor === 'nvidia' || profile.gpu.vendor === 'amd') &&
-      profile.gpu.vramMb > 0
-    ) {
-      return this.hardwareInspector.computeTier({ ...profile.gpu, runtimeAvailable: true }, profile.ram);
-    }
-
-    return profile.tier;
-  }
-
   /**
    * Bring running AI apps up to date after an inference config change, through the same service
    * `PATCH /api/user-settings` uses — it debounces bursts and restarts only apps whose env is stale.
@@ -177,7 +167,8 @@ export class InferenceController {
   // OpenAI-shaped (`{ error: { message, type, code } }`) like every error these
   // handlers emit themselves, so a client shows the reason, not a Nest envelope.
   // On the local path an engine's own refusal keeps its status and message, and
-  // only a failure to get any answer is a 502 — see `inference-error-reply.ts`.
+  // only a failure to get any answer is a 502 — see `inference-error-reply.ts`. Through the public
+  // address those replies go out as 500 so Cloudflare keeps the body: `TunnelErrorStatusInterceptor`.
   //
   // `@HttpCode(200)` on every POST here: Nest sets a POST's default 201 on the
   // response before the handler runs, `@Res()` or not, so a local success went
@@ -192,6 +183,7 @@ export class InferenceController {
   // connection, still generating, for as long as the provider kept it open.
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Post('v1/chat/completions')
   @HttpCode(200)
   async v1ChatCompletions(@Body() body: Record<string, unknown>, @Res() res: Response, @Headers(POOL_SESSION_HEADER) session?: string | string[]) {
@@ -223,6 +215,7 @@ export class InferenceController {
   }
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Post('v1/completions')
   @HttpCode(200)
   async v1Completions(@Body() body: Record<string, unknown>, @Res() res: Response) {
@@ -252,6 +245,7 @@ export class InferenceController {
   }
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Post('v1/embeddings')
   @HttpCode(200)
   async v1Embeddings(@Body() body: Record<string, unknown>, @Res() res: Response) {
@@ -269,6 +263,7 @@ export class InferenceController {
   }
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Get('v1/models')
   async v1Models(@Res() res: Response) {
     try {
@@ -280,6 +275,7 @@ export class InferenceController {
   }
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Post('v1/audio/speech')
   @HttpCode(200)
   async v1AudioSpeech(@Body() body: Record<string, unknown>, @Res() res: Response) {
@@ -293,6 +289,7 @@ export class InferenceController {
   }
 
   @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
   @Post('v1/audio/transcriptions')
   @HttpCode(200)
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_TRANSCRIPTION_BYTES } }))
@@ -326,6 +323,36 @@ export class InferenceController {
     }
   }
 
+  @UseGuards(InferenceAccessGuard)
+  @UseInterceptors(TunnelErrorStatusInterceptor)
+  @Post('v1/images/generations')
+  @HttpCode(200)
+  async v1ImagesGenerations(@Body() body: Record<string, unknown>, @Res() res: Response) {
+    const clientClosed = abortWhenClientCloses(res);
+    try {
+      const result = await this.router.routeImageGen(body, clientClosed);
+      res.json(result.data);
+    } catch (err) {
+      await sendRouteError(res, err);
+    }
+  }
+
+  @UseGuards(InferenceAccessGuard)
+  @Post('media/acquire')
+  @HttpCode(200)
+  async mediaAcquire(@Body() body: { kind?: 'image' | 'video' | 'comfyui'; model?: string }) {
+    this.router.acquireMediaWork({ kind: body?.kind ?? 'comfyui', model: body?.model });
+    return { ok: true, activeMediaWork: this.router.activeMediaWork() };
+  }
+
+  @UseGuards(InferenceAccessGuard)
+  @Post('media/release')
+  @HttpCode(200)
+  async mediaRelease(@Body() body: { kind?: 'image' | 'video' | 'comfyui'; model?: string }) {
+    this.router.releaseMediaWork({ kind: body?.kind ?? 'comfyui', model: body?.model });
+    return { ok: true, activeMediaWork: this.router.activeMediaWork() };
+  }
+
   // ─── Health ───────────────────────────────────────────────────────────
 
   @Get('health')
@@ -342,32 +369,58 @@ export class InferenceController {
 
   // ─── Management Endpoints ─────────────────────────────────────────────
 
+  /** The vLLM and oMLX keys are reported masked, as `cloud-providers` reports a provider key (`configured`). */
   @UseGuards(AuthGuard)
   @Get('preferences')
   async getPreferences() {
-    return this.configurationService.getInferencePreferences();
+    return maskInferencePreferences(this.configurationService.getInferencePreferences());
   }
 
-  @UseGuards(AuthGuard)
+  /** A vLLM or oMLX key that comes back as the mask is left as stored; `null` or an empty one still clears it. */
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Patch('preferences')
   async updatePreferences(@Body() body: UpdateInferencePreferencesBody) {
-    const result = await this.configurationService.setInferencePreferences(
-      body.backend,
-      body.model,
-      body.embeddingModel,
-      body.visionModel,
-      body.vllmApiKey,
-      body.vllmUrl,
-      body.omlxUrl,
-      body.decodeEndpoint,
-      body.encodeEndpoint,
-      body.maxNumCtx,
-      body.ollamaSlots,
-    );
+    const result = await this.configurationService.setInferencePreferences({
+      backend: body.backend,
+      model: body.model,
+      embeddingModel: body.embeddingModel,
+      visionModel: body.visionModel,
+      vllmApiKey: this.vllmApiKeyToSave(body),
+      vllmUrl: body.vllmUrl,
+      omlxUrl: body.omlxUrl,
+      omlxApiKey: this.omlxApiKeyToSave(body),
+      decodeEndpoint: body.decodeEndpoint,
+      encodeEndpoint: body.encodeEndpoint,
+      maxNumCtx: body.maxNumCtx,
+      ollamaSlots: body.ollamaSlots,
+      ollamaKeepAlive: body.ollamaKeepAlive,
+      ollamaKvCacheType: body.ollamaKvCacheType,
+    });
 
     this.scheduleAiAppRestart('inference preferences changed');
 
-    return result;
+    return maskInferencePreferences(result);
+  }
+
+  /**
+   * The vLLM key a preferences save stores, where `undefined` keeps the stored one. A key sent back
+   * as the mask, or left out, stands for the stored key, and that key belongs to the server it was
+   * saved for: Re-check never sends it to another one (`VllmBackend.healthCheck`). When the same
+   * save moves vLLM to another server, the stored key is dropped, to be entered again for the new one.
+   */
+  private vllmApiKeyToSave(body: UpdateInferencePreferencesBody): string | null | undefined {
+    if (body.vllmApiKey !== undefined && !isMaskedApiKey(body.vllmApiKey)) return body.vllmApiKey;
+    if (body.vllmUrl === undefined) return undefined;
+    const savedUrl = this.configurationService.getInferencePreferences().preferredVllmUrl;
+    return isSameServer(vllmBaseUrl(body.vllmUrl), vllmBaseUrl(savedUrl)) ? undefined : null;
+  }
+
+  /** The oMLX key a preferences save stores, by the rule {@link vllmApiKeyToSave} gives for the vLLM key. */
+  private omlxApiKeyToSave(body: UpdateInferencePreferencesBody): string | null | undefined {
+    if (body.omlxApiKey !== undefined && !isMaskedApiKey(body.omlxApiKey)) return body.omlxApiKey;
+    if (body.omlxUrl === undefined) return undefined;
+    const savedUrl = this.configurationService.getInferencePreferences().preferredOmlxUrl;
+    return isSameServer(omlxBaseUrl(body.omlxUrl), omlxBaseUrl(savedUrl)) ? undefined : null;
   }
 
   /**
@@ -433,6 +486,9 @@ export class InferenceController {
          */
         state: model.loaded ? 'available' : 'unknown',
         resident: residentIds.has(model.id),
+        // What the engine says the model takes on disk. An engine that does not say reports 0, which is
+        // not a size, so it is sent as null for the page to show as unknown.
+        sizeBytes: model.size > 0 ? model.size : null,
       })),
     };
   }
@@ -466,7 +522,7 @@ export class InferenceController {
     return this.hardwareInspector.getProfile();
   }
 
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Post('hardware/rescan')
   async rescanHardware() {
     return this.hardwareInspector.rescan();
@@ -478,7 +534,7 @@ export class InferenceController {
     return this.rocmInstaller.getStatus();
   }
 
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Post('rocm/install-state')
   async updateRocmInstallState(@Body() body: UpdateRocmInstallStateBody) {
     await this.rocmInstaller.recordInstallState({
@@ -536,7 +592,7 @@ export class InferenceController {
     return this.modelRegistry.getTrackedModels();
   }
 
-  @UseGuards(AuthGuard, DemoModeGuard)
+  @UseGuards(AuthGuard, HubManagerGuard, DemoModeGuard)
   @Post('models/pull/start')
   async startPullModel(@Body() body: { modelId: string; bestEffort?: boolean }) {
     if (!body.modelId?.trim()) {
@@ -545,7 +601,7 @@ export class InferenceController {
     return this.modelPuller.startPull(body.modelId.trim(), { bestEffort: body.bestEffort });
   }
 
-  @UseGuards(AuthGuard, DemoModeGuard)
+  @UseGuards(AuthGuard, HubManagerGuard, DemoModeGuard)
   @Post('models/pull')
   async pullModel(@Body() body: { modelId: string; bestEffort?: boolean }) {
     const result = await this.modelPuller.startPull(body.modelId, { bestEffort: body.bestEffort });
@@ -590,9 +646,9 @@ export class InferenceController {
     return catalog.some((model) => model.modality !== 'llm' && (model.id === modelId || model.backendModelId === modelId));
   }
 
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Post('models/load')
-  async loadModel(@Body() body: { modelId: string; backend?: InferenceBackendType }) {
+  async loadModel(@Body() body: LoadModelBody) {
     const catalogId = this.catalogIdForEngineModel(body.modelId);
     if (catalogId) {
       // Through the router, like a pin: it makes room, sizes the context window and refuses a load
@@ -624,9 +680,9 @@ export class InferenceController {
     return { success: true, message: `Model ${body.modelId} loaded` };
   }
 
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Post('models/unload')
-  async unloadModel(@Body() body: { modelId: string; backend?: InferenceBackendType }) {
+  async unloadModel(@Body() body: UnloadModelBody) {
     const catalogId = this.catalogIdForEngineModel(body.modelId);
     if (catalogId) {
       await this.modelPuller.unloadModel(catalogId);
@@ -639,7 +695,7 @@ export class InferenceController {
     return { success: true, message: `Model ${body.modelId} unloaded` };
   }
 
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Post('models/pin')
   async pinModel(@Body() body: { modelId: string }) {
     // Through the router's load path, so the pin fits, evicts or refuses exactly as a load does
@@ -653,28 +709,37 @@ export class InferenceController {
     return { success: true, message: `Model ${body.modelId} pinned` };
   }
 
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Post('models/unpin')
   async unpinModel(@Body() body: { modelId: string }) {
-    this.modelRegistry.unpinModel(body.modelId);
+    // Through the router, so Ollama is told too: the pin held the model there at `keep_alive: -1`.
+    await this.router.unpinTrackedModel(body.modelId);
     return { success: true, message: `Model ${body.modelId} unpinned` };
   }
 
+  /** Settings > AI shows a provider's base URL (see `cloudProviderStatus`), because a key entered there goes to it. */
   @UseGuards(AuthGuard)
   @Get('cloud-providers')
-  async getCloudProviders() {
-    return this.cloudFallback.listProviders().map((p) => ({
-      provider: p.provider,
-      enabled: p.enabled,
-      configured: !!p.apiKey,
-      defaultModel: p.defaultModel,
-    }));
+  async getCloudProviders(): Promise<CloudProviderStatus[]> {
+    return this.cloudFallback.listProviders().map((p) => cloudProviderStatus(p, this.cloudFallback.getDefaultBaseUrl(p.provider)));
   }
 
+  /** Whether `CI_HUB_ALLOW_CLOUD_FALLBACK` lets local inference failures fail over to configured cloud providers. */
   @UseGuards(AuthGuard)
+  @Get('cloud-policy')
+  @ApiResponse({ type: CloudFallbackPolicyDto })
+  getCloudPolicy(): CloudFallbackPolicyDto {
+    return {
+      allowCloudFallback: isCloudFallbackAllowed(),
+      hasCloudFallback: this.cloudFallback.hasCloudFallback(),
+      envFlag: 'CI_HUB_ALLOW_CLOUD_FALLBACK',
+    };
+  }
+
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Post('cloud-providers')
   async setCloudProvider(@Body() body: { provider: CloudProviderType; apiKey?: string; enabled: boolean; baseUrl?: string; defaultModel?: string }) {
-    this.cloudFallback.setProvider({
+    await this.cloudFallback.setProvider({
       provider: body.provider,
       apiKey: body.apiKey,
       enabled: body.enabled,
@@ -690,7 +755,7 @@ export class InferenceController {
    * the masked Settings field relies on. Running AI apps hold the key in their env, so they are
    * refreshed as they are after a save.
    */
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Delete('cloud-providers/:provider')
   async removeCloudProvider(@Param('provider') provider: CloudProviderType) {
     const removed = await this.cloudFallback.removeProvider(provider);
@@ -712,9 +777,11 @@ export class InferenceController {
     @Headers(OMLX_PROBE_API_KEY_HEADER) omlxApiKey?: string,
   ) {
     const profile = await this.hardwareInspector.getProfile();
-    const recommendedBackend = this.getRecommendedBackend(profile);
+    const recommendedBackend = recommendedInferenceBackend(profile);
     const installBackend = query?.backend ?? recommendedBackend;
-    const tier = this.getOnboardingTier(profile, recommendedBackend);
+    // The tier the Hub's own handouts read too (`installedDefaultChatModel`), so the wizard's Default and
+    // the model apps get with none chosen come from the same list.
+    const tier = onboardingTier(profile, (gpu, ram) => this.hardwareInspector.computeTier(gpu, ram));
     // Probed before the model lists, not after: the probe reads Lemonade's registry, which decides
     // which Lemonade rows the lists below may offer (ModelRegistryService.getModelsForTier).
     const lemonadeHealth =
@@ -731,10 +798,9 @@ export class InferenceController {
     const status = await this.router.getStatus();
 
     const totalMemoryMb = recommendedModels.reduce((sum, m) => sum + m.runtime.memoryFootprintMb, 0);
+    // The pool loads are budgeted against: RAM on a card whose memory is unknown, as on a CPU node.
     const availableMemoryMb =
-      profile.gpu.available && !profile.gpu.unifiedMemory
-        ? budget.modelBudgetVramMb - budget.modelUsedVramMb
-        : budget.modelBudgetRamMb - budget.modelUsedRamMb;
+      modelPoolFor(profile) === 'vram' ? budget.modelBudgetVramMb - budget.modelUsedVramMb : budget.modelBudgetRamMb - budget.modelUsedRamMb;
 
     const hostSection = await this.hostMetrics.readHostSection();
     const displayLoad = await this.hostMetrics.getDisplayLoad(0, 0);
@@ -790,11 +856,24 @@ export class InferenceController {
       installedCatalogIds = ollamaInstalled;
     }
 
+    // What each text model of the engine being set up would get here: window, KV cache, and the installed
+    // apps' floor (Hermes' 64000). From the load path's own arithmetic; a model it cannot plan is left out.
+    const contextPlans: Record<string, ModelContextPlan> = {};
+    await Promise.all(
+      availableModels
+        .filter((m) => m.modality === 'llm' && m.backend === installBackend)
+        .map(async (m) => {
+          const plan = await this.router.contextPlanFor(m, profile).catch(() => null);
+          if (plan) contextPlans[m.id] = plan;
+        }),
+    );
+
     return {
       hardware: profile,
       tier,
       recommendedModels,
       availableModels,
+      contextPlans,
       installedCatalogIds,
       memoryBudget: budget,
       backends: {
@@ -901,7 +980,7 @@ export class InferenceController {
       remediationCommand: remediation?.command,
       error: ready ? undefined : health.error,
       hint: remediation
-        ? `${remediation.hint} Hub probes from inside its container — use http://host.docker.internal:8000, not localhost. Currently probing ${probeUrl}.`
+        ? `${remediation.hint} The Hub probes from inside its container. Use http://host.docker.internal:8000, not localhost. Currently probing ${probeUrl}.`
         : undefined,
     };
   }
@@ -919,7 +998,10 @@ export class InferenceController {
       error: err instanceof Error ? err.message : String(err),
     }));
     const ready = !!(health.running && health.healthy);
-    const remediation = ready ? undefined : buildOmlxRemediation();
+    // An NVIDIA host cannot serve oMLX, but it can speed up a Mac's: say that, and whether its helper runs.
+    const prefillHelper = ready ? null : await this.omlxBackend.cudaHelperStatus();
+    const remediation = ready ? undefined : prefillHelper ? buildOmlxCudaHelperRemediation(prefillHelper) : buildOmlxRemediation();
+    const containerNote = ` The Hub probes from inside its container. Use http://host.docker.internal:8000, not localhost. Currently probing ${probeUrl}.`;
     return {
       ready,
       running: health.running,
@@ -928,9 +1010,8 @@ export class InferenceController {
       loadedModels: health.modelsLoaded,
       remediationCommand: remediation?.command,
       error: ready ? undefined : health.error,
-      hint: remediation
-        ? `${remediation.hint} Hub probes from inside its container — use http://host.docker.internal:8000, not localhost. Currently probing ${probeUrl}.`
-        : undefined,
+      hint: remediation ? `${remediation.hint}${prefillHelper ? '' : containerNote}` : undefined,
+      ...(prefillHelper ? { prefillHelper } : {}),
     };
   }
 
@@ -949,7 +1030,7 @@ export class InferenceController {
     };
   }
 
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Post('ollama/install')
   async installOllama() {
     return this.ollamaInstaller.install();

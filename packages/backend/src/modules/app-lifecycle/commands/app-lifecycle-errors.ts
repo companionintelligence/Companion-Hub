@@ -1,10 +1,17 @@
+import type { HostPortMove } from '@ci-hub/common/schemas';
 import { extractOverlapCidrsFromError, isDockerNetworkOverlapError } from '@/modules/network/docker-network-errors';
+import type { AppServiceFailure } from '@ci-hub/common/schemas';
 
 export const ROCM_KFD_MISSING_CODE = 'rocm_kfd_missing';
 
 export const KVM_MISSING_CODE = 'kvm_missing';
 
+export const KATA_RUNTIME_MISSING_CODE = 'kata_runtime_missing';
+
 export const NETWORK_OVERLAP_CODE = 'network_overlap';
+
+/** A service did not come up after `compose up`, which the Hub read from Docker (`AppLifecycleCommand.appCameUpError`). */
+export const APP_SERVICE_FAILED_CODE = 'app_service_failed';
 
 export const NETWORK_OVERLAP_USER_MESSAGE = 'App network range conflict — Hub is reassigning a new internal network. Retry install or start.';
 
@@ -33,6 +40,7 @@ export class AppLifecycleError extends Error {
   readonly errorCode?: string;
   readonly errorDetail?: string;
   readonly settingsPath?: string;
+  readonly serviceFailure?: AppServiceFailure;
 
   constructor(
     message: string,
@@ -40,6 +48,7 @@ export class AppLifecycleError extends Error {
       code?: string;
       detail?: string;
       settingsPath?: string;
+      serviceFailure?: AppServiceFailure;
     },
   ) {
     super(message);
@@ -47,6 +56,7 @@ export class AppLifecycleError extends Error {
     this.errorCode = options?.code;
     this.errorDetail = options?.detail;
     this.settingsPath = options?.settingsPath;
+    this.serviceFailure = options?.serviceFailure;
   }
 }
 
@@ -71,21 +81,39 @@ export function createKvmMissingError(): AppLifecycleError {
   });
 }
 
+/** Short user-facing message for apps whose Kata runtime Docker on this machine doesn't have. */
+export const KATA_RUNTIME_MISSING_USER_MESSAGE = "This app needs the Kata container runtime. It isn't set up in Docker on this machine.";
+
+export function createKataRuntimeMissingError(runtime: string): AppLifecycleError {
+  return new AppLifecycleError(KATA_RUNTIME_MISSING_USER_MESSAGE, {
+    code: KATA_RUNTIME_MISSING_CODE,
+    detail: `Docker on this machine has no runtime named "${runtime}". Install Kata Containers and register that runtime with Docker, then start the app again.`,
+  });
+}
+
 export type AppCommandFailureResult = {
   success: false;
   message: string;
   errorCode?: string;
   errorDetail?: string;
   settingsPath?: string;
+  /** The service that kept the app from coming up, when that is why the command failed. */
+  serviceFailure?: AppServiceFailure;
   /** True when the command stopped because the operation was cancelled (vs. failed). */
   cancelled?: boolean;
   /** Resting status a before-PONR cancel reverted to (e.g. 'stopped'); unused by install. */
   cancelledStatus?: string;
-  /** A failed update put the previous version back (and running again, if it was running). */
+  /** A cancelled install that left files, containers or volumes behind: `APP_INSTALL_CANCELLED_PARTIAL_REMNANT`. */
+  warningCode?: string;
+  /** Where the files left behind are on the host, for the page's manual `rm` command. */
+  warningDetail?: string;
+  /** A failed update put the previous version back (and running again, if it was running), or a backup was refused before it stopped the app. */
   rolledBack?: boolean;
+  /** The host port the command moved the app off and onto before it failed. */
+  movedHostPort?: HostPortMove;
 };
 
-export type AppCommandResult = { success: true; message: string } | AppCommandFailureResult;
+export type AppCommandResult = { success: true; message: string; movedHostPort?: HostPortMove } | AppCommandFailureResult;
 
 export function toAppCommandFailureResult(err: unknown): AppCommandFailureResult {
   if (err instanceof AppLifecycleError) {
@@ -95,6 +123,7 @@ export function toAppCommandFailureResult(err: unknown): AppCommandFailureResult
       errorCode: err.errorCode,
       errorDetail: err.errorDetail,
       settingsPath: err.settingsPath,
+      serviceFailure: err.serviceFailure,
     };
   }
 
@@ -142,8 +171,10 @@ export function translateKvmInstallMessage(message: string): AppLifecycleError |
   const referencesKvm = normalizedMessage.includes('/dev/kvm');
   const missingDevice = normalizedMessage.includes('error gathering device information') && normalizedMessage.includes('no such file or directory');
   const blockedPath = normalizedMessage.includes('file path') && normalizedMessage.includes('is not allowed');
+  // Has to name KVM. A Kata shim that isn't installed, or a missing file of an app with "kata" in its name, is also "no such file or directory".
+  const kataKvmError = (normalizedMessage.includes('kata') || normalizedMessage.includes('confidential')) && normalizedMessage.includes('kvm');
 
-  if (referencesKvm && (missingDevice || blockedPath)) {
+  if ((referencesKvm && (missingDevice || blockedPath)) || kataKvmError) {
     return createKvmMissingError();
   }
 

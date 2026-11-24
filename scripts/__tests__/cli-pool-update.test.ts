@@ -13,6 +13,7 @@ import {
   describeImageChange,
   describeImageSource,
   gatherGitUpdateFacts,
+  poolUpdateRabbitmqEnvFiles,
   resolvePoolUpdateImage,
 } from '../lib/cli-pool-update';
 
@@ -245,5 +246,33 @@ describe('describeImageChange', () => {
     const moved = describeImageChange(at('53fc3ea9bb11f34e'), null);
     expect(moved.warn).toBe(true);
     expect(moved.line).toContain('unverified');
+  });
+});
+
+/*
+ * Companion-Hub#884: the prod compose requires RABBITMQ_PASSWORD from the env file, so `pool update`
+ * fills it in before compose runs. These are the files it checks.
+ */
+describe('poolUpdateRabbitmqEnvFiles', () => {
+  const identity = (envFiles: string[]) => ({ container: 'ci-hub', project: 'ci-hub', workingDir: '/srv/hub', configFiles: [], envFiles });
+
+  it('uses the env file the running stack was created with', () => {
+    expect(poolUpdateRabbitmqEnvFiles({ identity: identity(['/srv/hub/.env.prod']), envFile: '.env.prod' })).toEqual(['/srv/hub/.env.prod']);
+  });
+
+  it("falls back to this context's env file when nothing is running or no env file was recorded", () => {
+    expect(poolUpdateRabbitmqEnvFiles({ identity: null, envFile: '.env.prod' })).toEqual(['.env.prod']);
+    expect(poolUpdateRabbitmqEnvFiles({ identity: identity([]), envFile: '.env.prod' })).toEqual(['.env.prod']);
+  });
+
+  it('adds both appliance env files once each, so they keep the same password', () => {
+    const data = '/home/ci/.local/share/companion-hub';
+    expect(
+      poolUpdateRabbitmqEnvFiles({
+        identity: identity([`${data}/.env.dev`]),
+        envFile: `${data}/.env.dev`,
+        applianceEnvFiles: [`${data}/.env.dev`, `${data}/.env`],
+      }),
+    ).toEqual([`${data}/.env.dev`, `${data}/.env`]);
   });
 });

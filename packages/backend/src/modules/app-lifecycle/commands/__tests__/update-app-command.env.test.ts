@@ -145,7 +145,10 @@ describe('UpdateAppCommand: the env the new version boots with', () => {
 
     dockerService = mock<DockerService>();
     marketplaceService = mock<MarketplaceService>();
-    marketplaceService.getDockerComposeJson.mockResolvedValue({ content: { services: [] } } as any);
+    // The smallest manifest the compose schema accepts: schemaVersion 2 and one main service.
+    marketplaceService.getDockerComposeJson.mockResolvedValue({
+      content: { schemaVersion: 2, services: [{ name: 'main', image: 'example/ledger:2.0.0', isMain: true }] },
+    } as any);
     incoming = nextVersion;
     // The real copy replaces the installed folder with the store's; here, with the next version's config.
     marketplaceService.copyAppFromRepoToInstalled.mockImplementation(async () => {

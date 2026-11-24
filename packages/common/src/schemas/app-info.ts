@@ -3,6 +3,94 @@ import { zodAppUrn } from '../types/app-urn.js';
 import { agentConfigSchema } from './agent-config.js';
 
 /**
+ * Values the Hub writes into every app's env that its checks take as the app's own.
+ *
+ * The Traefik label check takes `${APP_ID}` as the app's id and `${APP_DOMAIN}`,
+ * `${APP_LOCAL_DOMAIN}` and `${APP_BASE_HOST}` as its hosts. The sandbox takes `${APP_DATA_DIR}` as
+ * its data directory. `APP_NAME`, `APP_STORE_ID` and `APP_URN` say which app it is. The Hub sets them
+ * before it writes the manifest's form fields, so a field of the same name, its default or an alias
+ * would replace them. So would a Hub integration that names one. A manifest may name none of them
+ * and the Hub writes none of them from a manifest.
+ */
+export const HUB_OWNED_APP_ENV_VARS: ReadonlySet<string> = new Set([
+  'APP_ID',
+  'APP_NAME',
+  'APP_STORE_ID',
+  'APP_URN',
+  'APP_DOMAIN',
+  'APP_LOCAL_DOMAIN',
+  'APP_BASE_HOST',
+  'APP_DATA_DIR',
+]);
+
+/**
+ * Whether a form field writes `APP_BASE_URL`: as its own variable, or as an alias of a base URL
+ * field, the only type whose aliases the Hub writes. The Hub takes the host of that URL as one of
+ * the app's own hosts (`APP_BASE_HOST`).
+ */
+export function writesAppBaseUrl(field: { type?: unknown; env_variable?: unknown; alias_env_variables?: unknown }): boolean {
+  return (
+    field.env_variable === 'APP_BASE_URL' ||
+    (field.type === 'app_base_url' && Array.isArray(field.alias_env_variables) && field.alias_env_variables.includes('APP_BASE_URL'))
+  );
+}
+
+/** A form field default that would decide a value: set and not blank. */
+function hasDefault(field: { default?: unknown }): boolean {
+  return field.default !== undefined && String(field.default).trim() !== '';
+}
+
+/**
+ * A name the Hub may write as a key into an app's env file: what Compose's `${NAME}` can name.
+ *
+ * The name is written as `NAME=value` with nothing escaped, because no escape exists for a key. A
+ * newline in it started a second line, so `"env_variable": "X=1\nAPP_DATA_DIR"` with a default of `/`
+ * wrote `APP_DATA_DIR=/` after the Hub's own, Compose took the last one, and every
+ * `${APP_DATA_DIR}/...` bind the sandbox clears as the app's own folder became a host path.
+ * Compose's env-file reader also trims a leading space and an `export `, so those spellings named
+ * `APP_DATA_DIR` past the exact-name check as well.
+ */
+export const ENV_VARIABLE_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+export function isEnvVariableName(name: unknown): name is string {
+  return typeof name === 'string' && ENV_VARIABLE_NAME_PATTERN.test(name);
+}
+
+/**
+ * An env variable a manifest has the Hub write for the app: a plain variable name
+ * ({@link ENV_VARIABLE_NAME_PATTERN}), and never one of {@link HUB_OWNED_APP_ENV_VARS}.
+ */
+function appWrittenEnvName(schema: z.ZodString): z.ZodString {
+  return schema.superRefine((name, ctx) => {
+    if (!isEnvVariableName(name)) {
+      ctx.addIssue({ code: 'custom', message: `${JSON.stringify(name)} is not an environment variable name (letters, digits and _)` });
+    } else if (HUB_OWNED_APP_ENV_VARS.has(name)) {
+      ctx.addIssue({ code: 'custom', message: `${name} is set by the Hub for every app, so a manifest can't set it` });
+    }
+  });
+}
+
+/**
+ * Whether a Hub integration (`inference`, `inference_provider`, `oidc` and `memory`) may write `name`
+ * into the app's env: not one of {@link HUB_OWNED_APP_ENV_VARS} and not `APP_BASE_URL`, the app's
+ * address. The Hub takes the host of `APP_BASE_URL` as one of the app's own hosts
+ * (`APP_BASE_HOST`). An integration writes after that, and a base URL field keeps the value it finds
+ * in the app's env, so the next env build would take the host of the integration's URL.
+ */
+export function hubIntegrationMayWrite(name: string): boolean {
+  return isEnvVariableName(name) && !HUB_OWNED_APP_ENV_VARS.has(name) && name !== 'APP_BASE_URL';
+}
+
+/** An env variable a Hub integration writes for the app: see {@link hubIntegrationMayWrite}. */
+function integrationWrittenEnvName(schema: z.ZodString): z.ZodString {
+  return appWrittenEnvName(schema).superRefine((name, ctx) => {
+    if (name === 'APP_BASE_URL') {
+      ctx.addIssue({ code: 'custom', message: "APP_BASE_URL is the app's address from the Hub or the person, so a Hub integration can't set it" });
+    }
+  });
+}
+
+/**
  * Standardized inference variable names that apps can request from the Hub.
  * When declared in `hub_integration.inference`, the Hub resolves the value at
  * env-generation time and writes it into the app's `app.env` under the
@@ -14,8 +102,9 @@ export const INFERENCE_VARIABLES = [
   'chat_model',
   'embedding_model',
   'vision_model',
-  // The model for background calls (extraction, classification): a smaller installed model that
-  // fits beside the chat model, else the chat model. Companion Memory maps it to LLM_UTILITY_MODEL.
+  // The model for background calls (extraction, classification): a smaller installed model of at
+  // least 2B that fits beside the chat model, else the chat model. Companion Memory maps it to
+  // LLM_UTILITY_MODEL.
   'utility_model',
   'ollama_host',
   // The embedding endpoint as an OpenAI-style base, the sibling of `llm_base_url`: whichever
@@ -33,7 +122,7 @@ export type InferenceVariable = (typeof INFERENCE_VARIABLES)[number];
 // subset of inference vars (e.g. ci-memory declares llm_* only), so this must
 // be a partial record — otherwise marketplace config fails safeParse and the
 // Hub reports "App ci-memory:ci-marketplace not found".
-export const inferenceEnvMappingSchema = z.partialRecord(z.enum(INFERENCE_VARIABLES), z.string().min(1));
+export const inferenceEnvMappingSchema = z.partialRecord(z.enum(INFERENCE_VARIABLES), integrationWrittenEnvName(z.string().min(1)));
 
 /**
  * Dual-provider apps (e.g. AnythingLLM) expose an internal provider switch env var.
@@ -42,15 +131,39 @@ export const inferenceEnvMappingSchema = z.partialRecord(z.enum(INFERENCE_VARIAB
  */
 export const inferenceProviderSchema = z.object({
   /** Env variable the app reads its LLM provider mode from (e.g. APP_LLM_PROVIDER). */
-  env: z
-    .string()
-    .min(1)
-    .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'env must be a valid environment variable name'),
+  env: integrationWrittenEnvName(
+    z
+      .string()
+      .min(1)
+      .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'env must be a valid environment variable name'),
+  ),
   /** Value to write when Hub AI Settings use Ollama as the chat backend. */
   ollama: z.string().min(1),
   /** Value to write when Hub AI Settings use vLLM, Lemonade, or cloud. */
   openai_compatible: z.string().min(1),
 });
+
+/** An app id or store slug as an app link names it: a URN half (see `castAppUrn` in the backend). */
+const APP_LINK_SEGMENT = /^[^.\-\s/\\\0:][^\s/\\\0:]*$/;
+/** A compose service name or a name to reach one by: no dots, so never a hostname elsewhere. */
+const APP_LINK_NAME = /^[a-z0-9][a-z0-9_-]*$/;
+/**
+ * Names an app link may not give the other app: the Hub's own services and the names it gives apps.
+ * A link only reaches the declaring app's own containers, so a clash would only confuse that app, but
+ * it would confuse it about the Hub.
+ */
+export const RESERVED_APP_LINK_ALIASES: ReadonlySet<string> = new Set([
+  'ci-hub',
+  'ci-os-hub',
+  'ci-memory',
+  'ci-hub-db',
+  'ci-hub-queue',
+  'ci-os-hub-queue',
+  'traefik',
+  'cloudflared',
+  'hub-tailscale',
+  'localhost',
+]);
 
 export const hubIntegrationSchema = z
   .object({
@@ -116,10 +229,12 @@ export const hubIntegrationSchema = z
          * Must be a valid environment variable name so it is never written as a
          * malformed/whitespace-padded key (which would silently misconfigure OIDC).
          */
-        issuer_env: z
-          .string()
-          .min(1)
-          .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'issuer_env must be a valid environment variable name'),
+        issuer_env: integrationWrittenEnvName(
+          z
+            .string()
+            .min(1)
+            .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'issuer_env must be a valid environment variable name'),
+        ),
         /**
          * Optional path appended to the paired Portal origin to form the issuer
          * (e.g. "/api/auth" for discovery-based clients that resolve
@@ -165,17 +280,19 @@ export const hubIntegrationSchema = z
     memory: z
       .object({
         /** Env var to receive the resolved Companion Memory URL (must be a valid env name). */
-        url_env: z
-          .string()
-          .min(1)
-          .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'url_env must be a valid environment variable name')
-          .optional(),
+        url_env: integrationWrittenEnvName(
+          z
+            .string()
+            .min(1)
+            .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'url_env must be a valid environment variable name'),
+        ).optional(),
         /** Env var to receive the minted, memory-scoped api key (must be a valid env name). */
-        token_env: z
-          .string()
-          .min(1)
-          .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'token_env must be a valid environment variable name')
-          .optional(),
+        token_env: integrationWrittenEnvName(
+          z
+            .string()
+            .min(1)
+            .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'token_env must be a valid environment variable name'),
+        ).optional(),
         /**
          * The SHAPE of the URL this app wants in `url_env`. The provider is reachable
          * at `http://<service>:<port>`, but its gateway only proxies the API under
@@ -230,7 +347,7 @@ export const hubIntegrationSchema = z
     readiness: z
       .object({
         /**
-         * Compose service name the endpoint listens on; must be on the Hub's main network. Not
+         * Compose service name the endpoint listens on, in the app's own compose. Not
          * a hostname: lowercase, no dots, no `/` or `:`, no leading `-`. Every service in the
          * marketplace today already fits, so the rule costs nothing and refuses the shapes an
          * off-app target would need.
@@ -274,6 +391,60 @@ export const hubIntegrationSchema = z
         default: z.boolean().optional(),
       })
       .optional(),
+    /**
+     * Other apps this app talks to directly, container to container, and the apps it lets talk to it.
+     *
+     * Each app is on a Docker network of its own, and no other app is on it (see "App networks" in
+     * the Hub's docs/system/backend.md). An app that needs another app's service — Radarr calling
+     * Prowlarr — declares it in `connects_to`, and the other app declares the reverse in
+     * `accepts_from`. The Hub then puts the two on a network of their own: this app's containers,
+     * and the one named service of the other, under the name `alias`. Nothing else of either app is
+     * on it, and neither app can add a name to it.
+     *
+     * Both sides must name each other, by app and store, and a link between apps of the same store
+     * is made by itself. Any other link (two stores, or only one side declaring it) waits for the
+     * operator to allow it on the Hub. So no manifest can reach an app that did not ask for it, and a
+     * store cannot reach another store's apps without the operator.
+     *
+     * Example (radarr):
+     * ```json
+     * "hub_integration": {
+     *   "links": { "connects_to": [{ "app": "prowlarr", "service": "prowlarr" }], "accepts_from": [{ "app": "prowlarr" }] }
+     * }
+     * ```
+     */
+    links: z
+      .object({
+        connects_to: z
+          .array(
+            z.object({
+              /** The other app's id within its store (the part of its URN before `:`). */
+              app: z.string().regex(APP_LINK_SEGMENT, 'app must be an app id'),
+              /** The other app's store slug. Omitted: this app's own store. */
+              store: z.string().regex(APP_LINK_SEGMENT, 'store must be a store slug').optional(),
+              /** The compose service of the other app this app calls. */
+              service: z.string().regex(APP_LINK_NAME, 'service must be a compose service name, not a hostname'),
+              /** The name this app reaches it by. Omitted: the other app's id. */
+              alias: z
+                .string()
+                .regex(APP_LINK_NAME, 'alias must be a plain name, not a hostname')
+                .refine((alias) => !RESERVED_APP_LINK_ALIASES.has(alias), "alias names one of the Hub's own services")
+                .optional(),
+            }),
+          )
+          .max(16)
+          .default([]),
+        accepts_from: z
+          .array(
+            z.object({
+              app: z.string().regex(APP_LINK_SEGMENT, 'app must be an app id'),
+              store: z.string().regex(APP_LINK_SEGMENT, 'store must be a store slug').optional(),
+            }),
+          )
+          .max(32)
+          .default([]),
+      })
+      .optional(),
   })
   .optional();
 
@@ -287,6 +458,57 @@ export type HubIntegration = z.output<typeof hubIntegrationSchema>;
  */
 export function manifestDefaultsEdgeAuthOn(info: { exposable?: boolean; hub_integration?: HubIntegration }): boolean {
   return Boolean(info.exposable) && info.hub_integration?.edge_auth?.default === true;
+}
+
+/**
+ * What a stored install form with no `openPort` key is served as: open.
+ *
+ * Every start, restart and update replays the stored form through the queue's form schema
+ * (`queueAppFormSchema`), which defaults a missing `openPort` to this value. An install that sent
+ * no `openPort` (an API or MCP install, the onboarding path) is therefore served on an open host
+ * port, and with the Hub login in front of its public route (`requiresHubLoginOnPublicRoute`). The
+ * queue schema takes its default from here so the settings dialog cannot read the same form
+ * differently.
+ */
+export const STORED_FORM_OPEN_PORT_DEFAULT = true;
+
+/**
+ * Whether the Hub serves a stored install form on an open host port: the form's own boolean, else
+ * {@link STORED_FORM_OPEN_PORT_DEFAULT}. Anything that is not a boolean counts as absent, so a
+ * damaged value fails toward the login, not away from it.
+ */
+export function servedOpenPort(form: { openPort?: unknown } | null | undefined): boolean {
+  return typeof form?.openPort === 'boolean' ? form.openPort : STORED_FORM_OPEN_PORT_DEFAULT;
+}
+
+/**
+ * Whether the tunnel route puts the Hub login (`ci-hub@file`) in front of the app.
+ *
+ * The form's `enableAuth` when it holds one. When it does not, the manifest's
+ * `hub_integration.edge_auth.default` decides, and failing that an open host port turns the login
+ * on. Compose once skipped the tunnel route for apps on an open host port (#678's gate), and most
+ * of them never chose a login, because the queue sets `openPort` to true for any API or MCP install
+ * that left it out. Without this default, the next Hub upgrade (`restartRunningApps`) would put
+ * those apps on the internet with no login, CI-OpenClaw among them, whose `/` hands out a gateway
+ * token.
+ *
+ * The manifest default is read here, at route-build time, and not only when a form is saved
+ * (`app-lifecycle.service.ts` self-heals a stored form there): an install that never decided —
+ * `openPort: false`, no `enableAuth` key — is otherwise served with no login until someone re-saves
+ * its settings, while the settings dialog showed the toggle as on. That was the live OpenClaw
+ * exposure found 2026-09-28. `manifest` is optional because a compose rebuild can run without a
+ * resolvable manifest; then only the form and the port decide, as before.
+ *
+ * Shared by the backend route builder and the install form's edit dialog, so the switch shows what
+ * the Hub serves. They disagreed once: the dialog fell back to the manifest default alone, showed OFF
+ * for a stored form on an open host port, and a save wrote `enableAuth: false` over a login that was
+ * in front of the app.
+ */
+export function requiresHubLoginOnPublicRoute(
+  form: { enableAuth?: boolean; openPort?: boolean },
+  manifest?: { exposable?: boolean; hub_integration?: HubIntegration },
+): boolean {
+  return form.enableAuth ?? ((manifest !== undefined && manifestDefaultsEdgeAuthOn(manifest)) || Boolean(form.openPort));
 }
 
 /** The only interface a {@link hostPortStaysOnLoopback} app's host port is published on. */
@@ -367,7 +589,9 @@ export const marketplaceMcpSchema = z.looseObject({
   /**
    * How CI Hub spawns stdio servers:
    * - `container_exec` (default): `docker exec -i <main-container> <command…>`
-   * - `host_docker`: run `<command…>` on the Hub host (for catalog entries whose MCP is `docker run …`)
+   * - `host_docker`: run `<command…>` on the Hub host (for catalog entries whose MCP is `docker run …`).
+   *   Official-store apps only, and only a `docker run` within the flag allowlist; the bridge
+   *   refuses anything else at spawn time (backend `mcp-stdio-launch-policy.ts`).
    */
   launch: z.enum(MCP_LAUNCH_MODES).optional(),
   /** Executable for stdio servers (e.g. "uvx"); empty/absent for hosted http listings. */
@@ -565,25 +789,37 @@ export type FieldType = (typeof FIELD_TYPES)[number];
 export const RANDOM_ENCODINGS = ['hex', 'base64'] as const;
 export type RandomEncoding = (typeof RANDOM_ENCODINGS)[number];
 
-export const formFieldSchema = z.object({
-  type: z.enum(FIELD_TYPES),
-  label: z.string(),
-  placeholder: z.string().optional(),
-  max: z.number().optional(),
-  min: z.number().optional(),
-  hint: z.string().optional(),
-  options: z.object({ label: z.string(), value: z.string() }).array().optional(),
-  required: z.boolean().optional().default(false),
-  default: z.union([z.boolean(), z.string(), z.number()]).optional(),
-  regex: z.string().optional(),
-  pattern_error: z.string().optional(),
-  env_variable: z.string(),
-  encoding: z.enum(RANDOM_ENCODINGS).optional(),
-  /** When set on `app_base_url`, also write the resolved value to these env vars. */
-  alias_env_variables: z.array(z.string().min(1)).optional(),
-  /** When true, append a trailing slash to alias env var values. */
-  trailing_slash: z.boolean().optional(),
-});
+export const formFieldSchema = z
+  .object({
+    type: z.enum(FIELD_TYPES),
+    label: z.string(),
+    placeholder: z.string().optional(),
+    max: z.number().optional(),
+    min: z.number().optional(),
+    hint: z.string().optional(),
+    options: z.object({ label: z.string(), value: z.string() }).array().optional(),
+    required: z.boolean().optional().default(false),
+    default: z.union([z.boolean(), z.string(), z.number()]).optional(),
+    regex: z.string().optional(),
+    pattern_error: z.string().optional(),
+    env_variable: appWrittenEnvName(z.string()),
+    encoding: z.enum(RANDOM_ENCODINGS).optional(),
+    /** When set on `app_base_url`, also write the resolved value to these env vars. */
+    alias_env_variables: z.array(appWrittenEnvName(z.string().min(1))).optional(),
+    /** When true, append a trailing slash to alias env var values. */
+    trailing_slash: z.boolean().optional(),
+  })
+  .superRefine((field, ctx) => {
+    // The Hub takes the host of `APP_BASE_URL` as one of the app's own hosts (`APP_BASE_HOST`), so
+    // the URL is the operator's or the Hub's, never a manifest default.
+    if (writesAppBaseUrl(field) && hasDefault(field)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['default'],
+        message: "A field that writes APP_BASE_URL can't have a default: the Hub gives the app its address",
+      });
+    }
+  });
 
 function normalizeReplaces(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
@@ -611,6 +847,44 @@ function normalizeAppInfoInput(input: unknown): unknown {
     replaces: normalizeReplaces(raw.replaces),
   };
 }
+
+/**
+ * A folder (or file) inside the app's data folder, as a data move names it: relative, forward
+ * slashes, no `.`/`..` segments, nothing at or below the Hub's own `app.env`. `.` alone is the app's
+ * data folder itself, and only a move's `from` may be that.
+ */
+const dataMovePathSchema = z
+  .string()
+  .min(1)
+  .refine(
+    (value) =>
+      value === '.' ||
+      (!value.startsWith('/') &&
+        !value.includes('\\') &&
+        !/^[A-Za-z]:/.test(value) &&
+        value.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..') &&
+        value !== 'app.env' &&
+        !value.startsWith('app.env/')),
+    'DATA_MOVE_PATH_INVALID',
+  );
+
+/**
+ * One step of a listing's data layout change, which the Hub carries out on the host before the new
+ * version's containers start (`applyAppDataMoves` in the backend). Two kinds:
+ *
+ * - `to` outside `from`: `from` is renamed to `to` (`data/postgres` → `data/db`).
+ * - `to` inside `from`: what `from` holds moves into `to` (`data` → `data/app`), except what holds
+ *   the new version's other mounts, which stays where it is. With `from: "."` the Hub's own
+ *   `app.env` and `backups` stay too.
+ *
+ * Each step only moves what is still in its old place, so a step that already ran does nothing. A
+ * destination that already holds files stops the start instead of merging into it.
+ */
+export const dataMoveSchema = z
+  .object({ from: dataMovePathSchema, to: dataMovePathSchema.refine((value) => value !== '.', 'DATA_MOVE_PATH_INVALID') })
+  .refine(({ from, to }) => from !== to && !(from !== '.' && to !== '.' && from.startsWith(`${to}/`)), 'DATA_MOVE_INTO_ITSELF');
+
+export type DataMove = z.output<typeof dataMoveSchema>;
 
 export const appInfoObjectSchema = z.object({
   id: z.string().refine((v) => v.split(':').length === 1),
@@ -688,25 +962,141 @@ export const appInfoObjectSchema = z.object({
    */
   privacy: appPrivacySchema.optional(),
   hub_integration: hubIntegrationSchema,
+  /**
+   * Folder moves a version's new data layout needs, in order (see dataMoveSchema). Kept for good: a
+   * Hub that skips a version runs the steps of every version it skipped, and one that already ran a
+   * step finds nothing left to move.
+   */
+  data_moves: z.array(dataMoveSchema).optional().default([]),
 });
 
 export const appInfoSchema = z.preprocess(normalizeAppInfoInput, appInfoObjectSchema);
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+/** A name the schema refuses for a form field or alias: one the Hub sets, or no variable name at all. */
+const isHubOwnedEnvName = (value: unknown): boolean => typeof value === 'string' && (HUB_OWNED_APP_ENV_VARS.has(value) || !isEnvVariableName(value));
+/** How a left-out name is shown in the log: as it is, or quoted when it holds a newline or a space. */
+const shownEnvName = (value: unknown): string => (isEnvVariableName(value) ? value : JSON.stringify(value));
+const isRefusedIntegrationEnvName = (value: unknown): boolean => typeof value === 'string' && !hubIntegrationMayWrite(value);
+
+/** What {@link withoutHubOwnedEnvNames} left out of a manifest. */
+type LeftOut = {
+  /** What went, for the log. */
+  leftOut: string[];
+  /**
+   * The default each field that writes `APP_BASE_URL` had, by the field's variable. A value an
+   * earlier env build took from it is the manifest's, not the person's (see `parseInstalledAppInfo`).
+   */
+  baseUrlDefaults: Record<string, string>;
+};
+
+/**
+ * A manifest without what {@link appInfoSchema} refuses about the values the Hub sets for every app:
+ * a form field or alias named for one of {@link HUB_OWNED_APP_ENV_VARS}, a Hub integration that names
+ * one or `APP_BASE_URL`, either of them under a name that is no variable name
+ * ({@link ENV_VARIABLE_NAME_PATTERN}), and a default on a field that writes `APP_BASE_URL`.
+ */
+function withoutHubOwnedEnvNames(config: Record<string, unknown>): LeftOut & { config: Record<string, unknown> } {
+  const leftOut: string[] = [];
+  const baseUrlDefaults: Record<string, string> = {};
+  let result = config;
+
+  if (Array.isArray(config.form_fields)) {
+    const fields: unknown[] = [];
+    for (const field of config.form_fields) {
+      if (!isRecord(field)) {
+        fields.push(field);
+        continue;
+      }
+      if (isHubOwnedEnvName(field.env_variable)) {
+        leftOut.push(`form field ${shownEnvName(field.env_variable)}`);
+        continue;
+      }
+      let kept = field;
+      const aliases = Array.isArray(field.alias_env_variables) ? field.alias_env_variables : [];
+      if (aliases.some(isHubOwnedEnvName)) {
+        leftOut.push(...aliases.filter(isHubOwnedEnvName).map((alias) => `alias ${shownEnvName(alias)} of form field ${String(field.env_variable)}`));
+        kept = { ...kept, alias_env_variables: aliases.filter((alias) => !isHubOwnedEnvName(alias)) };
+      }
+      if (writesAppBaseUrl(kept) && hasDefault(kept)) {
+        leftOut.push(`the default of form field ${String(field.env_variable)}`);
+        baseUrlDefaults[String(field.env_variable)] = String(kept.default);
+        const { default: _default, ...withoutDefault } = kept;
+        kept = withoutDefault;
+      }
+      fields.push(kept);
+    }
+    result = { ...result, form_fields: fields };
+  }
+
+  const integration = config.hub_integration;
+  if (isRecord(integration)) {
+    const kept: Record<string, unknown> = { ...integration };
+    if (isRecord(integration.inference)) {
+      const entries = Object.entries(integration.inference);
+      for (const [key, name] of entries.filter(([, name]) => isRefusedIntegrationEnvName(name))) {
+        leftOut.push(`hub_integration.inference.${key} (${shownEnvName(name)})`);
+      }
+      kept.inference = Object.fromEntries(entries.filter(([, name]) => !isRefusedIntegrationEnvName(name)));
+    }
+    if (isRecord(integration.inference_provider) && isRefusedIntegrationEnvName(integration.inference_provider.env)) {
+      leftOut.push(`hub_integration.inference_provider (${shownEnvName(integration.inference_provider.env)})`);
+      delete kept.inference_provider;
+    }
+    if (isRecord(integration.oidc) && isRefusedIntegrationEnvName(integration.oidc.issuer_env)) {
+      leftOut.push(`hub_integration.oidc (${shownEnvName(integration.oidc.issuer_env)})`);
+      delete kept.oidc;
+    }
+    // The URL and the key go together: the Hub writes neither without the other.
+    if (
+      isRecord(integration.memory) &&
+      (isRefusedIntegrationEnvName(integration.memory.url_env) || isRefusedIntegrationEnvName(integration.memory.token_env))
+    ) {
+      const { url_env, token_env, ...memory } = integration.memory;
+      leftOut.push(`hub_integration.memory (${[url_env, token_env].filter(isRefusedIntegrationEnvName).map(shownEnvName).join(', ')})`);
+      kept.memory = memory;
+    }
+    result = { ...result, hub_integration: kept };
+  }
+
+  return { config: result, leftOut, baseUrlDefaults };
+}
+
+/**
+ * Parses the manifest copied into an installed app's folder.
+ *
+ * A store's manifest that names a value the Hub sets for every app is refused
+ * (`HUB_OWNED_APP_ENV_VARS`). An installed copy from before that rule is read with those names left
+ * out, so the app keeps starting and gets the Hub's values, as the env builder would give it anyway.
+ * `leftOut` says what was left out, for the log. `baseUrlDefaults` holds the defaults left out of
+ * fields that write `APP_BASE_URL`, by the field's variable: an earlier env build wrote such a default
+ * into the app's env, and the env builder drops a value that is still that default.
+ */
+export function parseInstalledAppInfo(config: Record<string, unknown>): LeftOut & {
+  parsed: ReturnType<typeof appInfoSchema.safeParse>;
+} {
+  const { config: kept, leftOut, baseUrlDefaults } = withoutHubOwnedEnvNames(config);
+  return { parsed: appInfoSchema.safeParse(kept), leftOut, baseUrlDefaults };
+}
 
 export type AppInfoInput = z.input<typeof appInfoObjectSchema>;
 export type AppInfo = z.output<typeof appInfoObjectSchema>;
 export type FormField = z.output<typeof formFieldSchema>;
 
-export const frontmatterSchema = z
-  .object({
-    name: appInfoObjectSchema.shape.name.optional(),
-    short_desc: appInfoObjectSchema.shape.short_desc.optional(),
-    description: appInfoObjectSchema.shape.description.optional(),
-    source: appInfoObjectSchema.shape.source.optional(),
-    website: appInfoObjectSchema.shape.website.optional(),
-    author: appInfoObjectSchema.shape.author.optional(),
-    categories: appInfoObjectSchema.shape.categories.optional().default(['development']),
-    version: appInfoObjectSchema.shape.version.optional(),
-    port: appInfoObjectSchema.shape.port.optional(),
-    supported_architectures: appInfoObjectSchema.shape.supported_architectures.optional().default(['amd64', 'arm64']),
-  })
-  .optional();
+/**
+ * What a custom app's note can change in its `config.json`. A key the note leaves out has to stay out of
+ * the result or saving the note overwrites the app's value, so no field here may have a default. Reusing
+ * `appInfoObjectSchema.shape.x.optional()` for a field that has one brings that default along.
+ */
+export const frontmatterSchema = z.object({
+  name: appInfoObjectSchema.shape.name.optional(),
+  short_desc: appInfoObjectSchema.shape.short_desc.optional(),
+  description: z.string().optional(),
+  source: appInfoObjectSchema.shape.source.optional(),
+  website: appInfoObjectSchema.shape.website.optional(),
+  author: appInfoObjectSchema.shape.author.optional(),
+  categories: z.enum(APP_CATEGORIES).array().optional(),
+  version: z.string().optional(),
+  port: appInfoObjectSchema.shape.port.optional(),
+  supported_architectures: z.enum(ARCHITECTURES).array().optional(),
+});

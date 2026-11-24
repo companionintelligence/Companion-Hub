@@ -654,7 +654,7 @@ export const HUB_RECREATE_WAIT_S = 180;
  *
  * The URL is environment-only in the Hub (see `llamacpp.backend.ts`: it is opt-in precisely because
  * 8080 is shared, and there is no Settings field for it), so it is set the way the fleet already
- * sets `LEMONADE_URL` and `DSPARK_URL` for out-of-band engines: a line in `.env.dev` and a recreate.
+ * sets `LEMONADE_URL` for out-of-band engines: a line in `.env.dev` and a recreate.
  * The file is the one the `ci-hub` container's `com.docker.compose.project.environment_file` label
  * names — on this fleet `~/.local/share/companion-hub/.env.dev`, while a guess of `.env` would land
  * in a file compose never opens (see `cli-image-pin.ts`) — and the recreate uses the project, working

@@ -1,6 +1,7 @@
 import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
 import { Button } from '@/components/ui/Button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
+import { asLegacyTranslate } from '@/lib/i18n/legacy-translate';
 import type { RegistrationStateDrift, StateDriftSignal } from '@/lib/registration-state-drift';
 import { cn } from '@/lib/utils';
 import { ArrowRightLeft, Laptop, PlusCircle, RefreshCw } from 'lucide-react';
@@ -68,7 +69,7 @@ function DriftOptionCard({
           <Icon className="h-5 w-5" aria-hidden />
         </div>
         <div className="min-w-0 space-y-1">
-          <p className="text-base font-semibold leading-snug text-foreground">{title}</p>
+          <p className="text-base font-medium leading-snug text-foreground">{title}</p>
           <p className="text-sm leading-relaxed text-muted-foreground">{description}</p>
         </div>
       </div>
@@ -125,7 +126,7 @@ export function RegistrationStateDriftDialog({
     <Dialog open={open} onOpenChange={() => undefined}>
       <DialogContent
         size="lg"
-        className="max-h-[calc(100dvh-2rem)] gap-0 overflow-y-auto p-0 sm:max-w-2xl"
+        className="max-h-[calc(var(--app-height)-2rem)] gap-0 overflow-y-auto p-0 sm:max-w-2xl"
         showCloseButton={false}
         onPointerDownOutside={(event) => event.preventDefault()}
         onEscapeKeyDown={(event) => event.preventDefault()}
@@ -134,9 +135,9 @@ export function RegistrationStateDriftDialog({
           <DialogHeader className="space-y-2 text-left">
             <div className="flex items-center gap-2 text-primary">
               <Laptop className="h-5 w-5 shrink-0" aria-hidden />
-              <span className="text-xs font-medium uppercase tracking-wide">{t('DEVICE_REGISTRATION_STATE_DRIFT_EYEBROW')}</span>
+              <span className="text-xs font-medium  ">{t('DEVICE_REGISTRATION_STATE_DRIFT_EYEBROW')}</span>
             </div>
-            <DialogTitle className="text-xl font-semibold leading-tight sm:text-2xl">{t('DEVICE_REGISTRATION_STATE_DRIFT_TITLE')}</DialogTitle>
+            <DialogTitle className="text-xl font-medium leading-tight sm:text-2xl">{t('DEVICE_REGISTRATION_STATE_DRIFT_TITLE')}</DialogTitle>
             <DialogDescription className="text-sm leading-relaxed sm:text-[15px]">
               {portalHasDevice
                 ? t('DEVICE_REGISTRATION_STATE_DRIFT_DESCRIPTION_PORTAL_HAS_DEVICE')
@@ -152,12 +153,10 @@ export function RegistrationStateDriftDialog({
 
           {extraSignals.length > 0 ? (
             <div className="rounded-lg border border-border/50 bg-muted/20 px-4 py-3">
-              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                {t('DEVICE_REGISTRATION_STATE_DRIFT_DETAILS_HEADING')}
-              </p>
+              <p className="text-xs font-medium   text-muted-foreground">{t('DEVICE_REGISTRATION_STATE_DRIFT_DETAILS_HEADING')}</p>
               <ul className="mt-2 space-y-1.5 text-sm text-muted-foreground">
                 {extraSignals.map((signal) => (
-                  <li key={`${signal.reason}-${signal.detail ?? ''}`}>{signalCopy(signal, t)}</li>
+                  <li key={`${signal.reason}-${signal.detail ?? ''}`}>{signalCopy(signal, asLegacyTranslate(t))}</li>
                 ))}
               </ul>
             </div>

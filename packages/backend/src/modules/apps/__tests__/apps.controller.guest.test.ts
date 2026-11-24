@@ -1,5 +1,5 @@
 /**
- * `GET /api/apps/guest` has no guard: it feeds the guest dashboard to anyone who can reach the
+ * `GET /api/apps/guest` takes no sign-in: while the setting is on it feeds the guest dashboard to anyone who can reach the
  * Hub. The row it serves carries `config` — the install form, with whatever admin passwords and
  * provider keys a manifest asked for — and none of it belongs in a response to an anonymous caller.
  */
@@ -50,6 +50,28 @@ describe('AppsController.getGuestApps', () => {
 
     expect(result.installed).toHaveLength(1);
     expect(result.installed[0]?.app).toMatchObject({ id: 3, status: 'running', domain: 'open-webui.example.test' });
+  });
+
+  it('passes on the public address, the one field a tile needs that is not a column', async () => {
+    const read = mock<AppsReadService>();
+    read.getGuestDashboardApps.mockResolvedValue([
+      {
+        app: { id: 3, status: 'running', appName: 'open-webui' },
+        info: { id: 'open-webui' },
+        metadata: {},
+        publicUrl: 'https://webui-dev-org.example.test',
+      },
+    ] as never);
+
+    const result = await new AppsController(
+      read,
+      mock<AppsService>(),
+      mock<AppRuntimeMonitorService>(),
+      mock<ModuleRef>(),
+      mock<MarketplaceWhoIsService>(),
+    ).getGuestApps();
+
+    expect((result.installed[0]?.app as { publicUrl?: string } | undefined)?.publicUrl).toBe('https://webui-dev-org.example.test');
   });
 
   it('does not include the install form, whatever the row holds', async () => {

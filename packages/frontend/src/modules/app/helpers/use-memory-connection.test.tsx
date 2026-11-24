@@ -2,14 +2,22 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { TranslatableError } from '@/types/error.types';
 import { useMemoryConnection, useMemoryProviderForceGate } from './use-memory-connection';
 
-const h = vi.hoisted(() => ({ get: vi.fn() }));
-vi.mock('@/api-client/client.gen', () => ({ client: { get: (...args: unknown[]) => h.get(...args) } }));
+const h = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
+vi.mock('@/api-client/client.gen', () => ({
+  client: { get: (...args: unknown[]) => h.get(...args), post: (...args: unknown[]) => h.post(...args) },
+}));
+
+const toasts = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }));
+vi.mock('sonner', () => ({ toast: toasts }));
 
 const ext = vi.hoisted(() => ({ openExternalWithHubSession: vi.fn(), getTauriInvoke: vi.fn() }));
 vi.mock('@/lib/hub-browser-handoff', () => ({ openExternalWithHubSession: ext.openExternalWithHubSession }));
 vi.mock('@/lib/helpers/tauri-invoke', () => ({ getTauriInvoke: ext.getTauriInvoke }));
+const mobile = vi.hoisted(() => ({ isTauriMobileSync: vi.fn(() => false) }));
+vi.mock('@/lib/mobile-connection', () => ({ isTauriMobileSync: mobile.isTauriMobileSync }));
 
 const wrapper = () => {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -114,6 +122,20 @@ describe('useMemoryConnection connect()', () => {
     expect(window.location.href).toBe(CURRENT_HREF); // webview stayed put
   });
 
+  it('phone: asks for the flow to end on the Hub page that brings the app back', async () => {
+    ext.getTauriInvoke.mockReturnValue(vi.fn());
+    mobile.isTauriMobileSync.mockReturnValue(true);
+    const result = await renderReady();
+
+    result.current.connect();
+
+    const launched = ext.openExternalWithHubSession.mock.calls[0]?.[0] as string;
+    const next = new URL(launched).searchParams.get('next');
+    expect(launched.startsWith(CONNECT_URL)).toBe(true);
+    expect(next).toBe(`${new URL(CONNECT_URL).origin}/memory-connect/return-to-app?app=${encodeURIComponent(NORMAL)}`);
+    mobile.isTauriMobileSync.mockReturnValue(false);
+  });
+
   it('desktop: refetches this app status the first time the window regains focus after connect', async () => {
     ext.getTauriInvoke.mockReturnValue(vi.fn());
     const result = await renderReady();
@@ -166,5 +188,100 @@ describe('useMemoryConnection connect()', () => {
 
     expect(ext.openExternalWithHubSession).not.toHaveBeenCalled();
     expect(window.location.href).toBe(CURRENT_HREF);
+  });
+});
+
+describe('useMemoryConnection disconnect()', () => {
+  const CONNECTED = {
+    applicable: true,
+    memoryInstalled: true,
+    memoryReady: true,
+    providerStatus: 'ready',
+    state: 'connected',
+    connectUrl: null,
+    connectUrlLocal: null,
+    connectable: true,
+    reason: null,
+    keyExpiresAt: null,
+    connectedByOther: false,
+  };
+
+  beforeEach(() => {
+    h.get.mockReset();
+    h.post.mockReset();
+    toasts.error.mockReset();
+  });
+
+  // Another person connected the app since this page loaded, so the Hub refuses this person's
+  // Disconnect (#2080). The page must reload the status instead of keeping a stale Disconnect.
+  it('reloads the status after a refused Disconnect', async () => {
+    h.get.mockResolvedValueOnce({ data: CONNECTED }).mockResolvedValue({ data: { ...CONNECTED, state: 'unconfigured', connectedByOther: true } });
+    h.post.mockRejectedValue(new Error('403'));
+    const { result } = renderHook(() => useMemoryConnection(NORMAL), { wrapper: wrapper() });
+    await waitFor(() => expect(result.current.connected).toBe(true));
+
+    result.current.disconnect();
+
+    await waitFor(() => expect(result.current.connectedByOther).toBe(true));
+    expect(result.current.connected).toBe(false);
+    expect(toasts.error).toHaveBeenCalledWith('Could not disconnect. Please try again.');
+    expect(h.get).toHaveBeenCalledTimes(2);
+  });
+
+  // The interceptor in root.tsx turns the Hub's answer into a TranslatableError carrying its key.
+  it('says only the other person can disconnect when the Hub refuses because it is their connection', async () => {
+    h.get.mockResolvedValueOnce({ data: CONNECTED }).mockResolvedValue({ data: { ...CONNECTED, state: 'unconfigured', connectedByOther: true } });
+    h.post.mockRejectedValue(
+      new TranslatableError('MEMORY_CONNECT_DISCONNECT_REFUSED', {}, { status: 403, url: '/api/memory-connect/apps/x/disconnect' }),
+    );
+    const { result } = renderHook(() => useMemoryConnection(NORMAL), { wrapper: wrapper() });
+    await waitFor(() => expect(result.current.connected).toBe(true));
+
+    result.current.disconnect();
+
+    await waitFor(() => expect(result.current.connectedByOther).toBe(true));
+    expect(toasts.error).toHaveBeenCalledWith('Another person on this Hub connected this app to their CI Memory. Only they can disconnect it.');
+  });
+
+  // Any other 403 is not about another person, so it must not say it is.
+  it('names a different refusal for what it is', async () => {
+    h.get.mockResolvedValue({ data: CONNECTED });
+    h.post.mockRejectedValue(new TranslatableError('SYSTEM_ERROR_FORBIDDEN', {}, { status: 403, url: '/api/memory-connect/apps/x/disconnect' }));
+    const { result } = renderHook(() => useMemoryConnection(NORMAL), { wrapper: wrapper() });
+    await waitFor(() => expect(result.current.connected).toBe(true));
+
+    result.current.disconnect();
+
+    await waitFor(() => expect(toasts.error).toHaveBeenCalledWith("You don't have permission to perform this action"));
+    expect(toasts.error).not.toHaveBeenCalledWith(expect.stringContaining('Another person'));
+  });
+
+  it('says CI Memory did not confirm when the revoke was not confirmed', async () => {
+    h.get.mockResolvedValue({ data: CONNECTED });
+    h.post.mockRejectedValue(
+      new TranslatableError('MEMORY_CONNECT_DISCONNECT_NOT_CONFIRMED', {}, { status: 503, url: '/api/memory-connect/apps/x/disconnect' }),
+    );
+    const { result } = renderHook(() => useMemoryConnection(NORMAL), { wrapper: wrapper() });
+    await waitFor(() => expect(result.current.connected).toBe(true));
+
+    result.current.disconnect();
+
+    await waitFor(() =>
+      expect(toasts.error).toHaveBeenCalledWith("CI Memory didn't confirm the disconnect, so the app is still connected. Try again in a moment."),
+    );
+  });
+
+  // The Hub holds the app before it revokes anything, so a busy app refuses the disconnect with a 409.
+  it('says what holds the app when the disconnect is refused with a 409', async () => {
+    h.get.mockResolvedValue({ data: CONNECTED });
+    h.post.mockRejectedValue(
+      new TranslatableError('APP_ERROR_START_IN_PROGRESS', { id: 'plane' }, { status: 409, url: '/api/memory-connect/apps/x/disconnect' }),
+    );
+    const { result } = renderHook(() => useMemoryConnection(NORMAL), { wrapper: wrapper() });
+    await waitFor(() => expect(result.current.connected).toBe(true));
+
+    result.current.disconnect();
+
+    await waitFor(() => expect(toasts.error).toHaveBeenCalledWith('App plane is still starting. Try again in a moment.'));
   });
 });

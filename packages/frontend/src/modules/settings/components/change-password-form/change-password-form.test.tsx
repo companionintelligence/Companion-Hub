@@ -1,4 +1,4 @@
-import { render } from '@/tests/test-utils';
+import { render, screen, userEvent } from '@/tests/test-utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChangePasswordForm } from './change-password-form';
 
@@ -41,6 +41,20 @@ describe('ChangePasswordForm', () => {
     render(<ChangePasswordForm />);
     return mockUseMutation.mock.calls[0]?.[0] as { onSuccess: () => void };
   }
+
+  it('says in words which fields are missing when Change password is clicked with nothing typed', async () => {
+    const mutate = vi.fn();
+    mockUseMutation.mockReturnValue({ mutate, isPending: false });
+    render(<ChangePasswordForm />);
+
+    await userEvent.click(screen.getByRole('button', { name: 'COMMON_CHANGE_PASSWORD' }));
+
+    expect(await screen.findByText('AUTH_FORM_ERROR_PASSWORD_REQUIRED')).toBeInTheDocument();
+    expect(screen.getAllByText('COMMON_PASSWORD_MIN_LENGTH')).toHaveLength(2);
+    // Zod's own wording ("Too small: expected string to have >=1 characters") is for developers.
+    expect(screen.queryByText(/too small|expected string/i)).not.toBeInTheDocument();
+    expect(mutate).not.toHaveBeenCalled();
+  });
 
   it('signs the client out after a successful change', () => {
     // The endpoint revokes every session for the user and clears the cookie. The desktop

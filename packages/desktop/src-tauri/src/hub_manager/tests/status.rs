@@ -263,3 +263,49 @@ fn downloads_count_for_half_the_percentage_only_when_this_start_downloaded() {
     assert_eq!(startup_progress_pct(100, 100, true), 100);
     assert_eq!(startup_progress_pct(0, 0, true), 0);
 }
+
+fn stack(states: &[(&str, &str)]) -> std::collections::HashMap<String, ContainerInspect> {
+    states
+        .iter()
+        .map(|(name, status)| (name.to_string(), container(status)))
+        .collect()
+}
+
+/// Every launch used to recreate the stack, which also brought back a Traefik, database or queue
+/// that had stopped beside a running Hub, such as a Traefik that lost port 80 at boot. A launch
+/// that leaves a healthy Hub alone has to find those itself.
+#[test]
+fn a_launch_finds_the_services_that_stopped_beside_a_running_hub() {
+    let traefik_lost_its_port = stack(&[
+        ("ci-hub", "running"),
+        ("ci-hub-db", "running"),
+        ("ci-hub-queue", "running"),
+        ("traefik", "created"),
+    ]);
+    assert_eq!(stopped_core_services_in(&traefik_lost_its_port), ["Router"]);
+
+    let database_and_queue_gone = stack(&[
+        ("ci-hub", "running"),
+        ("ci-hub-db", "exited"),
+        ("traefik", "running"),
+    ]);
+    assert_eq!(
+        stopped_core_services_in(&database_and_queue_gone),
+        ["Database", "Message queue"]
+    );
+}
+
+#[test]
+fn a_launch_leaves_a_stack_alone_whose_services_run_or_are_restarting() {
+    let healthy = stack(&[
+        ("ci-hub", "running"),
+        ("ci-hub-db", "running"),
+        ("ci-os-hub-queue", "running"),
+        ("traefik", "restarting"),
+    ]);
+    assert!(stopped_core_services_in(&healthy).is_empty());
+
+    // Nothing came back from `docker inspect`, not even the Hub that the launch just found up:
+    // the inspect failed, which says nothing about the other services.
+    assert!(stopped_core_services_in(&stack(&[])).is_empty());
+}

@@ -5,11 +5,7 @@ import type { ReactNode } from 'react';
 
 /** Rounded gradient panel that frames a wizard step's content. */
 export function WizardCard({ children, className }: { children: ReactNode; className?: string }) {
-  return (
-    <section className={cn('rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-6 shadow-sm sm:p-8', className)}>
-      {children}
-    </section>
-  );
+  return <section className={cn('rounded-lg border border-border bg-card p-6 shadow-sm sm:p-8', className)}>{children}</section>;
 }
 
 /** Glowing rounded icon badge used by the hero (Welcome / Done) steps. */
@@ -33,7 +29,7 @@ export function WizardHeader({ icon, title, description, action }: { icon?: Reac
       <div className="flex items-start gap-3">
         {icon && <span className="mt-0.5 text-primary [&_svg]:h-6 [&_svg]:w-6">{icon}</span>}
         <div>
-          <h2 className="text-lg font-bold tracking-tight sm:text-xl">{title}</h2>
+          <h2 className="text-lg font-medium tracking-tight sm:text-xl">{title}</h2>
           {description && <p className="mt-0.5 text-sm text-muted-foreground">{description}</p>}
         </div>
       </div>

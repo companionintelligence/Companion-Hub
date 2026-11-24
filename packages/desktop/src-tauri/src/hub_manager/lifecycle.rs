@@ -1,6 +1,15 @@
 //! Hub start/stop lifecycle: image pulls, staged startup and shutdown.
 
+use super::quiet_watch::{run_until_quiet, WatchedRun};
 use super::*;
+
+/// How long `docker compose pull` may print nothing before it counts as hung. It prints every layer's
+/// progress, so a slow connection keeps it talking and only a download that has stopped goes quiet:
+/// a 1 GB image over a 2 MB/s link printed 3,464 lines and was never silent for more than 4 seconds.
+const PULL_QUIET_LIMIT: Duration = Duration::from_secs(3 * 60);
+/// A new pull opens new connections, which gets past a stalled one, so it gets a second try before
+/// the start gives up. It doesn't help when Docker itself is stuck: that takes a Docker restart.
+const PULL_ATTEMPTS: u32 = 2;
 
 fn start_database_first(
     compose_path: &Path,
@@ -84,14 +93,51 @@ pub fn refresh_host_hardware_probe_cache(data_dir: &Path) {
     refresh_host_metrics_probe_cache(data_dir);
 }
 
+/// True while a `start_hub` call runs. The start is bringing the containers up, so the watchdog
+/// must not restart one from under it.
+pub fn hub_start_in_progress() -> bool {
+    START_IN_PROGRESS.load(Ordering::SeqCst)
+}
+
 /// Start Hub using docker compose up (with port conflict resolution).
 ///
 /// Uses a global `AtomicBool` guard to prevent concurrent invocations.
 /// A `Drop` guard ensures the flag is cleared even if the inner logic panics.
 pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Result<String, String> {
+    start_hub_with_origin(compose_path, env_path, data_dir, StartOrigin::Explicit)
+}
+
+/// A start the desktop begins on its own: launch auto-start and the watchdog. Unlike
+/// [`start_hub`], it leaves the automatic-retry budget alone, so a failure counts against it.
+pub(crate) fn start_hub_automatic(
+    compose_path: &Path,
+    env_path: &Path,
+    data_dir: &Path,
+) -> Result<String, String> {
+    start_hub_with_origin(compose_path, env_path, data_dir, StartOrigin::Automatic)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StartOrigin {
+    /// The user, the tray, a restart, or the updater asked for this start.
+    Explicit,
+    /// The desktop started the Hub on its own.
+    Automatic,
+}
+
+fn start_hub_with_origin(
+    compose_path: &Path,
+    env_path: &Path,
+    data_dir: &Path,
+    origin: StartOrigin,
+) -> Result<String, String> {
     // Clear the user-stopped marker: the user has explicitly requested a start.
     if !stack_dev_mode_enabled() {
         clear_user_stopped(data_dir);
+    }
+    if origin == StartOrigin::Explicit {
+        // An explicit start gets a fresh automatic-retry budget.
+        reset_start_retry_budget(data_dir);
     }
 
     // Prevent concurrent start attempts.
@@ -131,11 +177,9 @@ pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Resul
             let formatted = format_start_failure_message(&error);
             if should_persist_start_failure(&error) {
                 let _ = mark_start_failed(data_dir, &error);
-                let _ = append_desktop_log_for(
-                    data_dir,
-                    "hub.start",
-                    &format!("Start failed (sticky failure state set): {}", formatted),
-                );
+                let outcome = record_start_failure(data_dir, now_ms());
+                let _ =
+                    append_desktop_log_for(data_dir, "hub.start", &outcome.log_message(&formatted));
             } else {
                 let _ = append_desktop_log_for(
                     data_dir,
@@ -163,6 +207,16 @@ fn start_hub_inner(
             env_path.display()
         ),
     );
+
+    // The WSL engine stops whenever WSL does. Start it before choosing an engine: with no engine
+    // answering, the start would fail with Docker Desktop advice that doesn't apply.
+    #[cfg(target_os = "windows")]
+    wake_wsl_engine_for_start(data_dir).map_err(|error| {
+        let message =
+            format!("Docker is not running: the Docker engine in WSL didn't start. {error}");
+        let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+        with_view_logs_hint(message)
+    })?;
 
     // Re-resolve on every start/retry so affinity tracks the live Hub stack.
     crate::docker_engine::clear_process_pin();
@@ -297,12 +351,29 @@ fn start_hub_inner(
             "hub.start",
             "Stack configuration changed — pulling images and recreating containers.",
         );
-        if let Err(error) = pull_stack_images(compose_path, env_path, data_dir) {
-            let _ = append_desktop_log_for(
-                data_dir,
-                "hub.start",
-                &format!("Stack image pull failed (non-fatal, continuing): {}", error),
-            );
+        match pull_stack_images(compose_path, env_path, data_dir) {
+            Ok(()) => {}
+            Err(StackPullError::Failed(error)) => {
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "hub.start",
+                    &format!("Stack image pull failed (non-fatal, continuing): {}", error),
+                );
+            }
+            // Compose would only pull what is missing again, and hang on it the same way.
+            Err(StackPullError::Hung) => {
+                let missing = missing_startup_images();
+                if !missing.is_empty() {
+                    let message = hung_pull_message(&missing);
+                    let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+                    return Err(with_view_logs_hint(message));
+                }
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "hub.start",
+                    "Stack image pull hung, but every image is here: continuing with them.",
+                );
+            }
         }
     }
 
@@ -320,6 +391,8 @@ fn start_hub_inner(
     // host.docker.internal bridge). No-op once configured or if Ollama isn't present.
     #[cfg(target_os = "windows")]
     ensure_wsl_engine_ollama_reachable(data_dir);
+    // And tell the Hub where the update listener answers: there, host.docker.internal is the WSL VM.
+    record_update_listener_host(data_dir);
     #[cfg(target_os = "linux")]
     refresh_rocm_host_probe_cache(data_dir);
 
@@ -470,6 +543,8 @@ fn start_hub_inner(
             // Persist after compose up (even if health check fails later) so retries
             // and subsequent launches do not repeatedly pull/recreate unchanged stacks.
             persist_config_hash(data_dir, compose_path, env_path);
+            // Before the Hub is up, so its first status sync finds them running.
+            start_apps_stopped_with_hub(data_dir);
             let _ = append_desktop_log_for(
                 data_dir,
                 "hub.start",
@@ -609,7 +684,13 @@ pub fn invalidate_config_hash(data_dir: &Path) {
     let _ = std::fs::remove_file(&hash_path);
 }
 
-/// Compute a SHA256 hash of the compose and env file contents.
+/// Compute a SHA256 hash of the compose and env file contents, leaving out the env file's `DOMAIN`.
+///
+/// `DOMAIN` is the zone the Hub learns from its Portal at pairing. The Hub writes it into this env
+/// file itself (`ConfigurationService.setDomain`) and applies it without a restart. Its boot reads
+/// the zone from its own settings, so the pre-pairing `DOMAIN` that the Hub container keeps in its
+/// environment (it gets the file through `env_file`) never wins (CI-Hub#1894). Hashing it made the
+/// first window open after pairing recreate the whole running Hub, tunnel included (#2314).
 pub fn compute_config_hash(compose_path: &Path, env_path: &Path) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -617,9 +698,38 @@ pub fn compute_config_hash(compose_path: &Path, env_path: &Path) -> String {
         hasher.update(&content);
     }
     if let Ok(content) = std::fs::read(env_path) {
-        hasher.update(&content);
+        for line in env_lines_without_zone(&content) {
+            hasher.update(line);
+        }
     }
     crate::digest_hex::lower_hex(&hasher.finalize())
+}
+
+/// The env file's lines, each with its line break, except its `DOMAIN=` lines. Every other line,
+/// `PUBLIC_DOMAIN=` and the like included, is kept byte for byte.
+fn env_lines_without_zone(content: &[u8]) -> impl Iterator<Item = &[u8]> {
+    content
+        .split_inclusive(|byte| *byte == b'\n')
+        .filter(|line| !line.trim_ascii_start().starts_with(b"DOMAIN="))
+}
+
+/// Why a pull didn't finish.
+#[derive(Debug, PartialEq, Eq)]
+pub enum StackPullError {
+    /// Docker answered with an error. Startup carries on: the images may already be here.
+    Failed(String),
+    /// Docker stopped making progress on every attempt, and nothing would have ended the wait.
+    Hung,
+}
+
+/// What the start screen says when a pull hangs and an image the Hub needs is missing.
+pub(crate) fn hung_pull_message(missing: &[String]) -> String {
+    format!(
+        "Companion Hub's download has stopped. Docker made no progress for {} minutes and {} still missing: {}. Check your internet connection, restart Docker and try again.",
+        PULL_QUIET_LIMIT.as_secs() / 60,
+        if missing.len() == 1 { "this image is" } else { "these images are" },
+        missing.join(", "),
+    )
 }
 
 /// Pull all stack images before compose up when configuration changed.
@@ -627,54 +737,76 @@ pub fn pull_stack_images(
     compose_path: &Path,
     env_path: &Path,
     data_dir: &Path,
-) -> Result<(), String> {
+) -> Result<(), StackPullError> {
     let _ = append_desktop_log_for(
         data_dir,
         "hub.start",
         "Pulling stack images before startup…",
     );
-    let output = docker_command()
-        .env("ENV_FILE", compose_env_file_var(env_path))
-        .args([
-            "compose",
-            "--env-file",
-            &env_path.to_string_lossy(),
-            "--project-name",
-            "ci-hub",
-            "-f",
-            &compose_path.to_string_lossy(),
-            "pull",
-        ])
-        .output()
-        .map_err(|e| format!("Failed to run docker compose pull: {}", e))?;
+    for attempt in 1..=PULL_ATTEMPTS {
+        let mut command = docker_command();
+        command
+            .env("ENV_FILE", compose_env_file_var(env_path))
+            .args([
+                "compose",
+                "--env-file",
+                &env_path.to_string_lossy(),
+                "--project-name",
+                "ci-hub",
+                "-f",
+                &compose_path.to_string_lossy(),
+                "pull",
+            ]);
+        let run = run_until_quiet(command, PULL_QUIET_LIMIT).map_err(|e| {
+            StackPullError::Failed(format!("Failed to run docker compose pull: {}", e))
+        })?;
 
-    let combined = format_command_output(
-        &String::from_utf8_lossy(&output.stdout),
-        &String::from_utf8_lossy(&output.stderr),
-    );
-
-    if output.status.success() {
-        let message = if combined.is_empty() {
-            "docker compose pull succeeded.".to_string()
-        } else {
-            format!("docker compose pull succeeded. {}", combined)
-        };
-        let _ = append_desktop_log_for(data_dir, "hub.start", &message);
-        Ok(())
-    } else {
-        Err(if combined.is_empty() {
-            format!(
-                "docker compose pull failed with exit code {:?}",
-                output.status.code()
-            )
-        } else {
-            format!("docker compose pull failed. {}", combined)
-        })
+        match run {
+            WatchedRun::Finished {
+                status,
+                stdout,
+                stderr,
+            } => {
+                let combined = format_command_output(&stdout, &stderr);
+                if status.success() {
+                    let message = if combined.is_empty() {
+                        "docker compose pull succeeded.".to_string()
+                    } else {
+                        format!("docker compose pull succeeded. {}", combined)
+                    };
+                    let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+                    return Ok(());
+                }
+                return Err(StackPullError::Failed(if combined.is_empty() {
+                    format!(
+                        "docker compose pull failed with exit code {:?}",
+                        status.code()
+                    )
+                } else {
+                    format!("docker compose pull failed. {}", combined)
+                }));
+            }
+            WatchedRun::WentQuiet { stdout, stderr } => {
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "hub.start",
+                    &format!(
+                        "docker compose pull made no progress for {} seconds, so it was stopped (attempt {} of {}). {}",
+                        PULL_QUIET_LIMIT.as_secs(),
+                        attempt,
+                        PULL_ATTEMPTS,
+                        format_command_output(&stdout, &stderr),
+                    ),
+                );
+            }
+        }
     }
+    Err(StackPullError::Hung)
 }
 
 /// Stop Hub containers without marking user-stopped (for updates).
 pub fn stop_hub_for_update(compose_path: &Path, env_path: &Path) -> Result<String, String> {
+    let _stack_change = StackChange::begin();
     let data_dir = get_hub_data_dir();
 
     // If Docker is not available there are no containers to tear down.
@@ -730,6 +862,7 @@ pub fn stop_hub_for_update(compose_path: &Path, env_path: &Path) -> Result<Strin
 
 /// Stop Hub containers
 pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> {
+    let _stack_change = StackChange::begin();
     let data_dir = get_hub_data_dir();
     // Record that the user intentionally stopped the Hub so the next launch
     // does not auto-restart it.
@@ -816,7 +949,10 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
     }
 }
 
-pub fn stop_managed_app_containers() -> Result<Option<String>, String> {
+/// Stops the running app containers along with the Hub and remembers them for the next start.
+/// `restart: unless-stopped` leaves a container stopped by hand stopped, so nothing else starts
+/// them again.
+pub fn stop_managed_app_containers(data_dir: &Path) -> Result<Option<String>, String> {
     if !is_docker_available() {
         return Ok(None);
     }
@@ -825,6 +961,7 @@ pub fn stop_managed_app_containers() -> Result<Option<String>, String> {
     if ids.is_empty() {
         return Ok(None);
     }
+    remember_apps_stopped_with_hub(data_dir, &ids);
 
     let mut command = docker_command();
     command.arg("stop");

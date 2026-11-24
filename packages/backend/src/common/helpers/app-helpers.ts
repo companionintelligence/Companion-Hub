@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
 
 export const extractAppUrn = (id: AppUrn) => {
@@ -18,6 +19,20 @@ export const extractAppUrn = (id: AppUrn) => {
 export const createAppUrn = (appName: string, appstore: string) => {
   return `${appName}:${appstore}` as AppUrn;
 };
+
+/**
+ * The Docker network an app's containers are on: its own, and no other app's. The Hub, Traefik and the
+ * Private VPN sidecar join it to reach the app; nothing the app declares can put it on a network it
+ * shares with another app (see "App networks" in docs/system/backend.md).
+ */
+export const appNetworkName = (appUrn: AppUrn): string => {
+  const { appName, appStoreId } = extractAppUrn(appUrn);
+  return `${appName}_${appStoreId}_network`;
+};
+
+/** The address a container holds on the app's own network, from its inspect's `NetworkSettings.Networks`. */
+export const ipOnAppNetwork = (appUrn: AppUrn, networks?: Record<string, { IPAddress?: string } | undefined> | null): string | undefined =>
+  networks?.[appNetworkName(appUrn)]?.IPAddress || undefined;
 
 /**
  * The shape both halves of an app URN must have.
@@ -68,14 +83,14 @@ const APP_URN_SEGMENT = /^[^.\-\s/\\\0][^\s/\\\0]*$/;
 export const castAppUrn = (id: string): AppUrn => {
   const separatorIndex = id.indexOf(':');
   if (separatorIndex === -1) {
-    throw new Error(`Invalid namespaced app id: ${id}`);
+    throw new BadRequestException(`Invalid namespaced app id: ${id}`);
   }
 
   const appName = id.substring(0, separatorIndex);
   const appStoreId = id.substring(separatorIndex + 1);
 
   if (!APP_URN_SEGMENT.test(appName) || !APP_URN_SEGMENT.test(appStoreId)) {
-    throw new Error(`Invalid namespaced app id: ${id}`);
+    throw new BadRequestException(`Invalid namespaced app id: ${id}`);
   }
 
   return id as AppUrn;

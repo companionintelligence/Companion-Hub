@@ -56,6 +56,31 @@ describe('readContainerOutput', () => {
     ]);
   });
 
+  // sync-rabbitmq-password.ts sends the broker password this way. The copy route is the only one on
+  // the WSL2 engine, and dropping the flag there would hand rabbitmqctl an empty password.
+  it('passes env as `-e NAME` on both routes, with the value only in the docker CLI environment', () => {
+    engineThatLosesExecOutput({ out: 'Success\n', err: '', status: '0\n' });
+
+    const result = readContainerOutput(
+      'ci-hub-queue',
+      ['sh', '-c', 'printf %s "$SECRET" | "$@"', 'sh', 'rabbitmqctl', 'authenticate_user', 'companion'],
+      {
+        env: { SECRET: 'broker-secret' },
+      },
+    );
+
+    expect(result.status).toBe(0);
+    const execs = spawnSync.mock.calls.filter(([, args]) => (args as string[])[0] === 'exec' && (args as string[]).includes('rabbitmqctl'));
+    expect(execs.map(([, args]) => (args as string[]).slice(0, 5))).toEqual([
+      ['exec', '-e', 'SECRET', 'ci-hub-queue', 'sh'],
+      ['exec', '-d', '-e', 'SECRET', 'ci-hub-queue'],
+    ]);
+    for (const [, args, options] of execs) {
+      expect((args as string[]).join(' ')).not.toContain('broker-secret');
+      expect((options as { env: NodeJS.ProcessEnv }).env.SECRET).toBe('broker-secret');
+    }
+  });
+
   it('waits for the exit status, which the command writes last, before taking its output', () => {
     // The first copy catches the command half way: no status yet, and only part of its output.
     engineThatLosesExecOutput({ out: '[{"id":1},' }, { out: '[{"id":1},{"id":2}]\n', err: '', status: '0\n' });

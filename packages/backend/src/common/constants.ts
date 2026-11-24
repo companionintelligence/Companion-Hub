@@ -54,6 +54,8 @@ export const TUNNEL_LEFTOVER_MARKER = 'leftover.json';
 export const tunnelLeftoverMarkerPath = () => path.join(TUNNEL_DIR, TUNNEL_LEFTOVER_MARKER);
 /** Shared secret for the desktop host update listener (written by companion-hub desktop). */
 export const UPDATE_LISTENER_TOKEN_FILENAME = 'update-listener.token';
+/** Where that listener answers from inside the Hub container, when the desktop app knows better than host.docker.internal. */
+export const UPDATE_LISTENER_HOST_FILENAME = 'update-listener.host';
 
 export const SESSION_COOKIE_NAME = 'ci-hub-sid';
 /**
@@ -113,6 +115,15 @@ export function hubContainerName(env: NodeJS.ProcessEnv = process.env): string {
   return env.RABBITMQ_HOST === LEGACY_RABBITMQ_HOST ? LEGACY_HUB_CONTAINER_NAME : DEFAULT_HUB_CONTAINER_NAME;
 }
 
+/**
+ * Where to look for this Hub's own container. The hostname is the container ID unless compose sets
+ * `hostname:`, which makes it the one lookup that cannot find a different container; the names cover
+ * the rest, legacy topology included.
+ */
+export function selfContainerCandidates(): string[] {
+  return [...new Set([os.hostname(), hubContainerName(), ...HUB_CONTAINER_NAMES].filter(Boolean))];
+}
+
 export function hubNetworkName(env: NodeJS.ProcessEnv = process.env): string {
   return `${hubContainerName(env)}_network`;
 }
@@ -121,10 +132,63 @@ export function hubQueueName(env: NodeJS.ProcessEnv = process.env): string {
   return hubContainerName(env) === LEGACY_HUB_CONTAINER_NAME ? LEGACY_RABBITMQ_HOST : DEFAULT_RABBITMQ_HOST;
 }
 
-export function hubAppNetworkNames(env: NodeJS.ProcessEnv = process.env): string[] {
-  const primary = hubNetworkName(env);
-  return primary === LEGACY_NETWORK_NAME ? [primary] : [primary, LEGACY_NETWORK_NAME];
-}
+/**
+ * The ONLY keys an app's env may inherit from the Hub's own `.env`.
+ *
+ * `generateEnvFile` starts from the Hub's `/data/.env` — the file that also
+ * holds the Hub's Postgres and RabbitMQ passwords, its JWT secret, its Portal
+ * device key and whatever else the operator or installer put there — and
+ * writes the result to `app.env`, which is `env_file` for every service of the
+ * app. It used to copy that file whole and strip a short denylist, so each new
+ * Hub secret reached every installed app by default (the broker password did,
+ * and with it the ability to drive the Hub's lifecycle queue). This is the
+ * allowlist that replaces it: an app inherits these and nothing else. Every
+ * other value the Hub wants an app to have — its identity, its keys, its
+ * inference and Memory credentials — is set explicitly further down, from the
+ * Hub's own state, not inherited.
+ *
+ * Two groups:
+ *
+ * - Hub identity a manifest may reference (`DOMAIN`, `ROOT_FOLDER_HOST`,
+ *   `LOCAL_DOMAIN` are in the marketplace's `HUB_PROVIDED_VARS` contract;
+ *   `TZ` is used by dozens of manifests) and the values this function itself
+ *   reads back from the seeded map (`CI_HUB_APP_DATA_PATH`, `LOCAL_DOMAIN`).
+ * - Operator pins: the Hub honours a value the operator set in its `.env` for
+ *   these instead of its own default (`setUnlessOperatorSet`). They stay
+ *   operator-overridable, which is the documented behaviour. The maps keys are
+ *   pinned the same way but only for first-party Memory
+ *   ({@link HUB_ENV_KEYS_INHERITED_BY_FIRST_PARTY_MEMORY}).
+ *
+ * An app-specific pass-through — the Memory `url_env`/`token_env` names a
+ * manifest declares, which an operator may pin the same way — is added per app
+ * by {@link appInheritableHubEnvKeys}, for official-store apps only. Add a key here only if an app must read
+ * it from the Hub's `.env` specifically; if the Hub knows the value, set it.
+ */
+export const HUB_ENV_KEYS_INHERITED_BY_APPS: ReadonlySet<string> = new Set([
+  'DOMAIN',
+  'LOCAL_DOMAIN',
+  'ROOT_FOLDER_HOST',
+  'CI_HUB_APP_DATA_PATH',
+  'INTERNAL_IP',
+  'ARCHITECTURE',
+  'TZ',
+  'LOG_LEVEL',
+  'NODE_ENV',
+  'CI_HUB_VERSION',
+  'DEMO_MODE',
+  'CI_CLOUD_URL',
+  'PORTAL_OIDC_ENABLED',
+  'PORTAL_OIDC_ISSUER',
+  'PORTAL_OIDC_JWKS_URI',
+]);
+
+/**
+ * Operator pins only first-party Companion Memory inherits: the maps keys. Memory is the one app the
+ * Hub hands Portal's maps key, and an operator's own key in the Hub's `.env` wins over Portal's there
+ * (`setUnlessOperatorSet`, the maps-key gate). They used to be in {@link HUB_ENV_KEYS_INHERITED_BY_APPS},
+ * which handed an operator's Google Maps key to every app from every store; no store app reads them.
+ */
+export const HUB_ENV_KEYS_INHERITED_BY_FIRST_PARTY_MEMORY: ReadonlySet<string> = new Set(['GOOGLE_MAPS_KEY', 'GEOCODING_API_KEY']);
 
 export function isHubApplianceContainerName(name: string): boolean {
   const n = name.replace(/^\//, '');
@@ -144,15 +208,6 @@ export function managedAppLabels(appUrn: string): Record<string, string | boolea
   };
 }
 
-export function ipOnHubNetwork(networks?: Record<string, { IPAddress?: string } | undefined> | null): string | undefined {
-  if (!networks) return undefined;
-  for (const name of HUB_NETWORK_NAMES) {
-    const ip = networks[name]?.IPAddress;
-    if (ip) return ip;
-  }
-  return undefined;
-}
-
 // Traefik
 export const DEFAULT_FORWARD_AUTH_URL = `http://${hubContainerName()}:${process.env.API_PORT || '3000'}/api/auth/traefik`;
 
@@ -170,6 +225,12 @@ export const DEFAULT_TZ = 'UTC';
 
 /** Last-resort fallback when LOCAL_DOMAIN and DOMAIN are both unset. Prefer localhost:port for local app access. */
 export const DEFAULT_LOCAL_DOMAIN = 'localhost';
+
+/**
+ * Host ports the Hub's own web ingress (Traefik) holds. An app published on one of them can never bind, so
+ * a port-expose app is refused them when it is saved, and a conflict on them is the user's configuration.
+ */
+export const HUB_INGRESS_HOST_PORTS: readonly number[] = [80, 443];
 
 function isProductionEnvironmentDefault() {
   return process.env.CI_HUB_ENVIRONMENT === 'production';
@@ -192,8 +253,8 @@ export const DEFAULT_PUBLIC_DOMAIN = isProductionEnvironmentDefault() ? DEFAULT_
 export const DEFAULT_DEMO_MODE = 'false';
 export const DEFAULT_DISABLE_PASSWORD_RESET = 'true';
 export const DEFAULT_GUEST_DASHBOARD = 'false';
-export const DEFAULT_ALLOW_AUTO_THEMES = 'true';
-export const DEFAULT_ALLOW_ERROR_MONITORING = 'true';
+// Opt-in: error monitoring stays off until the user turns it on.
+export const DEFAULT_ALLOW_ERROR_MONITORING = 'false';
 export const DEFAULT_PERSIST_TRAEFIK_CONFIG = 'false';
 export const DEFAULT_QUEUE_TIMEOUT_IN_MINUTES = '5';
 /** Minimum RPC/status grace for app install while large images pull (e.g. OpenClaw ~1GB). */
@@ -239,5 +300,4 @@ export const HUB_STACK_REGISTRY_REPO = 'ci-hub';
 export const HUB_STACK_IMAGE_REPO = 'ghcr.io/companionintelligence/ci-hub';
 
 // Theming
-export const DEFAULT_THEME_BASE = 'gray';
 export const DEFAULT_THEME_COLOR = 'blue';

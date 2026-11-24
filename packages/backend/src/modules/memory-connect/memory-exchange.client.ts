@@ -47,11 +47,12 @@ export class MemoryExchangeClient {
 
   /**
    * Exchange a one-time connect code for the raw memory key. `baseUrl` is
-   * CI-Server's internal address on the shared docker network.
+   * CI-Server's gateway address on its own network (`ResolvedMemoryProvider.internalUrl`),
+   * null while it is not running.
    *
    * @throws if the shared secret is unset or CI-Server rejects/does not answer.
    */
-  async exchange(baseUrl: string, code: string): Promise<MemoryExchangeResult> {
+  async exchange(baseUrl: string | null, code: string): Promise<MemoryExchangeResult> {
     return this.post<MemoryExchangeResult>(baseUrl, '/connect/exchange', { code });
   }
 
@@ -60,7 +61,7 @@ export class MemoryExchangeClient {
    *
    * @throws if the shared secret is unset or CI-Server rejects/does not answer.
    */
-  async rotate(baseUrl: string, appUrn: string): Promise<MemoryExchangeResult> {
+  async rotate(baseUrl: string | null, appUrn: string): Promise<MemoryExchangeResult> {
     return this.post<MemoryExchangeResult>(baseUrl, '/connect/rotate', { app: appUrn });
   }
 
@@ -71,7 +72,11 @@ export class MemoryExchangeClient {
    * outcome (2xx, or a transient network/5xx error) is treated as "still valid"
    * so a blip never drops a working connection.
    */
-  async isKeyValid(baseUrl: string, token: string): Promise<boolean> {
+  async isKeyValid(baseUrl: string | null, token: string): Promise<boolean> {
+    if (!baseUrl) {
+      // ci-memory's gateway is not running: nothing to ask, and a stopped gateway is not a revoked key.
+      return true;
+    }
     try {
       await axios.get(`${this.trimTrailingSlash(baseUrl)}/api/memory/context`, {
         headers: { 'x-api-key': token },
@@ -100,7 +105,7 @@ export class MemoryExchangeClient {
    * the UI never falsely shows "disconnected" while the key is still live, while
    * uninstall proceeds regardless (the key then lapses on its own TTL).
    */
-  async revoke(baseUrl: string, appUrn: string): Promise<boolean> {
+  async revoke(baseUrl: string | null, appUrn: string): Promise<boolean> {
     try {
       await this.post(baseUrl, '/connect/revoke', { app: appUrn });
       this.logger.info(`[MemoryConnect] revoked key for ${appUrn} at ${baseUrl}`);
@@ -121,7 +126,10 @@ export class MemoryExchangeClient {
    *   gateway strips `/api` before the guard reconstructs the path it verifies.
    *   The request is still POSTed to the `/api`-prefixed URL so nginx routes it.
    */
-  private async post<T>(baseUrl: string, apiPath: string, body: Record<string, unknown>): Promise<T> {
+  private async post<T>(baseUrl: string | null, apiPath: string, body: Record<string, unknown>): Promise<T> {
+    if (!baseUrl) {
+      throw new Error("Companion Memory's gateway is not running");
+    }
     const secret = this.config.get('forwardAuthSecret');
 
     if (!secret) {

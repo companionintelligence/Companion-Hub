@@ -55,9 +55,38 @@ describe('iOS store readiness', () => {
       expect(manifest).toContain(reason);
     }
 
-    // Declared collection matches what the connect flow actually sends to the Portal.
-    expect(manifest).toContain('NSPrivacyCollectedDataTypeEmailAddress');
-    expect(manifest).toContain('NSPrivacyCollectedDataTypeCredentials');
+    // Declared collection matches what the app sends: the email to the Portal, and diagnostics,
+    // device ID and interaction data to Sentry while the user has opted in. Every entry must be
+    // linked, not tracked, and used for app functionality only.
+    // The block runs to the next top-level key. A lazy match to the first closing array would stop
+    // inside the first entry's purposes list.
+    const start = manifest.indexOf('<key>NSPrivacyCollectedDataTypes</key>');
+    expect(start).toBeGreaterThan(-1);
+    const nextKey = manifest.indexOf('\n\t<key>', start + 1);
+    const collected = manifest.slice(start, nextKey === -1 ? undefined : nextKey);
+    const entries = [...collected.matchAll(/<dict>([\s\S]*?)<\/dict>/g)].map(([, body = '']) => ({
+      type: body.match(/<key>NSPrivacyCollectedDataType<\/key>\s*<string>([^<]+)<\/string>/)?.[1],
+      linked: body.match(/<key>NSPrivacyCollectedDataTypeLinked<\/key>\s*<(true|false)\/>/)?.[1],
+      tracking: body.match(/<key>NSPrivacyCollectedDataTypeTracking<\/key>\s*<(true|false)\/>/)?.[1],
+      purposes: [...body.matchAll(/<string>(NSPrivacyCollectedDataTypePurpose[A-Za-z]+)<\/string>/g)].map((m) => m[1]),
+    }));
+    expect(entries.map((entry) => entry.type).sort()).toEqual([
+      'NSPrivacyCollectedDataTypeCrashData',
+      'NSPrivacyCollectedDataTypeDeviceID',
+      'NSPrivacyCollectedDataTypeEmailAddress',
+      'NSPrivacyCollectedDataTypeOtherDiagnosticData',
+      'NSPrivacyCollectedDataTypePerformanceData',
+      'NSPrivacyCollectedDataTypeProductInteraction',
+    ]);
+    for (const entry of entries) {
+      expect(entry).toMatchObject({
+        linked: 'true',
+        tracking: 'false',
+        purposes: ['NSPrivacyCollectedDataTypePurposeAppFunctionality'],
+      });
+    }
+    // Apple does not document a Credentials data type, so the manifest must not declare one.
+    expect(manifest).not.toContain('NSPrivacyCollectedDataTypeCredentials');
 
     // It must be a target resource or xcodegen leaves it out of the bundle,
     // which fails validation exactly as if it never existed.
@@ -99,7 +128,18 @@ describe('iOS store readiness', () => {
     const entitlements = read('gen/apple/ci-os-hub-mobile_iOS/ci-os-hub-mobile_iOS.entitlements');
     expect(entitlements).toContain('com.apple.developer.associated-domains');
     expect(entitlements).toContain('<string>applinks:hub.ci.computer</string>');
-    expect(entitlements).toContain('<string>applinks:hub.companionintelligence.com</string>');
+    expect(entitlements).not.toContain('applinks:hub.companionintelligence.com');
+  });
+
+  it('routes the production Hub host through the deep-link plugin', () => {
+    // The plugin strips associated-domains from every build unless a mobile entry
+    // carries a host. The committed entitlements alone would not catch that.
+    const conf = JSON.parse(read('tauri.conf.json')) as {
+      plugins: { 'deep-link': { mobile: Array<{ host?: string }> } };
+    };
+    const hosts = conf.plugins['deep-link'].mobile.map((entry) => entry.host);
+    // Only the production host: the dev-only host would be claimed by the store build for nothing.
+    expect(hosts.filter(Boolean)).toEqual(['hub.ci.computer']);
   });
 });
 
@@ -194,8 +234,9 @@ describe('mobile privacy/permission posture', () => {
    * Every zone Companion Portal publishes a Hub under, the new `.pw` zones first.
    * The app reaches a Hub at its public hostname through the native HTTP client
    * (`http:default`), and its events and sockets through the webview (CSP
-   * `connect-src`, `remote.urls`). A zone missing from any one of the three is a
-   * Hub the phone cannot sign in to, with nothing on screen saying why.
+   * `connect-src`). A zone missing from either is a Hub the phone cannot sign in
+   * to, with nothing on screen saying why. `remote.urls` is not one of them: it
+   * decides which REMOTE pages may call native commands, and names no Hub zone.
    */
   const HUB_ZONES = [
     'ci.computer',
@@ -219,6 +260,15 @@ describe('mobile privacy/permission posture', () => {
     'mysticalengine.com',
   ];
 
+  it('lets only the local dev server use native commands, never a page on a Hub zone', () => {
+    const caps = JSON.parse(read('capabilities/default.json')) as { remote: { urls: string[] } };
+
+    // The bundled UI needs no remote.urls entry. Naming the Hub zones gave the session store, native
+    // HTTP and the opener to any page on them that loaded in the window, installed apps included.
+    // One pattern also keeps startup fast: Tauri compiles each one for every allowed command at launch.
+    expect(caps.remote.urls).toEqual(['http://(localhost|127\\.0\\.0\\.1|lvh\\.me):*']);
+  });
+
   it.each(HUB_ZONES)('can reach a Hub published under %s', (zone) => {
     const caps = JSON.parse(read('capabilities/default.json')) as {
       remote: { urls: string[] };
@@ -231,7 +281,6 @@ describe('mobile privacy/permission posture', () => {
     const connectSrc = (csp.match(/connect-src([^;]*)/)?.[1] ?? '').trim().split(/\s+/);
 
     expect(http?.allow?.map((entry) => entry.url)).toContain(`https://*.${zone}/*`);
-    expect(caps.remote.urls).toContain(`https://*.${zone}`);
     expect(connectSrc).toContain(`https://*.${zone}`);
     expect(connectSrc).toContain(`wss://*.${zone}`);
   });

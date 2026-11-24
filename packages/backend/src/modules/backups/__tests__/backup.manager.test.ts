@@ -1,11 +1,15 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AppUrn } from '@ci-hub/common/types';
 import { ArchiveService } from '@/core/archive/archive.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import type { AppVolumeArchiveService } from '@/modules/docker/app-volume-archive.service';
+import type { DockerService } from '@/modules/docker/docker.service';
 import { BackupManager } from '../backup.manager';
 
 describe('BackupManager.enforceRetentionAllApps', () => {
@@ -55,7 +59,15 @@ describe('BackupManager.enforceRetentionAllApps', () => {
     filesystem.getSafeFilePath.mockImplementation((p: string) => p);
     filesystem.removeFile.mockResolvedValue(undefined as never);
 
-    manager = new BackupManager(mock<ArchiveService>(), mock<LoggerService>(), config, filesystem, mock<AppFilesManager>());
+    manager = new BackupManager(
+      mock<ArchiveService>(),
+      mock<LoggerService>(),
+      config,
+      filesystem,
+      mock<AppFilesManager>(),
+      mock<AppVolumeArchiveService>(),
+      mock<DockerService>(),
+    );
     manager.onApplicationShutdown(); // stop the constructor's weekly interval
   });
 
@@ -68,6 +80,25 @@ describe('BackupManager.enforceRetentionAllApps', () => {
     // backups/plane/ci-marketplace — a path that never exists — making the sweep a no-op.
     expect(listSpy).toHaveBeenCalledWith(`${app}:${store}`);
     await expect(listSpy.mock.results[0]?.value).resolves.toHaveLength(4);
+  });
+
+  // The pre-update snapshots live beside the backups, under backups/.pre-update-snapshots/<store>/<app>/<id>.
+  // Read as an app store, that folder would turn every snapshot id into an "app" and the sweep would go
+  // looking for archives in folders that are not backups.
+  it('does not read the pre-update snapshot folder as an app store', async () => {
+    const baseList = filesystem.listFiles.getMockImplementation() as (dir: string) => Promise<string[]>;
+    filesystem.listFiles.mockImplementation(async (dir: string) => {
+      if (dir === `${dataDir}/backups`) return ['.pre-update-snapshots', store];
+      if (dir === `${dataDir}/backups/.pre-update-snapshots`) return [store];
+      return baseList(dir);
+    });
+    const listSpy = vi.spyOn(manager, 'listBackupsByAppId');
+
+    await manager.enforceRetentionAllApps();
+
+    expect(filesystem.listFiles).not.toHaveBeenCalledWith(`${dataDir}/backups/.pre-update-snapshots`);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+    expect(listSpy).toHaveBeenCalledWith(`${app}:${store}`);
   });
 
   it('prunes only the archives beyond maxBackups, keeping the newest', async () => {
@@ -88,7 +119,15 @@ describe('BackupManager.getAppBackupsHostDir', () => {
       return undefined as never;
     });
 
-    const manager = new BackupManager(mock<ArchiveService>(), mock<LoggerService>(), config, mock<FilesystemService>(), mock<AppFilesManager>());
+    const manager = new BackupManager(
+      mock<ArchiveService>(),
+      mock<LoggerService>(),
+      config,
+      mock<FilesystemService>(),
+      mock<AppFilesManager>(),
+      mock<AppVolumeArchiveService>(),
+      mock<DockerService>(),
+    );
     manager.onApplicationShutdown();
     return manager;
   };
@@ -124,7 +163,16 @@ describe('BackupManager.uploadBackup', () => {
     filesystem = mock<FilesystemService>();
     filesystem.createDirectory.mockResolvedValue(true);
     filesystem.writeBinaryFile.mockResolvedValue(true);
-    manager = new BackupManager(mock<ArchiveService>(), mock<LoggerService>(), config, filesystem, mock<AppFilesManager>());
+    filesystem.restrictToOwner.mockResolvedValue(true);
+    manager = new BackupManager(
+      mock<ArchiveService>(),
+      mock<LoggerService>(),
+      config,
+      filesystem,
+      mock<AppFilesManager>(),
+      mock<AppVolumeArchiveService>(),
+      mock<DockerService>(),
+    );
     manager.onApplicationShutdown();
   });
 
@@ -143,5 +191,246 @@ describe('BackupManager.uploadBackup', () => {
     await expect(manager.uploadBackup('app:store' as never, 'fresh.tar.gz', Buffer.from('x'))).resolves.toBeUndefined();
 
     expect(filesystem.writeBinaryFile).toHaveBeenCalledWith('/data/backups/store/app/fresh.tar.gz', expect.any(Buffer));
+  });
+
+  it('makes an uploaded backup owner-only, as one the Hub makes itself is', async () => {
+    filesystem.pathExists.mockResolvedValue(false);
+
+    await manager.uploadBackup('app:store' as never, 'fresh.tar.gz', Buffer.from('x'));
+
+    expect(filesystem.restrictToOwner).toHaveBeenCalledWith('/data/backups/store/app/fresh.tar.gz');
+    expect(filesystem.restrictToOwner.mock.invocationCallOrder[0]).toBeGreaterThan(filesystem.writeBinaryFile.mock.invocationCallOrder[0]);
+  });
+
+  it('does not keep an uploaded backup it could not make owner-only', async () => {
+    filesystem.pathExists.mockResolvedValue(false);
+    filesystem.restrictToOwner.mockResolvedValue(false);
+
+    await expect(manager.uploadBackup('app:store' as never, 'fresh.tar.gz', Buffer.from('x'))).rejects.toThrow('owner-only');
+
+    expect(filesystem.removeFile).toHaveBeenCalledWith('/data/backups/store/app/fresh.tar.gz');
+  });
+});
+
+/**
+ * On a Windows Hub the app-data folder cannot carry file ownership, so most apps keep their database
+ * in a named Docker volume instead of the data folder, and a backup of the folders alone left it out.
+ * These run the real BackupManager and FilesystemService over the in-memory filesystem. `tar` and
+ * Docker are stand-ins that keep what they are given, so a test can say what went into the archive
+ * and what came back out of it.
+ */
+describe('BackupManager: named Docker volumes', () => {
+  const appUrn = 'wordpress:ci-marketplace' as AppUrn;
+  const database = 'wordpress_ci-marketplace_data-mariadb';
+  const appDataDir = path.join('/app-data', 'ci-marketplace', 'wordpress');
+  const appInstalledDir = path.join('/data', 'apps', 'ci-marketplace', 'wordpress');
+  const userConfigDir = path.join('/data', 'user-config', 'ci-marketplace', 'wordpress');
+  const backupDir = path.join('/data', 'backups', 'ci-marketplace', 'wordpress');
+
+  let manager: BackupManager;
+  let archive: MockProxy<ArchiveService>;
+  let appVolumes: MockProxy<AppVolumeArchiveService>;
+  /** The Docker volumes on the engine, by name: the key compose gave each one, and its files. */
+  let engine: Map<string, { key: string; files: Record<string, string> }>;
+  /** What was in the folder `tar` was last asked to archive, at that moment. */
+  let archived: Record<string, string | null>;
+
+  /** Every file (with its text) and folder (`null`) under `root`, by its path relative to `root`. */
+  const readTree = async (root: string) => {
+    const tree: Record<string, string | null> = {};
+    const walk = async (dir: string) => {
+      for (const entry of await fs.promises.readdir(dir, { withFileTypes: true })) {
+        const full = path.join(dir, String(entry.name));
+        const relative = path.relative(root, full).split(path.sep).join('/');
+        if (entry.isDirectory()) {
+          tree[`${relative}/`] = null;
+          await walk(full);
+        } else {
+          tree[relative] = await fs.promises.readFile(full, 'utf8');
+        }
+      }
+    };
+    await walk(root);
+    return tree;
+  };
+
+  const writeTree = async (root: string, tree: Record<string, string | null>) => {
+    for (const [relative, content] of Object.entries(tree)) {
+      const target = path.join(root, relative);
+      if (content === null) {
+        await fs.promises.mkdir(target, { recursive: true });
+      } else {
+        await fs.promises.mkdir(path.dirname(target), { recursive: true });
+        await fs.promises.writeFile(target, content);
+      }
+    }
+  };
+
+  beforeEach(async () => {
+    for (const [dir, file, content] of [
+      [appDataDir, 'app.env', 'DB_PASSWORD=secret'],
+      [appInstalledDir, 'docker-compose.yml', 'services: {}'],
+      [userConfigDir, 'app.env', 'EXTRA=1'],
+    ] as const) {
+      await fs.promises.mkdir(dir, { recursive: true });
+      await fs.promises.writeFile(path.join(dir, file), content);
+    }
+
+    const config = mock<ConfigurationService>();
+    config.get.mockImplementation((key: string) => (key === 'directories' ? ({ dataDir: '/data' } as never) : ({ maxBackups: 0 } as never)));
+    const appFilesManager = mock<AppFilesManager>();
+    appFilesManager.getAppPaths.mockReturnValue({ appDataDir, appInstalledDir } as never);
+
+    const filesystem = new FilesystemService(mock<LoggerService>());
+    let temps = 0;
+    vi.spyOn(filesystem, 'createTempDirectory').mockImplementation(async () => {
+      const dir = path.join('/data', 'tmp', `work-${++temps}`);
+      await fs.promises.mkdir(dir, { recursive: true });
+      return dir;
+    });
+
+    // `tar` writes the folder it is given as JSON, so the archive holds exactly what the folder did.
+    archived = {};
+    archive = mock<ArchiveService>();
+    archive.createTarGz.mockImplementation(async (sourceDir, destinationFile) => {
+      archived = await readTree(sourceDir);
+      await fs.promises.writeFile(destinationFile, JSON.stringify(archived));
+      return { stdout: '', stderr: '', exitCode: 0 };
+    });
+    archive.listTarGz.mockImplementation(async (file) => {
+      const tree = JSON.parse(await fs.promises.readFile(file, 'utf8')) as Record<string, string | null>;
+      return [
+        { path: './', type: 'd' },
+        ...Object.entries(tree).map(([entry, content]) => ({ path: `./${entry}`, type: content === null ? 'd' : '-' })),
+      ];
+    });
+    archive.extractTarGz.mockImplementation(async (file, destinationDir) => {
+      await writeTree(destinationDir, JSON.parse(await fs.promises.readFile(file, 'utf8')));
+      return { stdout: '', stderr: '', exitCode: 0 };
+    });
+    // A volume's archive is its files as JSON, so one that does not parse is one tar cannot read.
+    archive.verifyPlainTar.mockImplementation(async (file) => {
+      JSON.parse(await fs.promises.readFile(file, 'utf8'));
+    });
+
+    // Docker keeps volumes in a map, and a volume's archive is its files as JSON.
+    engine = new Map();
+    appVolumes = mock<AppVolumeArchiveService>();
+    appVolumes.listAppVolumes.mockImplementation(async () => [...engine].map(([name, { key }]) => ({ name, key })));
+    appVolumes.exportVolume.mockImplementation(async (name, file) => {
+      await fs.promises.writeFile(file, JSON.stringify(engine.get(name)?.files));
+    });
+    appVolumes.restoreTargets.mockImplementation(async (_appUrn, keys) =>
+      keys.map((key) => {
+        const name = [...engine].find(([, volume]) => volume.key === key)?.[0];
+        return { name: name ?? `wordpress_ci-marketplace_${key}`, key, create: !name };
+      }),
+    );
+    appVolumes.importVolume.mockImplementation(async (_appUrn, target, file) => {
+      engine.set(target.name, { key: target.key, files: JSON.parse(await fs.promises.readFile(file, 'utf8')) });
+    });
+
+    manager = new BackupManager(archive, mock<LoggerService>(), config, filesystem, appFilesManager, appVolumes, mock<DockerService>());
+    manager.onApplicationShutdown();
+  });
+
+  it("brings back an app's database kept in a named volume", async () => {
+    engine.set(database, { key: 'data-mariadb', files: { ibdata1: 'posts and users' } });
+
+    const { filename } = await manager.backupApp(appUrn);
+    // Resetting the app leaves an empty database volume.
+    engine.set(database, { key: 'data-mariadb', files: {} });
+    await manager.restoreApp(appUrn, filename);
+
+    expect(engine.get(database)?.files).toEqual({ ibdata1: 'posts and users' });
+  });
+
+  it('puts each named volume in the archive as volumes/<key>.tar', async () => {
+    engine.set(database, { key: 'data-mariadb', files: { ibdata1: 'posts and users' } });
+
+    await manager.backupApp(appUrn);
+
+    expect(archived['volumes/data-mariadb.tar']).toBe(JSON.stringify({ ibdata1: 'posts and users' }));
+  });
+
+  it('archives an app without named volumes exactly as before', async () => {
+    await manager.backupApp(appUrn);
+
+    expect(Object.keys(archived).sort()).toEqual([
+      'app-data/',
+      'app-data/app.env',
+      'app/',
+      'app/docker-compose.yml',
+      'user-config/',
+      'user-config/app.env',
+    ]);
+    expect(appVolumes.exportVolume).not.toHaveBeenCalled();
+  });
+
+  it('does not report a backup when a volume could not be copied', async () => {
+    engine.set(database, { key: 'data-mariadb', files: { ibdata1: 'posts and users' } });
+    appVolumes.exportVolume.mockRejectedValue(new Error('docker run exited 1: tar: write error: No space left on device'));
+
+    await expect(manager.backupApp(appUrn)).rejects.toThrow('No space left on device');
+
+    await expect(fs.promises.readdir(backupDir).catch(() => [])).resolves.toEqual([]);
+  });
+
+  it("refuses a restore before it touches the app's files when a volume cannot go back", async () => {
+    engine.set(database, { key: 'data-mariadb', files: { ibdata1: 'posts and users' } });
+    const { filename } = await manager.backupApp(appUrn);
+    await fs.promises.writeFile(path.join(appDataDir, 'app.env'), 'DB_PASSWORD=changed');
+    appVolumes.restoreTargets.mockRejectedValue(new Error('Volume wordpress_ci-marketplace_data-mariadb belongs to another app'));
+
+    await expect(manager.restoreApp(appUrn, filename)).rejects.toThrow('belongs to another app');
+
+    await expect(fs.promises.readFile(path.join(appDataDir, 'app.env'), 'utf8')).resolves.toBe('DB_PASSWORD=changed');
+    expect(appVolumes.importVolume).not.toHaveBeenCalled();
+  });
+
+  it('refuses a volume archive cut short before it empties the volume or touches the app files', async () => {
+    engine.set(database, { key: 'data-mariadb', files: { ibdata1: 'live' } });
+    appVolumes.exportVolume.mockImplementation(async (_name, file) => {
+      await fs.promises.writeFile(file, '{"ibdata1": "posts an');
+    });
+    const { filename } = await manager.backupApp(appUrn);
+    await fs.promises.writeFile(path.join(appDataDir, 'app.env'), 'DB_PASSWORD=changed');
+
+    await expect(manager.restoreApp(appUrn, filename)).rejects.toThrow();
+
+    await expect(fs.promises.readFile(path.join(appDataDir, 'app.env'), 'utf8')).resolves.toBe('DB_PASSWORD=changed');
+    expect(appVolumes.importVolume).not.toHaveBeenCalled();
+    expect(engine.get(database)?.files).toEqual({ ibdata1: 'live' });
+  });
+
+  it('leaves the backup archive readable by its owner alone', async () => {
+    const { filename } = await manager.backupApp(appUrn);
+
+    expect((await fs.promises.stat(path.join(backupDir, filename))).mode & 0o777).toBe(0o600);
+  });
+
+  it('keeps no backup whose archive could not be made owner-only', async () => {
+    // The first call restricts the archive before the copy; the second restricts the copy in the backups folder.
+    const restrict = vi.spyOn(FilesystemService.prototype, 'restrictToOwner').mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+
+    try {
+      await expect(manager.backupApp(appUrn)).rejects.toThrow('owner-only');
+
+      await expect(fs.promises.readdir(backupDir).catch(() => [])).resolves.toEqual([]);
+    } finally {
+      restrict.mockRestore();
+    }
+  });
+
+  it('restores a backup that has no volumes without asking Docker about them', async () => {
+    const { filename } = await manager.backupApp(appUrn);
+    engine.set(database, { key: 'data-mariadb', files: { ibdata1: 'live' } });
+    await fs.promises.writeFile(path.join(appDataDir, 'app.env'), 'DB_PASSWORD=changed');
+
+    await manager.restoreApp(appUrn, filename);
+
+    await expect(fs.promises.readFile(path.join(appDataDir, 'app.env'), 'utf8')).resolves.toBe('DB_PASSWORD=secret');
+    expect(engine.get(database)?.files).toEqual({ ibdata1: 'live' });
+    expect(appVolumes.restoreTargets).not.toHaveBeenCalled();
   });
 });

@@ -38,14 +38,15 @@ export const LanguageSelector = (props: IProps) => {
     setLocale(resolveSupportedLocale(initialLocale));
   }, [initialLocale]);
 
-  const onChange = (newLocale: Locale) => {
-    i18next.changeLanguage(newLocale);
-    setLocale(newLocale);
+  const onChange = (newLocale: string) => {
+    const supported = resolveSupportedLocale(newLocale);
+    i18next.changeLanguage(supported);
+    setLocale(supported);
   };
 
   return (
     <Select value={locale} onValueChange={onChange}>
-      <SelectTrigger className="mb-3" name="language" label={showLabel && <LanguageSelectorLabel />}>
+      <SelectTrigger className="mb-3" name="language" aria-label={t('SETTINGS_GENERAL_LANGUAGE')} label={showLabel && <LanguageSelectorLabel />}>
         <SelectValue placeholder={t('SETTINGS_GENERAL_LANGUAGE')} />
       </SelectTrigger>
       <SelectContent>

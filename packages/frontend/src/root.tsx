@@ -1,10 +1,24 @@
+import { syncTauriWindowBackground } from '@/lib/tauri-window-theme';
 import { Titlebar } from './components/titlebar/titlebar';
 import { HubStatus } from './components/hub-status/hub-status';
 import { useUpdateChecker } from './hooks/use-update-checker';
 import { useDesktopRestartNotice } from './hooks/use-desktop-restart-notice';
-import { Suspense, useEffect, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { Toaster } from '@/components/ui/Toaster/Toaster';
-import { Links, Meta, Navigate, Outlet, Scripts, ScrollRestoration, isRouteErrorResponse, redirect, useLocation, useRevalidator } from 'react-router';
+import { toasterPlacement } from '@/components/ui/Toaster/toaster-placement';
+import {
+  Links,
+  Meta,
+  Navigate,
+  Outlet,
+  Scripts,
+  ScrollRestoration,
+  isRouteErrorResponse,
+  redirect,
+  useLocation,
+  useNavigation,
+  useRevalidator,
+} from 'react-router';
 import type { Route } from './+types/root';
 import { userContext } from './api-client';
 import { client } from './api-client/client.gen';
@@ -16,6 +30,7 @@ import { ThemeProvider } from './components/providers/theme/theme-provider';
 import { normalizeApiErrorMessage } from './lib/normalize-api-error';
 import { TranslatableError } from './types/error.types';
 import { clearStaleServerSession, getTauriSessionId } from '@/lib/api-fetch';
+import { adoptSessionTokenFromFragment } from '@/lib/session-fragment';
 import { refreshHubSessionIfDue, setServerSessionRefreshRecommendedAt } from '@/lib/hub-session-refresh';
 import { handleSessionExpired } from '@/lib/session-expired';
 import { isSessionExpiryExempt } from '@/lib/session-expiry-policy';
@@ -28,6 +43,7 @@ import {
   usesCloudConnect,
 } from '@/lib/mobile-connection';
 import { shouldTimeBoxMobileLoads } from '@/lib/use-mobile-load-timeout';
+import { memoryConnectResultApp, memoryConnectResultToastKey } from '@/modules/app/helpers/memory-provider';
 import { installMobileLoadWatchdog } from '@/lib/mobile-load-watchdog';
 import { installScrollbarHover } from '@/lib/scrollbar-hover';
 import type { RegistrationStatus } from './lib/registration-status';
@@ -132,7 +148,10 @@ function describeUnknownError(error: unknown): string {
   }
 }
 
-// Add session header for Tauri release mode (cookies don't work cross-origin over HTTP)
+// A redirect-based sign-in leaves its session token in the fragment; keep it before the first request.
+adoptSessionTokenFromFragment();
+
+// Every request presents the session token: the Hub's cookie authenticates nothing (backend `session-token.ts`).
 client.interceptors.request.use((request) => {
   const sid = getTauriSessionId();
   if (sid) {
@@ -280,6 +299,13 @@ export function shouldRevalidate({
     return true;
   }
 
+  // `/` has no page: the root loader is what sends it on. A loader run marks bootstrap warm before its
+  // redirect lands. A newer revalidation can still cancel that redirect. Skipping the loader at `/`
+  // after that left the page on "Connecting to local API..." for good, every later revalidation a no-op.
+  if (nextUrl.pathname === '/') {
+    return defaultShouldRevalidate;
+  }
+
   if (!rootBootstrapWarm) {
     return defaultShouldRevalidate;
   }
@@ -290,6 +316,24 @@ export function shouldRevalidate({
   }
 
   return defaultShouldRevalidate;
+}
+
+/** How often `/` asks the root loader again while it waits to send the page on. */
+export const ROOT_BOOTSTRAP_POLL_MS = 1500;
+
+/**
+ * Longer than a root loader run can take: its registration and user-context reads each give up after
+ * HUB_BOOTSTRAP_FETCH_MS. A run older than this is stuck (a half-open socket, say) and may be replaced.
+ */
+export const ROOT_BOOTSTRAP_RUN_LIMIT_MS = 2 * HUB_BOOTSTRAP_FETCH_MS + 4_000;
+
+/**
+ * Whether the `/` poll may start another root revalidation, given when the loader run in flight
+ * started (null when none is). A new revalidation aborts the one in flight. From far away a run
+ * takes longer than the poll interval, so polling on every tick cancelled each run before its redirect landed.
+ */
+export function shouldStartBootstrapRevalidation(busySince: number | null, now: number): boolean {
+  return busySince === null || now - busySince >= ROOT_BOOTSTRAP_RUN_LIMIT_MS;
 }
 
 const MOBILE_ROOT_LOADER_MS = 6_000;
@@ -449,8 +493,13 @@ async function runClientLoader(request: Request) {
   }
 
   // Root path: determine where to send the user
+  //
+  // No admin yet goes to sign-in, not to sign-up. Every Hub that gets this far is paired (an unpaired
+  // one went to /device-registration above). A paired Hub's first admin has to be in its
+  // organization. An account signed up on /register is in none, so the next check-in revoked it
+  // (#2061). /login offers the CI Account button and CI Account email and password.
   if (!userResult.data?.isConfigured) {
-    return redirect('/register');
+    return redirect('/login');
   }
 
   if (!userResult.data?.isLoggedIn && !userResult.data?.isGuestDashboardEnabled) {
@@ -462,8 +511,16 @@ async function runClientLoader(request: Request) {
   // dashboard can surface it as a toast; without this the query is dropped here.
   // Whitelisted values only, so arbitrary query junk is never reflected onward.
   const memoryConnect = url.searchParams.get('memoryConnect');
-  if (memoryConnect === 'error' || memoryConnect === 'unavailable') {
-    return redirect(`/home?memoryConnect=${memoryConnect}`);
+  if (memoryConnectResultToastKey(memoryConnect)) {
+    // `busy` names the app it was about, so the dashboard can say which.
+    const app = memoryConnectResultApp(memoryConnect, url.searchParams.get('app'));
+    return redirect(`/home?memoryConnect=${memoryConnect}${app ? `&app=${encodeURIComponent(app)}` : ''}`);
+  }
+
+  // The same for a refused browser handoff (the Hub app signing this browser in for Open or a
+  // Memory connect), so the person sees why they are here instead of on the page they asked for.
+  if (url.searchParams.get('handoff') === 'failed') {
+    return redirect('/home?handoff=failed');
   }
 
   return redirect('/home');
@@ -487,7 +544,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   // recovery strands the prerendered gate as a dead full-screen overlay. Stay
   // identical to the prerender for the first render, then flip in an effect.
   const [apiReady, setApiReady] = useState(false);
-  const [documentTitle, setDocumentTitle] = useState(() => (i18next.isInitialized ? i18next.t('APP_NAME') : 'CI Hub'));
+  const [documentTitle, setDocumentTitle] = useState(() => (i18next.isInitialized ? i18next.t('APP_NAME') : 'Companion Hub'));
   const [documentLang, setDocumentLang] = useState(() => i18next.resolvedLanguage || i18next.language || 'en');
   // The document is PRERENDERED in Node, where isMobileClient() is false, so the
   // emitted <html>/<body> carry no mobile classes. Rendering them on the very
@@ -499,6 +556,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (isMobileClient()) setMobileUi(true);
   }, []);
+  // Adopting the mobile classes replaces the whole <html> class list, which can change
+  // the background the page shows. Repaint the Android system-bar strips to match.
+  useEffect(() => {
+    if (mobileUi) void syncTauriWindowBackground();
+  }, [mobileUi]);
 
   useEffect(() => installScrollbarHover(), []);
 
@@ -540,7 +602,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const syncDocumentTitle = () => {
-      setDocumentTitle(i18next.isInitialized ? i18next.t('APP_NAME') : 'CI Hub');
+      setDocumentTitle(i18next.isInitialized ? i18next.t('APP_NAME') : 'Companion Hub');
       setDocumentLang(i18next.resolvedLanguage || i18next.language || 'en');
     };
 
@@ -592,6 +654,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       try {
         const main = document.getElementById('root');
         if (!main) return;
+        // biome-ignore lint/performance/useDomNodeTextContent: the dev fallback depends on visible rendered content.
         const text = (main.innerText || '').trim();
         const shouldShow = text.length === 0 && location.pathname !== '/login';
         if (shouldShow) {
@@ -653,7 +716,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <html lang={documentLang} className={mobileUi ? 'ci-mobile' : undefined}>
+    <html lang={documentLang} className={mobileUi ? (/android/i.test(navigator.userAgent) ? 'ci-mobile ci-android' : 'ci-mobile') : undefined}>
       <head>
         <title>{documentTitle}</title>
         <meta charSet="UTF-8" />
@@ -686,9 +749,24 @@ export function Layout({ children }: { children: React.ReactNode }) {
 }
 
 export default function App({ loaderData }: Route.ComponentProps) {
-  const { revalidate } = useRevalidator();
+  const { revalidate, state: revalidationState } = useRevalidator();
+  const navigation = useNavigation();
   const location = useLocation();
   const onRootBootstrap = location.pathname === '/' && loaderData == null;
+  // When the loader work in flight started, or null while none is running. The redirect navigation a
+  // revalidation starts is a loader run of its own (for /login the root loader runs again), so it gets its own clock.
+  const loaderBusySinceRef = useRef<number | null>(null);
+  const loaderPhase = navigation.state === 'idle' ? (revalidationState === 'idle' ? null : 'revalidation') : 'navigation';
+  useEffect(() => {
+    loaderBusySinceRef.current = loaderPhase === null ? null : Date.now();
+  }, [loaderPhase]);
+
+  // A revalidation aborts the run in flight. The run that replaces it gets its own time, or the poll
+  // would cancel it again on the next tick.
+  const restartRootLoad = useCallback(() => {
+    if (loaderBusySinceRef.current !== null) loaderBusySinceRef.current = Date.now();
+    void revalidate();
+  }, [revalidate]);
 
   // Root has no index route. While the loader is still resolving (common during
   // desktop startup), keep polling so we redirect off `/` as soon as the API responds.
@@ -696,20 +774,17 @@ export default function App({ loaderData }: Route.ComponentProps) {
   useEffect(() => {
     if (!onRootBootstrap || needsRemoteHubConnect()) return;
 
-    void revalidate();
-    const id = window.setInterval(() => {
-      void revalidate();
-    }, 1500);
+    const poll = () => {
+      if (shouldStartBootstrapRevalidation(loaderBusySinceRef.current, Date.now())) restartRootLoad();
+    };
+    poll();
+    const id = window.setInterval(poll, ROOT_BOOTSTRAP_POLL_MS);
     return () => window.clearInterval(id);
-  }, [onRootBootstrap, revalidate]);
+  }, [onRootBootstrap, restartRootLoad]);
 
   // After a long idle the browser often keeps a half-open socket. Revalidate so
   // we abandon the hung bootstrap fetch instead of sitting on the connecting copy.
-  useEffect(() => {
-    return subscribeHubResume(() => {
-      void revalidate();
-    });
-  }, [revalidate]);
+  useEffect(() => subscribeHubResume(restartRootLoad), [restartRootLoad]);
 
   if (onRootBootstrap) {
     if (typeof document !== 'undefined' && usesCloudConnect()) {
@@ -726,7 +801,7 @@ export default function App({ loaderData }: Route.ComponentProps) {
   return (
     <Providers>
       <Outlet />
-      <Toaster />
+      <Toaster {...toasterPlacement(location.pathname)} />
     </Providers>
   );
 }

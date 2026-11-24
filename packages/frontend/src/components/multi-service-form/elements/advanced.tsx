@@ -23,7 +23,7 @@ export const AdvancedConfig = ({ register, errors, control, serviceIndex }: Prop
       <div>
         <Input
           {...register(`services.${serviceIndex}.networkMode`, { setValueAs: (v) => v.trim() || undefined })}
-          error={errors?.services?.[serviceIndex]?.networkMode?.message}
+          error={t(errors?.services?.[serviceIndex]?.networkMode?.message as string)}
           label={
             <>
               {t('MULTI_SERVICE_ADVANCED_NETWORK_MODE')}{' '}

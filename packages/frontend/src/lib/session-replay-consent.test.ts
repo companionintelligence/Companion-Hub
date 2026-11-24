@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { syncSessionReplayWithConsent } from './sentry';
 
@@ -34,7 +34,16 @@ vi.mock('@sentry/react', () => ({
 beforeEach(() => {
   client.integrations.clear();
   vi.clearAllMocks();
+  // A restart rolls the session sample rate, so the restart cases below use a rate that always records.
+  vi.stubEnv('VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE', '1');
 });
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
+/** Lets queued microtasks, such as a restart waiting on a stop, run to completion. */
+const flushPromises = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 describe('syncSessionReplayWithConsent', () => {
   it('does not record until consent is granted', () => {
@@ -76,5 +85,104 @@ describe('syncSessionReplayWithConsent', () => {
     syncSessionReplayWithConsent(null);
 
     expect(replay.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops without flushing, so the unsent segment is not uploaded after the switch is off', () => {
+    syncSessionReplayWithConsent(true);
+    syncSessionReplayWithConsent(false);
+
+    // Sessions stop with a flush by default; `flush: false` drops the pending segment instead.
+    expect(replay.stop).toHaveBeenCalledWith({ flush: false });
+  });
+
+  it('restarts the recorder when consent is granted again after a withdrawal', async () => {
+    syncSessionReplayWithConsent(true);
+    syncSessionReplayWithConsent(false);
+    syncSessionReplayWithConsent(true);
+
+    // The grant after a stop is a restart, not a second recorder.
+    await vi.waitFor(() => expect(replay.start).toHaveBeenCalledTimes(1));
+    expect(client.addIntegration).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for a stop that is still in flight before restarting', async () => {
+    let finishStop = () => {};
+    replay.stop.mockReturnValueOnce(
+      new Promise<undefined>((resolve) => {
+        finishStop = () => resolve(undefined);
+      }),
+    );
+
+    syncSessionReplayWithConsent(true);
+    syncSessionReplayWithConsent(false);
+    syncSessionReplayWithConsent(true);
+    await flushPromises();
+
+    // Starting while the old session is still being torn down would let its teardown clear the new one.
+    expect(replay.start).not.toHaveBeenCalled();
+
+    finishStop();
+    await vi.waitFor(() => expect(replay.start).toHaveBeenCalledTimes(1));
+  });
+
+  it('never starts the recorder twice in a row', async () => {
+    syncSessionReplayWithConsent(true);
+    syncSessionReplayWithConsent(false);
+    syncSessionReplayWithConsent(true);
+    syncSessionReplayWithConsent(true);
+    await flushPromises();
+
+    expect(replay.start).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not restart a recorder whose session sample rate is zero', async () => {
+    // The published image builds with an empty rate, which Number() reads as 0, so replay stays off.
+    vi.stubEnv('VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE', '');
+
+    syncSessionReplayWithConsent(true);
+    syncSessionReplayWithConsent(false);
+    syncSessionReplayWithConsent(true);
+    await flushPromises();
+
+    expect(replay.start).not.toHaveBeenCalled();
+  });
+
+  it('rolls the session sample rate before restarting, because start() ignores it', async () => {
+    vi.stubEnv('VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE', '0.1');
+    const random = vi.spyOn(Math, 'random');
+
+    try {
+      random.mockReturnValue(0.5);
+      syncSessionReplayWithConsent(true);
+      syncSessionReplayWithConsent(false);
+      syncSessionReplayWithConsent(true);
+      await flushPromises();
+      expect(replay.start).not.toHaveBeenCalled();
+
+      random.mockReturnValue(0.05);
+      syncSessionReplayWithConsent(false);
+      syncSessionReplayWithConsent(true);
+      await vi.waitFor(() => expect(replay.start).toHaveBeenCalledTimes(1));
+    } finally {
+      random.mockRestore();
+    }
+  });
+
+  it('drops a queued restart when consent is withdrawn again before it runs', async () => {
+    let finishStop = () => {};
+    replay.stop.mockReturnValueOnce(
+      new Promise<undefined>((resolve) => {
+        finishStop = () => resolve(undefined);
+      }),
+    );
+
+    syncSessionReplayWithConsent(true);
+    syncSessionReplayWithConsent(false);
+    syncSessionReplayWithConsent(true);
+    syncSessionReplayWithConsent(false);
+    finishStop();
+    await flushPromises();
+
+    expect(replay.start).not.toHaveBeenCalled();
   });
 });

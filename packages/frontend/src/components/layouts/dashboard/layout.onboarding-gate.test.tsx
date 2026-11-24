@@ -6,7 +6,7 @@ import { DashboardLayout, DashboardLayoutSuspense } from '@/components/layouts/d
 const { appContext } = vi.hoisted(() => ({
   appContext: {
     user: { hasCompletedOnboarding: false } as { hasCompletedOnboarding: boolean },
-    userSettings: { ciHubDeviceSlug: 'hub-device', allowAutoThemes: false },
+    userSettings: { ciHubDeviceSlug: 'hub-device' },
     isLoading: false,
     loadFailed: false,
   },

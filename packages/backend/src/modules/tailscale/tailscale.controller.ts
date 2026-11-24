@@ -4,6 +4,7 @@ import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { DemoModeGuard } from '@/common/guards/demo-mode.guard';
 import { AuthGuard } from '../auth/auth.guard';
+import { HubManagerGuard } from '../auth/hub-manager.guard';
 import { TailscaleService } from './tailscale.service';
 import { TailscaleStatusDto } from './tailscale.dto';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -38,7 +39,7 @@ export class TailscaleController {
   }
 
   @Post('sync')
-  @UseGuards(DemoModeGuard)
+  @UseGuards(HubManagerGuard, DemoModeGuard)
   @ApiOperation({ summary: 'Reconcile Tailscale Serve routes for Private VPN apps' })
   @ApiResponse({ status: 200, description: 'Sync triggered' })
   async syncExposure() {
@@ -47,7 +48,7 @@ export class TailscaleController {
   }
 
   @Post('auth/start')
-  @UseGuards(DemoModeGuard)
+  @UseGuards(HubManagerGuard, DemoModeGuard)
   @ApiResponse({ type: Object })
   async startAuth() {
     const cliAvailable = await this.tailscaleService.isCliAvailable();
@@ -64,7 +65,7 @@ export class TailscaleController {
   }
 
   @Post('auth/key')
-  @UseGuards(DemoModeGuard)
+  @UseGuards(HubManagerGuard, DemoModeGuard)
   @ApiResponse({ type: Object })
   async connectWithAuthKey(@Body() body: { authKey?: string }) {
     const cliAvailable = await this.tailscaleService.isCliAvailable();
@@ -85,7 +86,7 @@ export class TailscaleController {
   }
 
   @Post('disconnect')
-  @UseGuards(DemoModeGuard)
+  @UseGuards(HubManagerGuard, DemoModeGuard)
   @ApiResponse({ type: Object })
   async disconnect() {
     await this.tailscaleService.disconnect();

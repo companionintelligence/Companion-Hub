@@ -1,7 +1,9 @@
+import crypto from 'node:crypto';
 import type { Request } from 'express';
 import axios from 'axios';
 import { describeNetworkError } from '@/common/helpers/network-error';
 import { internalOriginRefusal } from '@/common/helpers/request-origin';
+import { isThisHostAddress } from '@/common/helpers/this-host-address';
 import {
   buildPortalAxiosConfig,
   readPortalInternalUrlOverride,
@@ -22,12 +24,112 @@ export interface PortalSsoState {
    * 'packaged', which is the safe default (see resolvePortalDesktopDeepLinkScheme).
    */
   desktopChannel?: DesktopChannel;
+  /**
+   * Ties this sign-in to the browser that started it. `/start` mints this value,
+   * stores it here and also drops it as a short-lived httpOnly cookie. `/callback`
+   * only completes the sign-in when the request carries the same value back, so a
+   * callback opened in a different browser cannot finish this flow or take over the
+   * initiating browser's session. Optional because states issued before this field
+   * existed may still be in flight; those fail closed at the callback.
+   */
+  binding?: string;
+  /**
+   * Ties the one-time desktop/mobile code to the APP that started the sign-in.
+   * The app makes a secret, keeps it, and sends only its SHA-256 (base64url)
+   * here; `/desktop-exchange` hands out the session only to a caller presenting
+   * the secret. The code itself rides a `cihub://` link, which another app can
+   * register for and any web page can open, so without this whoever held the
+   * link held the session, and a page could sign the phone in as someone else.
+   * Optional: an app from before this sends none, and is still served.
+   */
+  appChallenge?: string;
+}
+
+/**
+ * Prefix of the httpOnly cookie that binds a Portal sign-in to its initiating browser. Each
+ * sign-in gets its own cookie, named after its `state`, so two sign-ins started in one browser
+ * (two tabs, or a desktop sign-in button clicked twice, which opens two browser tabs) do not
+ * overwrite each other's binding.
+ */
+const PORTAL_SSO_BINDING_COOKIE_PREFIX = 'ci_hub_portal_sso_';
+
+/** The plain-http name of one sign-in's binding cookie. Only called with a `state` this Hub minted. */
+export function portalBindingCookieName(state: string): string {
+  return `${PORTAL_SSO_BINDING_COOKIE_PREFIX}${state}`;
+}
+
+/**
+ * Where the plain-http binding cookie is sent: the callback, the only route that reads it. `/start`
+ * may set a cookie for another path, and a wider scope would send every in-flight binding along with
+ * the polled `/api/auth/portal/*` routes (session-hint, desktop-handoff-status).
+ */
+const PORTAL_SSO_COOKIE_PATH = '/api/auth/portal/callback';
+
+/**
+ * Name, Path and Secure of one sign-in's binding cookie, for a request that is (`secure`) or is not
+ * served over https. `/start` sets it and the callback reads and clears it with the same answer.
+ *
+ * Over https the cookie is a `__Host-` cookie: Secure, Path=/ and no Domain. A browser stores a
+ * cookie with that prefix only when the host that is answering sets it that way, so no other host
+ * under the same parent domain (another Hub or app in a shared zone, which can set cookies for that
+ * zone) can put one in the browser with this name. The prefix requires Path=/, so over https the
+ * cookie goes with every request to this host until the callback clears it or it expires. Plain http
+ * cannot use the prefix, because it requires Secure, so there the name is unprefixed and the cookie
+ * stays on the callback path.
+ *
+ * The callback reads only the name its own scheme gives and never falls back to the other one. A
+ * `/start` and callback that disagree on the scheme (a proxy that forwards the protocol for one and
+ * not the other) therefore find no cookie and are refused like any other mismatch: accepting the
+ * plain name on an https callback would accept a cookie that any host under the parent can set.
+ */
+export function portalBindingCookie(state: string, secure: boolean): { name: string; path: string; secure: boolean } {
+  if (secure) {
+    return { name: `__Host-${portalBindingCookieName(state)}`, path: '/', secure: true };
+  }
+  return { name: portalBindingCookieName(state), path: PORTAL_SSO_COOKIE_PATH, secure: false };
+}
+
+/** Lifetime of a Portal sign-in state and its binding cookie. Keep both in step. */
+export const PORTAL_SSO_STATE_TTL_SECONDS = 10 * 60;
+
+/**
+ * Constant-time check that the browser presented the same binding the `/start` state stored.
+ * Returns false when either side is missing so a state without a stored binding fails closed.
+ * Both sides are `unknown` because cookie-parser turns a `j:`-prefixed cookie into an object.
+ */
+export function portalBindingMatches(stored: unknown, presented: unknown): boolean {
+  if (typeof stored !== 'string' || typeof presented !== 'string' || !stored || !presented) {
+    return false;
+  }
+  const storedBytes = Buffer.from(stored);
+  const presentedBytes = Buffer.from(presented);
+  if (storedBytes.length !== presentedBytes.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(storedBytes, presentedBytes);
 }
 
 export interface PortalDesktopExchange {
   sessionId: string;
   redirectPath: string;
   userId?: number;
+  /** Carried from {@link PortalSsoState.appChallenge}: the exchange needs its secret. */
+  appChallenge?: string;
+}
+
+/** An S256 challenge: base64url SHA-256, 43 characters. */
+export const APP_CHALLENGE_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+
+/** Whether `verifier` is the secret behind `challenge`, compared in constant time. */
+export function appVerifierMatches(challenge: string, verifier: string | undefined): boolean {
+  if (typeof verifier !== 'string' || verifier.length < 43 || verifier.length > 128) {
+    return false;
+  }
+
+  const expected = Buffer.from(challenge, 'utf8');
+  const actual = Buffer.from(crypto.createHash('sha256').update(verifier).digest('base64url'), 'utf8');
+
+  return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
 }
 
 export function resolveSameOriginRedirectUrl(redirectUrl: string | null | undefined, hubOrigin: string): string | null {
@@ -101,6 +203,59 @@ export function isDirectLoopbackRequest(req: Request): boolean {
 }
 
 /**
+ * Whether a request came from this Hub's own machine: {@link isDirectLoopbackRequest}, on a socket
+ * whose peer is an address the host's own connections arrive from (`isThisHostAddress`).
+ *
+ * The socket's address is read rather than `req.ip`, which `HUB_TRUST_PROXY` lets a header rewrite.
+ * Like the checks it builds on, this places a request by address. It isn't authentication.
+ *
+ * A browser on this machine sends from the same address whichever page asked it to, so a request
+ * the browser doesn't mark as sent by the Hub's own page is refused (`Sec-Fetch-Site`, `Origin`,
+ * `Referer`). That includes `Sec-Fetch-Site: none`, a navigation no page started, since nothing
+ * opens these routes in a browser. The setup service and `cihub` send none of these headers.
+ */
+export function isRequestFromThisHost(req: Request): boolean {
+  return isDirectLoopbackRequest(req) && !isCrossOriginBrowserRequest(req) && isThisHostAddress(req.socket?.remoteAddress);
+}
+
+/**
+ * Whether a browser says this request wasn't sent by a page on the origin it names. A browser too
+ * old to send `Sec-Fetch-Site` still names the page in `Referer` for a cross-site image or link.
+ */
+function isCrossOriginBrowserRequest(req: Request): boolean {
+  const fetchSite = req.headers['sec-fetch-site'];
+  if (typeof fetchSite === 'string' && fetchSite !== 'same-origin') {
+    return true;
+  }
+
+  for (const sentBy of [req.headers.origin, req.headers.referer]) {
+    if (typeof sentBy !== 'string' || !sentBy) {
+      continue;
+    }
+
+    try {
+      if (new URL(sentBy).origin.toLowerCase() !== new URL(resolveHubRequestOrigin(req)).origin.toLowerCase()) {
+        return true;
+      }
+    } catch {
+      // `Origin: null` and anything else that isn't a URL.
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Whether a browser says a page on another site or on a sibling hostname sent this request
+ * (`Sec-Fetch-Site`). The Hub's own pages send `same-origin`.
+ */
+export function isCrossSiteBrowserRequest(req: Request): boolean {
+  const fetchSite = req.headers['sec-fetch-site'];
+  return fetchSite === 'same-site' || fetchSite === 'cross-site';
+}
+
+/**
  * How long the desktop handoff token stays spendable.
  *
  * Short on purpose — it is a bearer credential sitting in a URL the OS hands
@@ -153,6 +308,35 @@ export function resolvePortalDesktopHandoffState(input: { claimed: boolean; pend
 
 export const PORTAL_DESKTOP_PRESENCE_CACHE_KEY = 'portal_sso_desktop_present';
 export const PORTAL_DESKTOP_PRESENCE_TTL_SECONDS = 10 * 60;
+
+/** The headers the desktop shell sends the challenge's nonce and `desktopSignInWaitProof` in. */
+export const DESKTOP_SIGN_IN_WAIT_NONCE_HEADER = 'x-ci-hub-desktop-nonce';
+export const DESKTOP_SIGN_IN_WAIT_PROOF_HEADER = 'x-ci-hub-desktop-proof';
+
+/**
+ * What the desktop app shows to set the presence flag, which nothing else may set: an HMAC of
+ * `desktop-waiting:<nonce>` under the host-local key, for a nonce the Hub just handed out
+ * (DesktopWaitingChallenges). `desktop_sign_in_wait.rs` signs the same text. The desktop shell
+ * reads the key from `state/settings.json`, which app containers can't read, and sends this from
+ * Rust, so no page script holds it. The key itself never goes on the wire, since the shell repeats
+ * the request every minute to whatever answers on the API port.
+ */
+export function desktopSignInWaitProof(hubLocalKey: string, nonce: string): string {
+  return crypto.createHmac('sha256', hubLocalKey).update(`desktop-waiting:${nonce}`).digest('hex');
+}
+
+/**
+ * Whether `presentedProof` is the proof for `nonce` under this Hub's host-local key. Compared in
+ * constant time, after a length check so a value of the wrong length is refused rather than thrown on.
+ */
+export function isDesktopSignInWaitProof(presentedProof: unknown, nonce: string, hubLocalKey: string | null | undefined): boolean {
+  if (!hubLocalKey || typeof presentedProof !== 'string') {
+    return false;
+  }
+  const expected = Buffer.from(desktopSignInWaitProof(hubLocalKey, nonce));
+  const actual = Buffer.from(presentedProof);
+  return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+}
 
 /** The desktop app on this machine is waiting for a sign-in, so a loopback browser sign-in hands off into it. */
 export function shouldHandoffPortalLoginToDesktop(input: { desktop: boolean; hubOrigin: string; desktopAppPresent: boolean }): boolean {
@@ -599,6 +783,60 @@ export async function fetchPortalSessionEmail(input: { publicPortalBaseUrl: stri
   }
 }
 
+/** What Portal's userinfo endpoint says about an access token, once the Hub has checked it. */
+export type PortalUserinfoResult =
+  | { ok: true; email: string; subject: string | null; issuer: string | null; status: number }
+  | { ok: false; reason: 'userinfo_failed' | 'network_error' | 'missing_email' | 'email_unverified'; status?: number; detail?: string };
+
+/**
+ * The shared Portal userinfo check for the browser callback (`exchangePortalAuthorizationCode`) and the
+ * desktop session route (`establishPortalDesktopSession`). Both take the operator's address from here, and
+ * only when Portal marks it verified, so the two routes cannot disagree about who the operator is.
+ */
+export async function fetchPortalUserinfo(input: { publicPortalBaseUrl: string; accessToken: string }): Promise<PortalUserinfoResult> {
+  const internalOverride = readPortalInternalUrlOverride();
+  const portalBaseUrl = resolveOutboundPortalBaseUrl(input.publicPortalBaseUrl, internalOverride);
+  const axiosConfig = buildPortalAxiosConfig(input.publicPortalBaseUrl, internalOverride);
+
+  const userinfoUrl = new URL('/api/auth/oauth2/userinfo', portalBaseUrl).toString();
+  let userinfoRes: { status: number; data: unknown };
+
+  try {
+    userinfoRes = await axios.get(userinfoUrl, {
+      ...withPortalAxiosHeaders(axiosConfig, { authorization: `Bearer ${input.accessToken}` }),
+      validateStatus: () => true,
+      timeout: 15_000,
+    });
+  } catch (error) {
+    return { ok: false, reason: 'network_error', detail: describeNetworkError(error) };
+  }
+
+  if (userinfoRes.status < 200 || userinfoRes.status >= 300) {
+    return { ok: false, reason: 'userinfo_failed', status: userinfoRes.status };
+  }
+
+  const claims = userinfoRes.data as { sub?: string; iss?: string; email?: string; email_verified?: boolean } | undefined;
+  const email = claims?.email;
+  if (!email) {
+    return { ok: false, reason: 'missing_email', status: userinfoRes.status };
+  }
+
+  // The Hub decides who its operator is by comparing this address, so an unverified one would let
+  // anybody claim a Hub by typing its operator's address into a signup form. The Portal issues the
+  // claim whenever the `email` scope is requested, so every sign-in that calls this must request it.
+  if (claims?.email_verified !== true) {
+    return { ok: false, reason: 'email_unverified', status: userinfoRes.status };
+  }
+
+  return {
+    ok: true,
+    email,
+    subject: (typeof claims?.sub === 'string' && claims.sub.trim()) || null,
+    issuer: (typeof claims?.iss === 'string' && claims.iss.trim()) || null,
+    status: userinfoRes.status,
+  };
+}
+
 export async function exchangePortalAuthorizationCode(input: {
   publicPortalBaseUrl: string;
   callbackUrl: string;
@@ -639,45 +877,17 @@ export async function exchangePortalAuthorizationCode(input: {
     return { ok: false, reason: 'missing_access_token', status: tokenRes.status };
   }
 
-  const userinfoUrl = new URL('/api/auth/oauth2/userinfo', portalBaseUrl).toString();
-  let userinfoRes: { status: number; data: unknown };
-
-  try {
-    userinfoRes = await axios.get(userinfoUrl, {
-      ...withPortalAxiosHeaders(axiosConfig, { authorization: `Bearer ${accessToken}` }),
-      validateStatus: () => true,
-      timeout: 15_000,
-    });
-  } catch (error) {
-    return { ok: false, reason: 'network_error', detail: describeNetworkError(error) };
-  }
-
-  if (userinfoRes.status < 200 || userinfoRes.status >= 300) {
-    return { ok: false, reason: 'userinfo_failed', status: userinfoRes.status };
-  }
-
-  const claims = userinfoRes.data as { sub?: string; iss?: string; email?: string; email_verified?: boolean } | undefined;
-  const email = claims?.email;
-  if (!email) {
-    return { ok: false, reason: 'missing_email', status: userinfoRes.status };
-  }
-
-  // The Hub decides who its operator is by comparing this address, so an unverified one would let
-  // anybody claim a Hub by typing its operator's address into a signup form. The Portal issues the
-  // claim whenever the `email` scope is requested, and this flow always requests it.
-  if (claims?.email_verified !== true) {
-    return { ok: false, reason: 'email_unverified', status: userinfoRes.status };
+  const userinfo = await fetchPortalUserinfo({ publicPortalBaseUrl: input.publicPortalBaseUrl, accessToken });
+  if (!userinfo.ok) {
+    return userinfo;
   }
 
   const idTokenClaims = decodeJwtPayload(tokenPayload?.id_token);
-  const subject =
-    (typeof claims?.sub === 'string' && claims.sub.trim()) || (typeof idTokenClaims?.sub === 'string' && idTokenClaims.sub.trim()) || null;
+  const subject = userinfo.subject || (typeof idTokenClaims?.sub === 'string' && idTokenClaims.sub.trim()) || null;
   const issuer =
-    (typeof claims?.iss === 'string' && claims.iss.trim()) ||
-    (typeof idTokenClaims?.iss === 'string' && idTokenClaims.iss.trim()) ||
-    input.publicPortalBaseUrl.replace(/\/+$/, '');
+    userinfo.issuer || (typeof idTokenClaims?.iss === 'string' && idTokenClaims.iss.trim()) || input.publicPortalBaseUrl.replace(/\/+$/, '');
 
-  return { ok: true, accessToken, email, emailVerified: true, subject, issuer };
+  return { ok: true, accessToken, email: userinfo.email, emailVerified: true, subject, issuer };
 }
 
 function decodeJwtPayload(token?: string): { sub?: string; iss?: string } | null {

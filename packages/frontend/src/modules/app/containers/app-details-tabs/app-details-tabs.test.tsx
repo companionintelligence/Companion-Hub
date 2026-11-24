@@ -1,6 +1,15 @@
 import { render, screen } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 
+const { saveNotesOptions, toastError } = vi.hoisted(() => ({
+  saveNotesOptions: { current: undefined as { onError?: (error: { message: string; intlParams?: Record<string, string> }) => void } | undefined },
+  toastError: vi.fn(),
+}));
+
+vi.mock('sonner', () => ({
+  toast: { error: toastError, success: vi.fn() },
+}));
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, params?: Record<string, string>) => {
@@ -11,10 +20,13 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('@tanstack/react-query', () => ({
-  useMutation: () => ({
-    mutate: vi.fn(),
-    isPending: false,
-  }),
+  useMutation: (options: typeof saveNotesOptions.current) => {
+    saveNotesOptions.current = options;
+    return {
+      mutate: vi.fn(),
+      isPending: false,
+    };
+  },
 }));
 
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
@@ -128,5 +140,74 @@ describe('AppDetailsTabs — compatibility surfacing', () => {
     render(<AppDetailsTabs info={makeInfo({ gpu_requirements: undefined })} metadata={defaultMetadata} />);
 
     expect(screen.queryByTestId('app-gpu-requirements')).not.toBeInTheDocument();
+  });
+});
+
+describe('AppDetailsTabs: saving custom app notes', () => {
+  it('names the refused action when the Hub turns the save down', () => {
+    toastError.mockClear();
+
+    render(<AppDetailsTabs info={makeInfo({ urn: 'my-compose:_user' })} metadata={defaultMetadata} />);
+    expect(saveNotesOptions.current?.onError).toBeTypeOf('function');
+    saveNotesOptions.current?.onError?.({ message: 'APP_ACTION_GRANT_DENIED', intlParams: { action: 'configure', app: 'my-compose' } });
+
+    expect(toastError).toHaveBeenCalledWith('APP_ACTION_GRANT_DENIED:{"action":"configure","app":"my-compose"}');
+  });
+
+  it('keeps the generic message for any other failure', () => {
+    toastError.mockClear();
+
+    render(<AppDetailsTabs info={makeInfo({ urn: 'my-compose:_user' })} metadata={defaultMetadata} />);
+    saveNotesOptions.current?.onError?.({ message: 'COMMON_AN_ERROR_OCCURRED' });
+
+    expect(toastError).toHaveBeenCalledWith('APP_ERROR_SAVE_NOTES');
+  });
+});
+
+describe('AppDetailsTabs: who may edit custom app notes', () => {
+  it('offers Edit on the notes to someone who may change the app', () => {
+    render(<AppDetailsTabs info={makeInfo({ urn: 'my-compose:_user' })} metadata={defaultMetadata} canEditNotes />);
+
+    expect(screen.getByRole('button', { name: 'COMMON_EDIT' })).toBeInTheDocument();
+  });
+
+  // A member may read a custom app's notes but not change them, so there is no Edit to be refused.
+  it('shows a member the notes without Edit', () => {
+    render(<AppDetailsTabs info={makeInfo({ urn: 'my-compose:_user' })} metadata={defaultMetadata} canEditNotes={false} />);
+
+    expect(screen.getByText('APP_DETAILS_NOTES')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'COMMON_EDIT' })).not.toBeInTheDocument();
+  });
+});
+
+// A custom app's manifest holds placeholders for the store's facts ("User", "Utilities", an empty source
+// link, both architectures), and the column showed them as if they were true.
+describe('AppDetailsTabs: information about an app made on this Hub', () => {
+  it('shows when it was made, when it changed and its version, and none of the store rows', () => {
+    render(
+      <AppDetailsTabs
+        info={makeInfo({ urn: 'my-compose:_user', created_at: Date.UTC(2026, 10, 10), updated_at: Date.UTC(2026, 10, 10) })}
+        metadata={defaultMetadata}
+      />,
+    );
+
+    expect(screen.getByTestId('app-created-date')).toBeInTheDocument();
+    expect(screen.getByText('COMMON_UPDATED')).toBeInTheDocument();
+    expect(screen.getByText('COMMON_VERSION')).toBeInTheDocument();
+    for (const storeRow of ['APP_DETAILS_PROVIDER', 'APP_DETAILS_CATEGORIES_TITLE', 'COMMON_SOURCE_CODE', 'APP_DETAILS_DOWNLOAD_SIZE']) {
+      expect(screen.queryByText(storeRow)).not.toBeInTheDocument();
+    }
+    expect(screen.queryByTestId('app-architectures')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('app-privacy-card')).not.toBeInTheDocument();
+  });
+
+  it('keeps every row for a store app', () => {
+    render(<AppDetailsTabs info={makeInfo()} metadata={defaultMetadata} />);
+
+    for (const storeRow of ['APP_DETAILS_PROVIDER', 'APP_DETAILS_CATEGORIES_TITLE', 'COMMON_SOURCE_CODE', 'APP_DETAILS_DOWNLOAD_SIZE']) {
+      expect(screen.getByText(storeRow)).toBeInTheDocument();
+    }
+    expect(screen.getByTestId('app-privacy-card')).toBeInTheDocument();
+    expect(screen.queryByTestId('app-created-date')).not.toBeInTheDocument();
   });
 });

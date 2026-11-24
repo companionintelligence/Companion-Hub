@@ -7,11 +7,13 @@ import { describeNetworkError } from '@/common/helpers/network-error';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import {
   PORTAL_HTTP_ERROR_CODE,
   PORTAL_STORE_LISTING_TIMEOUT_MS,
   type PortalRequestErrorCode,
   portalErrorCodeFor,
+  portalOrganizationRefusal,
 } from '@/core/portal/portal.constants';
 import { Injectable, Inject, forwardRef } from '@nestjs/common';
 import axios, { type AxiosHeaderValue, type AxiosRequestConfig } from 'axios';
@@ -22,18 +24,25 @@ import { buildCatalogSnapshotIndex, catalogSnapshotIndexPath, isSafeCatalogSlug 
 
 /**
  * Outcome of a repo or Portal operation. On failure `message` is either a translation key the
- * caller may show as-is (Portal 401/402/403) or the plain reason, and `errorCode` names the cause
- * when the operation was a Portal request so callers do not have to parse the message.
+ * caller may show as-is (Portal 401/402/403, or a refusal about the organization) or the plain
+ * reason. `errorCode` names the cause when the operation was a Portal request so callers do not
+ * have to parse the message.
  */
 export type RepoOperationResult = { success: true; message: string } | { success: false; message: string; errorCode?: PortalRequestErrorCode };
 
 @Injectable()
 export class ReposHelpers {
+  /** CI Marketplace catalog downloads under way (`fetchCiCloudRepo`); see `isDownloadingCatalog`. */
+  private catalogDownloads = 0;
+  /** Callers of `waitForCatalogDownloads` to tell once none is under way. */
+  private catalogDownloadWaiters: Array<() => void> = [];
+
   constructor(
     private readonly logger: LoggerService,
     private readonly configuration: ConfigurationService,
     private readonly filesystem: FilesystemService,
     @Inject(forwardRef(() => RegistrationService)) private readonly registrationService: RegistrationService,
+    private readonly whois: MarketplaceWhoIsService,
   ) {}
 
   /**
@@ -352,7 +361,51 @@ export class ReposHelpers {
     }
   }
 
-  private async fetchCiCloudRepo(url: string, _id: string, repoPath: string) {
+  /**
+   * Whether a CI Marketplace catalog download is under way. Until it ends, the catalog on disk is half
+   * written: it writes the apps' folders a dozen at a time, so the apps it has not reached yet are not
+   * there. An app missing from it reads as one the catalog does not list.
+   */
+  public isDownloadingCatalog(): boolean {
+    return this.catalogDownloads > 0;
+  }
+
+  /** Wait until no CI Marketplace catalog download is under way. False when one still is after `timeoutMs`. */
+  public waitForCatalogDownloads(timeoutMs: number): Promise<boolean> {
+    if (this.catalogDownloads === 0) {
+      return Promise.resolve(true);
+    }
+
+    return new Promise((resolve) => {
+      const waiter = () => {
+        clearTimeout(timer);
+        resolve(true);
+      };
+      const timer = setTimeout(() => {
+        this.catalogDownloadWaiters = this.catalogDownloadWaiters.filter((other) => other !== waiter);
+        resolve(false);
+      }, timeoutMs);
+      this.catalogDownloadWaiters.push(waiter);
+    });
+  }
+
+  private async fetchCiCloudRepo(url: string, id: string, repoPath: string) {
+    this.catalogDownloads += 1;
+    try {
+      return await this.downloadCiCloudCatalog(url, id, repoPath);
+    } finally {
+      this.catalogDownloads -= 1;
+      if (this.catalogDownloads === 0) {
+        const waiters = this.catalogDownloadWaiters;
+        this.catalogDownloadWaiters = [];
+        for (const waiter of waiters) {
+          waiter();
+        }
+      }
+    }
+  }
+
+  private async downloadCiCloudCatalog(url: string, _id: string, repoPath: string) {
     try {
       this.logger.debug(`Fetching CI Cloud Repo from ${url} to ${repoPath}`);
 
@@ -560,12 +613,19 @@ export class ReposHelpers {
         headers.Authorization = `Bearer ${ciHubApiKey}`;
         headers['x-device-key'] = ciHubApiKey;
       }
-      const response = await axios.get<{ files?: Record<string, string> }>(`${repoUrl}/store/${appSlug}/install`, {
+      const organizationId = await this.whois.deviceOrganizationId();
+      const response = await axios.get<{ files?: Record<string, string>; code?: unknown }>(`${repoUrl}/store/${appSlug}/install`, {
         timeout: 20_000,
         validateStatus: () => true,
         headers,
+        ...(organizationId ? { params: { organizationId } } : {}),
       });
       if (response.status < 200 || response.status >= 300) {
+        // Ahead of the plain 403 below: this one says what to do about it.
+        const organizationRefusal = portalOrganizationRefusal(response.status, response.data?.code);
+        if (organizationRefusal) {
+          return { success: false, message: organizationRefusal.messageKey };
+        }
         if (response.status === 402) {
           return { success: false, message: 'APP_INSTALL_PORTAL_DOWNLOAD_PAYMENT_REQUIRED' };
         }

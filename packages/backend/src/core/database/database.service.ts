@@ -4,6 +4,7 @@ import { Injectable } from '@nestjs/common';
 import { type NodePgDatabase, drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import pg from 'pg';
+import { isDatabaseCredentialError } from '@/modules/api-keys/api-key.errors';
 import { ConfigurationService } from '../config/configuration.service';
 import { LoggerService } from '../logger/logger.service';
 import * as schema from './drizzle/schema';
@@ -89,6 +90,12 @@ export class DatabaseService {
       } catch (err) {
         lastError = err;
         this.logger.warn(`Database not reachable yet (attempt ${attempt}/${READY_MAX_ATTEMPTS}):`, err instanceof Error ? err.message : String(err));
+        if (attempt === 1 && isDatabaseCredentialError(err)) {
+          // A password that no longer matches the data volume never heals by waiting, so say what to fix.
+          this.logger.error(
+            'Postgres refused the Hub database login. The configured password does not match the database role; restore the value the data volume was created with, or re-sync the role password.',
+          );
+        }
         await new Promise((resolve) => setTimeout(resolve, READY_DELAY_MS));
       }
     }

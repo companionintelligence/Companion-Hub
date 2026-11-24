@@ -245,6 +245,21 @@ describe('handoutContextLength for Qwen 3.8 27B on Lemonade (7900 XTX, measured 
     expect(numCtx).toBe(32_768);
   });
 
+  // 2026-11-10 on the same card: 22.50 GiB in use at 65536 with an 8-bit cache, against 22.01 at 32768
+  // with the 16-bit one. Hermes needs 64000.
+  it('lands on 64k, above Hermes floor, when Lemonade runs it with its q8_0 cache', () => {
+    expect(model.runtime.kvCacheType).toBe('q8_0');
+    const numCtx = handoutContextLength({
+      model,
+      servedLocally: true,
+      effectiveInferenceMemoryMb: card,
+      kvMbPerToken: 0.0667 * (34 / 64),
+      weightMb: 17_630,
+    });
+    expect(numCtx).toBeGreaterThanOrEqual(64_000);
+    expect(numCtx).toBe(65_536);
+  });
+
   it('still gets a usable window from the ladder when nothing could be measured', () => {
     expect(handoutContextLength({ model, servedLocally: true, effectiveInferenceMemoryMb: card })).toBe(16_384);
   });
