@@ -717,8 +717,8 @@ describe('AppHelpers', () => {
         });
 
         it('does not move a previous platform address while the Hub has no organization', async () => {
-          // The only thing to move it to would be the LAN APP_URL, which is kept once
-          // written, so a brief unregistered window would strand the app there.
+          // The only thing to move it to would be the LAN APP_URL, and a brief
+          // unregistered window should not move a public address there.
           deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(undefined);
           const previousOrg = 'https://test-app-test-store-core2-bill-co.example.com';
           withAppBaseUrlField(`APP_BASE_URL=${previousOrg}\n`);
@@ -726,6 +726,103 @@ describe('AppHelpers', () => {
           await appHelpers.generateEnvFile(testAppUrn, openPortForm);
 
           expect(written().get('APP_BASE_URL')).toBe(previousOrg);
+        });
+      });
+
+      describe('on This machine only', () => {
+        /*
+         * #2545: an app moved to This machine only kept `APP_BASE_URL` on its platform hostname,
+         * which Portal stops publishing, so CI Memory sent every sign-in to a name with no DNS record.
+         */
+        const thisMachineOnlyForm = { exposureMode: 'local', exposedLocal: false, openPort: true } as const;
+        const LOCAL_URL = 'http://127.0.0.1:9091';
+
+        const withAppBaseUrlField = (content: string) => {
+          appFilesManager.getInstalledAppInfo.mockResolvedValue({
+            ...mockAppInfo,
+            form_fields: [{ type: 'app_base_url', label: 'Public URL', env_variable: 'APP_BASE_URL', required: false }],
+          } as AppInfo);
+          appFilesManager.getAppEnv.mockResolvedValue({ path: '/data/app.env', content });
+        };
+
+        beforeEach(() => {
+          bind(null);
+        });
+
+        it('gives the app its local address as its base URL, not a public name nothing serves', async () => {
+          await appHelpers.generateEnvFile(testAppUrn, thisMachineOnlyForm);
+
+          const env = written();
+          expect(env.get('APP_URL')).toBe(LOCAL_URL);
+          expect(env.get('APP_BASE_URL')).toBe(LOCAL_URL);
+          expect(env.get('APP_BASE_HOST')).toBe('127.0.0.1:9091');
+          expect(env.get('APP_BASE_WSS_ORIGIN')).toBe('ws://127.0.0.1:9091');
+        });
+
+        it('moves a base URL field off the public address the app had on Public web', async () => {
+          // The install dialog filled the field with the public URL, and the stored form replays it.
+          withAppBaseUrlField(`APP_PUBLIC_URL=${PLATFORM_URL}\nAPP_BASE_URL=${PLATFORM_URL}\n`);
+
+          await appHelpers.generateEnvFile(testAppUrn, { ...thisMachineOnlyForm, APP_BASE_URL: PLATFORM_URL });
+
+          expect(written().get('APP_BASE_URL')).toBe(LOCAL_URL);
+
+          // The next start no longer has APP_PUBLIC_URL to recognise the value by.
+          withAppBaseUrlField(`APP_BASE_URL=${LOCAL_URL}\n`);
+
+          await appHelpers.generateEnvFile(testAppUrn, { ...thisMachineOnlyForm, APP_BASE_URL: PLATFORM_URL });
+
+          expect(written().get('APP_BASE_URL')).toBe(LOCAL_URL);
+        });
+
+        it('gives the app its public address again when it goes back to Public web', async () => {
+          withAppBaseUrlField(`APP_BASE_URL=${LOCAL_URL}\n`);
+
+          await appHelpers.generateEnvFile(testAppUrn, exposedForm);
+
+          expect(written().get('APP_BASE_URL')).toBe(PLATFORM_URL);
+        });
+
+        it('moves the localhost address the install dialog filled in when the app goes to Public web', async () => {
+          // The dialog suggests `http://localhost:<port>` on This machine only, and the stored form replays it.
+          withAppBaseUrlField('APP_BASE_URL=http://localhost:9091\n');
+
+          await appHelpers.generateEnvFile(testAppUrn, { ...exposedForm, APP_BASE_URL: 'http://localhost:9091' });
+
+          expect(written().get('APP_BASE_URL')).toBe(PLATFORM_URL);
+        });
+
+        it('keeps a base URL the operator entered', async () => {
+          withAppBaseUrlField('');
+
+          await appHelpers.generateEnvFile(testAppUrn, { ...thisMachineOnlyForm, APP_BASE_URL: 'http://hubbox.lan:9091' });
+
+          expect(written().get('APP_BASE_URL')).toBe('http://hubbox.lan:9091');
+        });
+
+        it('gives CI Memory no base URL, so it signs a browser in on the address the browser used', async () => {
+          appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory', urn: OFFICIAL_MEMORY_URN });
+          appFilesManager.getAppEnv.mockResolvedValue({
+            path: '/data/app.env',
+            content:
+              'APP_BASE_URL=https://ci-memory-ci-marketplace-core2-acme.example.com\nAPP_BASE_HOST=ci-memory-ci-marketplace-core2-acme.example.com\n',
+          });
+
+          await appHelpers.generateEnvFile(OFFICIAL_MEMORY_URN, thisMachineOnlyForm);
+
+          const env = written();
+          expect(env.get('APP_URL')).toBe(LOCAL_URL);
+          expect(env.has('APP_BASE_URL')).toBe(false);
+          expect(env.has('APP_BASE_HOST')).toBe(false);
+          expect(env.has('APP_BASE_WSS_ORIGIN')).toBe(false);
+        });
+
+        it('still gives CI Memory its public address on Public web', async () => {
+          appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory', urn: OFFICIAL_MEMORY_URN });
+
+          await appHelpers.generateEnvFile(OFFICIAL_MEMORY_URN, exposedForm);
+
+          expect(written().get('APP_BASE_URL')).toBe('https://ci-memory-ci-marketplace-core2-acme.example.com');
         });
       });
     });
