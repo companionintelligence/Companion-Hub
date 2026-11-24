@@ -340,18 +340,37 @@ interface AppNetworkMember {
   networks: Set<string>;
 }
 
-/** The file a root helper keeps its progress in, as `<bytes tar has read> <bytes it has to>`. */
+/** The file a root helper keeps its progress in, as `<bytes done> <bytes it has to do>`. */
 const HELPER_PROGRESS_FILE = 'progress';
 /** The folder for it where a helper's output folder is not otherwise writable: the extract of a restore. */
 const HELPER_PROGRESS_DIRNAME = 'progress-out';
 
 /**
- * Shell that follows the tar in `$pid` from the background, writing how much it has read to `file`
- * every couple of seconds. It ends with the tar, and nothing it does can fail the helper's own work.
- * Replaced whole each time, so the Hub never reads half a line. Ends in `&`: the caller's `wait` follows.
+ * Shell that sets `$c` to the first child of the process in `$pid`, if it has one yet: the gzip a
+ * `tar -z` starts. From the kernel's list of children where it keeps one, else from every process's parent.
  */
-const followTarProgress = (file: string, total: string) =>
-  `( while kill -0 "$pid" 2>/dev/null; do r=$(sed -n "s/^rchar: //p" "/proc/$pid/io" 2>/dev/null) || r=""; if [ -n "$r" ]; then echo "$r ${total}" > "${file}.tmp" && mv -f "${file}.tmp" "${file}"; fi; sleep 2; done ) >/dev/null 2>&1 &`;
+const FIND_COMPRESSOR =
+  'c=$(cut -d" " -f1 "/proc/$pid/task/$pid/children" 2>/dev/null); if [ -z "$c" ]; then for s in /proc/[0-9]*/stat; do read -r p _ _ pp _ < "$s" 2>/dev/null && [ "$pp" = "$pid" ] && c=$p && break; done; fi';
+
+/**
+ * Shell that follows the tar in `$pid` from the background, writing how much has passed through it to
+ * `file` every couple of seconds. It ends with the tar, and nothing it does can fail the helper's own work.
+ * Replaced whole each time, so the Hub never reads half a line. Ends in `&`: the caller's `wait` follows.
+ *
+ * `reader` is whose count to give. A tar that unpacks reads what gzip hands it, so its own count is the
+ * data. A tar that archives reads the files themselves, and the kernel's count of that is no measure:
+ * on the Hub's own computer it ran at twice the data for files read from disk and once for files
+ * already in memory, so a backup's figure reached its total halfway through and stood there. The gzip
+ * it starts reads only what tar hands it, which is the data and tar's headers.
+ */
+const followTarProgress = (file: string, total: string, reader: 'tar' | 'compressor' = 'tar') => {
+  const measure =
+    reader === 'tar'
+      ? 'r=$(sed -n "s/^rchar: //p" "/proc/$pid/io" 2>/dev/null) || r=""'
+      : `[ -n "$c" ] || { ${FIND_COMPRESSOR}; }; r=""; if [ -n "$c" ]; then r=$(sed -n "s/^rchar: //p" "/proc/$c/io" 2>/dev/null) || r=""; fi`;
+
+  return `( ${reader === 'tar' ? '' : 'c=""; '}while kill -0 "$pid" 2>/dev/null; do ${measure}; if [ -n "$r" ]; then echo "$r ${total}" > "${file}.tmp" && mv -f "${file}.tmp" "${file}"; fi; sleep 2; done ) >/dev/null 2>&1 &`;
+};
 
 /** What a root helper last wrote with {@link followTarProgress}, `null` until it has written anything. */
 const readHelperProgress = async (file: string): Promise<DataProgressSample | null> => {
@@ -903,7 +922,7 @@ export class DockerService {
               // What tar will read, for the progress figure. Worth no failure: the backup goes on without a total.
               'total=$(find ./app-data -mindepth 1 -path "./app-data/*backups*" -prune -o -type f -exec stat -c %s {} + | awk \'{s+=$1} END {print s+0}\') || total=0',
               'tar -czf /out/backup.tar.gz --numeric-owner --no-recursion -T /tmp/entries & pid=$!',
-              `${followTarProgress(`/out/${HELPER_PROGRESS_FILE}`, '$total')} wait "$pid"`,
+              `${followTarProgress(`/out/${HELPER_PROGRESS_FILE}`, '$total', 'compressor')} wait "$pid"`,
               'chown "$1" /out/backup.tar.gz',
               'chmod 600 /out/backup.tar.gz',
             ].join('; '),

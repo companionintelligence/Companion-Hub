@@ -106,6 +106,47 @@ export async function processBytesRead(pid: number | undefined): Promise<number 
   return count === undefined ? null : Number(count);
 }
 
+/**
+ * The first child of a process: the gzip a `tar -z` starts. From the kernel's list of children where it
+ * keeps one, else from every process's parent. `null` before the child has started, or with no `/proc`.
+ */
+export async function firstChildPid(pid: number): Promise<number | null> {
+  const listed = await fs.promises.readFile(`/proc/${pid}/task/${pid}/children`, 'utf8').catch(() => null);
+  const first = listed?.trim().split(/\s+/)[0];
+
+  if (first) return Number(first);
+
+  const entries = await fs.promises.readdir('/proc').catch(() => [] as string[]);
+
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+
+    const stat = await fs.promises.readFile(`/proc/${entry}/stat`, 'utf8').catch(() => null);
+    // `pid (comm) state ppid ...`: comm may hold spaces and parentheses, so read after the last `)`.
+    const parent = stat === null ? undefined : stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1];
+
+    if (parent !== undefined && Number(parent) === pid) return Number(entry);
+  }
+
+  return null;
+}
+
+/**
+ * What a `tar -cz` has handed its gzip so far: the data it is archiving and tar's headers. Not tar's
+ * own count, which is no measure of that: tar reads the files themselves, and on the Hub's own
+ * computer the kernel counted those reads at twice the data for files read from disk and once for
+ * files already in memory. gzip reads only what tar hands it.
+ *
+ * @param found the gzip found by an earlier call, kept so the processes are not searched every time
+ */
+export async function compressorBytesRead(tarPid: number | undefined, found: { pid?: number } = {}): Promise<number | null> {
+  if (tarPid === undefined) return null;
+
+  found.pid ??= (await firstChildPid(tarPid)) ?? undefined;
+
+  return processBytesRead(found.pid);
+}
+
 /** The size of a file, `null` while it is not there yet. */
 export async function fileBytes(file: string): Promise<number | null> {
   return fs.promises.stat(file).then(

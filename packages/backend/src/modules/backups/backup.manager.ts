@@ -30,6 +30,7 @@ import {
   type DataProgressSample,
   directoryBytes,
   fileBytes,
+  compressorBytesRead,
   processBytesRead,
   withDataProgress,
 } from '@/common/helpers/data-progress';
@@ -189,11 +190,12 @@ export class BackupManager implements OnApplicationShutdown {
         // It has no total: compressed, it would stop short of the size of the data.
         const totalBytes = onProgress ? await directoryBytes(tempDir) : undefined;
         let tarPid: number | undefined;
+        const compressor: { pid?: number } = {};
         const { stdout, stderr, exitCode } = await withDataProgress(
           onProgress,
           'archiving',
           async () => {
-            const read = await processBytesRead(tarPid);
+            const read = await compressorBytesRead(tarPid, compressor);
             if (read !== null) return { doneBytes: read, totalBytes };
             const written = await fileBytes(archivePath);
             return written === null ? null : { doneBytes: written };

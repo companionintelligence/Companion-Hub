@@ -3,7 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import type { DataProgress } from '@ci-hub/common/schemas';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { directoryBytes, fileBytes, processBytesRead, withDataProgress } from '../data-progress';
+import { spawn } from 'node:child_process';
+import { compressorBytesRead, directoryBytes, fileBytes, firstChildPid, processBytesRead, withDataProgress } from '../data-progress';
 
 vi.unmock('node:fs');
 vi.unmock('fs');
@@ -160,5 +161,32 @@ describe('measuring', () => {
     if (fs.existsSync('/proc/self/io')) {
       await expect(processBytesRead(process.pid)).resolves.toEqual(expect.any(Number));
     }
+  });
+
+  // A `tar -z`'s gzip is its child: the count followed for an archive is the child's, not tar's.
+  it.runIf(fs.existsSync('/proc/self/io'))("finds a process's child and reads the child's count", async () => {
+    const parent = spawn('sh', ['-c', 'sleep 5 & wait'], { stdio: 'ignore' });
+
+    try {
+      let child: number | null = null;
+      for (let tries = 0; tries < 50 && child === null; tries += 1) {
+        child = await firstChildPid(parent.pid as number);
+        if (child === null) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+
+      expect(child).toEqual(expect.any(Number));
+      expect(child).not.toBe(parent.pid);
+
+      const found: { pid?: number } = {};
+      await expect(compressorBytesRead(parent.pid, found)).resolves.toEqual(expect.any(Number));
+      expect(found.pid).toBe(child);
+    } finally {
+      parent.kill('SIGKILL');
+    }
+  });
+
+  it('has no count for a process with no child yet, or none at all', async () => {
+    await expect(compressorBytesRead(undefined)).resolves.toBeNull();
+    await expect(compressorBytesRead(2 ** 30)).resolves.toBeNull();
   });
 });

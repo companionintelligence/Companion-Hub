@@ -1732,6 +1732,10 @@ describe('DockerService', () => {
       expect(script).toContain('! -type b ! -type c ! -type p ! -type s');
       expect(script).toContain('-path "./app-data/*backups*" -prune');
       expect(script).toContain('tar -czf /out/backup.tar.gz --numeric-owner --no-recursion -T /tmp/entries');
+      // The figure is the count of the gzip tar starts, not tar's own: tar's ran at two to three times the data.
+      expect(script).toContain('/proc/$pid/task/$pid/children');
+      expect(script).toContain('"/proc/$c/io"');
+      expect(script).not.toContain('"/proc/$pid/io"');
       expect(script).toContain('chown "$1" /out/backup.tar.gz');
       expect(args.slice(18)).toEqual(['sh', '1000:1000']);
     });
