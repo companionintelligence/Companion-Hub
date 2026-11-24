@@ -142,6 +142,60 @@ pub(crate) fn run_wsl_root_script_capture(distro: &str, script: &str) -> Option<
     Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Runs `script` as root in `distro`, handed to `sh` on stdin byte for byte, and returns its trimmed
+/// stdout, or why it failed with the exit code and stderr. For a script whose text must arrive
+/// unchanged: as an argument after `wsl.exe --` it goes to the distro's shell to be parsed again, and
+/// a multi-line script with quotes in it fails there before it runs.
+#[cfg(windows)]
+pub(crate) fn run_wsl_root_script_stdin(distro: &str, script: &str) -> Result<String, String> {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let mut child = Command::new("wsl.exe")
+        .creation_flags(CREATE_NO_WINDOW)
+        .env("WSL_UTF8", "1")
+        .args(["-d", distro, "-u", "root", "-e", "sh"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Couldn't run wsl.exe: {error}"))?;
+    // Written whole and closed, so sh reads to the end of the script and then finishes.
+    let written = child
+        .stdin
+        .take()
+        .map(|mut stdin| stdin.write_all(script.as_bytes()));
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("Couldn't wait for wsl.exe: {error}"))?;
+    if let Some(Err(error)) = written {
+        return Err(format!("Couldn't hand the script to wsl.exe: {error}"));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if output.status.success() {
+        return Ok(stdout);
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = stderr.trim();
+    // The end of stderr says what failed; a long apt or openssl transcript is mostly noise.
+    let tail: String = {
+        let chars: Vec<char> = stderr.chars().collect();
+        chars[chars.len().saturating_sub(600)..].iter().collect()
+    };
+    Err(format!(
+        "{} {}",
+        output.status.code().map_or_else(
+            || "It ended without an exit code.".to_string(),
+            |code| format!("It exited with code {code}.")
+        ),
+        if tail.is_empty() {
+            "It printed nothing on stderr.".to_string()
+        } else {
+            format!("stderr: {tail}")
+        }
+    ))
+}
+
 /// Install + configure nvidia-container-toolkit inside the WSL2 distro so the native
 /// dockerd registers the `nvidia` runtime. Runs as root via `wsl -u root` (no sudo).
 /// The Debian apt flow applies because `find_wsl_distro` only returns Ubuntu/Debian.
