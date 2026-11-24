@@ -1044,7 +1044,7 @@
   "SETTINGS_FACTORY_RESET_DESCRIPTION": "Removes operators, installed apps, device registration, and local app data. Use this when you need a completely clean Hub.",
   "SETTINGS_FACTORY_RESET_BUTTON": "Factory reset Hub",
   "SETTINGS_FACTORY_RESET_DIALOG_TITLE": "Reset Hub to factory defaults?",
-  "SETTINGS_FACTORY_RESET_DIALOG_BODY": "This permanently deletes all users, apps, registration state, and local data on this Hub. You will need to sign in again as the first operator and re-pair the device.",
+  "SETTINGS_FACTORY_RESET_DIALOG_BODY": "This permanently deletes all users, apps, registration state, and local data on this Hub. You will need to pair the device again, then sign in as the first operator.",
   "SETTINGS_FACTORY_RESET_CONFIRMATION_LABEL": "Type \"{{phrase}}\" to confirm",
   "SETTINGS_FACTORY_RESET_CONFIRMATION_MISMATCH": "That does not match this device's name.",
   "SETTINGS_FACTORY_RESET_PORTAL_APPS_KEPT": "Your apps stay listed in Companion Portal. Pairing this Hub again reinstalls them without their data. To remove them, tick the box below or delete this device in the Portal.",

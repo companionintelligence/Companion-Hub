@@ -22,7 +22,7 @@ import { Trans, useTranslation } from 'react-i18next';
 import { UpdateRepoModal } from '../components/update-repo-modal/update-repo-modal';
 import { useState, useEffect, useCallback, useId, useRef } from 'react';
 import { clearClientHubState } from '@/lib/clear-client-hub-state';
-import { holdPageOnSessionExpiry } from '@/lib/session-expired';
+import { handleSessionExpired, holdPageOnSessionExpiry } from '@/lib/session-expired';
 import {
   clearHubSteadySession,
   clearKeptStackUpdateOutcome,
@@ -264,6 +264,12 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
       releaseFactoryResetPage.current?.();
       releaseFactoryResetPage.current = null;
       setFactoryResetting(false);
+      // Refused before it ran: the session had already ended, so nothing was reset. The hold kept that
+      // refusal from reaching sign-in, so it goes there now instead of saying the reset stopped halfway.
+      if (error instanceof TranslatableError && error.http?.status === 401) {
+        await handleSessionExpired();
+        return;
+      }
       // A reset that stopped on files it could not delete says how many, which, and how to finish, and
       // one that refused a home folder as the data folder names it. Anything else may have stopped
       // anywhere, and running it again is the advice.

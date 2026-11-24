@@ -1539,6 +1539,17 @@ describe('GeneralActionsContainer', () => {
 
       expect(assign).toHaveBeenCalledWith('/login');
     });
+
+    it('goes to sign-in when the reset itself is refused, instead of saying it stopped halfway', async () => {
+      mockFactoryReset.mockRejectedValue(new TranslatableError('COMMON_UNAUTHORIZED', {}, { status: 401, url: '/api/system/factory-reset' }));
+      render(<GeneralActionsContainer />);
+      await userEvent.click(await screen.findByTestId('factory-reset-btn'));
+      await userEvent.type(screen.getByTestId('factory-reset-confirmation-input'), 'core');
+      await userEvent.click(screen.getByTestId('factory-reset-confirm-btn'));
+
+      await waitFor(() => expect(assign).toHaveBeenCalledWith('/login'));
+      expect(mockToastError).not.toHaveBeenCalled();
+    });
   });
 
   it('says a failed factory reset may have stopped halfway', async () => {

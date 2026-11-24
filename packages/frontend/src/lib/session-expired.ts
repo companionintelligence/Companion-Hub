@@ -6,6 +6,11 @@ let queryClientRef: QueryClient | null = null;
 let handlingExpiry = false;
 let pageHolds = 0;
 
+/** Whether a page holds itself against the sign-in redirect right now (see `holdPageOnSessionExpiry`). */
+export function isPageHeldOnSessionExpiry(): boolean {
+  return pageHolds > 0;
+}
+
 /**
  * Keeps the page where it is when a request is refused, until the returned function is called.
  *
