@@ -300,7 +300,7 @@ function DockerDesktopGuide({
  * >250 employees or >$10M revenue; these run the open-source Engine instead.
  * Desktop-app only — hidden in web clients, which cannot trigger installs.
  */
-function EngineAlternativePanel({ platform }: { platform: 'windows' | 'macos' }) {
+function EngineAlternativePanel({ platform, onInstallStart }: { platform: 'windows' | 'macos'; onInstallStart?: () => void }) {
   const { t } = useTranslation();
   const [installState, setInstallState] = useState<LinuxInstallState>('idle');
   const [errorMessage, setErrorMessage] = useState<string>('');
@@ -308,6 +308,7 @@ function EngineAlternativePanel({ platform }: { platform: 'windows' | 'macos' })
   const handleInstall = useCallback(async () => {
     const invoke = getTauriInvoke();
     if (!invoke) return;
+    onInstallStart?.();
     setInstallState('installing');
     setErrorMessage('');
     try {
@@ -320,7 +321,7 @@ function EngineAlternativePanel({ platform }: { platform: 'windows' | 'macos' })
       setErrorMessage(getErrorMessage(err));
       setInstallState('error');
     }
-  }, []);
+  }, [onInstallStart]);
 
   if (!getTauriInvoke()) return null;
 
@@ -381,7 +382,7 @@ function EngineAlternativePanel({ platform }: { platform: 'windows' | 'macos' })
 
 type LinuxInstallState = 'idle' | 'installing' | 'completed' | 'needs_restart' | 'error';
 
-function LinuxDockerGuide() {
+function LinuxDockerGuide({ onInstallStart }: { onInstallStart?: () => void }) {
   const { t } = useTranslation();
   const [installState, setInstallState] = useState<LinuxInstallState>('idle');
   const [errorMessage, setErrorMessage] = useState<string>('');
@@ -389,6 +390,7 @@ function LinuxDockerGuide() {
   const handleAutoInstall = useCallback(async () => {
     const invoke = getTauriInvoke();
     if (!invoke) return;
+    onInstallStart?.();
     setInstallState('installing');
     setErrorMessage('');
     try {
@@ -398,7 +400,7 @@ function LinuxDockerGuide() {
       setErrorMessage(getErrorMessage(err));
       setInstallState('error');
     }
-  }, []);
+  }, [onInstallStart]);
 
   return (
     <div className="space-y-6 w-full max-w-2xl">
@@ -579,20 +581,26 @@ interface DockerReadState {
   settled: boolean;
 }
 
+/** A read of why Docker stopped answering that hasn't come back by now no longer holds the gate. */
+const DOCKER_READ_GIVE_UP_MS = 10_000;
+
 /**
  * The engine the Hub runs on and what Docker says to this user (`docker_engine` and `docker_access`
  * in the desktop app's startup progress). Read when the gate mounts, so the engine is usually known
- * before Docker stops answering, and again when it does. While Docker doesn't answer it is read
- * again every poll: a daemon that wasn't up yet at login can come up and then refuse this user.
+ * before Docker stops answering. It's read again when Docker stops answering and every poll after
+ * that: a daemon that wasn't up yet at login can come up and then refuse this user.
  */
 function useDockerRead(dockerUnavailable: boolean): DockerReadState {
   const [progress, setProgress] = useState<DockerRead | null>(null);
-  /** The `dockerUnavailable` the last finished read was for. */
+  /** The `dockerUnavailable` the last finished read in this run of the effect was for. */
   const [readFor, setReadFor] = useState<boolean | null>(null);
 
   useEffect(() => {
     const invoke = getTauriInvoke();
     if (!invoke) return;
+    // A read for an earlier stretch without Docker must not settle this one. The read made while
+    // Docker answered can still be running when it stops answering again.
+    setReadFor(null);
     let active = true;
     let inFlight = false;
     const read = async () => {
@@ -600,7 +608,13 @@ function useDockerRead(dockerUnavailable: boolean): DockerReadState {
       inFlight = true;
       try {
         const raw = readStartupProgress(await invoke('get_startup_progress_command'));
-        if (active) setProgress(raw && { docker_engine: raw.docker_engine, docker_access: raw.docker_access });
+        if (active) {
+          setProgress((previous) =>
+            raw && previous && previous.docker_engine === raw.docker_engine && previous.docker_access === raw.docker_access
+              ? previous
+              : raw && { docker_engine: raw.docker_engine, docker_access: raw.docker_access },
+          );
+        }
       } catch {
         // Keep what the last read said.
       } finally {
@@ -610,9 +624,17 @@ function useDockerRead(dockerUnavailable: boolean): DockerReadState {
     };
     void read();
     const id = dockerUnavailable ? setInterval(() => void read(), STARTUP_PROGRESS_POLL_MS) : null;
+    // A read that never comes back must not leave the gate on a spinner. The bootstrap page
+    // gives up checking too.
+    const giveUp = dockerUnavailable
+      ? setTimeout(() => {
+          if (active) setReadFor(true);
+        }, DOCKER_READ_GIVE_UP_MS)
+      : null;
     return () => {
       active = false;
       if (id !== null) clearInterval(id);
+      if (giveUp !== null) clearTimeout(giveUp);
     };
   }, [dockerUnavailable]);
 
@@ -624,7 +646,7 @@ function isWslEngineStopped(read: DockerRead | null): boolean {
   return read?.docker_engine === 'wsl-engine' && !NOT_AN_ENGINE_STOP.has(read.docker_access);
 }
 
-function DockerInstallGuide({ wslEngineStopped }: { wslEngineStopped: boolean }) {
+function DockerInstallGuide({ wslEngineStopped, onInstallStart }: { wslEngineStopped: boolean; onInstallStart: () => void }) {
   const platform = detectPlatform();
 
   if (platform === 'windows') {
@@ -636,7 +658,7 @@ function DockerInstallGuide({ wslEngineStopped }: { wslEngineStopped: boolean })
       <DockerDesktopGuide
         {...guide}
         footer={guide.hint ? <p className="text-xs text-muted-foreground">{guide.hint}</p> : undefined}
-        alternative={<EngineAlternativePanel platform="windows" />}
+        alternative={<EngineAlternativePanel platform="windows" onInstallStart={onInstallStart} />}
       />
     );
   }
@@ -649,12 +671,12 @@ function DockerInstallGuide({ wslEngineStopped }: { wslEngineStopped: boolean })
         {...guide}
         macChip={macChip}
         footer={guide.hint ? <p className="text-xs text-muted-foreground">{guide.hint}</p> : undefined}
-        alternative={<EngineAlternativePanel platform="macos" />}
+        alternative={<EngineAlternativePanel platform="macos" onInstallStart={onInstallStart} />}
       />
     );
   }
 
-  return <LinuxDockerGuide />;
+  return <LinuxDockerGuide onInstallStart={onInstallStart} />;
 }
 
 // ─── Startup screens: starting, stuck, stopped, couldn't start ────────────────
@@ -698,6 +720,8 @@ interface StartupProgress {
   user_stopped_at_ms: number | null;
   start_failed_at_ms: number | null;
   docker_access: DockerAccessState;
+  /** Docker's own words for `docker_access`, when it isn't available. */
+  docker_access_detail: string | null;
   hub_api_live: boolean;
   /** The engine the Hub runs on, such as `wsl-engine`; null from a shell that doesn't say. */
   docker_engine: string | null;
@@ -739,6 +763,11 @@ function readDockerAccess(raw: unknown): DockerAccessState {
   return typeof state === 'string' && DOCKER_ACCESS_STATES.has(state) ? (state as DockerAccessState) : 'error';
 }
 
+function readDockerAccessDetail(raw: unknown): string | null {
+  const detail = raw && typeof raw === 'object' ? (raw as { detail?: unknown }).detail : undefined;
+  return typeof detail === 'string' && detail.trim() !== '' ? detail.trim() : null;
+}
+
 /**
  * Read a startup-progress payload. The Hub container serving this page can be newer or older
  * than the desktop shell answering the command, so whatever an older shell leaves out reads as
@@ -758,6 +787,7 @@ function readStartupProgress(raw: unknown): StartupProgress | null {
     user_stopped_at_ms: finiteOrNull(payload.user_stopped_at_ms),
     start_failed_at_ms: finiteOrNull(payload.start_failed_at_ms),
     docker_access: readDockerAccess(payload.docker_access),
+    docker_access_detail: readDockerAccessDetail(payload.docker_access),
     hub_api_live: payload.hub_api_live === true,
     docker_engine: typeof payload.docker_engine === 'string' ? payload.docker_engine : null,
   };
@@ -1109,7 +1139,17 @@ function StartupScreen({
     if (service.state !== 'failed') return null;
     return service === failedService ? (service.detail ?? errorText) : service.detail;
   };
-  const panelError = failedService ? null : errorText;
+  let panelError = failedService ? null : errorText;
+  if (view === 'docker_refused') {
+    // Docker's own words. Refused also covers Windows asking for elevation and an unreadable
+    // ~/.docker/config.json, where the docker group line doesn't fit. Only the first line, since
+    // `docker info` prints the client's version and plugins after the error.
+    panelError =
+      progress?.docker_access_detail
+        ?.split('\n')
+        .map((line) => line.trim())
+        .find(Boolean) ?? null;
+  }
   const errorToCopy = [...new Set([failedService?.detail, errorText].filter((text): text is string => Boolean(text)))].join('\n\n');
   // The group command is for Linux. Elsewhere the line says what to do.
   const command = view === 'docker_refused' && detectPlatform() === 'linux' ? DOCKER_GROUP_COMMAND : null;
@@ -1167,7 +1207,7 @@ function StartupScreen({
       timeText = t('HUB_STATUS_ELAPSED_TIME', { time: formatClock(elapsedSeconds) });
   }
 
-  // A stopped Hub reads 0% whatever the containers score, and so does one this user can't see.
+  // A stopped Hub reads 0% whatever the containers score. So does one this user can't see.
   const pct = progress && view !== 'stopped' && view !== 'docker_refused' ? progress.progress_pct : 0;
   const barWidth = view === 'starting' || view === 'stuck' ? Math.max(pct, 4) : pct;
 
@@ -1375,9 +1415,14 @@ export function HubStatus({ children }: HubStatusProps) {
   const [showLogs, setShowLogs] = useState(false);
   const { read: dockerRead, settled: dockerReadSettled } = useDockerRead(status === 'DockerNotAvailable');
   const wslEngineStopped = isWslEngineStopped(dockerRead);
+  /** This page ran a Docker install while Docker didn't answer. */
+  const [dockerInstallRanHere, setDockerInstallRanHere] = useState(false);
+  const markDockerInstallRan = useCallback(() => setDockerInstallRanHere(true), []);
   // Docker is installed and may well run the Hub, but refuses this user: installing Docker is no
   // answer, so this gets the startup screen the desktop bootstrap page shows (Companion-Hub#2535).
-  const dockerRefused = status === 'DockerNotAvailable' && dockerRead?.docker_access === 'permission_denied';
+  // Docker installed from this page refuses this user too until they log in again. The install
+  // guide stays then: it holds the install's own result, or its error.
+  const dockerRefused = status === 'DockerNotAvailable' && !dockerInstallRanHere && dockerRead?.docker_access === 'permission_denied';
   const resolvedTheme = useResolvedTheme();
   const renderedLogs = useMemo(() => {
     if (!logs) {
@@ -1598,6 +1643,8 @@ export function HubStatus({ children }: HubStatusProps) {
       hubSteadyRunningRef.current = false;
       clearHubSteadySession();
     }
+    // Docker answered since the install: if it stops again, that install is history.
+    if (status !== null && status !== 'DockerNotAvailable') setDockerInstallRanHere(false);
   }, [status]);
 
   // Track the wait while Starting: elapsed seconds, and how long a start this page ran lasted
@@ -1685,9 +1732,9 @@ export function HubStatus({ children }: HubStatusProps) {
   const onConnectScreen = typeof window !== 'undefined' && isCloudConnectPath(window.location.pathname);
   if (!isTauri || isTauriMobileSync() || isMobileClient() || onConnectScreen || import.meta.env.VITE_HUB_RUNTIME === 'mobile') return <>{children}</>;
 
-  // Dark placeholder while the first hub status poll runs (avoids blank flash), and while Docker
-  // stopped answering before the read of why comes back: the install guide must not flash up for
-  // a Docker that is installed and refuses this user.
+  // Dark placeholder while the first hub status poll runs (avoids blank flash). It also stays up
+  // while Docker stopped answering and the read of why hasn't come back: the install guide must
+  // not flash up for a Docker that is installed and refuses this user.
   if (status === null || (status === 'DockerNotAvailable' && !dockerReadSettled)) {
     return (
       <SetupPageShell title={t('APP_NAME')} className="bg-transparent" contentClassName="items-center" fitShortWindows>
@@ -1745,7 +1792,7 @@ export function HubStatus({ children }: HubStatusProps) {
     <SetupPageShell title={gateTitle} className="bg-transparent" contentClassName="items-center" fitShortWindows>
       <div className="flex flex-col items-center gap-6 w-full max-w-3xl px-4">
         {status === 'DockerNotAvailable' && !dockerRefused ? (
-          <DockerInstallGuide wslEngineStopped={wslEngineStopped} />
+          <DockerInstallGuide wslEngineStopped={wslEngineStopped} onInstallStart={markDockerInstallRan} />
         ) : (
           <StartupScreen
             status={screenStatus}
