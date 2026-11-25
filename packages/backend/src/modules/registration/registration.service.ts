@@ -316,9 +316,9 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   private _currentPhase: ProvisioningPhase = 'unregistered';
   private _degradedReasons: DegradedReason[] = [];
   /**
-   * Whether this process has read its registration back: `syncPhaseFromDb` ran, a read found no
-   * registration at all, or the phase has moved since. Until then `_currentPhase` holds only its
-   * starting value, and the status says `starting` instead of `unregistered`. A paired Hub without its
+   * Whether this process has read its registration back: `syncPhaseFromDb` read it, a read found no
+   * registration at all, or the phase has moved since. A read that fails doesn't count. Until then `_currentPhase` holds only its
+   * starting value, so the status says `starting` instead of `unregistered`. A paired Hub without its
    * tunnel token file used to read `unregistered` until boot had written the token back and restarted
    * `cloudflared` twice, long enough for an open page to sign out and go to pairing (#2590).
    */
@@ -457,8 +457,6 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   async onApplicationBootstrap() {
     setImmediate(() => {
       void this.runDeferredBootstrap().catch((error) => {
-        // Report what memory holds rather than `starting` for good.
-        this.registrationReadBack = true;
         this.logger.error('Deferred registration bootstrap failed', error);
       });
     });
@@ -485,11 +483,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     // hostname reach Companion Hub.
     await this.ensureHubRouteFromRegistration();
 
-    // Restore the in-memory phase from durable registration state.
+    // Restore the in-memory phase from durable registration state. A database that can't be read
+    // leaves the Hub `starting` until a later read gets through: saying `unregistered` then would
+    // send a paired Hub's open pages to pairing.
     await this.syncPhaseFromDb();
-    // A database that couldn't be read leaves the phase as it was. Boot has done what it can, so the
-    // status reports that phase from here on.
-    this.registrationReadBack = true;
 
     if (isOperational(this._currentPhase)) {
       await this.verifyLicense();
@@ -1855,6 +1852,15 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       return {
         success: false,
         message: 'Cannot prepare fresh setup while the Hub is registered. Use reset from Settings instead.',
+        clearedAppEnvFiles: 0,
+      };
+    }
+    // A paired Hub that hasn't read its registration back yet holds `unregistered` in memory, so the
+    // check above lets it through. Wiping it then would undo a pairing that boot is about to restore.
+    if (!this.registrationReadBack) {
+      return {
+        success: false,
+        message: 'The Hub is still starting and has not read its registration back yet. Try again in a few seconds.',
         clearedAppEnvFiles: 0,
       };
     }

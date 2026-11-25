@@ -340,7 +340,7 @@ export const ROOT_BOOTSTRAP_POLL_MS = 1500;
 
 /**
  * Longer than a root loader run can take: its registration and user-context reads each give up after
- * HUB_BOOTSTRAP_FETCH_MS, and the registration read waits up to ROOT_STARTING_WAIT_MS more on a Hub
+ * HUB_BOOTSTRAP_FETCH_MS. The registration read waits up to ROOT_STARTING_WAIT_MS more on a Hub
  * that is still starting. A run older than this is stuck (a half-open socket, say) and may be replaced.
  */
 export const ROOT_BOOTSTRAP_RUN_LIMIT_MS = 2 * HUB_BOOTSTRAP_FETCH_MS + ROOT_STARTING_WAIT_MS + 4_000;

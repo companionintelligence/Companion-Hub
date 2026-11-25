@@ -21,7 +21,7 @@ export type DegradedReason = (typeof DEGRADED_REASONS)[number];
 /**
  * The phase the status routes report. `starting` is not a phase a Hub moves through or stores: it is
  * what a Hub says from the moment it answers until it has read its registration back from its
- * database. A paired Hub would otherwise read `unregistered` until then, and an open page would take
+ * database. A paired Hub would otherwise read `unregistered` until then and an open page would take
  * that for an unpaired Hub (#2590).
  */
 export type RegistrationStatusPhase = ProvisioningPhase | 'starting';

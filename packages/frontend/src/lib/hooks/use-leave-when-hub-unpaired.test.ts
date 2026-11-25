@@ -127,7 +127,7 @@ describe('useLeaveWhenHubUnpaired', () => {
   });
 
   // A Hub reads its registration back after it starts answering. Without its tunnel token file that
-  // took as long as restarting the tunnel twice, and the Hub said `unregistered` the whole time (#2590).
+  // took as long as restarting the tunnel twice. The Hub said `unregistered` the whole time (#2590).
   it('waits for a Hub that is still starting, however long it takes', async () => {
     registration.data = status('starting');
     renderHook(() => useLeaveWhenHubUnpaired());

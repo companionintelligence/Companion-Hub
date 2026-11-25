@@ -802,6 +802,8 @@ export default function DeviceRegistrationPage() {
         <div>
           <h2 className="text-xl font-medium text-foreground">{t('DEVICE_REGISTRATION_CHECKING_STATUS')}</h2>
           <p className="mt-1 text-sm text-muted-foreground">{t('DEVICE_REGISTRATION_PLEASE_WAIT')}</p>
+          {/* A Hub that stopped answering while it was starting: say so rather than spin with no word. */}
+          {!isLoading && statusError ? <p className="mt-3 text-sm text-muted-foreground">{statusError}</p> : null}
         </div>
       </div>
     );
