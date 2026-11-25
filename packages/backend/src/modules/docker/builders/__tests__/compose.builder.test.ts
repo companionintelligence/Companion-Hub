@@ -1489,6 +1489,25 @@ describe('DockerComposeBuilder — an app’s Traefik labels stay inside the app
     expect(labels).not.toHaveProperty('traefik.http.routers.my-app-_user-insecure.MIDDLEWARES');
   });
 
+  // Skyvern, Snapify, Cap and others gate routers of their own with `ci-hub@docker`. The Hub's image
+  // update leaves the Hub container's labels as the installed compose file had them, so that one
+  // can lag the sign-in the Hub writes to dynamic.yml on every boot (CI-Engineering#510).
+  it('gates a manifest’s own router with the sign-in the Hub writes itself', async () => {
+    const labels = await labelsFor(
+      { exposureMode: 'cloudflare', enableAuth: true },
+      {
+        'traefik.http.middlewares.{{CI_HUB_APP_ID}}-strip.stripprefix.prefixes': '/files',
+        'traefik.http.routers.{{CI_HUB_APP_ID}}-files.rule': 'Host(`${APP_DOMAIN}`) && PathPrefix(`/files`)',
+        'traefik.http.routers.{{CI_HUB_APP_ID}}-files.entrypoints': 'web',
+        'traefik.http.routers.{{CI_HUB_APP_ID}}-files.service': '{{CI_HUB_APP_ID}}',
+        'traefik.http.routers.{{CI_HUB_APP_ID}}-files.middlewares': '{{CI_HUB_APP_ID}}-strip@docker,ci-hub@docker',
+      },
+    );
+
+    expect(labels['traefik.http.routers.my-app-_user-files.middlewares']).toBe('my-app-_user-strip@docker,ci-hub@file,ci-hub-app-starting@file');
+    expect(Object.values(labels).some((value) => String(value).includes('ci-hub@docker'))).toBe(false);
+  });
+
   // What an app saved before the label rules reaches the builder with: it leaves out both kinds and
   // says which.
   it('leaves out the Hub’s own labels and refused Traefik labels and logs each', async () => {

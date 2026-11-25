@@ -88,6 +88,16 @@ fn classifies_daemon_unavailable_before_permission_denied() {
 }
 
 #[test]
+fn classifies_docker_29_missing_socket_as_daemon_unavailable() {
+    let result = classify_docker_access_result(
+        "failed to connect to the docker API at unix:///Users/me/.docker/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /Users/me/.docker/run/docker.sock: connect: no such file or directory\nClient:\n Version:    29.6.0",
+        Some(1),
+    );
+
+    assert!(matches!(result.state, DockerAccessState::DaemonUnavailable));
+}
+
+#[test]
 fn classifies_explicit_permission_denied_as_permission_issue() {
     let result = classify_docker_access_result(
             "Got permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock",

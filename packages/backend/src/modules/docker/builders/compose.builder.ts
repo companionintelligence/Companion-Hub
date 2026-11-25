@@ -16,7 +16,13 @@ import {
 import type { AppUrn } from '@ci-hub/common/types';
 import * as yaml from 'yaml';
 import { type BuiltService, ServiceBuilder } from './service.builder';
-import { labelsOfRoutersLosingTheirChain, TraefikLabelsBuilder, withAppStartingPage, withHubMiddlewaresFirst } from './traefik-labels.builder';
+import {
+  labelsOfRoutersLosingTheirChain,
+  TraefikLabelsBuilder,
+  withAppStartingPage,
+  withHubMiddlewaresFirst,
+  withSignInUnderFileProvider,
+} from './traefik-labels.builder';
 import { publishesHostPort } from '@/modules/apps/app-exposure.helpers';
 import { requiresHubLoginOnPublicRoute } from '@/modules/apps/app-public-routing.helpers';
 import { securityGrantsFor } from '@/modules/apps/security-grants';
@@ -626,6 +632,7 @@ export class DockerComposeBuilder {
       .interpolateVariables(appId, localDomain)
       // After interpolation, so a manifest's `{{CI_HUB_APP_ID}}` router is the same router as ours.
       .transformLabels((labels) => withHubMiddlewaresFirst(labels, traefikLabels))
+      .transformLabels(withSignInUnderFileProvider)
       .transformLabels(withAppStartingPage);
 
     return service.build();

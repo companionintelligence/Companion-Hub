@@ -43,8 +43,8 @@ pub(crate) fn cached_docker_access_check(
 /// Bumped by [`forget_docker_access_check`], so a check already under way doesn't cache its answer.
 static DOCKER_ACCESS_GENERATION: AtomicU64 = AtomicU64::new(0);
 
-/// Drop the cached check, so the next one asks Docker: it has just started.
-#[cfg_attr(not(windows), allow(dead_code))]
+/// Drop the cached check, so the next one asks Docker: it has just started, or its last answer
+/// may be stale.
 pub(crate) fn forget_docker_access_check() {
     let mut cache = lock_recovering(&DOCKER_ACCESS_CACHE);
     DOCKER_ACCESS_GENERATION.fetch_add(1, Ordering::SeqCst);
@@ -144,8 +144,12 @@ pub(crate) fn classify_docker_access_result(
             || combined_lower.contains("the pipe has been ended")
             || combined_lower.contains("the semaphore timeout period has expired"));
 
+    // Docker 29 says "failed to connect to the docker API at ...; check if the path is correct and
+    // if the daemon is running" when the socket is gone, which is how a stopped Docker Desktop,
+    // Colima or rootless engine looks.
     if combined_lower.contains("cannot connect to the docker daemon")
         || combined_lower.contains("is the docker daemon running")
+        || combined_lower.contains("check if the path is correct and if the daemon is running")
         || combined_lower.contains("error during connect")
         || combined_lower.contains("connection refused")
         || combined_lower.contains("context deadline exceeded")
