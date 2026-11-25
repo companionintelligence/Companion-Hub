@@ -1,5 +1,5 @@
 import { Injectable, type OnModuleInit } from '@nestjs/common';
-import type { AppUrn } from '@ci-hub/common/types';
+import { type AppUrn, publishesHostPort, storedHostPortForm } from '@ci-hub/common/types';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { AppsService } from '@/modules/apps/apps.service';
 import { DockerService } from '@/modules/docker/docker.service';
@@ -245,6 +245,11 @@ export function summarizeInstalledApp(entry: InstalledAppEntry) {
       installedVersion: info.version,
       latestVersion: metadata.latestDockerVersion,
     });
+  // Compose binds the host port by the stored form (`publishesHostPort`): a Public Web form with
+  // `exposedLocal` publishes it with `openPort` off, and Private VPN never does. A record with no
+  // form falls back to its row.
+  const hostPortForm = storedHostPortForm(app);
+  const publishesPort = hostPortForm ? publishesHostPort(hostPortForm) : Boolean(app.openPort) && app.exposureMode !== 'tailscale';
 
   return {
     appUrn: createAppUrn(app.appName, app.appStoreSlug),
@@ -254,8 +259,7 @@ export function summarizeInstalledApp(entry: InstalledAppEntry) {
     version: info.version,
     ...(updateAvailable ? { updateAvailable: true, latestVersion: metadata.latestDockerVersion } : {}),
     exposureMode: app.exposureMode,
-    // Private VPN publishes no host port, whatever the row's openPort says (`publishesHostPort`).
-    ...(app.openPort && app.port && app.exposureMode !== 'tailscale' ? { port: app.port } : {}),
+    ...(publishesPort && app.port ? { port: app.port } : {}),
     ...(app.localSubdomain ? { localSubdomain: app.localSubdomain } : {}),
     ...(app.publicDomain ? { publicDomain: app.publicDomain } : {}),
     ...(app.customDomain ? { customDomain: app.customDomain } : {}),
