@@ -156,7 +156,7 @@ async function servedAppAnswers(tailscaleService: TailscaleService, nodeFqdn: st
     const entry = entries.find((candidate) => candidate.listenPort === appPort && candidate.host === selfHost && candidate.mountPoint === '/');
     target = parseServedTarget(entry?.dest);
   } catch {
-    // This only turns a refusal into an answer, so a Serve status that can't be read leaves the refusal as it is.
+    // This only turns a failed fetch into an answer, so a Serve status that can't be read leaves the failure as it is.
     return false;
   }
   return target !== null && (await probeAppPort(target.host, target.port, APP_PROBE_TIMEOUT_MS)) === 'answered';
@@ -658,7 +658,10 @@ export class AppsService {
       }
 
       appUrl = vpnUrl;
-      privateVpn = tailscaleStatus?.nodeFqdn ? { tailscaleService, nodeFqdn: tailscaleStatus.nodeFqdn, appPort } : undefined;
+      // Serve completes a handshake only while the tailnet has HTTPS certificates. Without them a peer gets a TLS
+      // alert, so a Serve entry left over from before says nothing about whether the address opens.
+      privateVpn =
+        tailscaleStatus?.nodeFqdn && tailscaleStatus.httpsAvailable ? { tailscaleService, nodeFqdn: tailscaleStatus.nodeFqdn, appPort } : undefined;
     } else {
       const cloudflareClient = this.moduleRef.get(CloudflareClientService, { strict: false });
       const hasTunnelToken = Boolean(
@@ -710,10 +713,12 @@ export class AppsService {
       return classifyReachedApp(exposureMode, appUrl, response.status, response.text);
     } catch (e) {
       const message = e instanceof Error ? e.message : 'UNKNOWN_ERROR';
+      const code = (e as { code?: unknown } | null)?.code;
 
-      // A Serve listener bound to the tailscale device refuses the Hub, which dials from a Docker network, and a
-      // plain-HTTP publish of the same port on the host answers it instead of Serve, while every tailnet peer
-      // connects. Where Serve lists the port and the app behind it answers, the address is up.
+      // The Hub can miss Serve at an address every tailnet peer opens. A Serve listener bound to the tailscale
+      // device refuses the Hub, which dials from a Docker network. A plain-HTTP publish of the same port on the host
+      // can answer the Hub in place of Serve. Where Serve lists the port and the app behind it answers, the address
+      // is up.
       if (privateVpn && missedServeListener(e) && (await servedAppAnswers(privateVpn.tailscaleService, privateVpn.nodeFqdn, privateVpn.appPort))) {
         return { available: true, appUrl, stage: 'ready' };
       }
@@ -755,7 +760,8 @@ export class AppsService {
         stage: 'error',
         reason: 'NETWORK_ERROR',
         errorCode: 'UNKNOWN',
-        detail: message,
+        // A code-only error (`ERR_SSL_WRONG_VERSION_NUMBER`) would otherwise show an empty reason.
+        detail: message || (typeof code === 'string' ? code : 'UNKNOWN_ERROR'),
         resolvable: false,
       };
     }

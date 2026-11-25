@@ -85,6 +85,7 @@ const createMockService = () => {
       nodeFqdn: 'hub-tailscale-1.example.ts.net',
       tailnet: 'example.ts.net',
       supportsServices: true,
+      httpsAvailable: true,
     }),
     getServePermission: vi.fn().mockReturnValue({ denied: false, remedy: null, deniedSince: null }),
     getServeStatus: vi.fn().mockResolvedValue({ entries: [] }),
@@ -748,8 +749,8 @@ describe('AppsService.checkAppAvailability', () => {
       expect(result).toMatchObject({ available: true, appUrl: vpnUrl });
     });
 
-    // A timeout can come after the connection opened, and a name that does not resolve or a TLS failure that came
-    // from a TLS server (an alert, a certificate the Hub rejects) is not something the target says anything about.
+    // A timeout can come after the connection opened. A name that does not resolve or a TLS failure that came from a
+    // TLS server (an alert, a certificate the Hub rejects) is not something the target says anything about either.
     it.each([
       ['a timeout', new Error('timeout of 5000ms exceeded'), 'CONNECTION_TIMEOUT'],
       ['a connect timeout', new Error('connect ETIMEDOUT 100.64.0.1:8080'), 'CONNECTION_TIMEOUT'],
@@ -775,9 +776,9 @@ describe('AppsService.checkAppAvailability', () => {
       expect(probeAppPort).not.toHaveBeenCalled();
     });
 
-    // The host's own Tailscale with an app Docker also publishes on 0.0.0.0:<port>: inside the Hub the tailnet name
-    // is the host's own tailnet address, and the Hub's connection to it lands on that plain-HTTP publish instead
-    // of Serve, while a laptop on the tailnet opens the app. OpenSSL words the plain reply differently by version.
+    // The host's own Tailscale with an app Docker also publishes on 0.0.0.0:<port>. Inside the Hub the tailnet name
+    // is the host's own tailnet address. The Hub's connection to it lands on that plain-HTTP publish in place of
+    // Serve, while a laptop on the tailnet opens the app. OpenSSL words the plain reply differently by version.
     describe('when a plain-HTTP listener on the host answers instead of Serve', () => {
       const plainHttpReplies: [string, Error][] = [
         [
@@ -825,6 +826,35 @@ describe('AppsService.checkAppAvailability', () => {
 
         expect(result).toMatchObject({ available: false, errorCode: 'UNKNOWN' });
       });
+
+      // Serve without certificates answers every peer with a TLS alert, which the Hub can't see from behind the publish.
+      it('keeps the error when the tailnet has no HTTPS certificates', async () => {
+        mockedAxiosGet.mockRejectedValue(plainHttpReplies[0]?.[1]);
+        ctx.tailscaleService.getStatus.mockResolvedValue({
+          installed: true,
+          connected: true,
+          hostname: 'hub-tailscale-1',
+          nodeFqdn: 'hub-tailscale-1.example.ts.net',
+          tailnet: 'example.ts.net',
+          supportsServices: true,
+          httpsAvailable: false,
+        });
+        vi.mocked(probeAppPort).mockResolvedValue('answered');
+
+        const result = await ctx.service.checkAppAvailability(urn);
+
+        expect(result).toMatchObject({ available: false, errorCode: 'UNKNOWN' });
+        expect(probeAppPort).not.toHaveBeenCalled();
+      });
+
+      it('names the code when the error has no message and nothing answers behind Serve', async () => {
+        mockedAxiosGet.mockRejectedValue(plainHttpReplies[2]?.[1]);
+        ctx.tailscaleService.getServeStatus.mockResolvedValue({ entries: [] });
+
+        const result = await ctx.service.checkAppAvailability(urn);
+
+        expect(result).toMatchObject({ available: false, errorCode: 'UNKNOWN', detail: 'ERR_SSL_WRONG_VERSION_NUMBER' });
+      });
     });
 
     it('does not ask Serve when the address itself answers, whatever the status', async () => {
@@ -837,8 +867,8 @@ describe('AppsService.checkAppAvailability', () => {
       expect(probeAppPort).not.toHaveBeenCalled();
     });
 
-    // The new path only turns a refusal into an answer. Anything else the target does leaves the refusal, with the
-    // repair that goes with it.
+    // The new path only turns a failed fetch into an answer. Anything else the target does leaves the refusal with
+    // the repair that goes with it.
     it.each<[string, AppPortProbeResult]>([
       ['refuses', 'refused'],
       ['takes the connection and stays silent', 'silent'],
@@ -883,6 +913,7 @@ describe('AppsService.checkAppAvailability', () => {
         connected: true,
         nodeFqdn: 'Hub-Tailscale-1.Example.ts.net',
         supportsServices: true,
+        httpsAvailable: true,
       });
       vi.mocked(probeAppPort).mockResolvedValue('answered');
 
