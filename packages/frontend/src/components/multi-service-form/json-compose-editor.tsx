@@ -12,6 +12,11 @@ import { Alert, AlertDescription, AlertHeading, AlertIcon } from '@/components/u
 
 const schema = toJsonSchema(dynamicComposeFormSchema);
 
+// The validator opens each message with an emoji right after the carets ("^ 👈🏽  type must be string"), or at the top
+// of the frame when it has no column. Only that one goes, with its skin tone or variation selector, which would
+// otherwise be left as a square. The user's own JSON in the frame keeps its emoji, ® and arrows.
+const VALIDATOR_EMOJI = /^([ \t]*(?:\|[ \t]*\^+ )?)\p{Extended_Pictographic}(?:\p{Emoji_Modifier}|\uFE0F)* ?/gmu;
+
 type Props = {
   onChange: (json: string, error?: string) => void;
 };
@@ -104,9 +109,7 @@ export const JsonComposeEditor = ({ onChange }: Props) => {
             <div className="min-w-0">
               <AlertHeading>{t('MULTI_SERVICE_JSON_ERROR_TITLE')}</AlertHeading>
               <AlertDescription>
-                <pre className="mt-1 overflow-x-auto whitespace-pre-wrap font-mono text-xs">
-                  {error.replace(/\p{Extended_Pictographic}\uFE0F?\s?/gu, '')}
-                </pre>
+                <pre className="mt-1 overflow-x-auto whitespace-pre-wrap font-mono text-xs">{error.replace(VALIDATOR_EMOJI, '$1')}</pre>
               </AlertDescription>
             </div>
           </Alert>

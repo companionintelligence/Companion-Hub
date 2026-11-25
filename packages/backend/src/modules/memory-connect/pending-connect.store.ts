@@ -45,9 +45,9 @@ interface TombstoneEntry extends PendingEntry {
   /**
    * The redirect the consuming attempt actually resolved to, so a replay
    * repeats the real outcome instead of assuming success. Initialized to
-   * `next` (the safe landing for a failed, deferred, or still-in-flight
-   * attempt) and upgraded via {@link PendingConnectStore.recordOutcome} once
-   * the attempt resolves to something else (the finishing interstitial).
+   * `next`, where a replay of a still-in-flight attempt lands, and replaced
+   * via {@link PendingConnectStore.recordOutcome} once the attempt resolves
+   * (the finishing interstitial, or the app's page in the Hub for a failure).
    */
   redirect: string;
 }

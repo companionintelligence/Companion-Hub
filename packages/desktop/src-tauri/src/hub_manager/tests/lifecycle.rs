@@ -240,6 +240,120 @@ fn config_hash_ignores_the_learned_zone_and_nothing_else() {
     );
 }
 
+/// A failed Stop Hub left the Hub running and still marked as stopped by the user, so the next
+/// launch and the watchdog would have left it down once it fell over.
+#[test]
+fn a_stop_that_fails_does_not_leave_the_hub_marked_as_stopped() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let data_dir = tempdir.path();
+
+    let result = marking_user_stopped(
+        data_dir,
+        false,
+        || {
+            assert!(
+                is_user_stopped(data_dir),
+                "marked while the stop runs, so nothing starts the Hub meanwhile"
+            );
+            Err("docker compose down failed.".to_string())
+        },
+        || true,
+    );
+
+    assert_eq!(result, Err("docker compose down failed.".to_string()));
+    assert!(!is_user_stopped(data_dir));
+}
+
+#[test]
+fn a_stop_that_works_leaves_the_hub_marked_as_stopped() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+
+    let result = marking_user_stopped(
+        tempdir.path(),
+        false,
+        || Ok("Hub stopped".to_string()),
+        || panic!("a stop that works doesn't ask whether the Hub is up"),
+    );
+
+    assert_eq!(result, Ok("Hub stopped".to_string()));
+    assert!(is_user_stopped(tempdir.path()));
+}
+
+/// `down` can fail after it has removed the Hub's containers. Dropping the mark then would let
+/// the watchdog start the Hub the user just stopped.
+#[test]
+fn a_stop_that_fails_with_the_hub_already_down_keeps_the_mark() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+
+    let result = marking_user_stopped(
+        tempdir.path(),
+        false,
+        || Err("docker compose down failed.".to_string()),
+        || false,
+    );
+
+    assert!(result.is_err());
+    assert!(is_user_stopped(tempdir.path()));
+}
+
+/// A Hub stopped earlier stays stopped when a later stop, such as Clear Tunnel Token's, fails.
+#[test]
+fn a_failed_stop_keeps_the_mark_from_an_earlier_stop() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    mark_user_stopped(tempdir.path());
+
+    let result = marking_user_stopped(
+        tempdir.path(),
+        false,
+        || Err("docker compose down failed.".to_string()),
+        || true,
+    );
+
+    assert!(result.is_err());
+    assert!(is_user_stopped(tempdir.path()));
+}
+
+/// Stack-dev runs the Hub from a source checkout, where Stop Hub never marks it as stopped.
+#[test]
+fn a_stack_dev_stop_leaves_no_mark() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+
+    let result = marking_user_stopped(
+        tempdir.path(),
+        true,
+        || Ok("Hub stopped".to_string()),
+        || panic!("a stop that works doesn't ask whether the Hub is up"),
+    );
+
+    assert_eq!(result, Ok("Hub stopped".to_string()));
+    assert!(!is_user_stopped(tempdir.path()));
+}
+
+/// A stop can fail because Docker didn't answer at all. That stop never ran `down`, so the Hub is
+/// as it was: only Docker saying the container is gone or not running counts as down.
+#[test]
+fn the_hub_counts_as_down_only_when_docker_says_so() {
+    assert!(hub_state_may_be_up(true, "running\n", ""));
+    assert!(hub_state_may_be_up(true, "restarting\n", ""));
+    assert!(!hub_state_may_be_up(true, "exited\n", ""));
+    assert!(!hub_state_may_be_up(
+        false,
+        "",
+        "Error: No such object: ci-hub\n"
+    ));
+
+    assert!(hub_state_may_be_up(
+        false,
+        "",
+        "permission denied while trying to connect to the docker API at unix:///var/run/docker.sock\n"
+    ));
+    assert!(hub_state_may_be_up(
+        false,
+        "",
+        "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?\n"
+    ));
+}
+
 fn docker_check(state: DockerAccessState, detail: &str) -> DockerAccessCheck {
     DockerAccessCheck {
         state,

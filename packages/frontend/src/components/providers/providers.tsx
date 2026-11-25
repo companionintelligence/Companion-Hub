@@ -11,6 +11,7 @@ import { DebugPanel } from '../debug-panel/debug-panel';
 import { openExternal } from '@/lib/helpers/open-external';
 import { recoverFromChunkLoadError } from '@/lib/chunk-load-error';
 import { captureHubException } from '@/lib/sentry';
+import { isPageHeldOnSessionExpiry } from '@/lib/session-expired';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -31,6 +32,12 @@ function HubResumeQueryRefresh() {
 
   useEffect(() => {
     return subscribeHubResume(() => {
+      // A factory reset holding its page has deleted the user, so a refetched user context reads signed
+      // out and the page leaves with the reset's warning. That warning sends people to the Portal, so
+      // coming back to this tab after a while is the usual case (#2557).
+      if (isPageHeldOnSessionExpiry()) {
+        return;
+      }
       void queryClient.invalidateQueries();
     });
   }, [queryClient]);

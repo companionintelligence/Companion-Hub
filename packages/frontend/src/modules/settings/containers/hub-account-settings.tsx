@@ -7,6 +7,7 @@ import { clearClientHubState } from '@/lib/clear-client-hub-state';
 import { clearKeptStackUpdateOutcome } from '@/lib/desktop-stack-session';
 import { openExternal } from '@/lib/helpers/open-external';
 import { useDemoMode } from '@/lib/hooks/use-demo-mode';
+import { holdLeaveWhenHubUnpaired } from '@/lib/hooks/use-leave-when-hub-unpaired';
 import { type HubRemovalWatchEnd, portalRemoveDeviceUrl, watchForHubRemoval } from '@/lib/hub-removal-watch';
 import { portalConfigQueryOptions } from '@/lib/portal-config';
 import { clearRegistrationCache } from '@/lib/registration-cache';
@@ -63,13 +64,21 @@ export const HubAccountSection = () => {
   // time, so a second click would reset or watch again instead of being refused.
   const [leaving, setLeaving] = useState(false);
   const stopWatchRef = useRef<(() => void) | null>(null);
+  // Keeps the open-page check (useLeaveWhenHubUnpaired) from leaving first while a removal is watched.
+  const releaseWatchHoldRef = useRef<(() => void) | null>(null);
 
   const removeUrl = portalConfig?.portalUrl && portalConfig.deviceId ? portalRemoveDeviceUrl(portalConfig.portalUrl, portalConfig.deviceId) : null;
+
+  const releaseWatchHold = useCallback(() => {
+    releaseWatchHoldRef.current?.();
+    releaseWatchHoldRef.current = null;
+  }, []);
 
   const stopWatch = useCallback(() => {
     stopWatchRef.current?.();
     stopWatchRef.current = null;
-  }, []);
+    releaseWatchHold();
+  }, [releaseWatchHold]);
 
   useEffect(() => stopWatch, [stopWatch]);
 
@@ -78,6 +87,7 @@ export const HubAccountSection = () => {
       stopWatchRef.current = null;
 
       if (end === 'removed') {
+        // The hold stays: this page is leaving for pairing.
         setWatchState('idle');
         setLeaving(true);
         toast.success(t('SETTINGS_HUB_ACCOUNT_REMOVED'));
@@ -85,10 +95,11 @@ export const HubAccountSection = () => {
         return;
       }
 
+      releaseWatchHold();
       // A timeout is not an error: the person may still be in the Portal, or changed their mind.
       setWatchState(end === 'timed_out' ? 'idle' : end);
     },
-    [t],
+    [releaseWatchHold, t],
   );
 
   const handleRemove = () => {
@@ -105,6 +116,7 @@ export const HubAccountSection = () => {
 
     stopWatch();
     setWatchState('watching');
+    releaseWatchHoldRef.current = holdLeaveWhenHubUnpaired();
     stopWatchRef.current = watchForHubRemoval({ onEnd: handleWatchEnd });
   };
 
@@ -120,9 +132,12 @@ export const HubAccountSection = () => {
     }
     setResetConfirmOpen(false);
     setIsResetting(true);
+    // The Hub reports `unregistered` from the start of the reset, before it answers this request.
+    const releaseResetHold = holdLeaveWhenHubUnpaired();
     try {
       const result = await resetRegistration();
       if (result.error) {
+        releaseResetHold();
         toast.error(t('SETTINGS_NETWORK_RESET_REGISTRATION_ERROR'));
         return;
       }
@@ -131,6 +146,7 @@ export const HubAccountSection = () => {
       toast.success(t('SETTINGS_NETWORK_RESET_REGISTRATION_SUCCESS'));
       goToPairing();
     } catch {
+      releaseResetHold();
       toast.error(t('SETTINGS_NETWORK_RESET_REGISTRATION_ERROR'));
     } finally {
       setIsResetting(false);

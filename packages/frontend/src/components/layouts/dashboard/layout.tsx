@@ -9,6 +9,7 @@ import { systemLoadOptions } from '@/api-client/@tanstack/react-query.gen';
 import { CoreServerBanner } from '@/components/core-server-banner/core-server-banner';
 import { shouldShowCoreServerBanner } from '@/components/core-server-banner/core-server-banner-visibility';
 import { useCoreServerBanner } from '@/hooks/use-core-server-banner';
+import { useLeaveWhenHubUnpaired } from '@/lib/hooks/use-leave-when-hub-unpaired';
 import { PortalConnectionBanner } from '@/components/portal-connection-banner/portal-connection-banner';
 import { TunnelStatusBanner } from '@/components/tunnel-status-banner/tunnel-status-banner';
 import { shouldSkipIosPageSlide } from '@/lib/ios-webview-guards';
@@ -51,6 +52,7 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
     if (mainRef.current) scrollPageToTop(mainRef.current, pageKey);
   }, [pageKey]);
   const { isLoggedIn } = useUserContext();
+  useLeaveWhenHubUnpaired();
   const { data: systemData } = useQuery({
     ...systemLoadOptions(),
     refetchInterval: 3000,

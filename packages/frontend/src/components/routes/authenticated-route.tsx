@@ -3,6 +3,7 @@ import { AppContextProvider, GuestAppContextProvider, useAppContext } from '@/co
 import { useUserContext } from '@/context/user-context';
 import { isMobileClient } from '@/lib/mobile-connection';
 import { useMobileLoadTimeout } from '@/lib/use-mobile-load-timeout';
+import { useRememberDesktopAccount } from '@/lib/hooks/use-remember-desktop-account';
 import { getRehydrateStatus } from '@/api-client/sdk.gen';
 import { sdkResult } from '@/lib/sdk-unwrap';
 import { getStoredDriftChoice } from '@/lib/registration-state-drift';
@@ -27,6 +28,7 @@ function AuthenticatedContent({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const [restoreRedirectChecked, setRestoreRedirectChecked] = useState(false);
   const [restoreStatus, setRestoreStatus] = useState<RestoreStatus | null>(null);
+  useRememberDesktopAccount(isAppLoading || loadFailed ? null : user?.username);
 
   // Asked on every sign-in, not only in the tab that chose "Restore existing device": the Hub restores
   // on its own after pairing. The person who signs in next may be anywhere (see opensRestorePage).
