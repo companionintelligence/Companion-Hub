@@ -109,8 +109,8 @@ export function envPasswordFrom(env: NodeJS.ProcessEnv = process.env): string | 
  * Hidden TTY prompt. Does not echo keystrokes.
  *
  * Reading stdin keeps Node's event loop alive, so the prompt pauses it again once it has its answer,
- * as readline's close() does. Left flowing, `cihub up prod` started the Hub after the password and
- * then never exited.
+ * as readline's close() does, unless it was already being read before the prompt started. Left
+ * flowing, `cihub up prod` started the Hub after the password and then never exited.
  */
 export function promptHiddenPassword(label: string, stdin = input, stdout = output): Promise<string> {
   return new Promise((resolve, reject) => {
