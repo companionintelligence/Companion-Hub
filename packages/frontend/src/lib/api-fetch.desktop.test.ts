@@ -1,6 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { client } from '@/api-client/client.gen';
-import { apiFetch, getTauriSessionId, hydrateDesktopSession, setTauriSessionId, TAURI_SESSION_STORAGE_KEY } from './api-fetch';
+import { refreshTokenKey } from '@/vendor/ci-common/native/index';
+import {
+  apiFetch,
+  forgetStoredHubSession,
+  getTauriSessionId,
+  hydrateDesktopSession,
+  setTauriSessionId,
+  TAURI_SESSION_STORAGE_KEY,
+} from './api-fetch';
+import { DESKTOP_PORTAL_CLIENT_ID } from './desktop-session';
 import { resetActiveFetch, setActiveFetch } from './runtime-fetch';
 
 // The desktop is not a phone.
@@ -78,6 +87,20 @@ describe('desktop session in the OS keychain', () => {
     await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('plugin:ci-auth|secure_remove', { key: 'ci.hub.session' }));
     await vi.waitFor(() => expect(keychain.has('ci.hub.session')).toBe(false));
     expect(localStorage.getItem(TAURI_SESSION_STORAGE_KEY)).toBeNull();
+  });
+
+  // A page about to leave for pairing still sends its session. Its keychain copy and the Portal refresh
+  // token go first: the second removal waits on the first, and a page that leaves at once never sent it.
+  it('empties the keychain and keeps the session in memory when only the stored copies are forgotten', async () => {
+    setTauriSessionId('abc');
+    await vi.waitFor(() => expect(keychain.get('ci.hub.session')).toBe('abc'));
+    keychain.set(refreshTokenKey(DESKTOP_PORTAL_CLIENT_ID), 'portal-refresh');
+
+    forgetStoredHubSession();
+
+    expect(getTauriSessionId()).toBe('abc');
+    await vi.waitFor(() => expect(keychain.has(refreshTokenKey(DESKTOP_PORTAL_CLIENT_ID))).toBe(false));
+    expect(keychain.has('ci.hub.session')).toBe(false);
   });
 
   it('loads the session from the keychain at startup, with no web-storage read', async () => {

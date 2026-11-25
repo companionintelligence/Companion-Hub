@@ -351,6 +351,18 @@ export function getTauriSessionId(): string | null {
   return tauriSessionId;
 }
 
+/**
+ * Remove every stored copy of the session (web storage, the desktop keychain, the phone's store) and
+ * keep the one in memory, for a page that still sends it for a moment before it leaves. A reload or a
+ * closed window then starts signed out, and the keychain removals, which run one after another, have
+ * that moment to finish instead of racing the page's unload.
+ */
+export function forgetStoredHubSession(): void {
+  const id = getTauriSessionId();
+  setTauriSessionId(null);
+  tauriSessionId = id;
+}
+
 /** Drop a client session that the Hub no longer recognizes (expired, hub reset, etc.). */
 export function clearStaleTauriSession(): void {
   if (!getTauriSessionId()) {

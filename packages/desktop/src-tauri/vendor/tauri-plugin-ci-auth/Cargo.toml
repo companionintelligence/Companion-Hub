@@ -1,6 +1,5 @@
 # vendored-from: tauri-plugin-ci-auth@0.1.0 packages/tauri-plugin-ci-auth/Cargo.toml
-# Copyright (c) Lifescope Inc. All rights reserved.
-# Private & Confidential — Property of Lifescope Inc. Do not distribute.
+# Copyright (c) Lifescope Inc. Licensed under the PolyForm Noncommercial License 1.0.0; see LICENSE.md.
 
 [package]
 name = "tauri-plugin-ci-auth"
@@ -12,7 +11,7 @@ edition = "2021"
 rust-version = "1.90"
 description = "Tauri v2 plugin: RFC 8252 loopback sign-in and OS keychain storage for Companion Intelligence desktop apps"
 readme = "README.md"
-license = "UNLICENSED"
+license = "PolyForm-Noncommercial-1.0.0"
 publish = false
 
 [dependencies]

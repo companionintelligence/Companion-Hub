@@ -319,7 +319,7 @@ describe('root clientLoader registration gating', () => {
   it('sends /login with a page to come back to on to pairing as well', async () => {
     resolveRegistrationStatus.mockResolvedValue(makeStatus('unregistered'));
 
-    const result = (await clientLoader({ request: new Request('http://localhost/login?next=%2Fsettings') } as never)) as Response;
+    const result = (await clientLoader({ request: new Request('http://localhost/login?redirect_url=%2Fsettings') } as never)) as Response;
 
     expect(result.status).toBe(302);
     expect(result.headers.get('Location')).toBe('/device-registration');
