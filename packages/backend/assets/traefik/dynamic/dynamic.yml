@@ -31,7 +31,7 @@ http:
 
   middlewares:
     # The Hub sign-in in front of an app. Every route of an app with Enable authentication names it
-    # (TraefikLabelsBuilder.addCloudflareLabels), and some manifests name it on routes of their own, so
+    # (TraefikLabelsBuilder.addCloudflareLabels). Some manifests name it on routes of their own too, so
     # the name stays. A chain: the cache header first, so it is on every answer that passes here, the
     # sign-in's own redirects included, then the forward auth. The Hub container's labels define the
     # same chain for the Docker provider.
@@ -41,8 +41,8 @@ http:
           - ci-hub-no-store
           - ci-hub-forward-auth
 
-    # An answer behind the sign-in is for the visitor who signed in, and nobody may keep a copy. Apps
-    # send no Cache-Control on their files or a public one, and Cloudflare caches by file extension:
+    # An answer behind the sign-in is for the visitor who signed in. Nobody may keep a copy. Apps send
+    # no Cache-Control on their files or a public one. Cloudflare caches by file extension, so
     # once one signed-in visitor had loaded a script, image or PDF, the edge handed it to anyone who
     # asked for it, signed in or not. Browsers also showed the app from their own cache after the
     # visitor signed out of the Hub. This replaces whatever the app sent. Apps without the sign-in and

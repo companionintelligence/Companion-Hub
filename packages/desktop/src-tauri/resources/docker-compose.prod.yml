@@ -299,8 +299,8 @@ services:
       # Traefik to the canonical network and prod port instead of letting its
       # Docker provider choose an arbitrary network/first exposed port.
       traefik.docker.network: "ci-hub_network"
-      # `ci-hub` is the sign-in apps name in their chains: the cache header, then the forward auth
-      # below. See `ci-hub` and `ci-hub-no-store` in assets/traefik/dynamic/dynamic.yml.
+      # `ci-hub` is the sign-in that apps name in their chains: the cache header, then the forward
+      # auth below. See `ci-hub` and `ci-hub-no-store` in assets/traefik/dynamic/dynamic.yml.
       traefik.http.middlewares.ci-hub.chain.middlewares: "ci-hub-no-store,ci-hub-forward-auth"
       traefik.http.middlewares.ci-hub-no-store.headers.customresponseheaders.Cache-Control: "private, no-store"
       # Cloudflare reads these instead of Cache-Control when an answer has one; empty removes the app's copy.

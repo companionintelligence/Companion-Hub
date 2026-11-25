@@ -40,7 +40,7 @@ export const HUB_ROUTE_NAME_SUFFIXES: readonly string[] = [
 
 /** The file-provider middleware that strips visitor-set forwarded headers from tunnel requests. */
 export const EDGE_HEADERS_MIDDLEWARE = 'ci-hub-edge-headers@file';
-/** The Hub's forward auth under the file provider. Its `@docker` twin vanishes when the Hub's labels flap. */
+/** The Hub's sign-in (cache header, then forward auth) under the file provider. Its `@docker` twin vanishes when the Hub's labels flap. */
 const FORWARD_AUTH_MIDDLEWARE = 'ci-hub@file';
 /** See `ci-hub-sw-reset` in assets/traefik/dynamic/dynamic.yml. */
 export const SW_RESET_MIDDLEWARE = 'ci-hub-sw-reset@file';

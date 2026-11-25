@@ -118,7 +118,7 @@ describe('traefik ci-hub forward-auth middleware config', () => {
   /*
    * Every answer on a route behind the sign-in is for the visitor who signed in. Without a header that
    * says so, Cloudflare cached an app's scripts, images and PDFs by their extension after one signed-in
-   * visit and handed them to anyone, and browsers showed the app from their cache after a sign-out
+   * visit and handed them to anyone. Browsers showed the app from their cache after a sign-out
    * (CI-Engineering#510). Routes name `ci-hub`, so `ci-hub` has to carry the header itself.
    */
   it('backend traefik dynamic.yml marks every answer behind the sign-in as one nobody may keep', () => {

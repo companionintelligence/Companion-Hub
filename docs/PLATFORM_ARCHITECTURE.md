@@ -257,10 +257,10 @@ the tunnel received is not what the router expects.
 
 Every route behind the Hub sign-in names `ci-hub`, a chain of `ci-hub-no-store` and the forward
 auth (`ci-hub-forward-auth`), under both the file and the Docker provider. `ci-hub-no-store` sets
-`Cache-Control: private, no-store` on every answer that passes it, the sign-in's own redirects
-included, and removes `CDN-Cache-Control` and `Cloudflare-CDN-Cache-Control`, which Cloudflare would
-read in its place, so neither Cloudflare nor a browser keeps a copy of an answer meant for a
-signed-in visitor. Routes without the sign-in keep the app's own headers.
+`Cache-Control: private, no-store` on every answer that passes it (the sign-in's own redirects
+included) and removes `CDN-Cache-Control` and `Cloudflare-CDN-Cache-Control`, which Cloudflare would
+read in its place. Neither Cloudflare nor a browser keeps a copy of an answer meant for a signed-in
+visitor. Routes without the sign-in keep the app's own headers.
 
 Every app router ends with `ci-hub-app-starting@file`, an `errors` middleware for 502 and 504.
 It leaves 503 alone: apps send that on purpose, with a body their own clients read. While an
