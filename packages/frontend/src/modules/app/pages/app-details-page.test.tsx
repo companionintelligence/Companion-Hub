@@ -1,11 +1,16 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { useQuery, useIsMutating, getMarketplaceAppImageUrl } = vi.hoisted(() => ({
+const { useQuery, useIsMutating, getMarketplaceAppImageUrl, searchParams, setSearchParams, toastError } = vi.hoisted(() => ({
   useQuery: vi.fn(),
   useIsMutating: vi.fn(() => 0),
   getMarketplaceAppImageUrl: vi.fn(),
+  searchParams: { current: new URLSearchParams() },
+  setSearchParams: vi.fn(),
+  toastError: vi.fn(),
 }));
+
+vi.mock('sonner', () => ({ toast: { error: toastError } }));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -18,6 +23,7 @@ vi.mock('react-router', async () => {
   return {
     ...actual,
     useParams: () => ({ appId: 'test-app', storeId: 'community' }),
+    useSearchParams: () => [searchParams.current, setSearchParams],
     redirect: vi.fn(),
   };
 });
@@ -116,6 +122,7 @@ import AppDetailsPage from './app-details-page';
 describe('AppDetailsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    searchParams.current = new URLSearchParams();
     useIsMutating.mockReturnValue(0);
     getMarketplaceAppImageUrl.mockReturnValue('http://localhost:5002/api/marketplace/apps/test-app%3Acommunity/image');
     useQuery.mockImplementation((options: { queryKey?: readonly unknown[] }) => {
@@ -187,6 +194,25 @@ describe('AppDetailsPage', () => {
     const image = screen.getByRole('img', { name: 'Test App' });
     expect(getMarketplaceAppImageUrl).not.toHaveBeenCalled();
     expect(image).toHaveAttribute('src', 'https://cdn.example.com/test-app.png');
+  });
+
+  it('says a Connect Memory failed when the Hub lands here after one, then drops the marker (#2544)', () => {
+    searchParams.current = new URLSearchParams('memoryConnect=error&tab=memory');
+
+    render(<AppDetailsPage />);
+
+    expect(toastError).toHaveBeenCalledTimes(1);
+    expect(toastError).toHaveBeenCalledWith('MEMORY_CONNECT_ERROR_TOAST', { id: 'memory-connect-result' });
+    const [kept, options] = setSearchParams.mock.calls[0] ?? [];
+    expect(String(kept)).toBe('tab=memory');
+    expect(options).toEqual({ replace: true });
+  });
+
+  it('says nothing on an ordinary visit', () => {
+    render(<AppDetailsPage />);
+
+    expect(toastError).not.toHaveBeenCalled();
+    expect(setSearchParams).not.toHaveBeenCalled();
   });
 
   it('falls back to the placeholder image when the details logo fails to load', () => {

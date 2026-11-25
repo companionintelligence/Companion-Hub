@@ -88,6 +88,12 @@ export type PortalWhoIsResponse = {
  */
 export const PORTAL_GRANT_DENIED_CODE = 'GRANT_DENIED';
 
+/**
+ * An entry Companion Portal answered 200 for but did not keep, such as one over the organization's
+ * public address allowance. The registry's answer lists them; nothing else says so.
+ */
+type RegistryRefusal = { app?: string; slug?: string; reason?: string; message?: string };
+
 @Injectable()
 export class PortalClientService {
   private readonly publicPortalUrl: string;
@@ -500,7 +506,7 @@ export class PortalClientService {
       kind?: typeof PORT_EXPOSE_KIND;
       exposureMode?: 'local' | 'tailscale';
     }>;
-  }): Promise<{ success?: boolean }> {
+  }): Promise<{ success?: boolean; refused?: RegistryRefusal[] }> {
     return this.postJson('/devices/applications/registry', payload, { authenticated: true });
   }
 

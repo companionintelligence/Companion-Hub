@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import {
   quarantineStalePath,
   readTextFileIfExists,
+  removeLeftoverTemporaries,
   resetPosixPermissionSupportCache,
   supportsPosixPermissions,
   writeHealableTextFile,
@@ -14,6 +15,10 @@ describe('bind-mount-helpers', () => {
 
   beforeEach(() => {
     fs.mkdirSync(tmpRoot, { recursive: true });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   afterAll(() => {
@@ -40,6 +45,144 @@ describe('bind-mount-helpers', () => {
     const names = fs.readdirSync(tmpRoot);
     expect(names.some((name) => /^hub\.yml\.stale-root-/.test(name))).toBe(true);
     expect(readTextFileIfExists(filePath)).toContain('routers');
+  });
+
+  // Traefik reads its dynamic folder whenever a file in it changes. A write that empties the file
+  // before filling it let Traefik read apps.yml with no routes in it during an app restart (#2541).
+  describe('replacing a file someone else reads', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    /** Records what a reader sees while each write runs, the way the OS shows a file opened for writing: empty first. */
+    function watchReads(filePath: string): string[] {
+      const seen: string[] = [];
+      const realWriteFile = fs.promises.writeFile.bind(fs.promises);
+      vi.spyOn(fs.promises, 'writeFile').mockImplementation(async (target, ...rest) => {
+        if (String(target) === filePath) {
+          fs.writeFileSync(filePath, '');
+        }
+        seen.push(fs.readFileSync(filePath, 'utf-8'));
+        // @ts-expect-error forwarding the caller's own arguments to the real implementation
+        return realWriteFile(target, ...rest);
+      });
+      return seen;
+    }
+
+    it('never shows a reader an empty file while it writes', async () => {
+      const filePath = join(tmpRoot, 'apps.yml');
+      fs.writeFileSync(filePath, 'http:\n  routers:\n    old: {}\n', 'utf-8');
+      const seen = watchReads(filePath);
+
+      await writeHealableTextFile(filePath, 'http:\n  routers:\n    new: {}\n');
+
+      expect(seen.length).toBeGreaterThan(0);
+      expect(seen.every((content) => content.includes('old'))).toBe(true);
+      expect(fs.readFileSync(filePath, 'utf-8')).toContain('new');
+    });
+
+    it('leaves no file behind that Traefik would load', async () => {
+      const dir = join(tmpRoot, 'dynamic');
+      fs.mkdirSync(dir, { recursive: true });
+      const names: string[] = [];
+      const realRename = fs.promises.rename.bind(fs.promises);
+      vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+        names.push(...fs.readdirSync(dir).map(String));
+        return realRename(from, to);
+      });
+
+      await writeHealableTextFile(join(dir, 'apps.yml'), 'http: {}\n');
+
+      // While the new content waits beside the file, Traefik's directory read skips it.
+      expect(names.filter((name) => name !== 'apps.yml').every((name) => !/\.(ya?ml|toml)$/.test(name))).toBe(true);
+      expect(fs.readdirSync(dir)).toEqual(['apps.yml']);
+    });
+
+    it('writes in place where the folder refuses the rename and cleans up', async () => {
+      const filePath = join(tmpRoot, 'token');
+      fs.writeFileSync(filePath, 'old-token', 'utf-8');
+      vi.spyOn(fs.promises, 'rename').mockRejectedValue(Object.assign(new Error('EBUSY'), { code: 'EBUSY' }));
+
+      await writeHealableTextFile(filePath, 'new-token');
+
+      expect(fs.readFileSync(filePath, 'utf-8')).toBe('new-token');
+      expect(fs.readdirSync(tmpRoot).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+    });
+
+    it('leaves the folder mode alone when only the rename is refused', async () => {
+      const filePath = join(tmpRoot, 'token');
+      fs.writeFileSync(filePath, 'old-token', 'utf-8');
+      vi.spyOn(fs.promises, 'rename').mockRejectedValue(Object.assign(new Error('EBUSY'), { code: 'EBUSY' }));
+      const chmod = vi.spyOn(fs.promises, 'chmod');
+
+      await writeHealableTextFile(filePath, 'new-token');
+
+      expect(chmod).not.toHaveBeenCalledWith(tmpRoot, 0o777);
+      expect(fs.readFileSync(filePath, 'utf-8')).toBe('new-token');
+    });
+
+    it('passes on a failure that is not a refusal and keeps the old content', async () => {
+      const filePath = join(tmpRoot, 'apps.yml');
+      fs.writeFileSync(filePath, 'old', 'utf-8');
+      vi.spyOn(fs.promises, 'rename').mockRejectedValue(Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' }));
+
+      await expect(writeHealableTextFile(filePath, 'new')).rejects.toMatchObject({ code: 'ENOSPC' });
+
+      expect(fs.readFileSync(filePath, 'utf-8')).toBe('old');
+      expect(fs.readdirSync(tmpRoot).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+    });
+
+    it('removes the copy a killed write left beside the token', async () => {
+      const dir = join(tmpRoot, 'tunnel');
+      fs.mkdirSync(dir, { recursive: true });
+      const leftover = `.token.7-${Date.now() - 120_000}-1.tmp`;
+      const someoneElses = '.token.notes.tmp';
+      fs.writeFileSync(join(dir, leftover), 'old-secret');
+      fs.writeFileSync(join(dir, someoneElses), 'keep');
+
+      await writeHealableTextFile(join(dir, 'token'), 'new-token');
+
+      expect(fs.readdirSync(dir).sort()).toEqual([someoneElses, 'token'].sort());
+    });
+
+    it('removes a fresh leftover when asked to clear everything', async () => {
+      const dir = join(tmpRoot, 'tunnel');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(join(dir, `.token.7-${Date.now()}-1.tmp`), 'secret');
+
+      await removeLeftoverTemporaries(join(dir, 'token'), 0);
+
+      expect(fs.readdirSync(dir)).toEqual([]);
+    });
+
+    it('writes through a symlinked file instead of replacing the link', async () => {
+      const realPath = join(tmpRoot, 'real-token');
+      const linkPath = join(tmpRoot, 'token');
+      fs.writeFileSync(realPath, 'old-token', 'utf-8');
+      fs.symlinkSync(realPath, linkPath);
+
+      await writeHealableTextFile(linkPath, 'new-token');
+
+      expect(fs.lstatSync(linkPath).isSymbolicLink()).toBe(true);
+      expect(fs.readFileSync(realPath, 'utf-8')).toBe('new-token');
+    });
+
+    it('finishes two writes to one file in the order they were asked for', async () => {
+      const filePath = join(tmpRoot, 'apps.yml');
+      fs.writeFileSync(filePath, 'old', 'utf-8');
+      const realRename = fs.promises.rename.bind(fs.promises);
+      let renames = 0;
+      vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+        renames += 1;
+        // The first write is the slow one; without the queue the second would land first.
+        if (renames === 1) await new Promise((resolve) => setTimeout(resolve, 20));
+        return realRename(from, to);
+      });
+
+      await Promise.all([writeHealableTextFile(filePath, 'first'), writeHealableTextFile(filePath, 'second')]);
+
+      expect(fs.readFileSync(filePath, 'utf-8')).toBe('second');
+    });
   });
 
   it('quarantineStalePath preserves original file contents', () => {

@@ -525,19 +525,29 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
 
     const directions = this.directions();
     const connected = peers.filter((p) => p.status === 'connected').length;
+    const unreachable = peers.filter((p) => p.status === 'unreachable').length;
     // Peers this node would actually send work to. Reduces to `connected` when nothing is disabled,
     // which is what keeps every default byte-identical to the previous build.
     const usable = peers.filter((p) => p.status === 'connected' && p.enabled !== false).length;
-    // A node with a direction switched off, or with every connected peer individually disabled, is
+    // Disabled outranks the socket, as `poolReach` on the Resource Monitor has it: a peer the
+    // operator switched off is not reach this Hub has lost, and its row reads "Disabled", not
+    // "Unreachable". Only these make the pool `peers_unreachable`.
+    const enabledUnreachable = peers.filter((p) => p.status === 'unreachable' && p.enabled !== false).length;
+    // A node with a direction switched off, or with every paired peer individually disabled, is
     // NOT 'active' — it half-participates, and saying "active" there is exactly the lie an operator
-    // would debug for an hour. `no_peers` still means "nothing is paired", not "nothing is usable".
-    const partiallyDisabled = !directions.outbound.enabled || !directions.inbound.enabled || (connected > 0 && usable === 0);
+    // would debug for an hour. `no_peers` still means "nothing is paired", not "nothing is usable":
+    // a pairing that exists but can't be reached right now is `peers_unreachable`, so the card
+    // doesn't ask the operator to pair a Hub it lists as paired right below.
+    const everyPairedDisabled = connected + unreachable > 0 && usable + enabledUnreachable === 0;
+    const partiallyDisabled = !directions.outbound.enabled || !directions.inbound.enabled || (connected > 0 && usable === 0) || everyPairedDisabled;
     const reason: PoolStatusReason = enabled.enabled
       ? partiallyDisabled
         ? 'partially_disabled'
         : connected > 0
           ? 'active'
-          : 'no_peers'
+          : enabledUnreachable > 0
+            ? 'peers_unreachable'
+            : 'no_peers'
       : enabled.disabledBy === 'env'
         ? 'disabled_by_env'
         : 'disabled_by_setting';
@@ -592,7 +602,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
         total: peers.length,
         connected,
         pending: peers.filter((p) => p.status === 'pending').length,
-        unreachable: peers.filter((p) => p.status === 'unreachable').length,
+        unreachable,
         // Counted across every status, not just `connected`: disabling is a routing decision and
         // says nothing about the lifecycle, so this deliberately overlaps the three counts above.
         disabled: peers.filter((p) => p.enabled === false).length,

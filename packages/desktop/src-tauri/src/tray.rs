@@ -27,6 +27,34 @@ pub(crate) fn clear_tunnel_token_result(problems: &[String]) -> String {
     }
 }
 
+/// Tray Stop Hub: the Hub, then the apps it runs. A Hub that didn't stop keeps running, so its
+/// apps are left running too. The error then comes back for the tray to show. A failed `down`
+/// can still have taken the Hub down (it removes the networks last), so the apps go down with it.
+/// Before, the error only reached the log and Stop Hub seemed to do nothing (Companion-Hub#2536).
+pub(crate) fn stop_hub_then_apps(
+    stop_hub: impl FnOnce() -> Result<String, String>,
+    hub_still_up: impl FnOnce() -> bool,
+    stop_apps: impl FnOnce() -> Result<Option<String>, String>,
+    log: impl Fn(&str),
+) -> Result<(), String> {
+    match stop_hub() {
+        Ok(message) => log(&message),
+        Err(error) => {
+            log(&format!("Tray stop request failed: {error}"));
+            if hub_still_up() {
+                return Err(error);
+            }
+            log("The Hub is down after the failed stop, so its apps are stopped too.");
+        }
+    }
+    match stop_apps() {
+        Ok(Some(summary)) => log(&summary),
+        Ok(None) => {}
+        Err(error) => log(&format!("Managed app containers cleanup failed: {error}")),
+    }
+    Ok(())
+}
+
 /// What saving the window geometry reads from the window, so a test can stand in for one.
 pub(crate) trait GeometrySource {
     fn is_maximized(&self) -> bool;
@@ -95,6 +123,49 @@ pub(crate) fn save_window_geometry(app_handle: &tauri::AppHandle) {
     }
 }
 
+/// The tray's first item reads **Hide Hub** while the main window shows and **Show Hub** while it
+/// is in the tray.
+pub(crate) fn show_hide_label(shown: bool) -> &'static str {
+    if shown {
+        "Hide Hub"
+    } else {
+        "Show Hub"
+    }
+}
+
+/// Whether the main window shows. `create_tray` sets where it starts. After that only the main
+/// thread changes it: the tray menu, the window's close button and `note_main_window_shown`, which
+/// queues its update there.
+static MAIN_WINDOW_SHOWN: AtomicBool = AtomicBool::new(false);
+
+/// The tray's first item. It lives in app state so that whatever shows the window outside the
+/// tray (opening the app again, a deep link) can keep the label in step. Otherwise the item kept
+/// reading **Show Hub** over a window that was back and hiding it took two clicks
+/// (Companion-Hub#2537).
+struct ShowHideItem(MenuItem<tauri::Wry>);
+
+fn main_window_shown() -> bool {
+    MAIN_WINDOW_SHOWN.load(Ordering::SeqCst)
+}
+
+fn set_main_window_shown(app: &tauri::AppHandle, shown: bool) {
+    MAIN_WINDOW_SHOWN.store(shown, Ordering::SeqCst);
+    if let Some(show_hide) = app.try_state::<ShowHideItem>() {
+        let _ = show_hide.0.set_text(show_hide_label(shown));
+    }
+}
+
+/// Records that the main window was shown from outside the tray, so the tray offers to hide it.
+///
+/// The update runs on the main thread, queued behind the window's own show request. A second launch
+/// on Linux calls this from the single-instance D-Bus thread. Setting the label there would hold
+/// that thread until the main thread is free. A close or tray click handled in between could also
+/// leave the flag saying hidden under a window that then shows.
+pub(crate) fn note_main_window_shown(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || set_main_window_shown(&handle, true));
+}
+
 fn describe_hub_status(status: &crate::hub_manager::HubStatus) -> String {
     match status {
         crate::hub_manager::HubStatus::DockerNotAvailable => "docker not available".to_string(),
@@ -141,8 +212,15 @@ async fn hub_health_ok(client: &reqwest::Client, base_url: &str) -> bool {
     false
 }
 
-pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
-    let show_hide = MenuItem::with_id(app, "show_hide", "Hide Hub", true, None::<&str>)?;
+/// `window_shown` says whether setup showed the main window: a login start leaves it in the tray.
+pub fn create_tray(app: &App, window_shown: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let show_hide = MenuItem::with_id(
+        app,
+        "show_hide",
+        show_hide_label(window_shown),
+        true,
+        None::<&str>,
+    )?;
     let sep1 = PredefinedMenuItem::separator(app)?;
     let start_hub = MenuItem::with_id(app, "start_hub", "Start Hub", true, None::<&str>)?;
     let stop_hub = MenuItem::with_id(app, "stop_hub", "Stop Hub", false, None::<&str>)?;
@@ -180,19 +258,14 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
         ],
     )?;
 
-    // Track window visibility
-    let window_visible = Arc::new(AtomicBool::new(true));
-    let visible_for_event = Arc::clone(&window_visible);
+    // A second launch during setup queues its update behind setup, so it lands on this item.
+    MAIN_WINDOW_SHOWN.store(window_shown, Ordering::SeqCst);
+    app.manage(ShowHideItem(show_hide));
 
     // Keep refs for background updates
     let status_item = Arc::new(status);
     let start_item = Arc::new(start_hub);
     let stop_item = Arc::new(stop_hub);
-    let show_hide_item = Arc::new(show_hide);
-
-    // Share show_hide_item with the window close event handler
-    let show_hide_for_close = Arc::clone(&show_hide_item);
-    let visible_for_close = Arc::clone(&window_visible);
 
     // Register close-requested handler to hide instead of quit
     if let Some(window) = app.get_webview_window("main") {
@@ -203,14 +276,11 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(win) = app_handle.get_webview_window("main") {
                     save_window_geometry(&app_handle);
                     let _ = win.hide();
-                    visible_for_close.store(false, Ordering::Relaxed);
-                    let _ = show_hide_for_close.set_text("Show Hub");
+                    set_main_window_shown(&app_handle, false);
                 }
             }
         });
     }
-
-    let show_hide_for_menu = Arc::clone(&show_hide_item);
 
     // Load the tray icon defensively: prefer the packaged file, fall back to the
     // embedded bytes, and if both fail (corrupt asset / unusual packaging) build
@@ -233,15 +303,13 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
         .on_menu_event(move |app, event| match event.id.as_ref() {
             "show_hide" => {
                 if let Some(window) = app.get_webview_window("main") {
-                    if visible_for_event.load(Ordering::Relaxed) {
+                    if main_window_shown() {
                         let _ = window.hide();
-                        visible_for_event.store(false, Ordering::Relaxed);
-                        let _ = show_hide_for_menu.set_text("Show Hub");
+                        set_main_window_shown(app, false);
                     } else {
                         let _ = window.show();
                         let _ = window.set_focus();
-                        visible_for_event.store(true, Ordering::Relaxed);
-                        let _ = show_hide_for_menu.set_text("Hide Hub");
+                        set_main_window_shown(app, true);
                     }
                 }
             }
@@ -301,40 +369,29 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                     "tray.stop",
                     "Stop Hub requested from the tray menu.",
                 );
-                tauri::async_runtime::spawn(async move {
-                    match crate::hub_manager::stop_hub(&compose, &env) {
-                        Ok(message) => {
-                            let _ = crate::hub_manager::append_desktop_log_for(
-                                &data,
-                                "tray.stop",
-                                &message,
-                            );
-                        }
-                        Err(error) => {
-                            let _ = crate::hub_manager::append_desktop_log_for(
-                                &data,
-                                "tray.stop",
-                                &format!("Tray stop request failed: {}", error),
-                            );
-                        }
-                    }
-
-                    match crate::hub_manager::stop_managed_app_containers(&data) {
-                        Ok(Some(summary)) => {
-                            let _ = crate::hub_manager::append_desktop_log_for(
-                                &data,
-                                "tray.stop",
-                                &summary,
-                            );
-                        }
-                        Ok(None) => {}
-                        Err(error) => {
-                            let _ = crate::hub_manager::append_desktop_log_for(
-                                &data,
-                                "tray.stop",
-                                &format!("Managed app containers cleanup failed: {}", error),
-                            );
-                        }
+                let app_handle = app.clone();
+                // `docker compose down` and `docker stop` block, for as long as the containers
+                // take to go down, so they run off the async runtime's workers.
+                tauri::async_runtime::spawn_blocking(move || {
+                    let log = |message: &str| {
+                        let _ = crate::hub_manager::append_desktop_log_for(
+                            &data,
+                            "tray.stop",
+                            message,
+                        );
+                    };
+                    if let Err(error) = stop_hub_then_apps(
+                        || crate::hub_manager::stop_hub(&compose, &env),
+                        crate::hub_manager::hub_may_still_be_up,
+                        || crate::hub_manager::stop_managed_app_containers(&data),
+                        log,
+                    ) {
+                        app_handle
+                            .dialog()
+                            .message(error)
+                            .title("Couldn't stop the Hub")
+                            .kind(MessageDialogKind::Error)
+                            .show(|_| {});
                     }
                 });
             }
@@ -687,9 +744,10 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        clear_tunnel_token_result, window_geometry_to_save, GeometrySource,
+        clear_tunnel_token_result, stop_hub_then_apps, window_geometry_to_save, GeometrySource,
         CLEAR_TUNNEL_TOKEN_CONFIRM,
     };
+    use std::cell::RefCell;
     use tauri::{PhysicalPosition, PhysicalSize};
 
     /// The main window as Windows lays it out at 125% scaling. Decorations are off, but tao keeps
@@ -791,6 +849,78 @@ mod tests {
             assert_eq!(window.visible_size(), size, "size after launch {launch}");
             assert_eq!(window.position, place, "place after launch {launch}");
         }
+    }
+
+    /// With a Compose too old for the stack file, Stop Hub failed and then stopped every app while
+    /// the Hub kept running. It said nothing.
+    #[test]
+    fn a_hub_that_did_not_stop_keeps_its_apps_and_reports_why() {
+        let log = RefCell::new(Vec::new());
+        let apps_stopped = RefCell::new(false);
+
+        let result = stop_hub_then_apps(
+            || Err("Companion Hub needs Docker Compose 2.33 or newer.".to_string()),
+            || true,
+            || {
+                *apps_stopped.borrow_mut() = true;
+                Ok(Some("Stopped 8 running app container(s).".to_string()))
+            },
+            |line| log.borrow_mut().push(line.to_string()),
+        );
+
+        assert_eq!(
+            result,
+            Err("Companion Hub needs Docker Compose 2.33 or newer.".to_string())
+        );
+        assert!(!*apps_stopped.borrow(), "the apps were stopped");
+        assert_eq!(
+            *log.borrow(),
+            ["Tray stop request failed: Companion Hub needs Docker Compose 2.33 or newer."]
+        );
+    }
+
+    #[test]
+    fn a_hub_that_stopped_takes_its_apps_with_it() {
+        let log = RefCell::new(Vec::new());
+
+        let result = stop_hub_then_apps(
+            || Ok("Hub stopped".to_string()),
+            || panic!("a stop that works doesn't ask whether the Hub is up"),
+            || Ok(Some("Stopped 8 running app container(s).".to_string())),
+            |line| log.borrow_mut().push(line.to_string()),
+        );
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            *log.borrow(),
+            ["Hub stopped", "Stopped 8 running app container(s)."]
+        );
+    }
+
+    /// `down` removes the containers before the networks, so it can fail on a network an app still
+    /// holds after the Hub is gone. The apps go down with the Hub then.
+    #[test]
+    fn a_failed_stop_that_took_the_hub_down_takes_its_apps_with_it() {
+        const DOWN_FAILED: &str =
+            "docker compose down failed. network ci-hub_network has active endpoints";
+        let log = RefCell::new(Vec::new());
+
+        let result = stop_hub_then_apps(
+            || Err(DOWN_FAILED.to_string()),
+            || false,
+            || Ok(Some("Stopped 2 running app container(s).".to_string())),
+            |line| log.borrow_mut().push(line.to_string()),
+        );
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            *log.borrow(),
+            [
+                format!("Tray stop request failed: {DOWN_FAILED}").as_str(),
+                "The Hub is down after the failed stop, so its apps are stopped too.",
+                "Stopped 2 running app container(s).",
+            ]
+        );
     }
 
     #[test]

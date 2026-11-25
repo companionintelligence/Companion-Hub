@@ -121,11 +121,17 @@ The Hub checks whether an app is up by connecting to its address from where the
 Hub runs. When the Hub runs in a container, that is a Docker network, and a
 `tailscaled` that binds its Serve listeners to the Tailscale device (seen with
 1.104.7) refuses a connection that arrives there, even though every device on the
-tailnet connects. When the Hub is refused, it reads `tailscale serve status`,
+tailnet connects. A Hub that uses the host's Tailscale also misses Serve for an
+app whose port the host publishes too: its connection to its own tailnet address
+lands on that plain-HTTP port, and the TLS handshake fails with "wrong version
+number" or "packet length too long". When the Hub is refused or gets one of those
+two errors, and the tailnet has HTTPS certificates, it reads `tailscale serve status`,
 finds the entry for the app's port under the device's current name, and sends a
 request to the target that entry forwards to. If the target is an IP address on a
 private network, which is what the Hub writes (the app container's address on its
-app network), and it answers, the app reads as available. In every other case the
+app network, or for a port added with **Expose a port** the address
+`host.docker.internal` has inside the Hub's container), and it answers, the app
+reads as available. In every other case the
 app reads as **App not responding**: the port has no entry, the target doesn't
 answer, or the target is a host name such as `host.docker.internal` or
 `localhost`, which the Hub's container and the host's `tailscaled` can read

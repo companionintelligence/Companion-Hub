@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { execFile } from 'node:child_process';
 import { access, constants } from 'node:fs/promises';
 import { hubContainerName } from '@/common/constants';
+import { hubPortProbeAddress, hubPortProbeHost } from '@/modules/custom-apps/port-expose-reachability';
 
 export interface TailscalePeerDevice {
   id?: string;
@@ -835,6 +836,34 @@ export class TailscaleService {
       return process.env.TAILSCALE_HUB_UPSTREAM ?? `http://${hubContainerName()}:5002`;
     }
     return `http://localhost:${process.env.API_PORT || 3000}`;
+  }
+
+  /**
+   * Upstream for a program the operator exposed from the host with **Expose a port**, or null when the Hub
+   * can't name the host.
+   *
+   * It is the address `host.docker.internal` has inside the Hub's container, the `host-gateway` entry: the
+   * address Traefik proxies the same program at for the other exposure modes, and the one the
+   * **Expose a port** check opened. Serve needs the address, not the name. The host's tailscaled dials from
+   * the host, where the name doesn't resolve, so every request answered 502. The sidecar resolves it on
+   * `ci-hub_network`, where it is an alias of the Hub's own container, not the host.
+   *
+   * Not `localhost` for the host's tailscaled: the program would see every tailnet visitor as a loopback
+   * caller, which some programs let in without signing in, and a program listening only on loopback, which
+   * the check refuses to expose, would be reachable.
+   *
+   * A Hub that doesn't run in a container is on the host, so the address is loopback, which only the host's
+   * own tailscaled shares with it. The sidecar keeps the name there, as before.
+   */
+  async getHostPortServeUpstream(port: number): Promise<string | null> {
+    const address = await hubPortProbeAddress();
+    if (address === null) {
+      return null;
+    }
+    if (address === hubPortProbeHost(false) && (await this.resolveStrategy()) === 'sidecar') {
+      return `http://host.docker.internal:${port}`;
+    }
+    return `http://${address}:${port}`;
   }
 
   /**
