@@ -974,3 +974,40 @@ fn the_wsl_ollama_install_gets_zstd_before_running_install_sh() {
         .expect("sh runs");
     assert!(status.success());
 }
+
+#[test]
+fn wsl_without_virtual_machine_platform_is_not_ready() {
+    // WSL 3.0.5 with the package in and Virtual Machine Platform off: exit 0, and this text.
+    let vmp_off = "Default Distribution: docker-desktop\nDefault Version: 2\nWSL2 is unable to start since virtualization is not enabled on this machine.\nPlease ensure the \"Virtual Machine Platform\" optional component is enabled and virtualization is turned on in your computer's firmware settings.\n\nEnable \"Virtual Machine Platform\" by running: wsl.exe --install --no-distribution\n";
+    assert!(!wsl_status_says_ready(true, vmp_off));
+    // Translated Windows: only the suggested command stays in English.
+    assert!(!wsl_status_says_ready(
+        true,
+        "Plateforme : wsl.exe --install --no-distribution"
+    ));
+    assert!(!wsl_status_says_ready(
+        false,
+        "The Windows Subsystem for Linux is not installed."
+    ));
+    assert!(wsl_status_says_ready(
+        true,
+        "Default Distribution: Ubuntu\nDefault Version: 2\n"
+    ));
+}
+
+#[test]
+fn the_elevated_phase_turns_on_virtual_machine_platform_or_says_why_it_cant() {
+    let script = wsl2_engine_elevated_script();
+    assert!(script.contains("$wslStatus = (& wsl.exe --status 2>&1 | Out-String)"));
+    assert!(script.contains("-notmatch 'Virtual Machine Platform|--no-distribution'"));
+    // Already on and still not starting: firmware, not another restart.
+    assert!(
+        script.contains("Get-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform")
+    );
+    assert!(script.contains("if ($wslInstalled -and \"$vmp\" -eq 'Enabled') {"));
+    let firmware = script
+        .find("firmware (BIOS or UEFI")
+        .expect("firmware message");
+    let restart = script.find("exit 100").expect("restart exit");
+    assert!(firmware < restart);
+}

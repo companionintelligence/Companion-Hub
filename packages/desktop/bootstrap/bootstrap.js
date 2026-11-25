@@ -466,6 +466,9 @@
     if (osType() !== 'windows' || view !== 'docker' || wslEngineStopped(progress)) return false;
     // Installed and the Hub starting on it: the page shows Docker as missing until its next poll.
     if (page.wslInstallResult?.state === 'completed' && page.commandRunning) return false;
+    // Waiting on a Windows restart, which a second click can't replace: the button looked as if
+    // the install hadn't finished.
+    if (page.wslInstallResult?.state === 'needs_restart') return false;
     const state = progress?.docker_access?.state;
     return state === 'not_installed' || state === 'daemon_unavailable' || state === 'error';
   }

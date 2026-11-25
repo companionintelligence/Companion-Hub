@@ -417,10 +417,20 @@ if ($Program) {
 # allowed to fail (WSL absent) — relax briefly so its non-zero exit doesn't become
 # a terminating error under Stop, then restore Stop for the download cmdlets below.
 $ErrorActionPreference = 'Continue'
-& wsl.exe --status | Out-Null
-$wslPresent = ($LASTEXITCODE -eq 0)
+$wslStatus = (& wsl.exe --status 2>&1 | Out-String)
+$wslInstalled = ($LASTEXITCODE -eq 0)
+# With the WSL package in but Virtual Machine Platform off, --status exits 0 and says to run
+# `wsl.exe --install --no-distribution` (that command text isn't translated): not ready either.
+$wslPresent = $wslInstalled -and ($wslStatus -notmatch 'Virtual Machine Platform|--no-distribution')
 $ErrorActionPreference = 'Stop'
 if (-not $wslPresent) {
+  # The feature on (not just pending a restart) and WSL still unable to start: virtualization is
+  # off in the PC's firmware. Another restart wouldn't change that, so say so instead.
+  $vmp = $null
+  try { $vmp = (Get-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform).State } catch { }
+  if ($wslInstalled -and "$vmp" -eq 'Enabled') {
+    throw "Windows has Virtual Machine Platform turned on, but WSL still can't start. Virtualization looks turned off in this PC's firmware (BIOS or UEFI settings): turn it on there, then try again."
+  }
   & wsl.exe --install --no-distribution
   exit 100
 }
@@ -577,17 +587,37 @@ throw 'Timed out waiting for the Docker Engine inside WSL2 to come up.'
     )
 }
 
-/// True when the WSL platform is already enabled (`wsl --status` succeeds). Used
+/// Whether `wsl --status` says WSL can run distros: it succeeded, and doesn't say Virtual Machine
+/// Platform is off. With the WSL package installed but that Windows feature off, `wsl --status`
+/// exits 0 and prints "WSL2 is unable to start since virtualization is not enabled ... Enable
+/// "Virtual Machine Platform" by running: wsl.exe --install --no-distribution" (seen on Windows,
+/// WSL 3.0.5). Taken as ready, the install skipped the admin phase that turns it on and failed in
+/// the distro. The command it suggests isn't translated, so it is matched too.
+#[cfg(any(test, target_os = "windows"))]
+pub(crate) fn wsl_status_says_ready(succeeded: bool, output: &str) -> bool {
+    succeeded
+        && !output.contains("Virtual Machine Platform")
+        && !output.contains("--no-distribution")
+}
+
+/// True when the WSL platform is already enabled ([`wsl_status_says_ready`]). Used
 /// to decide whether the elevated phase has anything to do.
 #[cfg(target_os = "windows")]
-fn wsl_platform_present() -> bool {
+pub(crate) fn wsl_platform_present() -> bool {
     let mut command = Command::new("wsl.exe");
     command.creation_flags(CREATE_NO_WINDOW);
     command.env("WSL_UTF8", "1");
     command
         .arg("--status")
         .output()
-        .map(|o| o.status.success())
+        .map(|o| {
+            let text = format!(
+                "{}\n{}",
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)
+            );
+            wsl_status_says_ready(o.status.success(), &text)
+        })
         .unwrap_or(false)
 }
 

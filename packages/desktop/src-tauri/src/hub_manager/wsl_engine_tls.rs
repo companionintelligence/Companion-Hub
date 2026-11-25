@@ -134,22 +134,44 @@ pub(crate) fn wsl_engine_client_files_present(cert_dir: &std::path::Path) -> boo
     })
 }
 
-/// Whether this PC has a Docker engine in WSL that Companion Hub set up: the client certificate it
-/// copies once Docker answers, and an Ubuntu distro for it. Docker inside the distro can't be seen
-/// without starting it, which a status check mustn't do; the certificate comes only after Docker
-/// was up, so it stands in. Lets the startup screen offer Start Docker in WSL instead of an install
-/// to a Hub still saved on Docker Desktop. Cheap: three file checks and a remembered distro listing.
+/// Whether this PC has a Docker engine in WSL that Companion Hub set up, and WSL can run it: the
+/// client certificate it copies once Docker answers, an Ubuntu distro for it, and `wsl --status`
+/// ready ([`wsl_status_says_ready`]). Docker inside the distro can't be seen without starting it,
+/// which a status check mustn't do; the certificate comes only after Docker was up, so it stands
+/// in. Lets the startup screen offer Start Docker in WSL instead of an install to a Hub still saved
+/// on Docker Desktop.
+///
+/// Readiness matters: with WSL reinstalled and Virtual Machine Platform still waiting on a restart,
+/// the distro and certificate were there, so the screen offered Start, which can't work, and never
+/// the install whose admin step turns the feature on (seen on Windows). `wsl --status` is asked at
+/// most every 30 seconds, since the startup screen polls every few.
 pub fn wsl_engine_set_up() -> bool {
     #[cfg(windows)]
     {
         crate::docker_engine::wsl_engine_client_cert_dir()
             .is_some_and(|dir| wsl_engine_client_files_present(&dir))
             && wsl_engine_distro().is_some()
+            && wsl_platform_ready_recently()
     }
     #[cfg(not(windows))]
     {
         false
     }
+}
+
+/// [`wsl_platform_present`], remembered for 30 seconds.
+#[cfg(windows)]
+fn wsl_platform_ready_recently() -> bool {
+    static LAST: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+    let mut last = lock_recovering(&LAST);
+    if let Some((asked_at, ready)) = *last {
+        if asked_at.elapsed() < Duration::from_secs(30) {
+            return ready;
+        }
+    }
+    let ready = wsl_platform_present();
+    *last = Some((Instant::now(), ready));
+    ready
 }
 
 /// `docker context` `--docker` value that points the `wsl-engine` context at the TLS listener with
