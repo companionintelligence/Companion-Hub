@@ -447,8 +447,9 @@ export class ModelRegistryService implements OnModuleInit {
   /**
    * Rank a given backend's catalog LLMs that fit a budget and return a short, best-first list that
    * spans small/medium/large size classes. Index 0 is always that backend's single best model (biggest
-   * at q4+), which app bootstrap auto-installs; the remaining slots cover a useful range of smaller
-   * options.
+   * at q4+). App bootstrap downloads it only for an app that has no suitable model on this node and
+   * nothing suitable already downloading (`decideModelPrePull`). The remaining slots cover a useful
+   * range of smaller options.
    */
   private pickBestFittingLlms(budget: InferenceBudget, tierAllowedIds: Set<string>, backend: InferenceBackendType): CuratedModel[] {
     const fitting = CURATED_MODELS.filter(

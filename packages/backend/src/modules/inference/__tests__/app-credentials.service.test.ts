@@ -1804,8 +1804,129 @@ describe('AppCredentialsService', () => {
       await new Promise((resolve) => setImmediate(resolve));
 
       expect(config.env.DEFAULT_MODEL).toBe('hermes4:8b');
-      expect(config.prePull.find((decision) => decision.kind === 'chat')).toMatchObject({ catalogId: 'hermes4-70b', pull: true });
-      expect(modelPuller.startPull).toHaveBeenCalledWith('hermes4-70b', { bestEffort: true });
+      // Nobody chose hermes4-70b. The app runs on hermes4:8b, so the removed model stays removed.
+      expect(config.prePull.find((decision) => decision.kind === 'chat')).toMatchObject({ catalogId: 'hermes4-70b', pull: false });
+      expect(modelPuller.startPull).not.toHaveBeenCalledWith('hermes4-70b', expect.anything());
+    });
+
+    // No substitute download comes along to make this true later, so the tag Ollama lists has to.
+    it('reports a tag the operator named and Ollama lists as ready without pulling a substitute', async () => {
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'ollama',
+        preferredModel: 'qwen3:32b-q6_K',
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+      } as never);
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['qwen3:32b-q6_K'] });
+      service.invalidateCache();
+
+      const config = await service.getCredentials('openclaw');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(config.env.DEFAULT_MODEL).toBe('qwen3:32b-q6_K');
+      expect(config.chatModelReady).toBe(true);
+      expect(config.prePull.find((decision) => decision.kind === 'chat')).toMatchObject({ catalogId: 'hermes4-70b', pull: false });
+      expect(modelPuller.startPull).not.toHaveBeenCalled();
+    });
+
+    // #2538: a preferred gemma3-270m fails OpenClaw, so the recommender named MiniMax M2 230B and the
+    // Hub pulled 56 GB of it, while the same resolve handed OpenClaw the qwen3.6:35b Ollama already had.
+    describe('when the preferred model does not suit the app', () => {
+      const minimax = makeCapableLlm('minimax-m2-community-230b', 'gabegoodhart/minimax-m2:230b', {
+        tools: true,
+        contextWindow: 196608,
+      });
+      const qwen = makeCapableLlm('qwen3-6-35b', 'qwen3.6:35b', { tools: true, contextWindow: 262144 });
+      const gemma270m = makeCapableLlm('gemma3-270m', 'gemma3:270m', { tools: false, contextWindow: 32768 });
+      const prefer = (preferredModel: string) =>
+        configurationService.getInferencePreferences.mockReturnValue({
+          preferredBackend: 'ollama',
+          preferredModel,
+          preferredEmbeddingModel: null,
+          preferredVisionModel: null,
+        } as never);
+
+      beforeEach(() => {
+        modelRegistry.getRecommendedModelsForHardware.mockReturnValue([minimax, qwen, gemma270m]);
+        modelRegistry.getModelsForHardware.mockReturnValue([gemma270m, qwen, minimax]);
+        modelRegistry.getCuratedModel.mockImplementation((id) => [minimax, qwen, gemma270m].find((model) => model.id === id));
+        service.invalidateCache();
+      });
+
+      it('does not pull a substitute when the app already runs on a model this node has', async () => {
+        prefer('gemma3-270m');
+        ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma3:270m', 'qwen3.6:35b'] });
+
+        const config = await service.getCredentials('openclaw');
+        await new Promise((resolve) => setImmediate(resolve));
+
+        expect(config.env.DEFAULT_MODEL).toBe('qwen3.6:35b');
+        expect(config.chatModelReady).toBe(true);
+        expect(config.prePull.find((d) => d.kind === 'chat')).toEqual({
+          kind: 'chat',
+          catalogId: 'minimax-m2-community-230b',
+          pull: false,
+          reason: 'this app already runs on qwen3.6:35b from this node and gabegoodhart/minimax-m2:230b is not the preferred model',
+        });
+        expect(modelPuller.startPull).not.toHaveBeenCalledWith('minimax-m2-community-230b', expect.anything());
+      });
+
+      it('still pulls a substitute when no model on this node suits the app', async () => {
+        prefer('gemma3-270m');
+        ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma3:270m'] });
+
+        const config = await service.getCredentials('openclaw');
+        await new Promise((resolve) => setImmediate(resolve));
+
+        expect(config.chatModelId).toBeNull();
+        expect(config.prePull.find((d) => d.kind === 'chat')).toMatchObject({ catalogId: 'minimax-m2-community-230b', pull: true });
+      });
+
+      it('points the pre-pull at a suitable model already downloading, not at the top of the list', async () => {
+        prefer('gemma3-270m');
+        ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma3:270m'] });
+        modelPuller.isPullPending.mockImplementation((id) => id === 'qwen3-6-35b');
+        modelPuller.startPull.mockResolvedValue({ catalogId: 'qwen3-6-35b', status: 'in_progress' });
+
+        const config = await service.getCredentials('openclaw');
+        await new Promise((resolve) => setImmediate(resolve));
+
+        expect(config.prePull.find((d) => d.kind === 'chat')).toMatchObject({ catalogId: 'qwen3-6-35b', pull: true });
+        expect(modelPuller.startPull).not.toHaveBeenCalledWith('minimax-m2-community-230b', expect.anything());
+      });
+
+      it('keeps the top suitable model when this node has it, whatever else is downloading', async () => {
+        prefer('gemma3-270m');
+        ollamaBackend.healthCheck.mockResolvedValue({
+          running: true,
+          healthy: true,
+          modelsLoaded: ['gemma3:270m', 'gabegoodhart/minimax-m2:230b'],
+        });
+        modelPuller.isPullPending.mockImplementation((id) => id === 'qwen3-6-35b');
+
+        const config = await service.getCredentials('openclaw');
+        await new Promise((resolve) => setImmediate(resolve));
+
+        expect(config.env.DEFAULT_MODEL).toBe('gabegoodhart/minimax-m2:230b');
+        expect(config.chatModelReady).toBe(true);
+        expect(config.prePull.find((d) => d.kind === 'chat')).toMatchObject({
+          catalogId: 'minimax-m2-community-230b',
+          pull: false,
+          reason: 'already installed on this node',
+        });
+      });
+
+      it('still pulls the preferred model while the app runs on another one meanwhile', async () => {
+        prefer('minimax-m2-community-230b');
+        ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['qwen3.6:35b'] });
+
+        const config = await service.getCredentials('openclaw');
+        await new Promise((resolve) => setImmediate(resolve));
+
+        expect(config.env.DEFAULT_MODEL).toBe('qwen3.6:35b');
+        expect(config.prePull.find((d) => d.kind === 'chat')).toMatchObject({ catalogId: 'minimax-m2-community-230b', pull: true });
+        expect(modelPuller.startPull).toHaveBeenCalledWith('minimax-m2-community-230b', { bestEffort: true });
+      });
     });
 
     it('still counts a model the registry has as pulled while Ollama cannot be asked', async () => {
