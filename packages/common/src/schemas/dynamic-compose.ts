@@ -467,6 +467,8 @@ function isKnownNetworkMode(networkMode: string): boolean {
  * - `/dev/sg*` (SCSI generic): raw commands to a disk, behind the block-device refusal above.
  * - `/dev/uinput`: makes a virtual keyboard and mouse, so the app types into the host's session.
  * - `/dev/input/*` and `/dev/hidraw*`: the host's keyboards, mice and security keys, keystrokes included.
+ * - `/dev/bus/usb/*`: raw access to every USB device on the host (those same keyboards and keys, a
+ *   phone, a disk), below any driver. One dongle is `/dev/ttyUSB0` or `/dev/ttyACM0`, which stay open.
  * Sunshine streams games and needs `/dev/uinput`, by a grant ({@link TRUSTED_APP_SECURITY_ALLOWLIST}).
  */
 const DENIED_DEVICE_PATTERNS = [
@@ -476,6 +478,7 @@ const DENIED_DEVICE_PATTERNS = [
   /^\/dev\/(mem|kmem|port|root)$/i,
   /^\/dev\/(sg\d*|bsg)(\/|$)/i,
   /^\/dev\/(uinput|input|hidraw\d*)(\/|$)/i,
+  /^\/dev\/bus(\/|$)/i,
 ];
 
 function isDeniedDeviceHostPath(hostHalf: string, grants?: AppSecurityGrants): boolean {

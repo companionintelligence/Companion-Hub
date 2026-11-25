@@ -174,6 +174,8 @@ const SERVICE_CASES: Record<string, unknown>[] = [
   { devices: ['/dev/uinput'] },
   { devices: ['/dev/hidraw0'] },
   { devices: ['/dev/input/event0'] },
+  { devices: ['/dev/bus/usb/001/002'] },
+  { devices: ['/dev/ttyUSB0'] },
   { devices: ['/dev/mem'] },
   // biome-ignore lint/suspicious/noTemplateCurlyInString: a compose expansion, matched literally
   { volumes: [{ hostPath: '${APP_DATA_DIR}/data' }] },
