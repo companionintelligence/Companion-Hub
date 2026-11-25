@@ -458,7 +458,7 @@
   "APP_INSTALL_FORM_AUTO_RESTART_ON_DOMAIN_CHANGE": "Restart automatically when a custom domain is connected",
   "APP_INSTALL_FORM_AUTO_RESTART_ON_DOMAIN_CHANGE_HINT": "Off: the app keeps working on its platform address until you confirm a restart, so you choose when it is briefly unavailable. On: it restarts by itself as soon as the domain is ready.",
   "APP_RESTART_FORM_CUSTOM_DOMAIN_REASON": "Restarting {{name}} lets it answer on {{domain}}. {{name}} is briefly unavailable while it restarts.",
-  "APP_INSTALL_FORM_PUBLIC_PATHS": "Paths without the Hub login",
+  "APP_INSTALL_FORM_PUBLIC_PATHS": "Exempt these paths from Hub login:",
   "APP_INSTALL_FORM_PUBLIC_PATHS_HINT": "Paths anyone can reach without your Hub login, with everything under them, like a webhook. Separate them with commas. The rest of the app keeps the login.",
   "APP_INSTALL_FORM_PUBLIC_PATHS_INVALID": "{{path}} is not a path the Hub can open: start with / and use letters, digits and . _ ~ - between slashes.",
   "APP_INSTALL_FORM_PUBLIC_PATHS_TOO_MANY": "At most {{max}} paths.",
