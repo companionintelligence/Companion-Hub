@@ -4,8 +4,13 @@
  * The app runs the Portal's authorization-code flow with PKCE S256 and a loopback redirect on
  * 127.0.0.1, through the vendored native sign-in runtime. It opens the authorize URL in the system
  * browser and exchanges the code at Portal as the public client `ci-hub`, with no secret. It then
- * sends the Portal access token to this Hub in an Authorization header, and the Hub answers with its
- * own session id, which goes to the keychain (desktop-session.ts). No token goes into a URL.
+ * sends the Portal access token to this Hub in an Authorization header, with the id_token from the same
+ * exchange in `X-Portal-Id-Token`, and the Hub answers with its own session id, which goes to the
+ * keychain (desktop-session.ts). No token goes into a URL.
+ *
+ * The id_token is what tells the Hub the sign-in was for its own client: an access token does not say
+ * which Portal client it was issued to. The vendored runtime keeps only the access token, so the
+ * id_token is read off the token reply as it passes through this module's fetch.
  */
 import type { FetchLike } from '@companionintelligence/auth/token';
 import { createTauriSignInDriver, runSignIn, type InvokeFn } from '@/vendor/ci-common/native/index';
@@ -82,6 +87,24 @@ export function nativeTokenFetch(invoke: InvokeFn): FetchLike {
   };
 }
 
+/** `fetch` for the token exchange that also hands `onIdToken` the reply's id_token, if it has one. */
+export function capturingIdToken(fetch: FetchLike, onIdToken: (idToken: string) => void): FetchLike {
+  return async (input, init) => {
+    const response = await fetch(input, init);
+    if (response.ok) {
+      try {
+        const body = (await response.clone().json()) as { id_token?: unknown };
+        if (typeof body?.id_token === 'string' && body.id_token) {
+          onIdToken(body.id_token);
+        }
+      } catch {
+        // Not JSON: the token request's own parsing reports it.
+      }
+    }
+    return response;
+  };
+}
+
 export async function signInDesktopWithPortal(options: { signal?: AbortSignal } = {}): Promise<{ redirectPath: string }> {
   const invoke = getTauriInvoke();
   const store = desktopSecureStore();
@@ -90,17 +113,23 @@ export async function signInDesktopWithPortal(options: { signal?: AbortSignal } 
   }
 
   const portalUrl = await fetchDesktopPortalUrl();
+  let idToken: string | null = null;
   const session = await runSignIn({
     config: { clientId: DESKTOP_PORTAL_CLIENT_ID, issuer: portalUrl, scopes: DESKTOP_PORTAL_SCOPES },
     driver: createTauriSignInDriver({ invoke: invoke as InvokeFn, openUrl: openAuthInSystemBrowser }),
     store,
     signal: options.signal,
-    fetch: nativeTokenFetch(invoke as InvokeFn),
+    fetch: capturingIdToken(nativeTokenFetch(invoke as InvokeFn), (token) => {
+      idToken = token;
+    }),
   });
+  if (!idToken) {
+    throw new DesktopSignInError('The Portal sign-in came back without an ID token, which this Hub needs.');
+  }
 
   const res = await apiFetch('/api/auth/portal/desktop-session', {
     method: 'POST',
-    headers: { Authorization: `Bearer ${session.accessToken}` },
+    headers: { Authorization: `Bearer ${session.accessToken}`, 'X-Portal-Id-Token': idToken },
   });
   if (!res.ok) {
     throw new DesktopSignInError(`The Hub did not accept the Portal sign-in (${res.status}).`, res.status);

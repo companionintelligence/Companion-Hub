@@ -2240,13 +2240,24 @@ describe('AuthController', () => {
     const req = {
       protocol: 'https',
       get: vi.fn((header: string) => (header === 'host' ? 'hub.example.com' : undefined)),
-      headers: { authorization: 'Bearer portal-access-token', 'x-forwarded-proto': 'https', 'x-forwarded-host': 'hub.example.com' },
+      headers: {
+        authorization: 'Bearer portal-access-token',
+        'x-portal-id-token': 'portal.desktop.id-token',
+        'x-forwarded-proto': 'https',
+        'x-forwarded-host': 'hub.example.com',
+      },
       cookies: {},
     } as unknown as Request;
+    const signedInAs = (sub: string | null) =>
+      vi.mocked(verifyPortalIdToken).mockResolvedValue(sub === null ? null : { sub, email: 'demo-1@lifescope.io', name: null, emailVerified: true });
+    const userinfoFor = (subject: string) =>
+      vi.mocked(fetchPortalUserinfo).mockResolvedValue({ ok: true, email: 'demo-1@lifescope.io', subject, issuer: 'https://hub.ci.computer', status: 200 });
 
     beforeEach(() => {
       // Module-level mock, so its calls outlive a test unless cleared here.
       vi.mocked(fetchPortalUserinfo).mockReset();
+      vi.mocked(verifyPortalIdToken).mockReset();
+      signedInAs('portal-sub');
       config.get.mockImplementation((key: string) => {
         if (key === 'ciCloudUrl') return 'https://hub.ci.computer/';
         if (key === 'userSettings') return { experimental: { insecureCookie: true } };
@@ -2271,6 +2282,7 @@ describe('AuthController', () => {
         redirectPath: '/home',
       });
       expect(fetchPortalUserinfo).toHaveBeenCalledWith({ publicPortalBaseUrl: 'https://hub.ci.computer', accessToken: 'portal-access-token' });
+      expect(verifyPortalIdToken).toHaveBeenCalledWith('portal.desktop.id-token', expect.objectContaining({ audiences: ['ci-hub'] }));
       expect(authService.admitHubPerson).toHaveBeenCalledWith({
         issuer: 'https://hub.ci.computer',
         subject: 'portal-sub',
@@ -2280,6 +2292,23 @@ describe('AuthController', () => {
       expect(sessionManager.createSession).toHaveBeenCalledWith(7);
       // No session cookie: it reached every app on the Hub's host. The body carries the signed token.
       expect(res.cookie).not.toHaveBeenCalled();
+    });
+
+    // An access token does not say which Portal client it was issued to: any client's token for the same
+    // person (an app's, the extension's, Capture's) was a Hub sign-in on its own.
+    it.each([
+      ['no id_token comes with it', { 'x-portal-id-token': undefined }, 'portal-sub'],
+      ["the id_token is not one Portal signed for the Hub's client", {}, null],
+      ['the id_token names someone else', {}, 'someone-else'],
+    ])('refuses an access token alone when %s', async (_label, headers, idSub) => {
+      userinfoFor('portal-sub');
+      signedInAs(idSub);
+      const res = { cookie: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
+      const sent = { ...req, headers: { ...req.headers, ...headers } } as unknown as Request;
+
+      await expect(authController.establishPortalDesktopSession(sent, res)).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(authService.admitHubPerson).not.toHaveBeenCalled();
+      expect(sessionManager.createSession).not.toHaveBeenCalled();
     });
 
     it('refuses a request with no Bearer token, without asking Portal', async () => {

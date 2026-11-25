@@ -355,6 +355,8 @@ self.addEventListener('activate', (event) => {
 
 /** The Portal client the Hub's own sign-ins use (mobile-connect `OIDC_CLIENT_ID`). */
 const HUB_MOBILE_PORTAL_AUDIENCE = 'ci-hub';
+/** The desktop's id_token from its own Portal sign-in, beside the access token (`establishPortalDesktopSession`). */
+const PORTAL_ID_TOKEN_HEADER = 'x-portal-id-token';
 @Controller('auth')
 export class AuthController {
   constructor(
@@ -1687,10 +1689,14 @@ export class AuthController {
 
   /**
    * The desktop app ran its own sign-in: PKCE S256 with a 127.0.0.1 loopback redirect, against Portal as the
-   * public client `ci-hub` (no secret). It sends the access token that came back as a Bearer header, so no
-   * token goes into a URL. The Hub checks that token with Portal's userinfo endpoint, the same check the
-   * browser callback makes. The id_token audience check the mobile route does is not available from an
-   * access token, which is a known limit of this route.
+   * public client `ci-hub` (no secret). It sends the access token that came back as a Bearer header, and the
+   * id_token from the same exchange in `X-Portal-Id-Token`, so no token goes into a URL.
+   *
+   * The access token is checked with Portal's userinfo endpoint, the same check the browser callback makes.
+   * An access token does not say which Portal client it was issued to, so on its own any Portal client's
+   * token was a Hub sign-in: one an app, the extension or Capture holds for the same person. The id_token
+   * does say: it must be signed by Portal for the Hub's own client (`ci-hub`), as the mobile route requires,
+   * and name the same person userinfo names.
    */
   @Post('/portal/desktop-session')
   @ApiResponse({ type: PortalDesktopExchangeDto })
@@ -1701,11 +1707,22 @@ export class AuthController {
       throw new UnauthorizedException('Portal sign-in could not be used on this Hub');
     }
 
+    const idTokenHeader = req.headers[PORTAL_ID_TOKEN_HEADER];
+    const idToken = typeof idTokenHeader === 'string' ? idTokenHeader.trim() : '';
+    if (!idToken) {
+      throw new UnauthorizedException('Portal sign-in could not be used on this Hub');
+    }
+
     const userinfo = await fetchPortalUserinfo({ publicPortalBaseUrl: portalBase, accessToken: bearer });
     if (!userinfo.ok) {
       throw new UnauthorizedException('Portal sign-in could not be used on this Hub');
     }
     if (!userinfo.subject) {
+      throw new UnauthorizedException('Portal sign-in could not be used on this Hub');
+    }
+
+    const idClaims = await verifyPortalIdToken(idToken, { publicCiCloudUrl: portalBase, audiences: [HUB_MOBILE_PORTAL_AUDIENCE] });
+    if (!idClaims || idClaims.sub !== userinfo.subject) {
       throw new UnauthorizedException('Portal sign-in could not be used on this Hub');
     }
 
