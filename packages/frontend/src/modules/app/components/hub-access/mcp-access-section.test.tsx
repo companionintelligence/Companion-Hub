@@ -40,7 +40,7 @@ const UNANSWERED = { appKey: null, identityVerification: false, provisioned: fal
 function renderHubAccess() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
-  return render(<HubAccess appUrn={APP_URN} />, { wrapper });
+  return { qc, ...render(<HubAccess appUrn={APP_URN} />, { wrapper }) };
 }
 
 describe('HubAccess — the app’s request for the Hub MCP tools', () => {
@@ -116,6 +116,20 @@ describe('HubAccess — the app’s request for the Hub MCP tools', () => {
     expect((screen.getByTestId('hub-access-mcp-access-none') as HTMLInputElement).disabled).toBe(true);
     expect(screen.queryByTestId('hub-access-mcp-save')).toBeNull();
     expect(screen.getByText('APP_MCP_ACCESS_MANAGER_REQUIRED')).toBeTruthy();
+  });
+
+  // The panel reads the status again when the app restarts, which is when an answer given in another tab
+  // lands. The picker kept the choice it started with, so Save offered to put back the old answer.
+  it('follows an answer given elsewhere', async () => {
+    h.get.mockResolvedValue({ data: UNANSWERED });
+    const { qc } = renderHubAccess();
+    expect(((await screen.findByTestId('hub-access-mcp-access-none')) as HTMLInputElement).checked).toBe(true);
+
+    h.get.mockResolvedValue({ data: { ...UNANSWERED, mcp: { access: 'read', keyCapability: 'read' } } });
+    await qc.invalidateQueries();
+
+    await waitFor(() => expect((screen.getByTestId('hub-access-mcp-access-read') as HTMLInputElement).checked).toBe(true));
+    expect((screen.getByTestId('hub-access-mcp-save') as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('says when the key works at another level than the one granted, as Settings → Security may set', async () => {
