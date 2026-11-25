@@ -869,6 +869,44 @@ describe('AiSetupStep', () => {
       expect(config).toMatchObject({ selectedModels: ['qwen3-8b', 'nomic-embed-text'], preferredModelId: 'qwen3-8b' });
       expect(config.preferredVisionModelId).toBeUndefined();
     });
+
+    // #2538: with Gemma 3 270M the only ticked chat model, it became the Default, which OpenClaw cannot
+    // run on. The Hub went and found OpenClaw another model without a word on this page.
+    it('says when the Default cannot run a chosen agent', async () => {
+      const gemma270mNoTools = { ...gemma270m, metadata: { capabilities: { tools: false, vision: false } } };
+      const base = unified128Profile(['gemma3-270m']);
+      api.profile = { ...base, availableModels: [...base.availableModels, gemma270mNoTools] } as any;
+      const user = userEvent.setup();
+      renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      expect(screen.getByTestId('agent-model-unsuited-openclaw')).toHaveTextContent(
+        "OpenClaw needs a model marked Tools. The Default, Gemma 3 270M, isn't one. The Hub will give OpenClaw another model and may download one for it.",
+      );
+      expect(screen.queryByTestId('agent-model-unsuited-hermes')).not.toBeInTheDocument();
+
+      await user.click(screen.getByTestId('agent-hermes'));
+      expect(screen.getByTestId('agent-model-unsuited-hermes')).toHaveTextContent(
+        'Hermes needs a model marked Tools with a context window of at least 64k',
+      );
+
+      await user.click(screen.getByTestId('agent-openclaw'));
+      await user.click(screen.getByTestId('agent-hermes'));
+      expect(screen.queryByTestId('agent-model-unsuited')).not.toBeInTheDocument();
+    });
+
+    it('says nothing when the Default can run the chosen agents', async () => {
+      const withWindow = (m: any) => (m.id === 'qwen3-6-35b' ? { ...m, runtime: { ...m.runtime, contextWindow: 262144 } } : m);
+      const base = unified128Profile(['qwen3-6-35b']);
+      api.profile = { ...base, recommendedModels: base.recommendedModels.map(withWindow), availableModels: base.availableModels.map(withWindow) };
+      const user = userEvent.setup();
+      renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+      await user.click(screen.getByTestId('agent-hermes'));
+
+      expect(isMarkedDefault('qwen3-6-35b')).toBe(true);
+      expect(screen.queryByTestId('agent-model-unsuited')).not.toBeInTheDocument();
+    });
   });
 
   it('submits only Ollama-backed models with the agent framework and exposure', async () => {

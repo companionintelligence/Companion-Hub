@@ -6,7 +6,7 @@ import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-registry';
 import type { EngineCapabilities } from '@/modules/inference/backends/backend.interface';
 import { ModelRegistryService } from '@/modules/inference/model-registry.service';
-import { InferenceRouterService } from '@/modules/inference/inference-router.service';
+import { describeSystemMemoryRefusal, InferenceRouterService } from '@/modules/inference/inference-router.service';
 import { RelayError, relayToResponse, watchResponseClose, type ResponseCloseWatch } from '@/modules/inference/upstream-stream';
 import { QUARANTINE_STRIKES, STRIKE_WINDOW_MS } from '@/modules/inference/backends/serving-quarantine';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -661,6 +661,8 @@ function sleepUnlessAborted(ms: number, signal: AbortSignal): Promise<void> {
 interface LocalLoadRefusal {
   reason: string;
   idleWouldFree: boolean;
+  /** The model would load into system RAM, which it does not fit in: see `LoadOutcome.systemMemory`. */
+  systemMemory: boolean;
 }
 
 /**
@@ -2985,12 +2987,18 @@ export class PoolProxyService {
           const earlier = refusedLoads.get(candidate);
           // A refusal kept from before the other candidates were tried is read again when it was for busy
           // models: they may have ended since, and `awaitBusyModels` only looks again when they change.
-          let refusal = earlier?.idleWouldFree === false ? earlier : await this.arbitrateLocalLoad(candidate, path, body, model, clientClosed);
+          // So is one that would fail the request for system memory. The other candidates can take
+          // minutes to fail, and an app's idle model may have expired meanwhile and left the room.
+          let refusal =
+            earlier !== undefined && !earlier.idleWouldFree && !earlier.systemMemory
+              ? earlier
+              : await this.arbitrateLocalLoad(candidate, path, body, model, clientClosed);
           if (refusal !== null && earlier === undefined && walk.slice(index + 1).some((other) => !refusedLoads.has(other))) {
             // Another candidate can take the request, so this engine is not asked to load a model the
             // Hub could not make room for: it would load it anyway and overcommit the card, or put part
             // of it in system memory. Tried again after the rest rather than dropped, so a request
-            // every other candidate fails is still sent here, as it was before a refusal failed over.
+            // every other candidate fails is still sent here, as it was before a refusal failed over,
+            // unless the model would load into system RAM it does not fit in (below).
             refusedLoads.set(candidate, refusal);
             passOver(candidate, nodeLabel, null, describeLocalLoadRefusal(refusal.reason));
             // At log, not warn: nothing failed, the Hub kept a model off a card that could not hold it.
@@ -3006,6 +3014,31 @@ export class PoolProxyService {
             // for here, so the models running them are not marked to expire for this request, and the
             // Hub makes the room itself once they are idle.
             refusal = await this.awaitBusyModels(candidate, path, body, model, clientClosed, refusal);
+          }
+          if (refusal?.systemMemory) {
+            // Where the model would load into the system's own RAM, the engine is not sent it: Ollama
+            // loaded a 230B model it was sent this way and a 122 GB machine ran out of memory twice (#2539).
+            lastError = new Error(describeSystemMemoryRefusal(model, candidate.backend, refusal.reason));
+            // A candidate passed over once already, before the others were tried, is not recorded twice.
+            if (earlier === undefined) passOver(candidate, nodeLabel, null, describeLocalLoadRefusal(refusal.reason));
+            this.logger.warn(
+              `[PoolProxy] the Hub refused to load "${model}" on ${candidate.backend} here (${refusal.reason}) and it would load into ` +
+                `system memory; ${walk.length - index - 1 > 0 ? 'trying the candidates after it' : 'failing the request rather than sending it to the engine'}`,
+            );
+            if (index + 1 < walk.length) continue;
+            this.failForSystemMemory(row, res, affinityHeader, {
+              model,
+              candidate,
+              nodeLabel,
+              attempt: index + 1,
+              startedAt,
+              reason: refusal.reason,
+            });
+            // Remembered for this session at placement; nothing serves it here now, so the next call ranks fresh.
+            if (affinity.key) {
+              this.prefixAffinity.forget(affinity.key.key);
+            }
+            return;
           }
           if (refusal !== null) {
             // Nothing else can take it: sent to the engine, which loads the model on its own terms.
@@ -3282,6 +3315,37 @@ export class PoolProxyService {
   }
 
   /**
+   * Answer a request the Hub refused to load its model for, where nothing else can take it and the model
+   * would load into system RAM it does not fit in (`LoadOutcome.systemMemory`): a 503 with the Hub's
+   * reason. The row is settled failed with it. Sent to the engine instead, the model was loaded anyway
+   * and took the machine down (#2539).
+   */
+  private failForSystemMemory(
+    row: ReturnType<HubPoolRoutingLogService['open']>,
+    res: Response,
+    affinityHeader: Record<string, string>,
+    refused: { model: string; candidate: PoolCandidate; nodeLabel: string; attempt: number; startedAt: number; reason: string },
+  ): void {
+    this.routingLog.settle(row, {
+      node: refused.nodeLabel,
+      peerId: refused.candidate.peerId,
+      backend: refused.candidate.backend,
+      attempt: refused.attempt,
+      outcome: 'failed',
+      status: 503,
+      durationMs: Date.now() - refused.startedAt,
+      reason: describeLocalLoadRefusal(refused.reason),
+    });
+    if (!res.headersSent) {
+      res.setHeader(POOL_REQUEST_ID_HEADER, row.id);
+      for (const [name, value] of Object.entries(affinityHeader)) {
+        res.setHeader(name, value);
+      }
+    }
+    this.respondUncommitted(res, 503, { error: describeSystemMemoryRefusal(refused.model, refused.candidate.backend, refused.reason) });
+  }
+
+  /**
    * Close out a routed request whose client left. Before headers the row is still pending and is
    * settled as failed with no status — nothing was served — and it is logged, because a client giving
    * up on a turn that had not started answering is the one symptom of a queue too slow for its callers.
@@ -3376,7 +3440,7 @@ export class PoolProxyService {
         );
         return null;
       }
-      return { reason: outcome.reason, idleWouldFree: outcome.idleWouldFree === true };
+      return { reason: outcome.reason, idleWouldFree: outcome.idleWouldFree === true, systemMemory: outcome.systemMemory === true };
     } catch (error) {
       this.logger.debug(
         `[PoolProxy] residency arbitration for ${model} failed; forwarding anyway: ${error instanceof Error ? error.message : String(error)}`,

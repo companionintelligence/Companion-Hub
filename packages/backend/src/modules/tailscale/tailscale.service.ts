@@ -171,6 +171,8 @@ export class TailscaleService {
    * only ever delays noticing an out-of-band change.
    */
   private statusCache: { value: TailscaleStatus; expires: number } | null = null;
+  /** Bumped by {@link invalidateStatusCache}. */
+  private statusCacheGeneration = 0;
   private static readonly STATUS_TTL_MS = 30_000;
 
   /**
@@ -224,8 +226,20 @@ export class TailscaleService {
     }
   }
 
+  /**
+   * The sign-in link in `tailscale up` output, or null.
+   *
+   * `tailscale up` prints it after "To authenticate, visit:". The other URLs in its output are the
+   * `--login-server` value a refused `up` and the exec error repeat (after `=` or a space) and the help
+   * links warnings end with, and opening one read as a sign-in that failed (CI-Hub#2548).
+   */
   private extractAuthUrl(output: string, expectedHost?: string | null): string | null {
-    const candidates = (output.match(/https?:\/\/[^\s"']+/gi) ?? []).map((url) => url.replace(/[),.;]+$/, ''));
+    const prompted = output.match(/To authenticate, visit:\s+(https?:\/\/[^\s"']+)/i)?.[1];
+    if (prompted) {
+      return prompted.replace(/[),.;]+$/, '');
+    }
+
+    const candidates = (output.match(/(?<![=\w]|--login-server\s+)https?:\/\/[^\s"']+/gi) ?? []).map((url) => url.replace(/[),.;]+$/, ''));
     if (!candidates.length) {
       return null;
     }
@@ -250,7 +264,7 @@ export class TailscaleService {
         return false;
       }
     });
-    return tailscaleLoginMatch ?? candidates[0] ?? null;
+    return tailscaleLoginMatch ?? null;
   }
 
   private getExecErrorOutput(error: unknown): string {
@@ -302,7 +316,64 @@ export class TailscaleService {
     this.strategyCache = null;
   }
 
-  /** Same flags as `connectWithAuthKey`: env override or default Docker bridge advertisement. */
+  /**
+   * The flags `tailscale up` gets after `up` (and `--reset` or `--auth-key`): the sidecar's own, and none on the host.
+   *
+   * The host's tailscaled belongs to whoever set it up, and HUB_TAILSCALE_EXTRA_ARGS is the sidecar's
+   * `TS_EXTRA_ARGS`. A bare `up` after `tailscale down` brings the network back and changes nothing; when
+   * tailscaled refuses one for settings it leaves out, {@link execUp} restates them (CI-Hub#2548).
+   */
+  private getTailscaleUpArgsFor(strategy: ExecStrategy): string[] {
+    return strategy === 'sidecar' ? this.getTailscaleUpExtraArgs() : [];
+  }
+
+  /**
+   * The flags in tailscaled's refusal of an `up` that left out settings it holds, or null.
+   *
+   * The refusal ends with a `tailscale up …` line naming the current value of every setting that isn't a
+   * default, so running it changes nothing. It also repeats the flags the refused `up` was given, an auth
+   * key included, which are left out here: the caller passes its own again. Null for any other output, and
+   * for a shell-quoted value.
+   */
+  private restatedUpArgs(output: string): string[] | null {
+    if (!/requires mentioning all\s+non-default flags/i.test(output)) {
+      return null;
+    }
+    const suggested = output.match(/^[ \t]*tailscale up[ \t]+(\S.*?)[ \t]*$/m)?.[1];
+    if (!suggested) {
+      return null;
+    }
+    const plainFlag = /^--[a-z][a-z0-9-]*(?:=[^\s'"\\`$]*)?$/i;
+    const changesLogin = /^--(?:reset|force-reauth)(?:=|$)/i;
+    const args = suggested.split(/\s+/).filter((arg) => arg && !/^--auth-?key(?:=|$)/i.test(arg));
+    if (!args.length || !args.every((arg) => plainFlag.test(arg)) || args.some((arg) => changesLogin.test(arg))) {
+      return null;
+    }
+    return args;
+  }
+
+  /**
+   * Runs `tailscale up` with `args` on the tailscaled `strategy` names.
+   *
+   * A bare `up` on a host in NeedsLogin is still refused when the host holds settings that aren't defaults,
+   * such as Tailscale SSH, an operator or the routes older Hubs advertised. On the host that refusal is run
+   * once more with the flags tailscaled names in it, after `keep` (the auth key), so nothing changes.
+   */
+  private async execUp(strategy: ExecStrategy, args: string[], timeoutMs: number, keep: string[] = []): Promise<{ stdout: string; stderr: string }> {
+    const execFn = strategy === 'host' ? this.execHost.bind(this) : this.execDocker.bind(this);
+    try {
+      return await execFn(args, timeoutMs);
+    } catch (error) {
+      const restated = strategy === 'host' ? this.restatedUpArgs(this.getExecErrorOutput(error)) : null;
+      if (!restated) {
+        throw error;
+      }
+      this.logger.warn(`[TailscaleService] tailscaled refused tailscale up for settings it holds; running it again with them: ${restated.join(' ')}`);
+      return execFn(['up', ...keep, ...restated], timeoutMs);
+    }
+  }
+
+  /** The sidecar's flags: env override or default Docker bridge advertisement. */
   private getTailscaleUpExtraArgs(): string[] {
     const extra = (process.env.HUB_TAILSCALE_EXTRA_ARGS || '').trim();
     if (!extra) {
@@ -477,14 +548,19 @@ export class TailscaleService {
       return this.statusCache.value;
     }
 
+    const generation = this.statusCacheGeneration;
     const status = await this.getStatus();
-    this.statusCache = { value: status, expires: now + TailscaleService.STATUS_TTL_MS };
+    // A read that began before an invalidation holds the old state, so it must not refill the cache.
+    if (generation === this.statusCacheGeneration) {
+      this.statusCache = { value: status, expires: now + TailscaleService.STATUS_TTL_MS };
+    }
 
     return status;
   }
 
   private invalidateStatusCache(): void {
     this.statusCache = null;
+    this.statusCacheGeneration += 1;
   }
 
   /** Whether tailscaled refuses the Hub's Serve writes right now, and the command that ends it. */
@@ -579,7 +655,7 @@ export class TailscaleService {
   /**
    * Initiate Tailscale auth — returns URL for browser OAuth redirect (host or sidecar).
    */
-  async startAuth(operator?: string): Promise<{ authUrl: string }> {
+  async startAuth(): Promise<{ authUrl: string; reconnected?: boolean }> {
     const publicErrorMessage = 'Failed to start Tailscale auth. Check server logs for details.';
     const strategy = await this.resolveStrategy();
     if (strategy === null) {
@@ -606,17 +682,13 @@ export class TailscaleService {
     // --reset resets persisted non-default preferences to defaults before applying
     // the provided flags. Only safe for the sidecar (isolated daemon); on the host
     // it would mutate the user's existing Tailscale configuration.
-    const extraArgs = this.getTailscaleUpExtraArgs();
+    const extraArgs = this.getTailscaleUpArgsFor(strategy);
     const loginServerHost = this.getConfiguredLoginServerHost(extraArgs);
     const args = ['up', ...(strategy === 'sidecar' ? ['--reset'] : []), ...extraArgs];
-    if (operator) {
-      args.push(`--operator=${operator}`);
-    }
 
-    const execFn = strategy === 'host' ? this.execHost.bind(this) : this.execDocker.bind(this);
     let upOutput = '';
     try {
-      const { stdout, stderr } = await execFn(args, 30000);
+      const { stdout, stderr } = await this.execUp(strategy, args, 30000);
       upOutput = `${stdout}\n${stderr}`;
       const authUrl = this.extractAuthUrl(upOutput, loginServerHost);
       if (authUrl) {
@@ -638,7 +710,10 @@ export class TailscaleService {
       }
 
       if (status.connected || status.backendState === 'Running') {
-        return { authUrl: '' };
+        // `up` changed the state, so readers of getStatusCached must not keep the pre-`up` answer.
+        this.invalidateStatusCache();
+        // `Stopped` is what `tailscale down` leaves: still signed in, so `up` alone brought it back.
+        return preAuthStatus.backendState === 'Stopped' ? { authUrl: '', reconnected: true } : { authUrl: '' };
       }
 
       if (status.backendState === 'NeedsLogin' && status.authUrl) {
@@ -681,9 +756,15 @@ export class TailscaleService {
     }
 
     // --reset is scoped to the sidecar only — same rationale as startAuth.
-    const upArgs = ['up', ...(strategy === 'sidecar' ? ['--reset'] : []), '--auth-key', key, ...this.getTailscaleUpExtraArgs()];
-    const execFn = strategy === 'host' ? this.execHost.bind(this) : this.execDocker.bind(this);
-    await execFn(upArgs, 120_000);
+    const upArgs = ['up', ...(strategy === 'sidecar' ? ['--reset'] : []), '--auth-key', key, ...this.getTailscaleUpArgsFor(strategy)];
+    try {
+      await this.execUp(strategy, upArgs, 120_000, ['--auth-key', key]);
+    } catch (error) {
+      // The exec error repeats the command line, key included, and the exception filter logs it and sends it to Sentry.
+      const output = this.getExecErrorOutput(error).split(key).join('tskey-auth-<redacted>');
+      this.logger.error(`[TailscaleService] connectWithAuthKey failed\n${output || '(no diagnostic output)'}`);
+      throw new Error('Failed to connect to Tailscale with the auth key. Check server logs for details.');
+    }
     this.invalidateStrategyCache();
     this.invalidateStatusCache();
   }

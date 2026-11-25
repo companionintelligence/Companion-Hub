@@ -441,6 +441,7 @@ export class MemoryManagerService {
     const ordered: EvictionCandidate[] = [];
     const seen = new Set<string>([evictionKey(keep.backend, keep.backendModelId)]);
     const add = (candidate: EvictionCandidate): void => {
+      if (options.backend !== undefined && candidate.backend !== options.backend) return;
       const key = evictionKey(candidate.backend, candidate.backendModelId);
       if (seen.has(key)) return;
       seen.add(key);
@@ -713,6 +714,11 @@ export type EvictionOptions = {
    * next request. Only requests that pass through the pool proxy are seen.
    */
   inUse?: (backend: InferenceBackendType) => readonly { model: string }[];
+  /**
+   * Plan among this engine's models only. Asked when the question is what the engine would unload
+   * by itself to fit a model: Ollama makes room among its own runners, never another engine's.
+   */
+  backend?: InferenceBackendType;
 };
 
 export type EvictionPlan = {

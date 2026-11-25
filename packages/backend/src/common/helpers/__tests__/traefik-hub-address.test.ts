@@ -19,7 +19,7 @@ type DynamicConfig = {
 const hubAddresses = (content: string) => {
   const { http } = parse(content) as DynamicConfig;
   return {
-    forwardAuth: http.middlewares['ci-hub']?.forwardAuth?.address,
+    forwardAuth: http.middlewares['ci-hub-forward-auth']?.forwardAuth?.address,
     startingPage: http.services['ci-hub-app-starting']?.loadBalancer.servers.map((server) => server.url),
   };
 };

@@ -78,6 +78,19 @@ export function isWithinPath(targetPath: string, basePath: string, platform: Nod
   return comparableTarget === comparableBase || comparableTarget.startsWith(comparableBase + pathLib.sep);
 }
 
+/** The volumes the Hub stack declares. The prod compose file pins each to this name. */
+const HUB_STACK_VOLUME_KEYS = ['ci_hub_pgdata', 'ci_hub_app_data', 'hub_tailscale_state'] as const;
+
+/**
+ * True for one of the Hub stack's own volumes, by its whole name: as the prod compose file pins it
+ * (`ci_hub_pgdata`), or as compose names it in a Hub project that does not pin it (a checkout's
+ * `ci-hub_ci_hub_pgdata`). A name that only contains one is someone else's. `cihub reset` matched
+ * by substring and deleted a database backup kept as `ci_hub_pgdata_old`.
+ */
+export function isHubStackVolume(volumeName: string): boolean {
+  return HUB_STACK_VOLUME_KEYS.some((key) => volumeName === key || HUB_STACK_PROJECT_NAMES.some((project) => volumeName === `${project}_${key}`));
+}
+
 export function isRelatedVolume(volumeName: string): boolean {
   return (
     volumeName.includes('ci_os_hub') ||
@@ -87,11 +100,11 @@ export function isRelatedVolume(volumeName: string): boolean {
     // names are fixed at create time, so only `runtipi_` is actually out there.
     volumeName.startsWith('runtipi_') ||
     volumeName.startsWith('runcihub_') ||
-    volumeName.includes('ci_hub_pgdata') ||
-    volumeName.includes('ci_hub_app_data') ||
-    volumeName.includes('hub_tailscale_state') ||
+    isHubStackVolume(volumeName) ||
     volumeName.startsWith('e2e-') ||
     volumeName.startsWith('test-e2e-') ||
+    // The cross-domain e2e stack runs docker-compose.local.yml as project `ci-hub-e2e` (e2e/pre-test-cleanup.sh).
+    volumeName.startsWith('ci-hub-e2e_') ||
     /^(ci_os_hub|ci-os-hub|ci_hub|ci-hub)[-_].*_data$/.test(volumeName)
   );
 }

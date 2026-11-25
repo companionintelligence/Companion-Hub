@@ -305,6 +305,13 @@ export class ModelPullerService {
     return this.pullWorkerPromise;
   }
 
+  /** Whether `catalogId` is queued or downloading right now, from the setup wizard, Settings or a pre-pull. */
+  isPullPending(catalogId: string): boolean {
+    return (
+      this.pullActiveIds.has(catalogId) || this.pullQueue.includes(catalogId) || this.modelRegistry.getTrackedModel(catalogId)?.state === 'pulling'
+    );
+  }
+
   /**
    * Wait until a queued or in-flight pull reaches a terminal tracked state.
    *
