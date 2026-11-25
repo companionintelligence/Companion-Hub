@@ -5,10 +5,21 @@ import {
   buildPublicWebIdentity,
   deriveAppSlug,
   isHubReservedSubdomain,
+  isReservedAppName,
   resolvePublicDomainRoot,
   resolveRoutingSubdomain,
   sanitizeAppSubdomain,
 } from '../identity.js';
+
+describe('isReservedAppName', () => {
+  it.each(['create', 'expose', 'hub', 'hub-admin', 'Hub-x'])('reserves %s', (name) => {
+    expect(isReservedAppName(name)).toBe(true);
+  });
+
+  it.each(['hubitat', 'my-hub', 'github-hub', 'creative'])('leaves %s free', (name) => {
+    expect(isReservedAppName(name)).toBe(false);
+  });
+});
 
 describe('resolveRoutingSubdomain', () => {
   it('falls back to <app>-<store>, not the bare app name', () => {

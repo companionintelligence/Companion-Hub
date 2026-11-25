@@ -1,4 +1,5 @@
 import type { FormField } from '../schemas/app-info.js';
+import { isHubHostLabel } from '../public-web/identity.js';
 import validator from 'validator';
 
 export type FormFieldValidationError = {
@@ -246,6 +247,14 @@ const validateLocalSubdomain = (subdomain?: unknown): FormFieldValidationError |
       env_variable: 'localSubdomain',
       label: 'localSubdomain',
       messageKey: 'APP_INSTALL_FORM_ERROR_LOCAL_SUBDOMAIN_FORMAT',
+    };
+  }
+  // The Hub's own hostname starts so, and the desktop app would open the app as the Hub (`isHubHostLabel`).
+  if (isHubHostLabel(subdomain)) {
+    return {
+      env_variable: 'localSubdomain',
+      label: 'localSubdomain',
+      messageKey: 'APP_INSTALL_FORM_ERROR_LOCAL_SUBDOMAIN_HUB',
     };
   }
   return undefined;

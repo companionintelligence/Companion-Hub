@@ -36,9 +36,24 @@ describe('assertAppIdFree', () => {
     ['ci', 'hub'],
     ['CI', 'Hub'],
     ['ci-os', 'hub'],
-    ['hub', 'service'],
   ])('refuses %s from store %s, whose id is one of the Hub’s Traefik names', (appName, store) => {
     expect(() => assertAppIdFree(createAppUrn(appName, store), installed())).toThrow('APP_ERROR_APP_ID_RESERVED');
+  });
+
+  // An app's hostnames start with its name, and the desktop app keeps every `hub`/`hub-…` host in the
+  // Hub's window as the Hub itself. App `hub` from store `service` is refused here too (its id is also a
+  // Traefik name of the Hub's).
+  it.each([
+    ['hub', 'service'],
+    ['hub-admin', 'ci-marketplace'],
+    ['HUB-x', 'some-store'],
+    ['hub', '_user'],
+  ])('refuses %s from store %s, named like the Hub’s own host, from any store', (appName, store) => {
+    expect(() => assertAppIdFree(createAppUrn(appName, store), installed())).toThrow('APP_ERROR_APP_NAME_HUB_HOST');
+  });
+
+  it.each([['hubitat'], ['github-hub'], ['my-hub']])('installs %s, which only looks like the Hub', (appName) => {
+    expect(() => assertAppIdFree(createAppUrn(appName, 'ci-marketplace'), installed())).not.toThrow();
   });
 
   // The Hub names an app's other routers `<id>-insecure`, `<id>-tailscale`, `<id>-sw-reset` and
