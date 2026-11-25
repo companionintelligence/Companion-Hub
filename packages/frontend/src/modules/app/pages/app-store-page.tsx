@@ -21,6 +21,7 @@ import { FeaturedStoreView } from '@/modules/app/components/featured-store-view/
 import { AlternativesCatalog } from '@/modules/app/components/alternatives-catalog/alternatives-catalog';
 import { AppStoreSearchInput } from '@/modules/app/components/app-store-search-input/app-store-search-input';
 import { useRegistrationStatus } from '@/lib/hooks/use-registration-status';
+import { isHubStarting } from '@/lib/registration-status';
 import { AppCard } from '@/modules/app/components/app-card/app-card';
 import { getCategoryLabel } from '@/modules/app/helpers/category-label';
 import { iconForCategory } from '@/modules/app/helpers/table-helpers';
@@ -180,8 +181,10 @@ export default () => {
   // (`registered === false`, e.g. paired/provisioning/unregistered).
   // Fetch errors (status endpoint temporarily unreachable) are NOT treated as
   // unregistered/non-operational — this prevents transient failures from forcing a re-pair flow.
+  // A Hub that has just started says `starting` until it has read its registration back; that is no
+  // reason to leave (#2590).
   useEffect(() => {
-    if (!isCheckingRegistration && registrationStatus && !registrationStatus.registered) {
+    if (!isCheckingRegistration && registrationStatus && !registrationStatus.registered && !isHubStarting(registrationStatus)) {
       window.location.href = '/device-registration';
     }
   }, [registrationStatus, isCheckingRegistration]);
@@ -297,7 +300,7 @@ export default () => {
   // Root loader already resolved registration for operational hubs. Only block
   // when we *know* the hub is not registered — not while the status query is
   // still settling (avoids a full-page skeleton on every store revisit).
-  if (registrationStatus && !registrationStatus.registered) {
+  if (registrationStatus && !registrationStatus.registered && !isHubStarting(registrationStatus)) {
     return <AppStorePageSuspense />;
   }
 

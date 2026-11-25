@@ -1,12 +1,19 @@
 import type { RegistrationStatus } from './registration-status';
-import { isRegistrationOperational, requiresDeviceRegistration } from './registration-status';
+import { isHubStarting, isRegistrationOperational, requiresDeviceRegistration } from './registration-status';
 import { fetchRegistrationStatus } from './registration-api';
 
+/**
+ * A Hub that is still starting is read like one that didn't answer: the cached status when there is
+ * one, else `starting` itself. Neither is cached, so the next real answer decides.
+ */
 export async function resolveRegistrationStatus(): Promise<RegistrationStatus | null> {
   try {
     const status = await fetchRegistrationStatus();
     if (!status) {
       return getCachedRegistrationStatus();
+    }
+    if (isHubStarting(status)) {
+      return getCachedRegistrationStatus() ?? status;
     }
 
     cacheRegistrationStatus(status);

@@ -19,7 +19,13 @@ import {
   probeRegistrationDomain,
 } from '@/lib/registration-api';
 import type { RegistrationStatus } from '@/lib/registration-status';
-import { isRegistrationOperational, isRegistrationPending, requiresDeviceRegistration, requiresPortalRePairing } from '@/lib/registration-status';
+import {
+  isHubStarting,
+  isRegistrationOperational,
+  isRegistrationPending,
+  requiresDeviceRegistration,
+  requiresPortalRePairing,
+} from '@/lib/registration-status';
 import { cacheRegistrationStatus, clearRegistrationCache } from '@/lib/registration-cache';
 import { toast } from 'sonner';
 import { HintText, LabelWithHint } from '@/components/ui/field-hint/field-hint';
@@ -339,6 +345,11 @@ export default function DeviceRegistrationPage() {
       setRegistrationStatus(status);
       setStatusError(null);
 
+      // The Hub hasn't read its registration back yet. Keep what is cached and ask again.
+      if (isHubStarting(status)) {
+        return status;
+      }
+
       if (requiresDeviceRegistration(status)) {
         completionStartedRef.current = false;
         clearRegistrationCache();
@@ -489,14 +500,15 @@ export default function DeviceRegistrationPage() {
     // blip: keep polling, and let Retry run a check immediately.
     const isUnregistered = registrationStatus?.phase === 'unregistered';
     const isPending = Boolean(registrationStatus && isRegistrationPending(registrationStatus));
+    const isStarting = Boolean(registrationStatus && isHubStarting(registrationStatus));
     const retryingUnknownStatus = !registrationStatus && statusError !== null;
-    const shouldPoll = isPending || isUnregistered || retryingUnknownStatus;
+    const shouldPoll = isPending || isStarting || isUnregistered || retryingUnknownStatus;
 
     if (!shouldPoll) {
       return;
     }
 
-    const intervalMs = isPending ? STATUS_POLL_INTERVAL_MS : HEADLESS_POLL_INTERVAL_MS;
+    const intervalMs = isPending || isStarting ? STATUS_POLL_INTERVAL_MS : HEADLESS_POLL_INTERVAL_MS;
     const intervalId = window.setInterval(() => {
       // A check that is still running answers for this one. Starting another on every tick stacked
       // requests onto a Hub that was slow to answer, and made it slower still.
@@ -783,7 +795,7 @@ export default function DeviceRegistrationPage() {
   const loginUrl = driftChoice === 'restore' ? `${portalUrl}/home` : (registrationUrl ?? portalUrl);
   const signupUrl = buildPortalSignupUrl(portalUrl, deviceId);
 
-  if (isLoading) {
+  if (isLoading || (registrationStatus && isHubStarting(registrationStatus))) {
     return (
       <div className="flex flex-col items-center gap-4 py-4 text-center">
         <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-primary" />

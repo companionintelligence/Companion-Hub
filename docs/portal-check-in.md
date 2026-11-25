@@ -37,6 +37,8 @@ After each accepted check-in, the Hub probes its own public URL with `GET https:
 }
 ```
 
+Right after the Hub starts, both routes say `"phase": "starting"` until the Hub has read its registration back from its database, or found it has none. A paired Hub whose tunnel token file is missing writes the token back and restarts `cloudflared` first, so this can last a few seconds. It is not a phase the Hub stores, and the UI waits on it: before, the Hub said `unregistered` all that time and an open page signed out and went to pairing (#2590). `cihub doctor` shows it as pending.
+
 `lastCheckIn` is `null` until the process sends its first check-in, so it is empty for a few seconds after a restart. `httpStatus` is `null` when no response arrived, and then `error` says why: for example `getaddrinfo ENOTFOUND <portal-host>`, or, when none of Portal's addresses accepted the connection, each address and its reason, such as `ETIMEDOUT 192.0.2.10:443, ENETUNREACH [2001:db8::10]:443`.
 
 `cihub doctor` reads this route and prints two lines:

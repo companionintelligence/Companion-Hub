@@ -47,7 +47,7 @@ import { memoryConnectResultApp, memoryConnectResultToastKey } from '@/modules/a
 import { installMobileLoadWatchdog } from '@/lib/mobile-load-watchdog';
 import { installScrollbarHover } from '@/lib/scrollbar-hover';
 import type { RegistrationStatus } from './lib/registration-status';
-import { isRegistrationOperational, requiresDeviceRegistration, requiresPortalRePairing } from './lib/registration-status';
+import { isHubStarting, isRegistrationOperational, requiresDeviceRegistration, requiresPortalRePairing } from './lib/registration-status';
 import { resolveRegistrationStatus } from './lib/registration-cache';
 import { captureHubException, loadHubSentryDeviceId } from './lib/sentry';
 import { configureHubApiPort, probeHealthyHubApiPort } from './lib/tauri-hub-probe';
@@ -255,13 +255,30 @@ let rootBootstrapWarm = false;
  */
 let staleServerSessionCleared = false;
 
-async function loadRegistrationLookup(): Promise<RegistrationLookup> {
-  const status = await firstOf(resolveRegistrationStatus(), null, HUB_BOOTSTRAP_FETCH_MS);
-  if (status) {
-    return { kind: 'ok', status };
-  }
+/** How long a page load waits for a Hub that is still starting to say whether it is paired. */
+export const ROOT_STARTING_WAIT_MS = 3_000;
+const ROOT_STARTING_RETRY_MS = 500;
 
-  return { kind: 'unavailable' };
+/**
+ * A Hub that has just started says `starting` until it has read its registration back. Taking that
+ * for "unpaired" sent pages to pairing after a restart (#2590). The loader asks again for a few
+ * seconds, which is all an unpaired Hub needs, then goes on as if the API weren't up yet.
+ */
+async function loadRegistrationLookup(): Promise<RegistrationLookup> {
+  const deadline = Date.now() + ROOT_STARTING_WAIT_MS;
+  for (;;) {
+    const status = await firstOf(resolveRegistrationStatus(), null, HUB_BOOTSTRAP_FETCH_MS);
+    if (!status) {
+      return { kind: 'unavailable' };
+    }
+    if (!isHubStarting(status)) {
+      return { kind: 'ok', status };
+    }
+    if (Date.now() >= deadline) {
+      return { kind: 'unavailable' };
+    }
+    await new Promise((resolve) => globalThis.setTimeout(resolve, ROOT_STARTING_RETRY_MS));
+  }
 }
 
 const AUTH_BOOTSTRAP_PATHS = new Set([
@@ -323,9 +340,10 @@ export const ROOT_BOOTSTRAP_POLL_MS = 1500;
 
 /**
  * Longer than a root loader run can take: its registration and user-context reads each give up after
- * HUB_BOOTSTRAP_FETCH_MS. A run older than this is stuck (a half-open socket, say) and may be replaced.
+ * HUB_BOOTSTRAP_FETCH_MS, and the registration read waits up to ROOT_STARTING_WAIT_MS more on a Hub
+ * that is still starting. A run older than this is stuck (a half-open socket, say) and may be replaced.
  */
-export const ROOT_BOOTSTRAP_RUN_LIMIT_MS = 2 * HUB_BOOTSTRAP_FETCH_MS + 4_000;
+export const ROOT_BOOTSTRAP_RUN_LIMIT_MS = 2 * HUB_BOOTSTRAP_FETCH_MS + ROOT_STARTING_WAIT_MS + 4_000;
 
 /**
  * Whether the `/` poll may start another root revalidation, given when the loader run in flight

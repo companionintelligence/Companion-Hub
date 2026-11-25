@@ -32,6 +32,21 @@ describe('registration-cache', () => {
     await expect(resolveRegistrationStatus()).resolves.toEqual(makeStatus('locally_ready', true));
   });
 
+  // A Hub that has just started doesn't know yet whether it is paired (#2590).
+  it('reads a Hub that is still starting like one that did not answer, and keeps the cache', async () => {
+    cacheRegistrationStatus(makeStatus('publicly_ready', true));
+    fetchRegistrationStatus.mockResolvedValue(makeStatus('starting'));
+
+    await expect(resolveRegistrationStatus()).resolves.toEqual(makeStatus('locally_ready', true));
+    expect(getCachedRegistrationStatus()).not.toBeNull();
+  });
+
+  it('passes starting on when nothing is cached', async () => {
+    fetchRegistrationStatus.mockResolvedValue(makeStatus('starting'));
+
+    await expect(resolveRegistrationStatus()).resolves.toEqual(makeStatus('starting'));
+  });
+
   it('returns null when the API lookup fails and no valid cache exists', async () => {
     fetchRegistrationStatus.mockResolvedValue(null);
 

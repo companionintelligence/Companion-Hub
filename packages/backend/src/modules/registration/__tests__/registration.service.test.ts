@@ -229,11 +229,60 @@ describe('RegistrationService', () => {
   });
 
   describe('getRegistrationStatus', () => {
-    it('returns unregistered phase by default', () => {
+    it('says the Hub is starting until it has read its registration back', () => {
       const status = service.getRegistrationStatus();
-      expect(status.phase).toBe('unregistered');
+      expect(status.phase).toBe('starting');
       expect(status.registered).toBe(false);
       expect(status.degradedReasons).toEqual([]);
+      expect(service.getRegistrationPhaseReport().phase).toBe('starting');
+    });
+
+    // #2590: a paired Hub whose tunnel token file is missing can't restore its phase from a status
+    // read, and boot writes the token back and restarts `cloudflared` twice before it reads the phase.
+    // The status said `unregistered` all that time, and an open page signed out and went to pairing.
+    it('keeps saying starting, not unregistered, while a paired Hub waits for boot to put its token back', async () => {
+      const row = { id: 'org-1', provisioningPhase: 'publicly_ready', degradedReasons: '[]' } as any;
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(true);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(row);
+      const hasToken = vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(false);
+
+      expect((await service.getLiveRegistrationStatus()).phase).toBe('starting');
+      await (service as any).phaseRefreshInFlight;
+      expect((await service.getLiveRegistrationStatus()).phase).toBe('starting');
+      expect(service.getRegistrationPhaseReport().phase).toBe('starting');
+
+      // Boot has written the token back and reads the phase.
+      hasToken.mockReturnValue(true);
+      await (service as any).syncPhaseFromDb();
+
+      expect(service.getRegistrationStatus()).toEqual({ phase: 'publicly_ready', degradedReasons: [], registered: true });
+    });
+
+    it('says unregistered as soon as a read finds no registration', async () => {
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(false);
+
+      await service.getLiveRegistrationStatus();
+      await (service as any).phaseRefreshInFlight;
+
+      expect(service.getRegistrationStatus()).toEqual({ phase: 'unregistered', degradedReasons: [], registered: false });
+    });
+
+    it('says unregistered once boot has read the database and found no registration', async () => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(undefined);
+
+      await (service as any).syncPhaseFromDb();
+
+      expect(service.getRegistrationStatus().phase).toBe('unregistered');
+    });
+
+    it('reports the phase it holds once boot is over, even when boot could not read the database', async () => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockRejectedValue(new Error('db unavailable'));
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockRejectedValue(new Error('db unavailable'));
+      cloudflareClientService.stopTunnel.mockResolvedValue(true);
+
+      await (service as any).runDeferredBootstrap();
+
+      expect(service.getRegistrationStatus().phase).toBe('unregistered');
     });
 
     it('returns correct status after setPhase', async () => {
@@ -282,7 +331,7 @@ describe('RegistrationService', () => {
       const refreshSpy = vi.spyOn(service as any, 'refreshPhaseFromSources').mockResolvedValue(undefined);
 
       const status = await service.getLiveRegistrationStatus();
-      expect(status.phase).toBe('unregistered');
+      expect(status.phase).toBe('starting');
       expect(refreshSpy).toHaveBeenCalledOnce();
 
       refreshSpy.mockClear();
@@ -335,9 +384,9 @@ describe('RegistrationService', () => {
     });
 
     it('ignores illegal transitions', async () => {
-      // unregistered → publicly_ready is illegal
+      // unregistered → publicly_ready is illegal. The phase didn't move, so the Hub still says it is starting.
       await service.setPhase('publicly_ready');
-      expect(service.getRegistrationStatus().phase).toBe('unregistered');
+      expect(service.getRegistrationStatus().phase).toBe('starting');
     });
 
     it('allows idempotent no-op transitions', async () => {

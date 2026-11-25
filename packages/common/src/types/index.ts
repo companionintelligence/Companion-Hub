@@ -7,6 +7,7 @@ import {
   type RegistrationCheckIn,
   type RegistrationPhaseReport,
   type RegistrationStatus,
+  type RegistrationStatusPhase,
 } from './registration-status.js';
 
 export { type AppUrn, zodAppUrn };
@@ -18,6 +19,7 @@ export {
   type RegistrationCheckIn,
   type RegistrationPhaseReport,
   type RegistrationStatus,
+  type RegistrationStatusPhase,
 };
 export type { AvailableDomain, AvailableDomainsResponse } from './domains.js';
 // biome-ignore lint/performance/noBarrelFile: install and port-expose pickers filter through @ci-hub/common/types
