@@ -172,9 +172,33 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
   const stackCheckSeq = useRef(0);
   const autoUpdatesBlockedId = `${autoUpdatesId}-blocked`;
   const [switchHubOpen, setSwitchHubOpen] = useState(false);
-  // Set while a factory reset keeps this page from being sent to sign-in. Let go if the page goes away.
+  // Set while a factory reset keeps this page from being sent to sign-in.
   const releaseFactoryResetPage = useRef<(() => void) | null>(null);
-  useEffect(() => () => releaseFactoryResetPage.current?.(), []);
+  // `done` once the Hub is reset and the page has yet to leave for pairing, `leaving` once it has gone.
+  const factoryResetPhase = useRef<'idle' | 'running' | 'done' | 'leaving'>('idle');
+  const factoryResetLeaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const factoryResetPanelMounted = useRef(false);
+  useEffect(() => {
+    factoryResetPanelMounted.current = true;
+    return () => {
+      factoryResetPanelMounted.current = false;
+      // Another Settings tab or Back takes this panel away. A reset still running keeps its hold and its
+      // answer sends the page on: let go, the next refused request went to sign-in, which an unpaired
+      // Hub can't use. After the reset the page goes to pairing now instead of after the toast.
+      if (factoryResetPhase.current === 'running') {
+        return;
+      }
+      if (factoryResetPhase.current === 'done') {
+        factoryResetPhase.current = 'leaving';
+        if (factoryResetLeaveTimer.current !== null) {
+          clearTimeout(factoryResetLeaveTimer.current);
+          factoryResetLeaveTimer.current = null;
+        }
+        window.location.href = FACTORY_RESET_DONE_ROUTE;
+      }
+      releaseFactoryResetPage.current?.();
+    };
+  }, []);
 
   const desktop = isTauri();
   // The desktop app's own window, where this page can ask the app to install its update. `isTauri()`
@@ -207,6 +231,7 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
       // The Hub is already reset when the dialog is only left open to say the Portal still lists its
       // apps. Closing it goes on to pairing, as a reset that needed no warning does.
       if (!open && factoryResetPortalAppsLeft) {
+        factoryResetPhase.current = 'leaving';
         window.location.href = FACTORY_RESET_DONE_ROUTE;
         return;
       }
@@ -238,29 +263,40 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
     // Held from here until the page leaves on its own.
     releaseFactoryResetPage.current?.();
     releaseFactoryResetPage.current = holdPageOnSessionExpiry();
+    factoryResetPhase.current = 'running';
     try {
       const result = await factoryReset({ body: { confirmation: typedName, removeAppsFromPortal: factoryResetRemovePortalApps } });
       if (result.error) {
         throw result.error instanceof Error ? result.error : new Error(String(result.error));
       }
       clearClientHubState();
+      factoryResetPhase.current = 'done';
+      const portalAppsLeft = (result.data as { portalApps?: string } | undefined)?.portalApps === 'failed';
       // Asked to take the apps off the Portal and it couldn't be reached: say so before leaving, since a
       // toast would go with the page. The X, Escape and a click outside can close the dialog while the
       // reset runs, so it opens again to say it. Closed, it left the page on a Hub that was reset.
-      if ((result.data as { portalApps?: string } | undefined)?.portalApps === 'failed') {
+      if (portalAppsLeft && factoryResetPanelMounted.current) {
         setFactoryResetting(false);
         setFactoryResetPortalAppsLeft(true);
         setFactoryResetOpen(true);
         return;
       }
       setFactoryResetOpen(false);
-      toast.success(t('SETTINGS_FACTORY_RESET_SUCCESS'));
-      setTimeout(() => {
+      // A panel that went away while the reset ran has no dialog left to warn in.
+      if (portalAppsLeft) {
+        toast.warning(t('SETTINGS_FACTORY_RESET_PORTAL_APPS_LEFT'));
+      } else {
+        toast.success(t('SETTINGS_FACTORY_RESET_SUCCESS'));
+      }
+      factoryResetLeaveTimer.current = setTimeout(() => {
+        factoryResetLeaveTimer.current = null;
+        factoryResetPhase.current = 'leaving';
         window.location.href = FACTORY_RESET_DONE_ROUTE;
       }, FACTORY_RESET_TOAST_MS);
     } catch (error) {
       // A reset that stopped may have kept every user (it says so when files were left), so the page goes
       // on as usual. If it did delete them, the next refused request sends the page to sign-in.
+      factoryResetPhase.current = 'idle';
       releaseFactoryResetPage.current?.();
       releaseFactoryResetPage.current = null;
       setFactoryResetting(false);
@@ -972,7 +1008,8 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
               <Button
                 intent="danger"
                 variant="outline"
-                disabled={demoMode}
+                // Stays true after a reset that worked. Opened then, the dialog would sit on its spinner.
+                disabled={demoMode || factoryResetting}
                 onClick={() => setFactoryResetDialogOpen(true)}
                 data-testid="factory-reset-btn"
               >
