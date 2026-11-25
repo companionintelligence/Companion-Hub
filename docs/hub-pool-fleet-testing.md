@@ -822,11 +822,11 @@ without holding its token must still fail.
 **FAIL** anything other than 401. Being on the tailnet must not by itself grant use of a peer-facing
 route; only a device this Hub has explicitly paired with can.
 
-### 9.3 A tailnet device needs a key, when the Hub is set to ask for one
+### 9.3 A tailnet device needs a key
 
-Only meaningful with `HUB_INFERENCE_TAILNET_AUTH=require-key` in the Hub's environment (restart the Hub
-after setting it). Without it the tailnet is inside the appliance by design and the first command
-returns 200. Mint a key first with `cihub api-key create --scope inference`.
+The default since 2026-11-25. With `HUB_INFERENCE_TAILNET_AUTH=trust` in the Hub's environment the
+tailnet is inside the appliance and the first command returns 200. Mint a key first with
+`cihub api-key create --scope inference`.
 
 ```bash
 $ curl -s -o /dev/null -w '%{http_code}\n' https://<core-node>/api/inference/pool/v1/models
