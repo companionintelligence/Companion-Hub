@@ -168,6 +168,16 @@ pub(crate) fn classify_docker_access_result(
             || combined_lower.contains("the pipe has been ended")
             || combined_lower.contains("the semaphore timeout period has expired"));
 
+    // The CLI stopped before asking any engine: it couldn't read the current context (left owned
+    // by root by `sudo docker context create`) or the context doesn't exist. No daemon refused
+    // this user, so the "permission denied" in it must not read as that.
+    if combined_lower.contains("unable to resolve docker endpoint") {
+        return DockerAccessCheck {
+            state: DockerAccessState::Error,
+            detail: Some(combined.to_string()),
+        };
+    }
+
     // Docker 29 says "failed to connect to the docker API at ...; check if the path is correct and
     // if the daemon is running" when the socket is gone, which is how a stopped Docker Desktop,
     // Colima or rootless engine looks.

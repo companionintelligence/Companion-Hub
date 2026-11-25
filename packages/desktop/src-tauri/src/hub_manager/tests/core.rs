@@ -237,6 +237,36 @@ fn a_cli_plugin_that_cannot_run_does_not_read_as_refused_access() {
 }
 
 #[test]
+fn a_docker_context_the_cli_cannot_read_does_not_read_as_refused_access() {
+    // `sudo docker context create` leaves `~/.docker/contexts` owned by root. The CLI then stops
+    // before it asks any engine, so this user was never refused.
+    let result = docker_access_from_info_output(
+        false,
+        Some(1),
+        "",
+        "Failed to initialize: unable to resolve docker endpoint: context \"remote\": open /home/me/.docker/contexts/meta/0123abcd/meta.json: permission denied",
+    );
+
+    assert!(matches!(result.state, DockerAccessState::Error));
+    assert_eq!(
+        result.detail.as_deref(),
+        Some("Failed to initialize: unable to resolve docker endpoint: context \"remote\": open /home/me/.docker/contexts/meta/0123abcd/meta.json: permission denied")
+    );
+}
+
+#[test]
+fn a_docker_context_the_cli_cannot_read_on_windows_does_not_read_as_refused_access() {
+    let result = docker_access_from_info_output(
+        false,
+        Some(1),
+        "",
+        "Failed to initialize: unable to resolve docker endpoint: context \"remote\": open C:\\Users\\me\\.docker\\contexts\\meta\\0123abcd\\meta.json: Access is denied.",
+    );
+
+    assert!(matches!(result.state, DockerAccessState::Error));
+}
+
+#[test]
 fn a_daemon_refusing_access_still_reads_as_refused_when_docker_info_exits_zero() {
     let result = docker_access_from_info_output(
         true,
