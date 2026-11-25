@@ -34,8 +34,19 @@ pub(crate) fn docker_server_os_and_kernel() -> Option<(String, String)> {
 /// Docker Desktop). Docker Desktop manages the container GPU runtime itself; a native
 /// engine needs nvidia-container-toolkit installed inside the distro. Mirrors the
 /// backend's `detectContainerHostKind` and the CLI's `detectWindowsDockerBackend`.
+///
+/// The Hub's own engine decides first: a Hub on the WSL engine is on it whatever the Docker CLI's
+/// context says. Docker Desktop sets that context back to `desktop-linux` when it starts, and the
+/// app moves a Hub whose saved engine stopped answering to the WSL engine without touching it. Seen
+/// on Windows: the Hub ran on the WSL engine with the context on `desktop-linux`, and this said
+/// no, so Install Ollama would have put it on Windows, out of the Hub's reach, and the GPU runtime
+/// and Ollama setup in the distro would be skipped. Not the other way round: Start Docker in WSL
+/// and the TLS move rely on the context while the Hub is still saved on Docker Desktop.
 #[cfg(windows)]
 pub(crate) fn is_wsl_engine_docker_backend() -> bool {
+    if hub_wsl_engine(&get_hub_data_dir()).is_some() {
+        return true;
+    }
     if let Some(context) = current_docker_context_name(None) {
         if context == DOCKER_CONTEXT_WSL_ENGINE {
             return true;
