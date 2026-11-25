@@ -13,10 +13,11 @@ vi.mock('@/lib/hooks/use-registration-status', () => ({ useRegistrationStatus: (
 vi.mock('@/lib/session-expired', () => ({ handleSessionExpired }));
 vi.mock('@/lib/mobile-connection', () => ({
   isMobileClient: () => connection.mobile,
+  isTauriMobileSync: () => false,
   getHubBaseUrlSync: () => connection.hubBaseUrl,
 }));
 
-const { UNPAIRED_CONFIRM_MS, useLeaveWhenHubUnpaired } = await import('./use-leave-when-hub-unpaired');
+const { UNPAIRED_CONFIRM_MS, holdLeaveWhenHubUnpaired, useLeaveWhenHubUnpaired } = await import('./use-leave-when-hub-unpaired');
 
 const status = (phase: RegistrationStatus['phase']): RegistrationStatus => ({
   phase,
@@ -38,6 +39,7 @@ describe('useLeaveWhenHubUnpaired', () => {
     registration.data = status('publicly_ready');
     connection.mobile = false;
     connection.hubBaseUrl = null;
+    sessionStorage.clear();
   });
 
   afterEach(() => {
@@ -58,6 +60,58 @@ describe('useLeaveWhenHubUnpaired', () => {
     await passConfirmDelay();
     expect(registration.refetch).toHaveBeenCalledTimes(1);
     expect(handleSessionExpired).toHaveBeenCalledTimes(1);
+  });
+
+  // A drift choice kept from the last pairing hid the pairing page's question about the Portal device.
+  it('forgets the last pairing on its way out, as Settings does', async () => {
+    sessionStorage.setItem('ci-hub-registration-drift-choice', 'fresh');
+    sessionStorage.setItem('device-registered', 'true');
+    registration.data = status('unregistered');
+    registration.refetch.mockResolvedValue({ data: status('unregistered') });
+    renderHook(() => useLeaveWhenHubUnpaired());
+
+    await passConfirmDelay();
+
+    expect(handleSessionExpired).toHaveBeenCalledTimes(1);
+    expect(sessionStorage.getItem('ci-hub-registration-drift-choice')).toBeNull();
+    expect(sessionStorage.getItem('device-registered')).toBeNull();
+  });
+
+  // Settings resetting the Hub, or watching for its removal, says what happened before it leaves.
+  it('waits while a page leaves for pairing by itself and goes once it lets go', async () => {
+    registration.data = status('unregistered');
+    registration.refetch.mockResolvedValue({ data: status('unregistered') });
+    const release = holdLeaveWhenHubUnpaired();
+    try {
+      renderHook(() => useLeaveWhenHubUnpaired());
+
+      await passConfirmDelay();
+      await passConfirmDelay();
+      expect(handleSessionExpired).not.toHaveBeenCalled();
+
+      release();
+      await passConfirmDelay();
+      expect(handleSessionExpired).toHaveBeenCalledTimes(1);
+    } finally {
+      release();
+    }
+  });
+
+  it('counts a release once, however often it is called', async () => {
+    registration.data = status('unregistered');
+    registration.refetch.mockResolvedValue({ data: status('unregistered') });
+    const first = holdLeaveWhenHubUnpaired();
+    const second = holdLeaveWhenHubUnpaired();
+    try {
+      first();
+      first();
+      renderHook(() => useLeaveWhenHubUnpaired());
+
+      await passConfirmDelay();
+      expect(handleSessionExpired).not.toHaveBeenCalled();
+    } finally {
+      second();
+    }
   });
 
   // A Hub that just started answers `unregistered` once before it reads its registration back.

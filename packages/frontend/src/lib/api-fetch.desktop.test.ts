@@ -90,7 +90,7 @@ describe('desktop session in the OS keychain', () => {
   });
 
   // A page about to leave for pairing still sends its session. Its keychain copy and the Portal refresh
-  // token go first: the second removal waits on the first, and a page that leaves at once never sent it.
+  // token go first. The second removal waits on the first and never ran in a page that left at once.
   it('empties the keychain and keeps the session in memory when only the stored copies are forgotten', async () => {
     setTauriSessionId('abc');
     await vi.waitFor(() => expect(keychain.get('ci.hub.session')).toBe('abc'));

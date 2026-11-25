@@ -1,14 +1,34 @@
 import { useEffect } from 'react';
+import { clearClientHubState } from '@/lib/clear-client-hub-state';
 import { useRegistrationStatus } from '@/lib/hooks/use-registration-status';
 import { getHubBaseUrlSync, isMobileClient } from '@/lib/mobile-connection';
 import { handleSessionExpired } from '@/lib/session-expired';
 
 /**
  * How long "unpaired" has to last before an open page acts on it. A Hub that just started answers
- * `unregistered` once before it reads its registration back, so a single answer proves nothing. It
- * also gives a page that leaves for pairing by itself (a reset, a removal it watched for) time to go.
+ * `unregistered` once before it reads its registration back, so a single answer proves nothing.
  */
 export const UNPAIRED_CONFIRM_MS = 3_000;
+
+let holds = 0;
+
+/**
+ * Holds the hook back while a page leaves for pairing by itself: Settings while it resets the Hub or
+ * waits for the Portal to remove it. That page says what happened on its way out. The Hub turns
+ * `unregistered` as soon as a reset starts, so the hook used to cut that page short whenever the reset
+ * ran long. It nearly always did when a check-in found the removal before the watch did. Returns the
+ * release, which may be called more than once.
+ */
+export function holdLeaveWhenHubUnpaired(): () => void {
+  holds += 1;
+  let released = false;
+  return () => {
+    if (!released) {
+      released = true;
+      holds -= 1;
+    }
+  };
+}
 
 /**
  * Sends a signed-in page on when the Hub stops being paired while it is open: the device deleted in
@@ -17,8 +37,10 @@ export const UNPAIRED_CONFIRM_MS = 3_000;
  * unpaired Hub until a reload (#2556).
  *
  * It goes the way an ended session does, to sign-in. On an unpaired Hub the root loader sends that on
- * to pairing. A phone signed in to a remote Hub is left alone: its root loader never looks at
- * pairing, so sign-in would let it straight back in and this would send it out again.
+ * to pairing. It clears what Settings clears when it leaves for pairing: a drift choice kept from the
+ * last pairing hid the pairing page's question about the device the Portal still lists. A phone
+ * signed in to a remote Hub is left alone: its root loader never looks at pairing, so sign-in would
+ * let it straight back in and this would send it out again.
  */
 export function useLeaveWhenHubUnpaired(): void {
   const { data: status, refetch } = useRegistrationStatus();
@@ -45,9 +67,16 @@ export function useLeaveWhenHubUnpaired(): void {
             confirm();
             return;
           }
-          if (result.data?.phase === 'unregistered') {
-            void handleSessionExpired();
+          if (result.data?.phase !== 'unregistered') {
+            return;
           }
+          // A page leaving for pairing by itself goes first. Ask again in case it stops.
+          if (holds > 0) {
+            confirm();
+            return;
+          }
+          clearClientHubState({ keepPortalEmail: true });
+          void handleSessionExpired();
         });
       }, UNPAIRED_CONFIRM_MS);
     };
