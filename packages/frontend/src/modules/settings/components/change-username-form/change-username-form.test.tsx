@@ -57,8 +57,9 @@ describe('ChangeUsernameForm', () => {
   });
 
   it('signs the client out after a successful change', () => {
-    // Changing the username revokes every session for the user, same as the password
-    // form — and the name you sign back in with is the new one.
+    // Changing the username revokes every session for the user, same as the password form. The
+    // remembered CI Account address stays: the rename changes only the Hub's record, and password
+    // sign-in asks the Portal first, which still knows the account by its old address.
     render(<ChangeUsernameForm username="old@example.com" />);
     const options = mockUseMutation.mock.calls[0]?.[0] as { onSuccess: () => void };
 
