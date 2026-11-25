@@ -1328,6 +1328,19 @@ describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
     expect(collectServiceSecurityViolations({ devices: ['/dev/../dev/sda:/dev/sda'] })).toHaveLength(1);
   });
 
+  // Raw disk commands past the block-device refusal, and the host's keyboards, mice and security keys.
+  it.each(['/dev/sg0', '/dev/sg', '/dev/bsg/0:0:0:0', '/dev/uinput', '/dev/input', '/dev/input/event3', '/dev/hidraw0', '/dev/HIDRAW1'])(
+    'flags %s, which reaches a disk or the person at the host',
+    (device) => {
+      expect(collectServiceSecurityViolations({ devices: [`${device}:${device}`] }).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_DEVICE_NOT_ALLOWED');
+    },
+  );
+
+  it("leaves devices that only start like those alone, and Sunshine's granted /dev/uinput", () => {
+    expect(collectServiceSecurityViolations({ devices: ['/dev/sgx_enclave:/dev/sgx_enclave', '/dev/inputs-fake:/dev/x'] })).toHaveLength(0);
+    expect(collectServiceSecurityViolations({ devices: ['/dev/uinput:/dev/uinput'] }, TRUSTED_APP_SECURITY_ALLOWLIST.sunshine)).toHaveLength(0);
+  });
+
   it('leaves the ordinary device passthroughs alone', () => {
     /*
      * ⚠ NARROWER THAN THE HOST-PATH REJECT-LIST ON PURPOSE. `/dev` is on that
@@ -1577,6 +1590,7 @@ describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
       'refly',
       'steam-headless',
       'strix',
+      'sunshine',
       'sup3rs3cretmes5age',
       'torollo',
       'transmission-vpn',
