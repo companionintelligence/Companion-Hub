@@ -25,6 +25,7 @@ import {
 import { type HubPrincipalFields, hubSessionOperatorUserId, isAppViewObserverPrincipal, isGrantExemptPrincipal } from './hub-session-operator';
 import type { LifecycleActor } from './lifecycle-actor';
 import { PortalClientService, type PortalWhoIsResponse } from './portal-client.service';
+import { CI_MARKETPLACE_STORE_SLUG } from './portal.constants';
 import { assertHubManageAllowed, type HubManageVerdict } from './hub-manage-verdict';
 import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
 import { linksForCurrentPortal } from '@/modules/user/portal-links';
@@ -656,15 +657,24 @@ export class MarketplaceWhoIsService {
    *
    * When the rows cannot be read, a port expose cannot be told from a custom
    * app, so only the view is granted.
+   *
+   * Apps from a store the operator added (any store but the official
+   * `ci-marketplace`) are decided here too ({@link addedStoreAppGrants}): the
+   * Portal's grants are for its catalog's apps, and it is asked by app name
+   * alone, so such an app got no grants at all, its owner's included, or the
+   * grants of the catalog app that shares its name.
    */
   private async localAppGrants(userId: number, urns: AppUrn[], action: HubAction): Promise<Map<AppUrn, HubAction[]>> {
-    const out = new Map<AppUrn, HubAction[]>();
+    const out = await this.addedStoreAppGrants(userId, urns, action);
     const local = urns.filter((urn) => extractAppUrn(urn).appStoreId === '_user');
     if (local.length === 0) {
       return out;
     }
 
-    const viewOnly = () => new Map<AppUrn, HubAction[]>(local.map((urn) => [urn, ['view']]));
+    const viewOnly = () => {
+      for (const urn of local) out.set(urn, ['view']);
+      return out;
+    };
 
     // A view of any `_user` app needs neither the row nor a role, so the lists the UI polls cost nothing here.
     if (action === 'view') {
@@ -689,6 +699,32 @@ export class MarketplaceWhoIsService {
     const customGrant = firstCustomApp === undefined ? [] : await this.customAppGrant(userId, firstCustomApp);
     for (const urn of local) {
       out.set(urn, portExposeNames.has(extractAppUrn(urn).appName) ? [...PORT_EXPOSE_ACTIONS] : [...customGrant]);
+    }
+    return out;
+  }
+
+  /**
+   * What a person may do to an app from a store the operator added, decided on this Hub as for a custom
+   * app ({@link customAppGrant}): anyone signed in may view it, and every other verb takes an organization
+   * owner or admin, asked of the Portal fresh, with no app named (the role is the organization's). An
+   * operator with no linked Portal identity keeps the member fallback, and a role that cannot be read
+   * refuses the change.
+   * Nothing goes into the WhoIs cache, which is keyed by app name.
+   */
+  private async addedStoreAppGrants(userId: number, urns: AppUrn[], action: HubAction): Promise<Map<AppUrn, HubAction[]>> {
+    const out = new Map<AppUrn, HubAction[]>();
+    const added = urns.filter((urn) => {
+      const { appStoreId } = extractAppUrn(urn);
+      return appStoreId !== '_user' && appStoreId !== CI_MARKETPLACE_STORE_SLUG;
+    });
+    if (added.length === 0) {
+      return out;
+    }
+
+    // The same decision as for custom apps in general, about no app in particular (`customAppGrant`).
+    const grant: HubAction[] = action === 'view' ? ['view'] : await this.customAppGrant(userId, null);
+    for (const urn of added) {
+      out.set(urn, [...grant]);
     }
     return out;
   }
