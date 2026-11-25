@@ -1141,9 +1141,9 @@ function StartupScreen({
   };
   let panelError = failedService ? null : errorText;
   if (view === 'docker_refused') {
-    // Docker's own words. Refused also covers Windows asking for elevation and an unreadable
-    // ~/.docker/config.json, where the docker group line doesn't fit. Only the first line, since
-    // `docker info` prints the client's version and plugins after the error.
+    // Docker's own words. Refused also covers Windows asking for elevation, where the docker group
+    // line doesn't fit. Only the first line, since `docker info` prints the client's version and
+    // plugins after the error.
     panelError =
       progress?.docker_access_detail
         ?.split('\n')

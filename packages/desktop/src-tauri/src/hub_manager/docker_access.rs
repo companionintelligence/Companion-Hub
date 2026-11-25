@@ -111,14 +111,23 @@ pub(crate) fn docker_access_from_info_output(
     }
 
     if config_file_unreadable {
-        // Without its config file the CLI also loses the current context, so it may have asked
-        // the wrong engine. The warning itself stays out: its "permission denied" or "Access is
-        // denied" would read as Docker refusing this user.
+        // Without its config file the CLI also loses its registry logins and, when no engine is
+        // pinned through DOCKER_HOST, the current context. The warning itself stays out: its
+        // "permission denied" or "Access is denied" would read as Docker refusing this user.
+        // The note goes right after Docker's own error, ahead of the client and server sections
+        // `docker info` prints to stdout, since the screens show only the first lines.
         let detail = check.detail.get_or_insert_with(String::new);
-        if !detail.is_empty() {
-            detail.push('\n');
-        }
-        detail.push_str(CONFIG_FILE_UNREADABLE_NOTE);
+        let at = if !stderr.is_empty() && detail.starts_with(stderr) {
+            stderr.len()
+        } else {
+            detail.len()
+        };
+        let note = if at == 0 {
+            CONFIG_FILE_UNREADABLE_NOTE.to_string()
+        } else {
+            format!("\n{CONFIG_FILE_UNREADABLE_NOTE}")
+        };
+        detail.insert_str(at, &note);
     }
     check
 }
@@ -127,7 +136,7 @@ pub(crate) fn docker_access_from_info_output(
 pub(crate) const CONFIG_FILE_UNREADABLE_NOTE: &str =
     "Docker could not read its config file, so it ran without the settings in it, such as the current context.";
 
-/// Drops the warnings the Docker CLI prints about its own files before carrying on, and says
+/// Drops the warnings the Docker CLI prints about its own files before carrying on and says
 /// whether one of them was about the config file.
 ///
 /// "WARNING: Error loading config file: <why>" comes when it can't read the config file.
@@ -169,9 +178,13 @@ pub(crate) fn classify_docker_access_result(
             || combined_lower.contains("the semaphore timeout period has expired"));
 
     // The CLI stopped before asking any engine: it couldn't read the current context (left owned
-    // by root by `sudo docker context create`) or the context doesn't exist. No daemon refused
-    // this user, so the "permission denied" in it must not read as that.
-    if combined_lower.contains("unable to resolve docker endpoint") {
+    // by root by `sudo docker context create`) or the context doesn't exist. Docker 20.10 checks
+    // the context first and prints only its meta.json path and why, so that path counts too. No
+    // daemon refused this user, so the "permission denied" in it must not read as that.
+    if combined_lower.contains("unable to resolve docker endpoint")
+        || combined_lower.contains("contexts/meta/")
+        || combined_lower.contains("contexts\\meta\\")
+    {
         return DockerAccessCheck {
             state: DockerAccessState::Error,
             detail: Some(combined.to_string()),

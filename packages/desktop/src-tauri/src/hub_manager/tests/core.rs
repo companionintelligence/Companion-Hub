@@ -191,7 +191,8 @@ fn a_stopped_daemon_with_an_unreadable_config_file_reads_as_not_running() {
 
 #[test]
 fn a_failed_check_after_an_unreadable_config_file_says_the_settings_were_skipped() {
-    // An unreadable config file also loses the current context, so the CLI may ask the wrong engine.
+    // An unreadable config file also loses the registry logins and, with no engine pinned, the
+    // current context.
     let result = docker_access_from_info_output(
         false,
         Some(1),
@@ -204,6 +205,32 @@ fn a_failed_check_after_an_unreadable_config_file_says_the_settings_were_skipped
     let detail = result.detail.unwrap_or_default();
     assert!(detail.ends_with(CONFIG_FILE_UNREADABLE_NOTE));
     assert!(!detail.to_lowercase().contains("access is denied"));
+}
+
+#[test]
+fn the_skipped_config_note_comes_before_the_client_section_of_docker_info() {
+    // The screens show only the first lines of the detail, and `docker info` prints the client's
+    // version and plugins to stdout after the error.
+    let result = docker_access_from_info_output(
+        false,
+        Some(1),
+        "Client: Docker Engine - Community\n Version:    29.9.3\n Context:    default\n\nServer:",
+        "WARNING: Error loading config file: open /home/me/.docker/config.json: permission denied\n\
+         failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running",
+    );
+
+    assert!(matches!(result.state, DockerAccessState::DaemonUnavailable));
+    let detail = result.detail.unwrap_or_default();
+    let lines: Vec<&str> = detail.lines().collect();
+    assert_eq!(
+        lines.first().copied(),
+        Some("failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running")
+    );
+    assert_eq!(lines.get(1).copied(), Some(CONFIG_FILE_UNREADABLE_NOTE));
+    assert_eq!(
+        lines.get(2).copied(),
+        Some("Client: Docker Engine - Community")
+    );
 }
 
 #[test]
@@ -264,6 +291,19 @@ fn a_docker_context_the_cli_cannot_read_on_windows_does_not_read_as_refused_acce
     );
 
     assert!(matches!(result.state, DockerAccessState::Error));
+}
+
+#[test]
+fn a_docker_context_docker_20_cannot_read_does_not_read_as_refused_access() {
+    // Docker 20.10 checks the current context before anything else and prints only its file and why.
+    for stderr in [
+        "open /home/me/.docker/contexts/meta/0123abcd/meta.json: permission denied",
+        "open C:\\Users\\me\\.docker\\contexts\\meta\\0123abcd\\meta.json: Access is denied.",
+    ] {
+        let result = docker_access_from_info_output(false, Some(1), "", stderr);
+
+        assert!(matches!(result.state, DockerAccessState::Error), "{stderr}");
+    }
 }
 
 #[test]
