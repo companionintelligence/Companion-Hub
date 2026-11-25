@@ -3424,7 +3424,7 @@ export class PoolProxyService {
     const tracked =
       registry.getTrackedModel(model) ??
       registry.getTrackedModels().find((entry) => sameModelId(entry.backendModelId, model)) ??
-      // Installed, and untracked since the Hub started: weighed like any other (#2539). The candidate's
+      // Installed but untracked since the Hub started: weighed like any other (#2539). The candidate's
       // engine lists the model, since that is what made it a candidate, so no engine is asked again.
       registry.trackInstalledModel(model, [{ backend: candidate.backend, models: [model] }], { omlxSpellings: false });
     // Resident as far as the registry knows (`loaded`, `pinned`), not the Hub's, or not on disk yet:

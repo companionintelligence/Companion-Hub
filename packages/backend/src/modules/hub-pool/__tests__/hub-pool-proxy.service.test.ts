@@ -9036,7 +9036,7 @@ describe('PoolProxyService', () => {
       expect(routingLog.list()[0]).toMatchObject({ attempts: [], localLoadRefused: null });
     });
 
-    // #2539, seen on a Strix Halo machine on 2026-11-25: right after a restart the registry tracked nothing, and a
+    // #2539, seen on a Strix Halo machine on 2026-11-25: right after a restart the registry tracked nothing and a
     // request for a model on disk went to Ollama with no fit check. Each case is a fresh registry, as after a
     // restart, over an engine that lists the model.
     describe('after a restart, for a model the engine lists that nothing has used since', () => {
@@ -9064,7 +9064,7 @@ describe('PoolProxyService', () => {
       it.each([
         ['/api/chat', { options: { num_ctx: 8192 } }, 8192],
         ['/v1/chat/completions', {}, null],
-      ])('has the router weigh the load before %s reaches the engine, and tracks the model', async (path, extra, numCtx) => {
+      ])('has the router weigh the load before %s reaches the engine and tracks the model', async (path, extra, numCtx) => {
         const res = createMockResponse();
 
         await afterRestart.proxyRequest({ path, method: 'POST', body: { model: MODEL, messages: [], ...extra }, model: MODEL, res });

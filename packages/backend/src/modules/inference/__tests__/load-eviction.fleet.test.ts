@@ -767,7 +767,7 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
     });
   });
 
-  // A Strix Halo machine, 2026-11-25 (#2539): right after the Hub restarted it tracked nothing, and a request
+  // A Strix Halo machine, 2026-11-25 (#2539): right after the Hub restarted it tracked nothing and a request
   // for qwen3:8b, on disk but not used since, went to Ollama with no fit check. Ollama loaded 9.9 GB. The same
   // request answered 503 once a pull check had made the Hub track the model. Each case is a fresh router:
   // an empty tracker over an engine that lists the model.
@@ -799,7 +799,7 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
       return world(await hardware.getProfile(), ollama, { 'minimax-m2-community-230b': 72_243, 'qwen3-8b': 9_900 }, { hardware });
     }
 
-    it.each(routes)('is weighed on the local /v1 %s route, and refused when it does not fit in unified memory', async (_route, _path, send) => {
+    it.each(routes)('is weighed on the local /v1 %s route and refused when it does not fit in unified memory', async (_route, _path, send) => {
       const w = await strixHaloWorld();
       ollama.installed.add(MINIMAX);
       const forwarded = forwardedBy(w.router);
@@ -823,7 +823,24 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
       expect(forwarded).toEqual([['ollama', 'qwen3:8b', path]]);
     });
 
-    it('is still sent on unweighed when the catalog does not know it, and is not tracked', async () => {
+    // The second request finds the model untracked and waits for its sweep while the first tracks it. It used
+    // to go to Ollama unweighed, because the registry leaves a row it tracks already alone.
+    it('refuses two requests that arrive together, not only the one that tracked the model', async () => {
+      const w = await strixHaloWorld();
+      ollama.installed.add(MINIMAX);
+      const forwarded = forwardedBy(w.router);
+
+      const results = await Promise.allSettled([
+        w.router.routeChatCompletion({ model: MINIMAX, messages: [] }),
+        w.router.routeChatCompletion({ model: MINIMAX, messages: [] }),
+      ]);
+
+      expect(results.map((result) => result.status)).toEqual(['rejected', 'rejected']);
+      expect(forwarded).toEqual([]);
+      expect(ollama.loads).toEqual([]);
+    });
+
+    it('is still sent on unweighed when the catalog does not know it and is not tracked', async () => {
       const w = await strixHaloWorld();
       ollama.installed.add('mystery:7b');
       const forwarded = forwardedBy(w.router);

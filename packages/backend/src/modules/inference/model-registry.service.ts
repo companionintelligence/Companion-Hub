@@ -13,7 +13,7 @@ import type {
 import { sameModelId } from '@/common/helpers/hub-pool';
 import { omlxModelsMatch } from '@/common/helpers/omlx-model-id';
 import { CURATED_MODELS } from './catalog/curated-models';
-import { isCatalogModelInstalled, isServedModelForCatalog } from './model-availability.util';
+import { isServedModelForCatalog } from './model-availability.util';
 // A value import: Nest reads the constructor's parameter types from emitted decorator metadata.
 import { LemonadeBackend } from './backends/lemonade.backend';
 import { readPinnedModels, removePinnedModels, writePinnedModels } from './pinned-models-record';
@@ -559,24 +559,29 @@ export class ModelRegistryService implements OnModuleInit {
   /**
    * Track as `pulled` the catalog model a request for `model` names, when it is not tracked yet and
    * its engine lists it as installed. A pull check of an installed model tracks it the same way
-   * (`ModelPullerService.markAlreadyInstalled`), by the same rule. `listed` is what each engine that
-   * answered lists. A row is named by its catalog id or its engine tag, `name` and `name:latest`
-   * alike, and with `omlxSpellings` by any name oMLX gives it, as the caller's own lookup of a tracked
-   * model finds one.
+   * (`ModelPullerService.markAlreadyInstalled`). `listed` is what each engine that answered lists. A
+   * row is named by its catalog id or its engine tag, `name` and `name:latest` alike. With
+   * `omlxSpellings` it is also named by any name oMLX gives it, as the caller's own lookup of a
+   * tracked model finds one.
    *
-   * The tracker lives in memory, and a request's load is weighed only for a model it holds. Right
+   * An Ollama row counts only when Ollama lists its own tag, which is what the Hub's load of it asks
+   * for. A pull check is looser: it also credits the row with a tag that only starts with it
+   * (`qwen3.8:27b-q8_0` for `qwen3.8:27b`). Tracked that way, a request would have the Hub unload
+   * models for a load that then fails.
+   *
+   * The tracker lives in memory and a request's load is weighed only for a model it holds. Right
    * after a restart a model on disk that nothing has used yet is not tracked, so a request for it
-   * went to the engine unweighed, and Ollama loaded it where the Hub would have refused (#2539).
+   * went to the engine unweighed and Ollama loaded it where the Hub would have refused (#2539).
    *
    * Undefined, with nothing tracked, for a model the catalog does not know (a custom Ollama tag,
-   * which the Hub never tracks), and for one no engine lists.
+   * which the Hub never tracks) and for one no engine lists. Undefined too for a row it tracks
+   * already, which it leaves as it is: a caller that waited for `listed` looks the model up again.
    */
   trackInstalledModel(
     model: string,
     listed: ReadonlyArray<{ backend: InferenceBackendType; models: readonly string[] }>,
     options: { omlxSpellings: boolean },
   ): TrackedModel | undefined {
-    const backendModelIds = this.getCatalogBackendModelIds();
     const row = CURATED_MODELS.find((candidate) => {
       if (this.trackedModels.has(candidate.id)) return false;
       const named =
@@ -586,11 +591,11 @@ export class ModelRegistryService implements OnModuleInit {
       const models = named ? listed.find((entry) => entry.backend === candidate.backend)?.models : undefined;
       if (!models) return false;
       return candidate.backend === 'ollama'
-        ? isCatalogModelInstalled(candidate, [...models], false, backendModelIds)
+        ? models.some((tag) => sameModelId(tag, candidate.backendModelId))
         : isServedModelForCatalog(candidate, [...models]);
     });
     if (!row) return undefined;
-    this.logger.info(`[Inference] Tracking ${row.id}: ${row.backend} lists it, and this Hub had not used it since it started`);
+    this.logger.info(`[ModelRegistry] Tracking ${row.id}: ${row.backend} lists it and this Hub had not used it since it started`);
     return this.trackModel(row.id, 'pulled');
   }
 

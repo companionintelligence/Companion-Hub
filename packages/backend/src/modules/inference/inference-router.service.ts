@@ -1061,14 +1061,19 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     // Folded like every other engine-id comparison on this path: an app may send `nomic-embed-text`
     // or `nomic-embed-text:latest` for the one model, and an app handed oMLX's name for a model
     // (`Qwen3-8B-4bit`) sends that, where the registry holds the catalog's `mlx-community/Qwen3-8B-4bit`.
-    const tracked =
+    const findTracked = (): TrackedModel | undefined =>
       this.modelRegistry.getTrackedModel(model) ??
       this.modelRegistry
         .getTrackedModels()
-        .find((entry) => sameModelId(entry.backendModelId, model) || (entry.backend === 'omlx' && omlxModelsMatch(entry.backendModelId, model))) ??
-      (options.probe
-        ? this.modelRegistry.trackInstalledModel(model, answeredInventories(await options.probe()), { omlxSpellings: true })
-        : undefined);
+        .find((entry) => sameModelId(entry.backendModelId, model) || (entry.backend === 'omlx' && omlxModelsMatch(entry.backendModelId, model)));
+    let tracked = findTracked();
+    if (!tracked && options.probe) {
+      const listed = answeredInventories(await options.probe());
+      // Looked up again after the sweep: a request for the same model that arrived beside this one may have
+      // tracked it meanwhile. `trackInstalledModel` leaves a tracked row alone, so the request that missed it
+      // went to the engine unweighed.
+      tracked = findTracked() ?? this.modelRegistry.trackInstalledModel(model, listed, { omlxSpellings: true });
+    }
     if (!tracked) {
       return null;
     }

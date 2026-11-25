@@ -217,7 +217,7 @@ answers "not tracked" and "refused" with the same `null` and drops the reason. T
 memory, so after a restart it holds nothing until a model is pulled, loaded or pinned. Both paths
 therefore track a catalog model the engine lists as installed the first time a request names it
 (`ModelRegistryService.trackInstalledModel`), from the engine lists they already hold: the pool's
-candidate, and the router's own sweep. A model the catalog does not know is never tracked and goes
+candidate and the router's own sweep. A model the catalog does not know is never tracked and goes
 to the engine unweighed.
 `POST /api/inference/models/load` and MCP `hub_load_model` reach it directly; `models/pin` and MCP
 `hub_pin_model` reach it through `pinTrackedModel`. Every caller states its origin (`LoadOrigin`);

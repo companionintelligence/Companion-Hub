@@ -555,7 +555,7 @@ describe('ModelRegistryService', () => {
     });
   });
 
-  // After a restart nothing is tracked, and a request's load is weighed only for a tracked model (#2539).
+  // After a restart nothing is tracked and a request's load is weighed only for a tracked model (#2539).
   describe('tracking an installed model a request names', () => {
     const omlx = { omlxSpellings: false };
 
@@ -573,11 +573,13 @@ describe('ModelRegistryService', () => {
       ).toBe('nomic-embed-text-v1-5-lemonade');
     });
 
-    it('tracks nothing for a custom tag, or for a row no engine lists by the rule a pull check uses', () => {
+    it('tracks nothing for a custom tag, or for a row whose own tag no engine lists', () => {
       expect(service.trackInstalledModel('mystery:7b', [{ backend: 'ollama', models: ['mystery:7b'] }], omlx)).toBeUndefined();
       expect(service.trackInstalledModel('qwen3:8b', [{ backend: 'lemonade', models: ['qwen3:8b'] }], omlx)).toBeUndefined();
-      // Ollama's tag names the longer catalog row, so the plain one is not on disk.
+      // Only the row's own tag counts: the Hub's load of the row asks Ollama for `qwen3.8:27b`, which it does not have
+      // beside the MTP build or a quant the catalog does not spell out.
       expect(service.trackInstalledModel('qwen3.8:27b', [{ backend: 'ollama', models: ['qwen3.8:27b-mtp-q4_K_M'] }], omlx)).toBeUndefined();
+      expect(service.trackInstalledModel('qwen3.8:27b', [{ backend: 'ollama', models: ['qwen3.8:27b-q8_0'] }], omlx)).toBeUndefined();
       expect(service.getTrackedModels()).toEqual([]);
     });
 
