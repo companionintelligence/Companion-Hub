@@ -239,6 +239,37 @@ describe('AppStorePage — multi-store UX', () => {
     }
   });
 
+  // The catalog routes refuse a Hub that is still starting, and a refused query isn't retried.
+  it('holds the catalog and store queries until the Hub has finished starting', () => {
+    registration.data = { phase: 'starting', registered: false, degradedReasons: [] };
+    setupQueries();
+
+    const { rerender } = render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    const enabledStoresQuery = () =>
+      mockUseQuery.mock.calls
+        .map(([opts]) => opts as { queryKey: unknown[]; enabled?: boolean })
+        .filter((opts) => opts.queryKey[0] === 'enabledStores')
+        .at(-1);
+    const catalogQuery = () => mockUseInfiniteQuery.mock.calls.map(([opts]) => opts as { enabled?: boolean }).at(-1);
+    expect(enabledStoresQuery()).toMatchObject({ enabled: false });
+    expect(catalogQuery()).toMatchObject({ enabled: false });
+
+    registration.data = { phase: 'publicly_ready', registered: true, degradedReasons: [] };
+    rerender(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(enabledStoresQuery()).toMatchObject({ enabled: true });
+    expect(catalogQuery()).toMatchObject({ enabled: true });
+  });
+
   it('offers expose and custom app from the store header', () => {
     setupQueries();
 

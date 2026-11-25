@@ -72,6 +72,9 @@ export default () => {
   const hasInitializedDefaultCategory = useRef(false);
   const isWritingBrowseUrl = useRef(false);
   const { data: registrationStatus, isLoading: isCheckingRegistration } = useRegistrationStatus();
+  // The catalog routes refuse a Hub that isn't operational, `starting` included, and a refused query
+  // isn't retried. Hold them until the Hub has read its registration back (#2590).
+  const hubStarting = Boolean(registrationStatus && isHubStarting(registrationStatus));
 
   useEffect(() => {
     setLocalSearch(search);
@@ -107,6 +110,7 @@ export default () => {
   const { data: appStores } = useQuery({
     ...getEnabledAppStoresOptions(),
     staleTime: 30_000,
+    enabled: !hubStarting,
   });
   const knownStoreSlugs = useMemo(() => appStores?.appStores?.map((store) => store.slug), [appStores]);
 
@@ -148,7 +152,7 @@ export default () => {
   const catalogSearchEnabled = !isAlternativesView && !isFeaturedView;
 
   useEffect(() => {
-    if (!catalogSearchEnabled) {
+    if (!catalogSearchEnabled || hubStarting) {
       return;
     }
 
@@ -156,7 +160,7 @@ export default () => {
       ...searchAppsInfiniteOptions({ query: catalogSearchQuery }),
       staleTime: MARKETPLACE_SEARCH_STALE_MS,
     });
-  }, [queryClient, catalogSearchEnabled, catalogSearchQuery]);
+  }, [queryClient, catalogSearchEnabled, catalogSearchQuery, hubStarting]);
 
   const { mutate: pullApps, isPending: isPulling } = useMutation({
     // throwOnError: the generated client resolves on a non-2xx, which would run onSuccess for a failed pull.
@@ -268,7 +272,7 @@ export default () => {
     getNextPageParam: (lastPage) => lastPage.nextCursor,
     placeholderData: keepPreviousData,
     staleTime: MARKETPLACE_SEARCH_STALE_MS,
-    enabled: catalogSearchEnabled,
+    enabled: catalogSearchEnabled && !hubStarting,
   });
 
   const catalogFailed = catalogSearchEnabled && isError;

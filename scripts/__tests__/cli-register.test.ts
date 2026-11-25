@@ -20,8 +20,8 @@ const mocks = vi.hoisted(() => ({
     prepareFresh: { success: true, message: 'cleared' },
     prepareFreshFails: false,
     status: { phase: 'unregistered', registered: false } as { phase: string; registered: boolean; degradedReasons?: string[] },
-    /** Answers given before `status`, one per read. */
-    statusQueue: [] as { phase: string; registered: boolean }[],
+    /** Answers given before `status`, one per read. An `Error` is thrown instead of answered. */
+    statusQueue: [] as ({ phase: string; registered: boolean } | Error)[],
     driftDetected: false,
     prepareFreshCalls: 0,
   },
@@ -63,7 +63,11 @@ vi.mock('../lib/register-hub.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/register-hub.js')>()),
   resolveRegisterApiBase: () => 'http://localhost:3001',
   waitForHubApi: async () => true,
-  fetchRegistrationStatus: async () => mocks.hub.statusQueue.shift() ?? mocks.hub.status,
+  fetchRegistrationStatus: async () => {
+    const next = mocks.hub.statusQueue.shift() ?? mocks.hub.status;
+    if (next instanceof Error) throw next;
+    return next;
+  },
   fetchStateDrift: async () => ({ detected: mocks.hub.driftDetected }),
   prepareFreshSetup: async () => {
     mocks.hub.prepareFreshCalls++;
@@ -189,6 +193,19 @@ describe('cihub register on a Hub that is still starting', () => {
 
     expect(output()).toContain('Hub still starting');
     expect(mocks.hub.prepareFreshCalls).toBe(0);
+    expect(mocks.submitPairingCode).not.toHaveBeenCalled();
+  });
+
+  it('keeps waiting through a status read that fails while the Hub is starting', async () => {
+    vi.useFakeTimers();
+    mocks.hub.statusQueue = [{ phase: 'starting', registered: false }, new Error('Registration status failed (502)')];
+    mocks.hub.status = { phase: 'publicly_ready', registered: true };
+
+    const run = registerHub('local', { code: 'AB12CD' });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await expect(run).resolves.toBeUndefined();
+
+    expect(output()).toContain('Already registered');
     expect(mocks.submitPairingCode).not.toHaveBeenCalled();
   });
 

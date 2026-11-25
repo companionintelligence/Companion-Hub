@@ -273,9 +273,9 @@ describe('DeviceRegistrationPage', () => {
     expect(navigate).toHaveBeenCalledWith('/login', { replace: true });
   });
 
-  // A database that never answers keeps the Hub `starting`. The page keeps asking, and says so rather
+  // A database that never answers keeps the Hub `starting`. The page keeps asking and says so rather
   // than spin with no word.
-  it('says the Hub is taking long when it stays starting, and keeps asking', async () => {
+  it('says the Hub is taking long when it stays starting and keeps asking', async () => {
     vi.useFakeTimers();
     fetchRegistrationStatusResult.mockResolvedValue(statusOk('starting'));
 

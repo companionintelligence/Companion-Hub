@@ -194,16 +194,8 @@ export async function resolvePairingCode(env: HubEnv, code: string | undefined, 
 }
 
 /**
- * Every failure here exits non-zero.
- *
- * It used to print a red box and `return`, so `cihub register` exited 0 whether it had registered a
- * Hub or failed to reach one — and an automated installer reading the exit code could not tell the
- * difference. A fleet run that "succeeded" on fourteen unreachable machines is worse than one that
- * failed on fourteen, because nobody goes looking.
- */
-/**
  * How long `register` waits for a Hub that has just started to read its registration back. Its first
- * status answer says `starting` even when the tunnel token is there, and a Hub whose token file is
+ * status answer says `starting` even when the tunnel token is there. A Hub whose token file is
  * missing restarts the tunnel before it reads the registration, which takes seconds (#2590).
  */
 export const HUB_STARTING_WAIT_MS = 60_000;
@@ -215,11 +207,23 @@ async function fetchSettledRegistrationStatus(apiBase: string): Promise<Registra
   let status = await fetchRegistrationStatus(apiBase);
   while (status.phase === 'starting' && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, HUB_STARTING_POLL_MS));
-    status = await fetchRegistrationStatus(apiBase);
+    try {
+      status = await fetchRegistrationStatus(apiBase);
+    } catch {
+      // A Hub that is still starting can miss an answer. Ask again until the wait is over.
+    }
   }
   return status;
 }
 
+/**
+ * Every failure here exits non-zero.
+ *
+ * It used to print a red box and `return`, so `cihub register` exited 0 whether it had registered a
+ * Hub or failed to reach one — and an automated installer reading the exit code could not tell the
+ * difference. A fleet run that "succeeded" on fourteen unreachable machines is worse than one that
+ * failed on fourteen, because nobody goes looking.
+ */
 export async function registerHub(env: HubEnv, options: RegisterHubOptions = {}) {
   const ctx = resolveHubContext(env);
   if (ctx.appliance) {

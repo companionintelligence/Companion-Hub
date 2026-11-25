@@ -296,6 +296,29 @@ describe('RegistrationService', () => {
       expect(service.getRegistrationStatus().phase).toBe('locally_ready');
     });
 
+    // A status read can't restore the phase while the token file is missing, so only the registration
+    // loop is left to read it once the database answers.
+    it('reads the stored phase in the registration loop once the database answers after a failed boot', async () => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockRejectedValue(new Error('db unavailable'));
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockRejectedValue(new Error('db unavailable'));
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(false);
+
+      await (service as any).runDeferredBootstrap();
+      expect(service.getRegistrationStatus().phase).toBe('starting');
+
+      // A row with no tunnel credentials: nothing can write the token back.
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(true);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({
+        id: 'org-1',
+        provisioningPhase: 'publicly_ready',
+        degradedReasons: '[]',
+      } as any);
+      deviceRegistrationRepository.updateProvisioningState.mockResolvedValue({} as any);
+      await (service as any).pollRegistration();
+
+      expect(service.getRegistrationStatus()).toEqual({ phase: 'degraded', degradedReasons: ['tunnel_token_missing'], registered: true });
+    });
+
     it('returns correct status after setPhase', async () => {
       // setPhase requires a legal transition, start from unregistered → paired
       deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as any);

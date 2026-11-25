@@ -2126,6 +2126,21 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       try {
         await this.retryPendingTunnelCheck();
 
+        // Boot couldn't read the phase back. A status read can't either while the token file is
+        // missing, so without this a paired Hub stays `starting` and Start fresh stays refused. Read the
+        // stored phase before the check below takes the row for a new pairing and resets it to `locally_ready`.
+        if (!this.registrationReadBack) {
+          await this.syncPhaseFromDb();
+          if (isOperational(this._currentPhase)) {
+            if (this.checkInterval) {
+              clearInterval(this.checkInterval);
+              this.checkInterval = null;
+            }
+            this.startPeriodicValidation();
+            return;
+          }
+        }
+
         const registered = await this.checkRegistrationWithCloud();
         if (registered) {
           this.logger.info('Device successfully registered!');
