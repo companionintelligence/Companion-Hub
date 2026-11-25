@@ -125,7 +125,9 @@ tailnet connects. When the Hub is refused, it reads `tailscale serve status`,
 finds the entry for the app's port under the device's current name, and sends a
 request to the target that entry forwards to. If the target is an IP address on a
 private network, which is what the Hub writes (the app container's address on its
-app network), and it answers, the app reads as available. In every other case the
+app network, or for a port added with **Expose a port** the address
+`host.docker.internal` has inside the Hub's container), and it answers, the app
+reads as available. In every other case the
 app reads as **App not responding**: the port has no entry, the target doesn't
 answer, or the target is a host name such as `host.docker.internal` or
 `localhost`, which the Hub's container and the host's `tailscaled` can read

@@ -1,6 +1,7 @@
 import { TranslatableError } from '@/common/error/translatable-error';
 import { detectHubContainer } from '@/modules/inference/backends/host-url.util';
 import { HttpStatus } from '@nestjs/common';
+import { lookup } from 'node:dns/promises';
 import net from 'node:net';
 
 const PROBE_TIMEOUT_MS = 2000;
@@ -14,6 +15,22 @@ const PROBE_TIMEOUT_MS = 2000;
  */
 export function hubPortProbeHost(inContainer: boolean = detectHubContainer()): string {
   return inContainer ? 'host.docker.internal' : '127.0.0.1';
+}
+
+/**
+ * The address {@link hubPortProbeHost} names, for a process outside the Hub's container that has to reach the
+ * same program: Tailscale Serve, which proxies an exposed port from the host's tailscaled or the sidecar.
+ * Inside the container `host.docker.internal` is the `host-gateway` entry compose gives the Hub, an address
+ * the host owns. Null when it doesn't resolve.
+ */
+export async function hubPortProbeAddress(inContainer: boolean = detectHubContainer()): Promise<string | null> {
+  const host = hubPortProbeHost(inContainer);
+  if (!inContainer) return host;
+  try {
+    return (await lookup(host, { family: 4 })).address;
+  } catch {
+    return null;
+  }
 }
 
 export type PortConnect = (host: string, port: number) => Promise<void>;
