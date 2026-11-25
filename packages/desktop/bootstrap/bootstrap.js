@@ -760,7 +760,23 @@
     el.startEngine.setAttribute('aria-busy', starting ? 'true' : 'false');
     el.actions.hidden = !Object.values(shown).some(Boolean);
     el.aside.hidden = view !== 'stopped';
-    el.waiting.hidden = view !== 'docker' || restartNeeded;
+    el.waiting.hidden = !waitingForDocker(view, access, shown, restartNeeded);
+  }
+
+  /**
+   * The "Waiting for Docker…" spinner, only while the page is waiting on something it can't hurry:
+   * an install or engine start running, or Docker installed and not up yet. Not while one of the
+   * Docker buttons can be clicked: the moving spinner read as something already under way rather
+   * than a choice left to make. Not with Docker missing and nothing running, nor while a restart
+   * is needed. (Linux's command to copy is no such choice: Docker is installed, and the page waits
+   * for it to start.)
+   */
+  function waitingForDocker(view, access, shown, restartNeeded) {
+    if (view !== 'docker' || restartNeeded) return false;
+    const clickable = ['installDocker', 'installWslEngine', 'startEngine'].some((key) => shown[key] && !el[key].disabled);
+    if (clickable) return false;
+    const running = page.installRunning || page.wslInstallRunning || engineStarting();
+    return running || access !== 'not_installed';
   }
 
   function giveUpChecking(now) {
