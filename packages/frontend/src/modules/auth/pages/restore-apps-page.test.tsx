@@ -284,7 +284,7 @@ describe('RestoreAppsPage', () => {
       });
 
       expect(await screen.findByTestId('restore-summary-local-apps')).toHaveTextContent(
-        "App Store apps and custom apps on This machine only or Private VPN aren't kept, so pairing again doesn't bring them back.",
+        "Your CI Account doesn't keep apps on This machine only or Private VPN, except ports added with Expose a port, so pairing again can't bring them back.",
       );
     });
 

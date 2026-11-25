@@ -1990,7 +1990,7 @@
   "RESTORE_APPS_DONE_TITLE": "Your apps are back on this Hub",
   "RESTORE_APPS_DONE_TITLE_NONE": "Your apps could not be restored",
   "RESTORE_APPS_DONE_DESCRIPTION": "After pairing, this Hub reinstalled the apps your CI Account lists for this computer, so first-time setup is skipped. You can still run it from Settings.",
-  "RESTORE_APPS_LOCAL_APPS_NOT_KEPT": "Your CI Account keeps every app on Public web. It also keeps the ports you exposed with Expose a port, including those on This machine only or Private VPN. App Store apps and custom apps on This machine only or Private VPN aren't kept, so pairing again doesn't bring them back. If any are missing, add them again.",
+  "RESTORE_APPS_LOCAL_APPS_NOT_KEPT": "Your CI Account doesn't keep apps on This machine only or Private VPN, except ports added with Expose a port, so pairing again can't bring them back. If any are missing, add them again.",
   "RESTORE_APPS_RESTORED_TITLE": "Restored",
   "RESTORE_APPS_NOT_RESTORED_TITLE": "Not restored",
   "RESTORE_APPS_REASON_SETTINGS_REQUIRED": "It needs settings your CI Account doesn't keep: {{fields}}. Install it from the App Store to fill them in.",
