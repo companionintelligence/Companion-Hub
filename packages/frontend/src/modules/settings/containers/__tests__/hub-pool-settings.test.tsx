@@ -351,6 +351,21 @@ describe('HubPoolSection', () => {
     expect(screen.queryByTestId('hub-pool-env-lock')).toBeNull();
   });
 
+  it('says the paired Hub is unreachable instead of asking to pair one', async () => {
+    fixtures.status = baseStatus({
+      reason: 'peers_unreachable',
+      routingActive: false,
+      peers: [connectedPeer({ status: 'unreachable', consecutiveFailures: 5, inFlightRequests: 0 })],
+      peerCounts: { total: 1, connected: 0, pending: 0, unreachable: 1, disabled: 0 },
+    });
+
+    renderSection();
+
+    const state = await screen.findByTestId('hub-pool-state');
+    expect(state.getAttribute('data-reason')).toBe('peers_unreachable');
+    expect(state.textContent).toBe('HUB_POOL_REASON_PEERS_UNREACHABLE');
+  });
+
   it('marks the env kill switch as non-actionable and locks the toggle', async () => {
     fixtures.status = baseStatus({
       enabled: false,
