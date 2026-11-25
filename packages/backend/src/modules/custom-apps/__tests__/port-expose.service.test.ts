@@ -273,6 +273,15 @@ describe('PortExposeService', () => {
       ).rejects.toMatchObject({ message: 'PORT_EXPOSE_SUBDOMAIN_REQUIRED' });
     });
 
+    it('says how to fix a port already named Hub, whose settings have no subdomain to change', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ ...existingApp, appName: 'hub', localSubdomain: 'hub' } as any);
+
+      await expect(service.updatePortExposeApp('hub:_user', { port: 8081, exposureMode: 'local' })).rejects.toMatchObject({
+        message: 'PORT_EXPOSE_NAME_RESERVED_FOR_HUB',
+      });
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+    });
+
     it("refuses to move a port onto the Hub's own subdomain, changing nothing", async () => {
       await expect(
         service.updatePortExposeApp('my-workload:_user', { port: 8080, exposureMode: 'tailscale', localSubdomain: 'hub' }),

@@ -172,7 +172,8 @@ export class PortExposeService {
       throw new TranslatableError('PORT_EXPOSE_SUBDOMAIN_REQUIRED', undefined, HttpStatus.BAD_REQUEST);
     }
 
-    assertNotHubSubdomain(localSubdomain?.trim() || extractAppUrn(appUrn).appName);
+    // Outside Public Web the settings dialog has no subdomain field, so the name decides, and a name can't be changed.
+    assertNotHubSubdomain(localSubdomain?.trim() || extractAppUrn(appUrn).appName, localSubdomain?.trim() ? 'subdomain' : 'existing-name');
 
     const appsWithSamePort = await this.appsRepository.getAppsByPort(port, app.id);
     if (appsWithSamePort.length > 0) {
@@ -576,9 +577,13 @@ export class PortExposeService {
  * tunnel sync both key the Portal's entry by this name, so a port called "Hub" landed on the Hub's
  * own entry and took its public address down.
  */
-function assertNotHubSubdomain(subdomain: string): void {
+function assertNotHubSubdomain(subdomain: string, from: 'subdomain' | 'existing-name' = 'subdomain'): void {
   if (isHubReservedSubdomain(subdomain)) {
-    throw new TranslatableError('APP_SUBDOMAIN_RESERVED_FOR_HUB', { subdomain: sanitizeAppSubdomain(subdomain) }, HttpStatus.BAD_REQUEST);
+    throw new TranslatableError(
+      from === 'existing-name' ? 'PORT_EXPOSE_NAME_RESERVED_FOR_HUB' : 'APP_SUBDOMAIN_RESERVED_FOR_HUB',
+      { subdomain: sanitizeAppSubdomain(subdomain) },
+      HttpStatus.BAD_REQUEST,
+    );
   }
 }
 

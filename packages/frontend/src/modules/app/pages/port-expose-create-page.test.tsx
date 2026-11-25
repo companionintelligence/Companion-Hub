@@ -246,6 +246,17 @@ describe('PortExposeCreatePage', () => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
       expect(createMutation.mutate).not.toHaveBeenCalled();
     });
+
+    // The Portal calls its own name taken, and that answer replaced the reason given under the field.
+    it('on Public web without asking the Portal about the name', async () => {
+      DOMAINS.domains = [{ id: '2', domain: 'ci1.pw', isDefault: true, offered: true }];
+      renderPage();
+      await waitFor(() => expect(checkEnabled()).toBe(true));
+
+      fireEvent.change(screen.getByPlaceholderText('CUSTOM_APP_NAME_PLACEHOLDER'), { target: { value: 'Hub' } });
+
+      await waitFor(() => expect(checkEnabled()).toBe(false));
+    });
   });
 
   it('puts "nothing is listening on that port" under the port field instead of in a toast', async () => {

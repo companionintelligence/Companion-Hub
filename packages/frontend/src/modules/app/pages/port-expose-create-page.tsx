@@ -140,8 +140,14 @@ export default function PortExposeCreatePage() {
   );
 
   const { isCheckingDns, dnsAvailabilityError, domainAvailabilityError } = useDnsAvailability<FormValues>({
-    // Only once there is a domain to ask about: none while Companion Portal's list is on its way.
-    enabled: watchExposureMode === 'cloudflare' && Boolean(publicDomain) && Boolean((watchLocalSubdomain || defaultAppSubdomain).trim()),
+    // Only once there is a domain to ask about: none while Companion Portal's list is on its way. Not
+    // for the Hub's own name either: its answer landed on the field after submit and replaced the
+    // reason given there (CI-Portal#1091).
+    enabled:
+      watchExposureMode === 'cloudflare' &&
+      Boolean(publicDomain) &&
+      Boolean((watchLocalSubdomain || defaultAppSubdomain).trim()) &&
+      !isHubReservedSubdomain(watchLocalSubdomain || defaultAppSubdomain),
     subdomain: watchLocalSubdomain || defaultAppSubdomain,
     selectedDomain: publicDomain,
     checkDnsAvailability,
