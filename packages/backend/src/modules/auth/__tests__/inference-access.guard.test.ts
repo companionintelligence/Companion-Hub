@@ -138,12 +138,14 @@ describe('InferenceAccessGuard', () => {
       expect(req.inferenceApiKey).toBeUndefined();
     });
 
-    it('includes a wholly private forwarded chain — a tailnet peer behind the Docker bridge', async () => {
+    it('includes a wholly private forwarded chain — a tailnet peer behind the Docker bridge, on a Hub that trusts the tailnet', async () => {
+      vi.stubEnv('HUB_INFERENCE_TAILNET_AUTH', 'trust');
       const req = request('172.18.0.2', { 'x-forwarded-for': '172.18.0.2, 100.101.102.103' });
 
       await expect(guard.canActivate(contextFor(req, fakeResponse()))).resolves.toBe(true);
 
       expect(repo.findByHash).not.toHaveBeenCalled();
+      vi.unstubAllEnvs();
     });
   });
 
@@ -300,6 +302,10 @@ describe('InferenceAccessGuard', () => {
     });
 
     it('leaves tailnet callers to HUB_INFERENCE_TAILNET_AUTH', async () => {
+      vi.stubEnv('HUB_INFERENCE_LAN_AUTH', 'trust');
+      expect((await refusalOf(request('100.101.102.103'))).error).toBeInstanceOf(UnauthorizedException);
+      vi.stubEnv('HUB_INFERENCE_TAILNET_AUTH', 'trust');
+      vi.stubEnv('HUB_INFERENCE_LAN_AUTH', 'require-key');
       await expect(guard.canActivate(contextFor(request('100.101.102.103'), fakeResponse()))).resolves.toBe(true);
     });
   });
@@ -309,16 +315,26 @@ describe('InferenceAccessGuard', () => {
       vi.unstubAllEnvs();
     });
 
-    it('reads the setting: trust unless it says require-key, whatever its case or padding', () => {
-      expect(inferenceTailnetAuth({})).toBe('trust');
-      expect(inferenceTailnetAuth({ HUB_INFERENCE_TAILNET_AUTH: '' })).toBe('trust');
-      expect(inferenceTailnetAuth({ HUB_INFERENCE_TAILNET_AUTH: 'trust' })).toBe('trust');
-      expect(inferenceTailnetAuth({ HUB_INFERENCE_TAILNET_AUTH: 'yes please' })).toBe('trust');
+    // The default was `trust` until 2026-11-25: every device on a tailnet the Hub joined spent its GPU.
+    it('reads the setting: require-key unless it says trust, whatever its case or padding', () => {
+      expect(inferenceTailnetAuth({})).toBe('require-key');
+      expect(inferenceTailnetAuth({ HUB_INFERENCE_TAILNET_AUTH: '' })).toBe('require-key');
+      expect(inferenceTailnetAuth({ HUB_INFERENCE_TAILNET_AUTH: 'yes please' })).toBe('require-key');
       expect(inferenceTailnetAuth({ HUB_INFERENCE_TAILNET_AUTH: 'require-key' })).toBe('require-key');
-      expect(inferenceTailnetAuth({ HUB_INFERENCE_TAILNET_AUTH: '  Require-Key ' })).toBe('require-key');
+      expect(inferenceTailnetAuth({ HUB_INFERENCE_TAILNET_AUTH: 'trust' })).toBe('trust');
+      expect(inferenceTailnetAuth({ HUB_INFERENCE_TAILNET_AUTH: '  Trust ' })).toBe('trust');
     });
 
-    it('unset (the default) admits a tailnet caller by origin and never asks the key store', async () => {
+    it('unset (the default) asks a tailnet caller for a key, naming the opt-out', async () => {
+      for (const req of [request('100.101.102.103'), request('172.18.0.2', { 'x-forwarded-for': '100.101.102.103' })]) {
+        const { error, res } = await refusalOf(req);
+        expect(error).toBeInstanceOf(UnauthorizedException);
+        expect((res.body as { error: { message: string } }).error.message).toContain('HUB_INFERENCE_TAILNET_AUTH=trust');
+      }
+    });
+
+    it('trust admits a tailnet caller by origin and never asks the key store', async () => {
+      vi.stubEnv('HUB_INFERENCE_TAILNET_AUTH', 'trust');
       for (const req of [request('100.101.102.103'), request('172.18.0.2', { 'x-forwarded-for': '100.101.102.103' })]) {
         await expect(guard.canActivate(contextFor(req, fakeResponse()))).resolves.toBe(true);
       }
