@@ -876,11 +876,9 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
     // --env-file"). Only when Docker is missing or not running, though: see
     // `stop_without_docker`.
     let mut docker_check = check_docker_access();
-    if !matches!(docker_check.state, DockerAccessState::Available)
-        && !docker_runs_nothing(&docker_check.state)
-    {
+    if !matches!(docker_check.state, DockerAccessState::Available) {
         // The answer may be a status poll's from a few seconds ago. Ask once more before
-        // telling the user the Hub could not be stopped.
+        // counting the Hub stopped or telling the user it could not be stopped.
         forget_docker_access_check();
         docker_check = check_docker_access();
     }
@@ -888,7 +886,7 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
         let outcome = stop_without_docker(&docker_check);
         let (Ok(message) | Err(message)) = &outcome;
         let _ = append_desktop_log_for(&data_dir, "hub.stop", message);
-        return outcome;
+        return outcome.map_err(with_view_logs_hint);
     }
 
     let _ = append_desktop_log_for(
@@ -954,19 +952,57 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
 }
 
 /// Docker that isn't installed or isn't running runs no containers. Any other failed `docker info`
-/// (a permission error, or "Too many open files" on a busy host) says nothing about them, and they
+/// (a permission error, or "Too many open files" on a busy host) says nothing about them. They
 /// may well run on (Companion-Hub#2554).
-pub(crate) fn docker_runs_nothing(state: &DockerAccessState) -> bool {
-    matches!(
-        state,
-        DockerAccessState::NotInstalled | DockerAccessState::DaemonUnavailable
-    )
+///
+/// Some failures read as "not running" yet come from a daemon that is up but busy or locked
+/// down, so those don't count either.
+pub(crate) fn docker_runs_nothing(check: &DockerAccessCheck) -> bool {
+    match check.state {
+        DockerAccessState::NotInstalled => true,
+        DockerAccessState::DaemonUnavailable => {
+            let detail = check.detail.as_deref().unwrap_or_default().to_lowercase();
+            !DOCKER_UP_BUT_UNREACHABLE
+                .iter()
+                .any(|marker| detail.contains(marker))
+        }
+        _ => false,
+    }
+}
+
+/// Words in a "daemon unavailable" answer that point at a daemon that timed out, ran out of file
+/// handles or refused this user. Older Docker CLIs file these under "error during connect".
+const DOCKER_UP_BUT_UNREACHABLE: [&str; 5] = [
+    "context deadline exceeded",
+    "timeout",
+    "resource temporarily unavailable",
+    "too many open files",
+    "access is denied",
+];
+
+/// What a message the user reads calls a `docker info` that says nothing about the containers.
+fn docker_check_failure(check: &DockerAccessCheck) -> &'static str {
+    if matches!(check.state, DockerAccessState::PermissionDenied) {
+        "Docker refused this user"
+    } else {
+        "Docker did not answer"
+    }
+}
+
+/// The first line of the check's detail, which is the error. `docker info` prints the client's
+/// version and plugins after it. Those don't belong in a dialog.
+fn docker_check_reason(check: &DockerAccessCheck) -> &str {
+    check
+        .detail
+        .as_deref()
+        .and_then(|detail| detail.lines().map(str::trim).find(|line| !line.is_empty()))
+        .unwrap_or("docker info gave no reason")
 }
 
 /// What Stop Hub makes of a `docker info` that didn't answer: stopped only when Docker runs
 /// nothing (see [`docker_runs_nothing`]), else a failure, since the Hub may still be running.
 pub(crate) fn stop_without_docker(check: &DockerAccessCheck) -> Result<String, String> {
-    if docker_runs_nothing(&check.state) {
+    if docker_runs_nothing(check) {
         let reason = check
             .detail
             .as_deref()
@@ -975,13 +1011,11 @@ pub(crate) fn stop_without_docker(check: &DockerAccessCheck) -> Result<String, S
             "Docker is not available ({reason}); Hub is effectively stopped."
         ));
     }
-    let reason = check
-        .detail
-        .as_deref()
-        .unwrap_or("docker info gave no reason");
-    Err(with_view_logs_hint(format!(
-        "Docker did not answer, so the Hub may still be running ({reason})."
-    )))
+    Err(format!(
+        "{}, so the Hub may still be running ({}).",
+        docker_check_failure(check),
+        docker_check_reason(check)
+    ))
 }
 
 /// Stops the running app containers along with the Hub and remembers them for the next start.
@@ -990,15 +1024,13 @@ pub(crate) fn stop_without_docker(check: &DockerAccessCheck) -> Result<String, S
 pub fn stop_managed_app_containers(data_dir: &Path) -> Result<Option<String>, String> {
     let docker_check = check_docker_access();
     if !matches!(docker_check.state, DockerAccessState::Available) {
-        if docker_runs_nothing(&docker_check.state) {
+        if docker_runs_nothing(&docker_check) {
             return Ok(None);
         }
-        let reason = docker_check
-            .detail
-            .as_deref()
-            .unwrap_or("docker info gave no reason");
         return Err(format!(
-            "Docker did not answer, so installed apps may still be running ({reason})."
+            "{}, so installed apps may still be running ({}).",
+            docker_check_failure(&docker_check),
+            docker_check_reason(&docker_check)
         ));
     }
 

@@ -111,8 +111,12 @@ pub(crate) fn classify_docker_access_result(
             || combined_lower.contains("the pipe has been ended")
             || combined_lower.contains("the semaphore timeout period has expired"));
 
+    // Docker 29 says "failed to connect to the docker API at ...; check if the path is correct and
+    // if the daemon is running" when the socket is gone, which is how a stopped Docker Desktop,
+    // Colima or rootless engine looks.
     if combined_lower.contains("cannot connect to the docker daemon")
         || combined_lower.contains("is the docker daemon running")
+        || combined_lower.contains("check if the path is correct and if the daemon is running")
         || combined_lower.contains("error during connect")
         || combined_lower.contains("connection refused")
         || combined_lower.contains("context deadline exceeded")

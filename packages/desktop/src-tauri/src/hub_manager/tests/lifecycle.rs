@@ -247,29 +247,56 @@ fn docker_check(state: DockerAccessState, detail: &str) -> DockerAccessCheck {
     }
 }
 
-/// `docker info` failed with "Too many open files" while all 22 containers kept running, and
-/// Stop Hub took that for "Docker isn't running": Clear Tunnel Token then said it had stopped them.
+/// `docker info` failed with "Too many open files" while all 22 containers kept running. Stop Hub
+/// took that for "Docker isn't running": Clear Tunnel Token then said it had stopped them.
 #[test]
 fn stop_hub_does_not_take_a_failed_docker_info_for_a_stopped_hub() {
-    for check in [
-        docker_check(
-            DockerAccessState::Error,
-            "Failed to run docker info: Too many open files (os error 24)",
+    for (check, expected) in [
+        (
+            docker_check(
+                DockerAccessState::Error,
+                "Failed to run docker info: Too many open files (os error 24)",
+            ),
+            "Docker did not answer, so the Hub may still be running (Failed to run docker info: Too many open files (os error 24)).",
         ),
-        docker_check(
-            DockerAccessState::PermissionDenied,
-            "permission denied while trying to connect to the docker API at unix:///var/run/docker.sock",
+        (
+            docker_check(
+                DockerAccessState::PermissionDenied,
+                "permission denied while trying to connect to the docker API at unix:///var/run/docker.sock",
+            ),
+            "Docker refused this user, so the Hub may still be running (permission denied while trying to connect to the docker API at unix:///var/run/docker.sock).",
+        ),
+        // Older CLIs file a busy daemon and a refused Windows user under "error during connect".
+        (
+            docker_check(
+                DockerAccessState::DaemonUnavailable,
+                "error during connect: Get \"http://%2Fvar%2Frun%2Fdocker.sock/v1.43/info\": context deadline exceeded",
+            ),
+            "Docker did not answer, so the Hub may still be running (error during connect: Get \"http://%2Fvar%2Frun%2Fdocker.sock/v1.43/info\": context deadline exceeded).",
+        ),
+        (
+            docker_check(
+                DockerAccessState::DaemonUnavailable,
+                "error during connect: This error may indicate that the docker daemon is not running.: Get \"http://%2F%2F.%2Fpipe%2Fdocker_engine/v1.24/info\": open //./pipe/docker_engine: Access is denied.",
+            ),
+            "Docker did not answer, so the Hub may still be running (error during connect: This error may indicate that the docker daemon is not running.: Get \"http://%2F%2F.%2Fpipe%2Fdocker_engine/v1.24/info\": open //./pipe/docker_engine: Access is denied.).",
         ),
     ] {
-        let detail = check.detail.clone().expect("detail");
-        let error = stop_without_docker(&check).expect_err(&detail);
-        assert_eq!(
-            error,
-            with_view_logs_hint(format!(
-                "Docker did not answer, so the Hub may still be running ({detail})."
-            ))
-        );
+        assert_eq!(stop_without_docker(&check).expect_err(expected), expected);
     }
+}
+
+#[test]
+fn stop_hub_failure_names_only_the_error_line_of_docker_info() {
+    let check = docker_check(
+        DockerAccessState::Error,
+        "Error response from daemon: Docker Desktop is unable to start\nClient:\n Version:    29.6.0\n Context:    default",
+    );
+
+    assert_eq!(
+        stop_without_docker(&check).expect_err("may still run"),
+        "Docker did not answer, so the Hub may still be running (Error response from daemon: Docker Desktop is unable to start)."
+    );
 }
 
 #[test]
@@ -278,6 +305,10 @@ fn stop_hub_counts_the_hub_stopped_when_docker_is_missing_or_not_running() {
         docker_check(
             DockerAccessState::DaemonUnavailable,
             "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?",
+        ),
+        classify_docker_access_result(
+            "failed to connect to the docker API at unix:///Users/me/.docker/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /Users/me/.docker/run/docker.sock: connect: no such file or directory",
+            Some(1),
         ),
         docker_check(
             DockerAccessState::NotInstalled,
