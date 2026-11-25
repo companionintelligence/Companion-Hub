@@ -1,6 +1,5 @@
 // vendored-from: tauri-plugin-ci-auth@0.1.0 packages/tauri-plugin-ci-auth/src/lib.rs
-// Copyright (c) Lifescope Inc. All rights reserved.
-// Private & Confidential — Property of Lifescope Inc. Do not distribute.
+// Copyright (c) Lifescope Inc. Licensed under the PolyForm Noncommercial License 1.0.0; see LICENSE.md.
 
 //! tauri-plugin-ci-auth: RFC 8252 sign-in over a loopback redirect, and secure storage for the
 //! Companion Intelligence apps. Desktop stores in the OS keychain. iOS and Android store through the
