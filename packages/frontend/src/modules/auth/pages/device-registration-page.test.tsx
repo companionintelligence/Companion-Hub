@@ -273,6 +273,31 @@ describe('DeviceRegistrationPage', () => {
     expect(navigate).toHaveBeenCalledWith('/login', { replace: true });
   });
 
+  // A database that never answers keeps the Hub `starting`. The page keeps asking, and says so rather
+  // than spin with no word.
+  it('says the Hub is taking long when it stays starting, and keeps asking', async () => {
+    vi.useFakeTimers();
+    fetchRegistrationStatusResult.mockResolvedValue(statusOk('starting'));
+
+    render(<DeviceRegistrationPage />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(29_000);
+    });
+    expect(screen.queryByText(/taking longer than usual to start/)).not.toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+
+    expect(screen.getByRole('heading', { name: 'Checking registration status...' })).toBeInTheDocument();
+    expect(screen.getByText(/taking longer than usual to start/)).toBeInTheDocument();
+    expect(screen.queryByLabelText('Enter pairing code:')).not.toBeInTheDocument();
+    expect(fetchRegistrationStatusResult.mock.calls.length).toBeGreaterThanOrEqual(10);
+  });
+
   it('shows a retryable temporary-unavailable state instead of the pairing form when status lookup fails', async () => {
     fetchRegistrationStatusResult.mockResolvedValue({ ok: false, status: 503, data: undefined });
 

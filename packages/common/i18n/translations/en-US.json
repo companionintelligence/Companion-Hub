@@ -1873,6 +1873,7 @@
   "DEVICE_REGISTRATION_DEVICE_ID_COPY_FAILED": "Failed to copy device ID.",
   "DEVICE_REGISTRATION_CHECKING_STATUS": "Checking registration status...",
   "DEVICE_REGISTRATION_PLEASE_WAIT": "Please wait while we confirm your Hub status.",
+  "DEVICE_REGISTRATION_HUB_STILL_STARTING": "The Hub is taking longer than usual to start. If this lasts more than a few minutes, restart the Hub.",
   "DEVICE_REGISTRATION_PROGRESS_CONTACT_LOST": "We temporarily lost contact while checking progress. We will keep retrying automatically.",
   "DEVICE_REGISTRATION_STATUS_UNAVAILABLE": "Registration status temporarily unavailable",
   "DEVICE_REGISTRATION_RETRY_STATUS_CHECK": "Retry status check",

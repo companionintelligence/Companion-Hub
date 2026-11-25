@@ -60,6 +60,12 @@ const HEADLESS_POLL_INTERVAL_MS = 5000; // Poll less often while waiting for ext
  * so a request that never settles would otherwise stop the poll for good.
  */
 const STATUS_CHECK_GIVE_UP_MS = 60_000;
+/**
+ * How long a Hub may say `starting` before the page says it is taking long. A paired Hub without its
+ * tunnel token file restarts the tunnel first, which takes seconds; a database that never answers keeps
+ * it there for good (#2590).
+ */
+const STARTING_SLOW_HINT_MS = 30_000;
 const DOMAIN_PROBE_INTERVAL_MS = 5000;
 const MAX_DOMAIN_PROBE_ATTEMPTS = 60;
 const REQUIRED_CONSECUTIVE_PROBES = 2;
@@ -238,6 +244,8 @@ export default function DeviceRegistrationPage() {
   const [redirectStatusKey, setRedirectStatusKey] = useState('DEVICE_REGISTRATION_SETTING_UP_HUB_ELLIPSIS');
   /** True while this page is checking the public URL after pairing, which can take several minutes. */
   const [followingPublicUrl, setFollowingPublicUrl] = useState(false);
+  /** The Hub has said `starting` for longer than STARTING_SLOW_HINT_MS. */
+  const [startingTooLong, setStartingTooLong] = useState(false);
 
   const pairingInputRef = useRef<HTMLInputElement>(null);
   const pendingPairTargetRef = useRef<PairingTarget | null>(null);
@@ -524,6 +532,18 @@ export default function DeviceRegistrationPage() {
     };
   }, [refreshRegistrationStatus, registrationStatus, statusError]);
 
+  const hubStarting = Boolean(registrationStatus && isHubStarting(registrationStatus));
+  useEffect(() => {
+    setStartingTooLong(false);
+    if (!hubStarting) {
+      return;
+    }
+    const timer = window.setTimeout(() => setStartingTooLong(true), STARTING_SLOW_HINT_MS);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [hubStarting]);
+
   useEffect(() => {
     if (
       !registrationStatus ||
@@ -795,7 +815,7 @@ export default function DeviceRegistrationPage() {
   const loginUrl = driftChoice === 'restore' ? `${portalUrl}/home` : (registrationUrl ?? portalUrl);
   const signupUrl = buildPortalSignupUrl(portalUrl, deviceId);
 
-  if (isLoading || (registrationStatus && isHubStarting(registrationStatus))) {
+  if (isLoading || hubStarting) {
     return (
       <div className="flex flex-col items-center gap-4 py-4 text-center">
         <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-primary" />
@@ -804,6 +824,7 @@ export default function DeviceRegistrationPage() {
           <p className="mt-1 text-sm text-muted-foreground">{t('DEVICE_REGISTRATION_PLEASE_WAIT')}</p>
           {/* A Hub that stopped answering while it was starting: say so rather than spin with no word. */}
           {!isLoading && statusError ? <p className="mt-3 text-sm text-muted-foreground">{statusError}</p> : null}
+          {!isLoading && startingTooLong ? <p className="mt-3 text-sm text-muted-foreground">{t('DEVICE_REGISTRATION_HUB_STILL_STARTING')}</p> : null}
         </div>
       </div>
     );
