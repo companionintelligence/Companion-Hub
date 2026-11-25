@@ -11,11 +11,15 @@
 // its own `ref` (a tag or a commit, such as an unmerged branch) is read from that ref
 // instead. --package limits the sync to the entries of one package, so the others stay
 // exactly as they are.
+//
+// CI Common is private and its files say so. The Hub is PolyForm Noncommercial (LICENSE.md), so
+// every copy gets the Hub's notice in place of CI Common's "Private & Confidential" one, and
+// --check fails on a copy that still has it.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const manifestPath = resolve(repoRoot, 'packages/frontend/ci-common.vendor.json');
@@ -44,6 +48,32 @@ function parseArgs(argv) {
     process.exit(2);
   }
   return out;
+}
+
+/**
+ * CI Common's two-line notice, under `#`, `//` or inside an HTML comment, and the Cargo manifest's
+ * `license` line. \u2014 is the dash CI Common writes between "Confidential" and "Property".
+ */
+const CI_COMMON_NOTICE =
+  /^([ \t]*(?:#|\/\/)?[ \t]*)Copyright \(c\) Lifescope Inc\. All rights reserved\.\r?\n\1Private & Confidential \u2014 Property of Lifescope Inc\. Do not distribute\.$/gm;
+const HUB_NOTICE = 'Copyright (c) Lifescope Inc. Licensed under the PolyForm Noncommercial License 1.0.0; see LICENSE.md.';
+const CARGO_UNLICENSED = /^license = "UNLICENSED"$/m;
+const CARGO_HUB_LICENSE = 'license = "PolyForm-Noncommercial-1.0.0"';
+
+/** True when a copy still says CI Common's terms rather than the Hub's. */
+export function hasCiCommonNotice(bytes) {
+  const text = bytes.toString('utf8');
+  return text.includes('Private & Confidential') || CARGO_UNLICENSED.test(text);
+}
+
+/** The file with the Hub's license notice in place of CI Common's. Anything else, binary files included, is returned as is. */
+export function relicense(raw) {
+  if (!hasCiCommonNotice(raw)) return raw;
+  const text = raw
+    .toString('utf8')
+    .replace(CI_COMMON_NOTICE, (_line, prefix) => `${prefix}${HUB_NOTICE}`)
+    .replace(CARGO_UNLICENSED, CARGO_HUB_LICENSE);
+  return Buffer.from(text);
 }
 
 function markOf(entry) {
@@ -103,6 +133,7 @@ function check(manifest) {
     const bytes = readFileSync(dest);
     if (sha256(bytes) !== entry.sha256) problems.push(`${entry.dest}: bytes differ from ci-common.vendor.json`);
     if (entry.stamp && !bytes.toString('utf8').includes(markOf(entry))) problems.push(`${entry.dest}: missing ${markOf(entry)}`);
+    if (hasCiCommonNotice(bytes)) problems.push(`${entry.dest}: still has CI Common's private license notice`);
   }
   if (problems.length) {
     console.error(`vendor-ci-common:\n  ${problems.join('\n  ')}`);
@@ -125,7 +156,7 @@ function sync(manifest, from, ref, onlyPackage) {
       versions.set(versionKey, declaredVersion(entry.packageJson, gitShow(from, entryRef, entry.packageJson).toString('utf8')));
     }
     entry.version = versions.get(versionKey);
-    const stamped = stamp(entry, gitShow(from, entryRef, entry.source));
+    const stamped = stamp(entry, relicense(gitShow(from, entryRef, entry.source)));
     const destPath = resolve(repoRoot, entry.dest);
     mkdirSync(dirname(destPath), { recursive: true });
     writeFileSync(destPath, stamped);
@@ -136,7 +167,10 @@ function sync(manifest, from, ref, onlyPackage) {
   console.log(`vendored ${selected.length} file(s) from ${from} @ ${ref}`);
 }
 
-const args = parseArgs(process.argv.slice(2));
-const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-if (args.from) sync(manifest, resolve(args.from), args.ref, args.package);
-else check(manifest);
+// process.argv[1] is empty when another script imports this one through `node -e`.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const args = parseArgs(process.argv.slice(2));
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  if (args.from) sync(manifest, resolve(args.from), args.ref, args.package);
+  else check(manifest);
+}
