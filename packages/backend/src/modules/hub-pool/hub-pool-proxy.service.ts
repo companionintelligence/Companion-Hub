@@ -3391,9 +3391,10 @@ export class PoolProxyService {
    * they go through `proxyLocalOnlyRequest`.
    *
    * Returns why the Hub refused the load this request needed on `candidate`'s engine, or null when
-   * nothing stands in the way: the model is resident, is not one the Hub tracks, was loaded, or the
-   * arbitration itself failed, which leaves the engine to do what it always did. A refusal for a
-   * model the Hub tracks on another local engine is not this candidate's either.
+   * nothing stands in the way: the model is resident, is not one the catalog knows (a custom tag),
+   * was loaded, or the arbitration itself failed, which leaves the engine to do what it always did. A
+   * catalog model the Hub has not tracked since it started is tracked first, since the engine lists it.
+   * A refusal for a model the Hub tracks on another local engine is not this candidate's either.
    *
    * The load is `InferenceRouterService.loadTrackedModel` with origin `request`, as
    * `prepareTrackedModel` makes it, and the model is found as that method finds it: by catalog id or
@@ -3420,7 +3421,12 @@ export class PoolProxyService {
     if (!GENERATION_PATHS.has(path) || !router || !registry || clientClosed.aborted) {
       return null;
     }
-    const tracked = registry.getTrackedModel(model) ?? registry.getTrackedModels().find((entry) => sameModelId(entry.backendModelId, model));
+    const tracked =
+      registry.getTrackedModel(model) ??
+      registry.getTrackedModels().find((entry) => sameModelId(entry.backendModelId, model)) ??
+      // Installed, and untracked since the Hub started: weighed like any other (#2539). The candidate's
+      // engine lists the model, since that is what made it a candidate, so no engine is asked again.
+      registry.trackInstalledModel(model, [{ backend: candidate.backend, models: [model] }], { omlxSpellings: false });
     // Resident as far as the registry knows (`loaded`, `pinned`), not the Hub's, or not on disk yet:
     // nothing for the Hub to load, and the request goes to the engine as it always did.
     if (tracked?.state !== 'pulled') {

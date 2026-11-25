@@ -213,7 +213,12 @@ off the instance, because test doubles are mock proxies whose `type` is undefine
 The pool proxy calls it (`PoolProxyService.arbitrateLocalLoad`) for every app generation bound for
 this node's engine that names a Hub-tracked model the registry has as downloaded but not loaded. It
 finds the model the way `prepareTrackedModel` does, but does not go through that method, which
-answers "not tracked" and "refused" with the same `null` and drops the reason.
+answers "not tracked" and "refused" with the same `null` and drops the reason. The tracker lives in
+memory, so after a restart it holds nothing until a model is pulled, loaded or pinned. Both paths
+therefore track a catalog model the engine lists as installed the first time a request names it
+(`ModelRegistryService.trackInstalledModel`), from the engine lists they already hold: the pool's
+candidate, and the router's own sweep. A model the catalog does not know is never tracked and goes
+to the engine unweighed.
 `POST /api/inference/models/load` and MCP `hub_load_model` reach it directly; `models/pin` and MCP
 `hub_pin_model` reach it through `pinTrackedModel`. Every caller states its origin (`LoadOrigin`);
 there is no default. The origin decides both the window the model is loaded at (see

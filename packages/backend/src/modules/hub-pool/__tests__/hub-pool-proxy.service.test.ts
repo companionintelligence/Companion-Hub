@@ -9036,6 +9036,69 @@ describe('PoolProxyService', () => {
       expect(routingLog.list()[0]).toMatchObject({ attempts: [], localLoadRefused: null });
     });
 
+    // #2539, seen on a Strix Halo machine on 2026-11-25: right after a restart the registry tracked nothing, and a
+    // request for a model on disk went to Ollama with no fit check. Each case is a fresh registry, as after a
+    // restart, over an engine that lists the model.
+    describe('after a restart, for a model the engine lists that nothing has used since', () => {
+      let restarted: ModelRegistryService;
+      let afterRestart: PoolProxyService;
+
+      beforeEach(() => {
+        restarted = new ModelRegistryService(mock<LoggerService>());
+        afterRestart = new PoolProxyService(
+          new InferenceBackendRegistry(ollama, vllm, lemonade, omlx),
+          peerService,
+          tailscaleService,
+          loadService,
+          configuration,
+          routingLog,
+          pressureService,
+          restarted,
+          undefined,
+          undefined,
+          router,
+        );
+        ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL, 'mystery:7b'] });
+      });
+
+      it.each([
+        ['/api/chat', { options: { num_ctx: 8192 } }, 8192],
+        ['/v1/chat/completions', {}, null],
+      ])('has the router weigh the load before %s reaches the engine, and tracks the model', async (path, extra, numCtx) => {
+        const res = createMockResponse();
+
+        await afterRestart.proxyRequest({ path, method: 'POST', body: { model: MODEL, messages: [], ...extra }, model: MODEL, res });
+
+        expect(router.loadTrackedModel).toHaveBeenCalledWith(CATALOG_ID, { origin: 'request', numCtx, signal: expect.any(AbortSignal) });
+        expect(restarted.getTrackedModel(CATALOG_ID)).toMatchObject({ state: 'pulled', backend: 'ollama' });
+        expect(res.status).toHaveBeenCalledWith(200);
+      });
+
+      it('fails the request without sending it to the engine when it would load into system memory it does not fit in', async () => {
+        router.loadTrackedModel.mockResolvedValue({
+          loaded: false,
+          reason: `${CATALOG_ID} needs 9000 MB but only 2000 MB is free`,
+          systemMemory: true,
+        });
+        const res = createMockResponse();
+
+        await afterRestart.proxyRequest({ path: '/api/chat', method: 'POST', body: { model: MODEL, messages: [] }, model: MODEL, res });
+
+        expect(global.fetch).not.toHaveBeenCalled();
+        expect(res.status).toHaveBeenCalledWith(503);
+      });
+
+      it('leaves a model the catalog does not know to the engine, untracked', async () => {
+        const res = createMockResponse();
+
+        await afterRestart.proxyRequest({ path: '/api/chat', method: 'POST', body: { model: 'mystery:7b', messages: [] }, model: 'mystery:7b', res });
+
+        expect(router.loadTrackedModel).not.toHaveBeenCalled();
+        expect(restarted.getTrackedModels()).toEqual([]);
+        expect(res.status).toHaveBeenCalledWith(200);
+      });
+    });
+
     /*
      * Audit R6 of #1679: a refused load was forwarded to the engine regardless, which then loaded the
      * model on its own terms beside what the Hub had just declined to unload, overcommitting the card

@@ -167,6 +167,11 @@ type LoadTarget = {
 /** One parallel health sweep over every registered backend. */
 type ProbedBackends = ReadonlyArray<readonly [InferenceBackendType, InferenceBackend, BackendHealthStatus]>;
 
+/** What each engine that answered the sweep lists, for `ModelRegistryService.trackInstalledModel`. */
+function answeredInventories(probed: ProbedBackends): Array<{ backend: InferenceBackendType; models: readonly string[] }> {
+  return probed.filter(([, , health]) => health.running && health.healthy).map(([backend, , health]) => ({ backend, models: health.modelsLoaded }));
+}
+
 /** The window {@link InferenceRouterService.planLoad} chose for a load, and what the load then occupies. */
 type LoadPlan = {
   contextLength: number | null;
@@ -742,7 +747,7 @@ export class InferenceRouterService implements OnApplicationBootstrap {
 
     // 2 + 3. A tracked model: serve it if loaded, else make room and load it. Shared with the pool
     // proxy so an app that calls the engine's native routes gets the same arbitration.
-    const prepared = await this.prepareTrackedModel(resolvedModel, { signal: clientClosed });
+    const prepared = await this.prepareTrackedModel(resolvedModel, { signal: clientClosed, probe: probeOnce });
     if (prepared) {
       return this.proxyToBackend(prepared.backend, prepared.backendModelId, body, '/v1/chat/completions', clientClosed);
     }
@@ -786,7 +791,7 @@ export class InferenceRouterService implements OnApplicationBootstrap {
       throw new Error('No models available — no local models loaded and no cloud providers configured');
     }
 
-    const prepared = await this.prepareTrackedModel(resolvedModel, { signal: clientClosed });
+    const prepared = await this.prepareTrackedModel(resolvedModel, { signal: clientClosed, probe: probeOnce });
     if (prepared) {
       return this.proxyToBackend(prepared.backend, prepared.backendModelId, body, '/v1/completions', clientClosed);
     }
@@ -965,11 +970,13 @@ export class InferenceRouterService implements OnApplicationBootstrap {
   async routeEmbeddings(body: Record<string, unknown>, clientClosed?: AbortSignal): Promise<{ data: unknown; backend: string }> {
     const requestedModel = typeof body.model === 'string' ? body.model : '';
     if (requestedModel) {
-      const prepared = await this.prepareTrackedModel(requestedModel, { signal: clientClosed });
+      let probed: ProbedBackends | undefined;
+      const probeOnce = async (): Promise<ProbedBackends> => (probed ??= await this.probeBackends());
+      const prepared = await this.prepareTrackedModel(requestedModel, { signal: clientClosed, probe: probeOnce });
       if (prepared) {
         return this.proxyToBackend(prepared.backend, prepared.backendModelId, body, '/v1/embeddings', clientClosed);
       }
-      for (const [backendType, , health] of await this.probeBackends()) {
+      for (const [backendType, , health] of await probeOnce()) {
         if (health.running && health.healthy && inventoryListsModel(health.modelsLoaded, requestedModel)) {
           return this.proxyToBackend(backendType, requestedModel, body, '/v1/embeddings', clientClosed);
         }
@@ -1025,6 +1032,12 @@ export class InferenceRouterService implements OnApplicationBootstrap {
    * model was loaded by the app and the Hub then evicted it for its own copy. Only a model that is
    * genuinely absent goes through the fit check and, if needed, eviction.
    *
+   * `options.probe` is the request's own sweep of the engines, which the caller makes anyway when
+   * this answers null. It is read only for a model the Hub does not track yet: one an engine lists as
+   * installed is tracked here (`ModelRegistryService.trackInstalledModel`) and weighed like any other.
+   * The tracker lives in memory, so after a restart that is every model on disk nothing has used.
+   * Without it, such a model went to the engine with no fit check at all (#2539).
+   *
    * Null means "not a tracked model, or it does not fit and nothing can be freed"; the caller then
    * falls through to the engine as before. Never throws for a residency probe that fails. Throws a
    * 503 when the model does not fit in system memory ({@link LoadOutcome.systemMemory}): the engine
@@ -1043,7 +1056,7 @@ export class InferenceRouterService implements OnApplicationBootstrap {
    */
   async prepareTrackedModel(
     model: string,
-    options: { numCtx?: number | null; signal?: AbortSignal } = {},
+    options: { numCtx?: number | null; signal?: AbortSignal; probe?: () => Promise<ProbedBackends> } = {},
   ): Promise<{ backend: InferenceBackendType; backendModelId: string } | null> {
     // Folded like every other engine-id comparison on this path: an app may send `nomic-embed-text`
     // or `nomic-embed-text:latest` for the one model, and an app handed oMLX's name for a model
@@ -1052,7 +1065,10 @@ export class InferenceRouterService implements OnApplicationBootstrap {
       this.modelRegistry.getTrackedModel(model) ??
       this.modelRegistry
         .getTrackedModels()
-        .find((entry) => sameModelId(entry.backendModelId, model) || (entry.backend === 'omlx' && omlxModelsMatch(entry.backendModelId, model)));
+        .find((entry) => sameModelId(entry.backendModelId, model) || (entry.backend === 'omlx' && omlxModelsMatch(entry.backendModelId, model))) ??
+      (options.probe
+        ? this.modelRegistry.trackInstalledModel(model, answeredInventories(await options.probe()), { omlxSpellings: true })
+        : undefined);
     if (!tracked) {
       return null;
     }

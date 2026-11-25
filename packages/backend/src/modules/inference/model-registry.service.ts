@@ -10,7 +10,10 @@ import type {
   ModelState,
   TrackedModel,
 } from '@ci-hub/common/types';
+import { sameModelId } from '@/common/helpers/hub-pool';
+import { omlxModelsMatch } from '@/common/helpers/omlx-model-id';
 import { CURATED_MODELS } from './catalog/curated-models';
+import { isCatalogModelInstalled, isServedModelForCatalog } from './model-availability.util';
 // A value import: Nest reads the constructor's parameter types from emitted decorator metadata.
 import { LemonadeBackend } from './backends/lemonade.backend';
 import { readPinnedModels, removePinnedModels, writePinnedModels } from './pinned-models-record';
@@ -551,6 +554,44 @@ export class ModelRegistryService implements OnModuleInit {
 
     this.trackedModels.set(catalogId, tracked);
     return tracked;
+  }
+
+  /**
+   * Track as `pulled` the catalog model a request for `model` names, when it is not tracked yet and
+   * its engine lists it as installed. A pull check of an installed model tracks it the same way
+   * (`ModelPullerService.markAlreadyInstalled`), by the same rule. `listed` is what each engine that
+   * answered lists. A row is named by its catalog id or its engine tag, `name` and `name:latest`
+   * alike, and with `omlxSpellings` by any name oMLX gives it, as the caller's own lookup of a tracked
+   * model finds one.
+   *
+   * The tracker lives in memory, and a request's load is weighed only for a model it holds. Right
+   * after a restart a model on disk that nothing has used yet is not tracked, so a request for it
+   * went to the engine unweighed, and Ollama loaded it where the Hub would have refused (#2539).
+   *
+   * Undefined, with nothing tracked, for a model the catalog does not know (a custom Ollama tag,
+   * which the Hub never tracks), and for one no engine lists.
+   */
+  trackInstalledModel(
+    model: string,
+    listed: ReadonlyArray<{ backend: InferenceBackendType; models: readonly string[] }>,
+    options: { omlxSpellings: boolean },
+  ): TrackedModel | undefined {
+    const backendModelIds = this.getCatalogBackendModelIds();
+    const row = CURATED_MODELS.find((candidate) => {
+      if (this.trackedModels.has(candidate.id)) return false;
+      const named =
+        candidate.id === model ||
+        sameModelId(candidate.backendModelId, model) ||
+        (options.omlxSpellings && candidate.backend === 'omlx' && omlxModelsMatch(candidate.backendModelId, model));
+      const models = named ? listed.find((entry) => entry.backend === candidate.backend)?.models : undefined;
+      if (!models) return false;
+      return candidate.backend === 'ollama'
+        ? isCatalogModelInstalled(candidate, [...models], false, backendModelIds)
+        : isServedModelForCatalog(candidate, [...models]);
+    });
+    if (!row) return undefined;
+    this.logger.info(`[Inference] Tracking ${row.id}: ${row.backend} lists it, and this Hub had not used it since it started`);
+    return this.trackModel(row.id, 'pulled');
   }
 
   /**
