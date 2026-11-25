@@ -175,7 +175,7 @@ describe('HubAccess', () => {
     await waitFor(() => expect(screen.getByText('APP_SETTINGS_HUB_ACCESS_IDENTITY_OFF')).toBeTruthy());
     expect(screen.queryByTestId('hub-access-key')).toBeNull();
 
-    // The restart provisions the new material, and the Hub says the app is running again.
+    // The restart provisions the new material. Then the Hub says the app is running again.
     h.get.mockResolvedValue({ data: NEW_KEY });
     handleAppSseEvent(qc, { event: 'restart_success', appUrn: APP_URN, appStatus: 'running' });
 
@@ -232,6 +232,24 @@ describe('HubAccess', () => {
     await user.click(screen.getByTestId('hub-access-rotate-confirm'));
 
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('APP_SETTINGS_HUB_ACCESS_ROTATE_ERROR'));
+  });
+
+  // The backend revokes the key before it dispatches the restart, so a restart it could not dispatch
+  // (the queue was down) leaves the app holding no key. The panel kept showing the old one.
+  it('reads the status again when the rotate fails', async () => {
+    const user = userEvent.setup();
+    h.get.mockResolvedValue({ data: WITH_KEY });
+    h.post.mockRejectedValue(new Error('queue unavailable'));
+
+    renderHubAccess();
+    await waitFor(() => expect(screen.getByTestId('hub-access-key')).toBeTruthy());
+
+    h.get.mockResolvedValue({ data: { appKey: null, identityVerification: false, provisioned: true } });
+    await user.click(screen.getByTestId('hub-access-rotate'));
+    await user.click(screen.getByTestId('hub-access-rotate-confirm'));
+
+    await waitFor(() => expect(screen.queryByTestId('hub-access-key')).toBeNull());
+    expect(screen.getByText('APP_SETTINGS_HUB_ACCESS_IDENTITY_OFF')).toBeTruthy();
   });
 
   it('toasts what holds the app when the rotate is refused with a 409', async () => {

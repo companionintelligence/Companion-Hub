@@ -22,6 +22,21 @@ describe('invalidateAppRecords', () => {
     expect(client.getQueryState(context)?.isInvalidated).toBe(false);
   });
 
+  // A rotate's restart can finish while the stream is down, and its restart_success never arrives (#2540).
+  it('marks every Hub access panel stale', () => {
+    const client = new QueryClient();
+    const panels = [appHubAccessQueryKey('one:store'), appHubAccessQueryKey('other:store')];
+    for (const key of panels) {
+      client.setQueryData(key, {});
+    }
+
+    invalidateAppRecords(client);
+
+    for (const key of panels) {
+      expect(client.getQueryState(key)?.isInvalidated).toBe(true);
+    }
+  });
+
   it('marks a listing that failed while the Hub was away stale and leaves a loaded one alone', async () => {
     const client = new QueryClient();
     const failed = ['app-listing', 'one:store'];

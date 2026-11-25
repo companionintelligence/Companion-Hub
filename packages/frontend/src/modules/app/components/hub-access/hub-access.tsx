@@ -66,13 +66,15 @@ export const HubAccess = ({ appUrn, hasUnsavedChanges = false }: HubAccessProps)
     // throwOnError so a non-2xx rotate rejects into onError instead of silently firing the
     // success toast while the app keeps its old credentials.
     mutationFn: () => client.post({ url: `/api/app-lifecycle/${encodeURIComponent(appUrn)}/hub-access/rotate`, throwOnError: true }),
-    onSuccess: async () => {
+    onSuccess: () => {
       toast.success(t('APP_SETTINGS_HUB_ACCESS_ROTATED'));
-      await queryClient.invalidateQueries({ queryKey: appHubAccessQueryKey(appUrn) });
     },
     // A 409 names the operation holding the app ("still starting, try again"); nothing was rotated.
     onError: (error) =>
       toast.error(isConflictError(error) ? formatApiError(error, asLegacyTranslate(t), 409) : t('APP_SETTINGS_HUB_ACCESS_ROTATE_ERROR')),
+    // Read again after a failure too. The backend revokes the key and clears the secret before it
+    // dispatches the restart, so a restart it could not dispatch leaves the app holding neither.
+    onSettled: () => queryClient.invalidateQueries({ queryKey: appHubAccessQueryKey(appUrn) }),
   });
 
   const status = query.data ?? null;
@@ -140,8 +142,16 @@ export const HubAccess = ({ appUrn, hasUnsavedChanges = false }: HubAccessProps)
         </p>
       )}
 
+      {/* Keyed by the saved answer: the picker starts from it, and an answer given in another tab
+          arrives with the app's restart. Without the key the picker kept the old choice. */}
       {status.mcp && (
-        <McpAccessSection appUrn={appUrn} mcp={status.mcp} queryKey={appHubAccessQueryKey(appUrn)} hasUnsavedChanges={hasUnsavedChanges} />
+        <McpAccessSection
+          key={status.mcp.access ?? 'unanswered'}
+          appUrn={appUrn}
+          mcp={status.mcp}
+          queryKey={appHubAccessQueryKey(appUrn)}
+          hasUnsavedChanges={hasUnsavedChanges}
+        />
       )}
 
       {/* Confirmation gate: rotating restarts the app, so it must not fire on a single click. */}
