@@ -167,9 +167,18 @@ type LoadTarget = {
 /** One parallel health sweep over every registered backend. */
 type ProbedBackends = ReadonlyArray<readonly [InferenceBackendType, InferenceBackend, BackendHealthStatus]>;
 
-/** What each engine that answered the sweep lists, for `ModelRegistryService.trackInstalledModel`. */
+/**
+ * What each engine that answered the sweep lists, for `ModelRegistryService.trackInstalledModel`, less what it
+ * has withheld (`unservableModels`): the Hub would make room for a load the engine has been failing, as the pool
+ * proxy, which drops such a model from its candidates, never does.
+ */
 function answeredInventories(probed: ProbedBackends): Array<{ backend: InferenceBackendType; models: readonly string[] }> {
-  return probed.filter(([, , health]) => health.running && health.healthy).map(([backend, , health]) => ({ backend, models: health.modelsLoaded }));
+  return probed
+    .filter(([, , health]) => health.running && health.healthy)
+    .map(([backend, , health]) => ({
+      backend,
+      models: health.modelsLoaded.filter((id) => !inventoryListsModel(health.unservableModels, id)),
+    }));
 }
 
 /** The window {@link InferenceRouterService.planLoad} chose for a load, and what the load then occupies. */

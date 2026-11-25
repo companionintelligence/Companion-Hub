@@ -39,6 +39,8 @@ type Resident = { id: string; processMb: number; sizeVramMb: number; refs: numbe
 class FakeOllama {
   readonly resident = new Map<string, Resident>();
   readonly installed = new Set<string>();
+  /** Installed models it has been caught unable to serve, as its health check reports them (`unservableModels`). */
+  readonly withheld = new Set<string>();
   readonly loads: string[] = [];
   readonly unloads: string[] = [];
   /** The most memory the runner ever held at once. */
@@ -84,7 +86,12 @@ class FakeOllama {
       type: 'ollama',
       getBaseUrl: () => 'http://fake-ollama:11434',
       // Ollama's inventory is what is installed, resident or not.
-      healthCheck: async () => ({ running: true, healthy: true, modelsLoaded: [...this.installed] }),
+      healthCheck: async () => ({
+        running: true,
+        healthy: true,
+        modelsLoaded: [...this.installed],
+        ...(this.withheld.size > 0 ? { unservableModels: [...this.withheld] } : {}),
+      }),
       isModelLoaded: async (id: string) => this.find(id) !== undefined,
       loadModel: async (id: string) => {
         const size = this.loadSizesMb[id] ?? 1_000;
@@ -848,6 +855,21 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
       await w.router.routeChatCompletion({ model: 'mystery:7b', messages: [] });
 
       expect(forwarded).toEqual([['ollama', 'mystery:7b', '/v1/chat/completions']]);
+      expect(ollama.loads).toEqual([]);
+      expect(w.registry.getTrackedModels()).toEqual([]);
+    });
+
+    // Ollama lists a model on disk whose every load fails. Tracked, the Hub would unload its own idle models
+    // for a load that then fails as well.
+    it('is neither tracked nor loaded when the engine has withheld it as unservable', async () => {
+      const w = await strixHaloWorld();
+      ollama.installed.add('qwen3:8b');
+      ollama.withheld.add('qwen3:8b');
+      const forwarded = forwardedBy(w.router);
+
+      await w.router.routeChatCompletion({ model: 'qwen3:8b', messages: [] });
+
+      expect(forwarded).toEqual([['ollama', 'qwen3:8b', '/v1/chat/completions']]);
       expect(ollama.loads).toEqual([]);
       expect(w.registry.getTrackedModels()).toEqual([]);
     });
