@@ -4,8 +4,6 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from '@/components/ui/Input';
 import { PasswordInput } from '@/components/ui/PasswordInput/PasswordInput';
 import { clearClientHubState } from '@/lib/clear-client-hub-state';
-import { isTauriDesktopApp } from '@/lib/hub-runtime-mode';
-import { rememberPortalAccountEmail } from '@/lib/portal-session-hint';
 import { emailField } from '@/modules/auth/helpers/email-field';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
 import { SIGNED_OUT_PARAM } from '@/lib/signed-out-reasons';
@@ -34,7 +32,7 @@ export const ChangeUsernameForm = ({ username }: Props) => {
 
   const changeUsername = useMutation({
     ...changeUsernameMutation(),
-    onSuccess: (_data, variables) => {
+    onSuccess: () => {
       changeUsernameDisclosure.close();
       // Same as the password form: the username change revokes every session for this
       // user and the endpoint clears the cookie, so finish the sign-out here instead of
@@ -42,11 +40,6 @@ export const ChangeUsernameForm = ({ username }: Props) => {
       // with, and the confirmation rides the URL because the navigation would destroy a
       // toast raised here.
       clearClientHubState({ keepPortalEmail: true });
-      // The desktop window remembers the account it was signed in as, which is the old username
-      // now. Its sign-in page should offer the new one.
-      if (isTauriDesktopApp()) {
-        rememberPortalAccountEmail(variables.body.newUsername.toLowerCase());
-      }
       window.location.assign(`/login?${SIGNED_OUT_PARAM}=username_changed`);
     },
     onError: (e: TranslatableError) => {
