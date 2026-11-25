@@ -21,6 +21,8 @@ interface RecommendedModelsProps {
   preferredModelId?: string;
   /** Chat backend — vLLM models open Hugging Face when not yet served. */
   chatBackend?: InferenceBackendType;
+  /** Rendered above the cards: a warning about the Default, such as an agent it cannot run. */
+  notice?: ReactNode;
   /** Rendered at the bottom of the section (e.g. the collapsible Other Models drawer). */
   children?: ReactNode;
 }
@@ -107,6 +109,7 @@ export const RecommendedModels = ({
   onToggleModel,
   preferredModelId,
   chatBackend = 'ollama',
+  notice,
   children,
 }: RecommendedModelsProps) => {
   const { t } = useTranslation();
@@ -130,6 +133,7 @@ export const RecommendedModels = ({
     <StepSection number={4} badge="recommended" title={t('ONBOARDING_MODELS_TITLE')}>
       <p className="mb-3 text-sm text-muted-foreground">{t('ONBOARDING_MODELS_CALLOUT')}</p>
       {installHint && <p className="mb-4 text-xs text-muted-foreground">{installHint}</p>}
+      {notice}
       {models.length > 0 ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" data-testid="model-card-title">
           {models.map((model) => (

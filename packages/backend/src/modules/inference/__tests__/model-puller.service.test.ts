@@ -566,13 +566,16 @@ describe('ModelPullerService.startPull', () => {
         }),
     );
 
+    expect(service.isPullPending('phi-4-mini')).toBe(false);
     const first = await service.startPull('phi-4-mini');
     const second = await service.startPull('phi-4-mini');
 
     expect(first.status).toBe('queued');
     expect(second.status).toBe('in_progress');
+    expect(service.isPullPending('phi-4-mini')).toBe(true);
     resolvePull?.();
     await new Promise((r) => setTimeout(r, 0));
+    expect(service.isPullPending('phi-4-mini')).toBe(false);
   });
 
   it('skips blocked pulls when bestEffort is true', async () => {
