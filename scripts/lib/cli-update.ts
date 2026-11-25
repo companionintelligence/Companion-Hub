@@ -371,15 +371,8 @@ async function askVisible(label: string): Promise<string> {
   }
 }
 
-async function askSecret(label: string): Promise<string> {
-  try {
-    return await promptHiddenPassword(label, input, output);
-  } finally {
-    // promptHiddenPassword resumes stdin and has no close() to pause it again the way readline does.
-    // A flowing stdin keeps the event loop alive, so `cihub connect` would sit at the shell after
-    // printing its result instead of exiting.
-    input.pause();
-  }
+function askSecret(label: string): Promise<string> {
+  return promptHiddenPassword(label, input, output);
 }
 
 /**

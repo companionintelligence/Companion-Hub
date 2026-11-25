@@ -4,14 +4,17 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { toast } from 'sonner';
 import { resetRegistration } from '@/api-client/sdk.gen';
+import { TAURI_SESSION_STORAGE_KEY, getTauriSessionId, setTauriSessionId } from '@/lib/api-fetch';
 import { clearClientHubState } from '@/lib/clear-client-hub-state';
 import { openExternal } from '@/lib/helpers/open-external';
+import { holdLeaveWhenHubUnpaired } from '@/lib/hooks/use-leave-when-hub-unpaired';
 import { type HubRemovalWatchEnd, watchForHubRemoval } from '@/lib/hub-removal-watch';
 import { HubAccountSection } from '../hub-account-settings';
 
 const fixtures = vi.hoisted(() => ({
   portalConfig: { portalUrl: 'https://portal.example.com', deviceId: 'hw-123', registrationUrl: null, demoMode: false } as Record<string, unknown>,
 }));
+const { releaseHold } = vi.hoisted(() => ({ releaseHold: vi.fn() }));
 
 vi.mock('react-i18next', () => {
   const t = (key: string) => key;
@@ -21,6 +24,7 @@ vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock('@/lib/hooks/use-demo-mode', () => ({ useDemoMode: () => false }));
 vi.mock('@/lib/clear-client-hub-state', () => ({ clearClientHubState: vi.fn() }));
 vi.mock('@/lib/helpers/open-external', () => ({ openExternal: vi.fn().mockResolvedValue(true) }));
+vi.mock('@/lib/hooks/use-leave-when-hub-unpaired', () => ({ holdLeaveWhenHubUnpaired: vi.fn(() => releaseHold) }));
 vi.mock('@/api-client/sdk.gen', () => ({ resetRegistration: vi.fn(), checkForRemoval: vi.fn() }));
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getPortalConfigOptions: () => ({ queryKey: ['portal-config'], queryFn: async () => fixtures.portalConfig }),
@@ -37,6 +41,29 @@ const renderSection = () => {
       <HubAccountSection />
     </QueryClientProvider>,
   );
+};
+
+/**
+ * Holds back only the redirect's timer, so a test can look at the page before it leaves and no timer
+ * from one test fires in the next one.
+ */
+const holdRedirect = () => {
+  const timers: Array<() => void> = [];
+  const realSetTimeout = globalThis.setTimeout;
+  const spy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((callback: () => void, delay?: number) => {
+    if (delay === 1500) {
+      timers.push(callback);
+      return 0;
+    }
+    return realSetTimeout(callback, delay);
+  }) as typeof globalThis.setTimeout);
+  return {
+    leave: () =>
+      act(() => {
+        for (const timer of timers.splice(0)) timer();
+      }),
+    restore: () => spy.mockRestore(),
+  };
 };
 
 /** Starts the removal flow and hands back the watch's `onEnd` and stop function. */
@@ -95,10 +122,12 @@ describe('HubAccountSection', () => {
     act(() => onEnd('removed'));
 
     expect(toast.success).toHaveBeenCalledWith('SETTINGS_HUB_ACCOUNT_REMOVED');
-    expect(clearClientHubState).toHaveBeenCalledWith({ keepPortalEmail: true });
+    // Still signed in while the toast shows: a request refused in that gap sent the page to sign-in (#2555).
+    expect(clearClientHubState).not.toHaveBeenCalled();
     act(() => {
       vi.runAllTimers();
     });
+    expect(clearClientHubState).toHaveBeenCalledWith({ keepPortalEmail: true });
     expect(window.location.href).toBe('/device-registration');
   });
 
@@ -122,6 +151,25 @@ describe('HubAccountSection', () => {
     expect(window.location.href).toBe('http://hub.local/settings');
   });
 
+  // The open-page check would otherwise leave first and cut the toast short (#2556).
+  it('holds the unpaired check while it watches and keeps holding once the Hub is removed', async () => {
+    const { onEnd } = await startRemoval();
+    vi.useFakeTimers();
+
+    expect(holdLeaveWhenHubUnpaired).toHaveBeenCalledTimes(1);
+    act(() => onEnd('removed'));
+
+    expect(releaseHold).not.toHaveBeenCalled();
+  });
+
+  it('lets go of the unpaired check when the watch stops without a removal', async () => {
+    const { onEnd } = await startRemoval();
+
+    act(() => onEnd('key_refused'));
+
+    expect(releaseHold).toHaveBeenCalledTimes(1);
+  });
+
   it('stops the watch when the person stops waiting', async () => {
     const { stop } = await startRemoval();
 
@@ -129,6 +177,7 @@ describe('HubAccountSection', () => {
 
     expect(stop).toHaveBeenCalledTimes(1);
     expect(screen.queryByTestId('remove-hub-waiting')).toBeNull();
+    expect(releaseHold).toHaveBeenCalledTimes(1);
   });
 
   it('replaces a running watch instead of starting a second one when clicked again', async () => {
@@ -166,15 +215,72 @@ describe('HubAccountSection', () => {
 
   it('resets only this Hub after confirmation, warning that the Portal keeps the device', async () => {
     vi.mocked(resetRegistration).mockResolvedValue({ data: { success: true }, error: undefined } as never);
+    const redirect = holdRedirect();
+
+    try {
+      renderSection();
+      await userEvent.click(await screen.findByTestId('reregister-device-btn'));
+
+      expect(await screen.findByText('SETTINGS_HUB_ACCOUNT_RESET_CONFIRM')).toBeTruthy();
+      await userEvent.click(screen.getByTestId('reregister-confirm-btn'));
+
+      await waitFor(() => expect(resetRegistration).toHaveBeenCalledWith());
+      expect(toast.success).toHaveBeenCalledWith('SETTINGS_NETWORK_RESET_REGISTRATION_SUCCESS');
+      expect(openExternal).not.toHaveBeenCalled();
+    } finally {
+      redirect.restore();
+    }
+  });
+
+  // The Hub reports `unregistered` as soon as the reset starts, before it answers the request.
+  it('holds the unpaired check through the reset and lets go when the reset fails', async () => {
+    vi.mocked(resetRegistration).mockResolvedValue({ data: undefined, error: { message: 'nope' } } as never);
 
     renderSection();
     await userEvent.click(await screen.findByTestId('reregister-device-btn'));
+    await userEvent.click(await screen.findByTestId('reregister-confirm-btn'));
 
-    expect(await screen.findByText('SETTINGS_HUB_ACCOUNT_RESET_CONFIRM')).toBeTruthy();
-    await userEvent.click(screen.getByTestId('reregister-confirm-btn'));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('SETTINGS_NETWORK_RESET_REGISTRATION_ERROR'));
+    expect(holdLeaveWhenHubUnpaired).toHaveBeenCalledTimes(1);
+    expect(releaseHold).toHaveBeenCalledTimes(1);
+  });
 
-    await waitFor(() => expect(resetRegistration).toHaveBeenCalledWith());
-    expect(toast.success).toHaveBeenCalledWith('SETTINGS_NETWORK_RESET_REGISTRATION_SUCCESS');
-    expect(openExternal).not.toHaveBeenCalled();
+  it('keeps the session until the reset leaves for the pairing screen', async () => {
+    vi.mocked(resetRegistration).mockResolvedValue({ data: { success: true }, error: undefined } as never);
+    const redirect = holdRedirect();
+
+    sessionStorage.setItem('device-registered', 'true');
+    sessionStorage.setItem('device-registered-at', String(Date.now()));
+    sessionStorage.setItem('ci-hub-stack-update-outcome', JSON.stringify({ kind: 'updated', version: '1.0.0', keptAt: Date.now() }));
+    setTauriSessionId('hub-session');
+
+    try {
+      renderSection();
+      await userEvent.click(await screen.findByTestId('reregister-device-btn'));
+      await userEvent.click(await screen.findByTestId('reregister-confirm-btn'));
+      await waitFor(() => expect(toast.success).toHaveBeenCalledWith('SETTINGS_NETWORK_RESET_REGISTRATION_SUCCESS'));
+
+      expect(clearClientHubState).not.toHaveBeenCalled();
+      expect(holdLeaveWhenHubUnpaired).toHaveBeenCalledTimes(1);
+      expect(releaseHold).not.toHaveBeenCalled();
+      // The page still sends its session. The stored copies are gone before the delay, so a page closed
+      // or reloaded in those 1.5 s starts signed out and doesn't keep calling the Hub paired.
+      expect(getTauriSessionId()).toBe('hub-session');
+      expect(localStorage.getItem(TAURI_SESSION_STORAGE_KEY)).toBeNull();
+      expect(sessionStorage.getItem(TAURI_SESSION_STORAGE_KEY)).toBeNull();
+      expect(sessionStorage.getItem('device-registered')).toBeNull();
+      expect(sessionStorage.getItem('ci-hub-stack-update-outcome')).toBeNull();
+      expect(window.location.href).toBe('http://hub.local/settings');
+      // Nothing to start again while the page leaves.
+      expect(screen.getByTestId('reregister-device-btn')).toBeDisabled();
+      expect(screen.getByTestId('remove-hub-from-account-btn')).toBeDisabled();
+
+      redirect.leave();
+      expect(clearClientHubState).toHaveBeenCalledWith({ keepPortalEmail: true });
+      expect(window.location.href).toBe('/device-registration');
+    } finally {
+      redirect.restore();
+      setTauriSessionId(null);
+    }
   });
 });

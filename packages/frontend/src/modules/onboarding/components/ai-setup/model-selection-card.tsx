@@ -21,6 +21,8 @@ interface RecommendedModelsProps {
   preferredModelId?: string;
   /** Chat backend — vLLM models open Hugging Face when not yet served. */
   chatBackend?: InferenceBackendType;
+  /** Rendered above the cards: a warning about the Default, such as an agent it cannot run. */
+  notice?: ReactNode;
   /** Rendered at the bottom of the section (e.g. the collapsible Other Models drawer). */
   children?: ReactNode;
 }
@@ -107,6 +109,7 @@ export const RecommendedModels = ({
   onToggleModel,
   preferredModelId,
   chatBackend = 'ollama',
+  notice,
   children,
 }: RecommendedModelsProps) => {
   const { t } = useTranslation();
@@ -130,6 +133,7 @@ export const RecommendedModels = ({
     <StepSection number={4} badge="recommended" title={t('ONBOARDING_MODELS_TITLE')}>
       <p className="mb-3 text-sm text-muted-foreground">{t('ONBOARDING_MODELS_CALLOUT')}</p>
       {installHint && <p className="mb-4 text-xs text-muted-foreground">{installHint}</p>}
+      {notice}
       {models.length > 0 ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" data-testid="model-card-title">
           {models.map((model) => (
@@ -279,7 +283,17 @@ function ModelGroup({
   preferredModelId?: string;
 }) {
   const { t } = useTranslation();
-  const [open, setOpen] = useState(false);
+  // A group holding a ticked model is open, so nothing is saved from a row nobody saw (#2550). That
+  // holds for a tick a re-check or a rescan adds later, as well as for one there on the first render.
+  const tickedHere = group.items.filter((model) => selectedModelIds.includes(model.id)).map((model) => model.id);
+  const tickedKey = tickedHere.join(',');
+  const [open, setOpen] = useState(tickedHere.length > 0);
+  const [seenTicked, setSeenTicked] = useState(tickedKey);
+  if (tickedKey !== seenTicked) {
+    const before = new Set(seenTicked.split(','));
+    setSeenTicked(tickedKey);
+    if (tickedHere.some((id) => !before.has(id))) setOpen(true);
+  }
   const installed = new Set(installedCatalogIds);
   return (
     <div className={cn('overflow-hidden rounded-lg border', LEVEL_TAG[group.color])}>
@@ -363,7 +377,7 @@ const OTHER_MODEL_GROUPS: { key: string; title: string; testId: string; color: L
 
 /**
  * Non-recommended installable models, as a color-coded table grouped by parameter range (plus
- * embedding/speech). Each category is collapsed by default; rows show colored tier and capability
+ * embedding/speech). Each category is collapsed by default unless it holds a ticked model; rows show colored tier and capability
  * tags alongside the intelligence score and RAM / disk. De-duplicated by id.
  */
 export const OtherModels = ({

@@ -448,6 +448,11 @@ export function decideModelPrePull(input: {
    * qualifies. Null otherwise.
    */
   poolHandout?: string | null;
+  /**
+   * The chat model this node already hands the app from its own engine, when one meets the app's
+   * requirements there. Null when the app gets none, or gets one through the pool or a cloud provider.
+   */
+  localHandout?: string | null;
   /** `model` is the operator's preferred model, not a substitute the recommender picked for this hardware. */
   operatorPreferred?: boolean;
   requirements?: AppInferenceRequirements;
@@ -484,6 +489,11 @@ export function decideModelPrePull(input: {
   // multi-gigabyte side effect of a GET, one step removed. The operator's own choice still pulls.
   if (kind === 'chat' && input.poolHandout && !input.operatorPreferred) {
     return decide(false, `the pool already serves this app ${input.poolHandout}, and ${model.backendModelId} is not the preferred model`);
+  }
+  // The same rule on this node (#2538). A preferred gemma3-270m fails OpenClaw, so the recommender
+  // named MiniMax M2 230B and this pulled 56 GB, while OpenClaw was handed the qwen3.6:35b already here.
+  if (kind === 'chat' && input.localHandout && !input.operatorPreferred) {
+    return decide(false, `this app already runs on ${input.localHandout} from this node and ${model.backendModelId} is not the preferred model`);
   }
   if (input.requirements) {
     const check = checkModelRequirements(model, input.requirements);

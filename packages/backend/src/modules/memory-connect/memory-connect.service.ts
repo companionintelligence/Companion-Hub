@@ -95,6 +95,28 @@ function connectBusyRedirect(appUrn: AppUrn): string {
   return `/?${new URLSearchParams({ memoryConnect: 'busy', app: appUrn }).toString()}`;
 }
 
+/**
+ * Where a callback lands when the connect failed after consent: the app's page in the Hub, which
+ * says so and offers Connect Memory again (#2544). The app's own address said nothing, so a person
+ * whose Hub sign-in outlasted CI Memory's one-minute code landed there still not connected. A
+ * custom app's page (`/apps/<name>`) reads no marker, so that one ends on Home with the message.
+ */
+function connectFailedRedirect(appUrn: AppUrn): string {
+  let parts: { appName: string; appStoreId: string };
+
+  try {
+    parts = extractAppUrn(appUrn);
+  } catch {
+    return '/?memoryConnect=error';
+  }
+
+  if (parts.appStoreId === '_user') {
+    return '/?memoryConnect=error';
+  }
+
+  return `/apps/${encodeURIComponent(parts.appStoreId)}/${encodeURIComponent(parts.appName)}?memoryConnect=error`;
+}
+
 /** Machine-readable reasons let the UI explain a disabled Connect button. */
 export type ConnectBlockedReason =
   /** ci-memory is not installed; there is nothing to connect to. */
@@ -403,7 +425,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
   /**
    * The callback schedules rather than awaits the restart so browser navigation cannot time out.
    * Same-code replays reuse the recorded redirect, while foreign users receive an indistinguishable failure to prevent login CSRF and code injection.
-   * Once the owner resolves the state, downstream failures return to the originating app instead of dead-ending on the Hub.
+   * Once the owner resolves the state, a downstream failure lands on the app's page in the Hub, which says so and offers Connect Memory again.
    *
    * `mayConnect` asks again for the grant `/start` checked. The callback is what restarts the app and
    * ends another person's connection, and a grant can be taken away in the minutes consent takes.
@@ -435,7 +457,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     }
 
     // Refused before the exchange, so CI Memory never mints a key and nobody's connection is touched.
-    if (mayConnect && !(await mayConnect(attempt.appUrn))) {
+    if (mayConnect && !(await this.recordFailureIfThrows(state, attempt.appUrn, () => mayConnect(attempt.appUrn)))) {
       this.logger.warn(`[MemoryConnect] connect refused at the callback for ${attempt.appUrn}: the restart grant is gone`);
       this.pending.recordOutcome(state, CONNECT_DENIED_REDIRECT);
 
@@ -445,8 +467,8 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     // Held before anything is revoked or exchanged, and before the connection lock. A busy app sends
     // the person back with `busy` at once: nothing is revoked and the request never waits for the
     // app. The single-use code is spent, so connecting again goes through consent again.
-    const held = await this.lifecycle().withAppHeldUnlessBusy(attempt.appUrn, (app) =>
-      this.connectHeld(app, attempt.appUrn, attempt.next, code, currentUserId),
+    const held = await this.recordFailureIfThrows(state, attempt.appUrn, () =>
+      this.lifecycle().withAppHeldUnlessBusy(attempt.appUrn, (app) => this.connectHeld(app, attempt.appUrn, attempt.next, code, currentUserId)),
     );
 
     if ('busy' in held) {
@@ -461,6 +483,21 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     this.pending.recordOutcome(state, held.result.next);
 
     return held.result;
+  }
+
+  /**
+   * Runs a step of a consumed callback. The code is spent, so a step that throws records the failure
+   * landing first. Without it a refresh replays the state's default redirect, the app's own address,
+   * which says nothing about the failure.
+   */
+  private async recordFailureIfThrows<T>(state: string, appUrn: AppUrn, step: () => Promise<T>): Promise<T> {
+    try {
+      return await step();
+    } catch (err) {
+      this.pending.recordOutcome(state, connectFailedRedirect(appUrn));
+
+      throw err;
+    }
   }
 
   /** A connect with the app held: its locked part, then the restart that applies it, under the hold and after the lock. */
@@ -484,13 +521,13 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     if (!provider) {
       this.logger.error(`[MemoryConnect] callback with no resolvable provider for ${appUrn}`);
 
-      return { next, error: true };
+      return { next: connectFailedRedirect(appUrn), error: true };
     }
 
     const released = await this.releaseOtherConnections(appUrn, provider.internalUrl, hubUserId);
 
     if (released === 'failed') {
-      return { next, error: true };
+      return { next: connectFailedRedirect(appUrn), error: true };
     }
 
     let exchanged: { appUrn: string; key: string; expiresAt: string };
@@ -500,7 +537,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     } catch (err) {
       this.logger.error(`[MemoryConnect] exchange failed for ${appUrn}`, err);
 
-      return this.failConnect(appUrn, next, hubUserId, released);
+      return this.failConnect(appUrn, hubUserId, released);
     }
 
     // Defense in depth: the code must be for the same app the flow started for.
@@ -510,7 +547,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       // Revoke a mismatched exchange so its unmanaged key does not remain valid.
       await this.exchange.revoke(provider.internalUrl, exchanged.appUrn);
 
-      return this.failConnect(appUrn, next, hubUserId, released);
+      return this.failConnect(appUrn, hubUserId, released);
     }
 
     try {
@@ -524,7 +561,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
         this.logger.error(`[MemoryConnect] ${appUrn}: the unstored key could not be revoked either; it stays valid on CI Memory until it expires`);
       }
 
-      return this.failConnect(appUrn, next, hubUserId, released, true);
+      return this.failConnect(appUrn, hubUserId, released, true);
     }
 
     return { next, restart: 'finish' };
@@ -533,16 +570,11 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
   /**
    * Ends a connect that failed. When another person's connection was already revoked for it, that
    * connection is gone and cannot be brought back (CI Memory revokes by app), so the person lands on
-   * the dashboard with a message that says so instead of back on the app as if nothing happened. The
+   * the dashboard with a message that says so instead of back on the app as if nothing happened.
+   * Otherwise the person lands on the app's page in the Hub, which says the connect failed. The
    * app is restarted after the lock so it stops presenting a key CI Memory no longer accepts.
    */
-  private async failConnect(
-    appUrn: AppUrn,
-    next: string,
-    hubUserId: string,
-    released: 'none' | 'released',
-    keyDropped = false,
-  ): Promise<ConnectOutcome> {
+  private async failConnect(appUrn: AppUrn, hubUserId: string, released: 'none' | 'released', keyDropped = false): Promise<ConnectOutcome> {
     const restart = released === 'released' || keyDropped ? 'apply' : undefined;
 
     if (restart) {
@@ -562,7 +594,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       return { next: PREVIOUS_CONNECTION_REMOVED_REDIRECT, error: true, restart };
     }
 
-    return { next, error: true, restart };
+    return { next: connectFailedRedirect(appUrn), error: true, restart };
   }
 
   /**

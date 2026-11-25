@@ -864,31 +864,97 @@ pub fn stop_hub_for_update(compose_path: &Path, env_path: &Path) -> Result<Strin
 pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> {
     let _stack_change = StackChange::begin();
     let data_dir = get_hub_data_dir();
-    // Record that the user intentionally stopped the Hub so the next launch
-    // does not auto-restart it.
-    if !stack_dev_mode_enabled() {
-        mark_user_stopped(&data_dir);
+    marking_user_stopped(
+        &data_dir,
+        stack_dev_mode_enabled(),
+        || stop_hub_stack(compose_path, env_path, &data_dir),
+        hub_may_still_be_up,
+    )
+}
+
+/// Runs `stop` with the Hub marked as stopped by the user, so neither the watchdog nor the next
+/// launch starts it again while it goes down. A stop that fails with the Hub still up drops the
+/// mark again: kept, it would leave that Hub down for good if it later fell over. A failed
+/// `down` can still have taken the Hub down. Then the mark stays so the watchdog doesn't start
+/// it again. A mark from an earlier Stop Hub is never dropped here. Stack-dev mode never marks.
+pub(crate) fn marking_user_stopped(
+    data_dir: &Path,
+    stack_dev: bool,
+    stop: impl FnOnce() -> Result<String, String>,
+    hub_still_up: impl FnOnce() -> bool,
+) -> Result<String, String> {
+    let marks = !stack_dev && !is_user_stopped(data_dir);
+    if marks {
+        mark_user_stopped(data_dir);
     }
     START_IMAGE_DOWNLOADS_SEEN.store(false, Ordering::SeqCst);
 
-    // If Docker is not available there are no containers to tear down.
-    // Return success immediately rather than letting `docker compose down`
-    // fail with a confusing plugin-flag error (e.g. "unknown flag: --env-file").
-    let docker_check = check_docker_access();
-    if !matches!(docker_check.state, DockerAccessState::Available) {
-        let reason = docker_check
-            .detail
-            .unwrap_or_else(|| "Docker daemon is not running.".to_string());
-        let message = format!(
-            "Docker is not available ({}); Hub is effectively stopped.",
-            reason
+    let result = stop();
+    if marks && result.is_err() && hub_still_up() {
+        clear_user_stopped(data_dir);
+        let _ = append_desktop_log_for(
+            data_dir,
+            "hub.stop",
+            "The Hub may still be running after the failed stop, so it is no longer marked as stopped by the user.",
         );
-        let _ = append_desktop_log_for(&data_dir, "hub.stop", &message);
-        return Ok(message);
+    }
+    result
+}
+
+/// Whether the Hub may still be running after a stop that failed: its container is running or
+/// restarting, or Docker couldn't say. A stop that Docker didn't answer left the Hub as it was.
+pub(crate) fn hub_may_still_be_up() -> bool {
+    match docker_command()
+        .args([
+            "inspect",
+            "--format",
+            "{{.State.Status}}",
+            hub_container_name(),
+        ])
+        .output()
+    {
+        Ok(output) => hub_state_may_be_up(
+            output.status.success(),
+            &String::from_utf8_lossy(&output.stdout),
+            &String::from_utf8_lossy(&output.stderr),
+        ),
+        Err(_) => true,
+    }
+}
+
+/// [`hub_may_still_be_up`] on what `docker inspect` printed. Only Docker saying the container is
+/// gone or not running counts as down.
+pub(crate) fn hub_state_may_be_up(inspected: bool, stdout: &str, stderr: &str) -> bool {
+    if inspected {
+        return matches!(stdout.trim(), "running" | "restarting");
+    }
+    let stderr = stderr.to_lowercase();
+    !(stderr.contains("no such object") || stderr.contains("no such container"))
+}
+
+fn stop_hub_stack(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Result<String, String> {
+    // Without Docker there are no containers to tear down. Return success at once rather than
+    // letting `docker compose down` fail with a confusing plugin-flag error (e.g. "unknown flag:
+    // --env-file"). Only when Docker is missing or not running, though: see
+    // `stop_without_docker`.
+    let mut docker_check = check_docker_access();
+    if !matches!(docker_check.state, DockerAccessState::Available) {
+        // The answer may be a status poll's from a few seconds ago. Ask once more before
+        // counting the Hub stopped or telling the user it could not be stopped.
+        forget_docker_access_check();
+        docker_check = check_docker_access();
+    }
+    if !matches!(docker_check.state, DockerAccessState::Available) {
+        let outcome = stop_without_docker(&docker_check);
+        let (Ok(message) | Err(message)) = &outcome;
+        let _ = append_desktop_log_for(data_dir, "hub.stop", message);
+        return outcome.map_err(with_view_logs_hint);
     }
 
+    ensure_docker_compose_can_stop_hub_stack(data_dir)?;
+
     let _ = append_desktop_log_for(
-        &data_dir,
+        data_dir,
         "hub.stop",
         &format!(
             "Requested stop via docker compose down{}\ncompose={}\nenv={}",
@@ -918,7 +984,7 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
         .output()
         .map_err(|e| {
             let message = format!("Failed to run docker compose down: {}", e);
-            let _ = append_desktop_log_for(&data_dir, "hub.stop", &message);
+            let _ = append_desktop_log_for(data_dir, "hub.stop", &message);
             with_view_logs_hint(message)
         })?;
 
@@ -933,7 +999,7 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
         } else {
             format!("docker compose down succeeded. {}", combined_output)
         };
-        let _ = append_desktop_log_for(&data_dir, "hub.stop", &message);
+        let _ = append_desktop_log_for(data_dir, "hub.stop", &message);
         Ok("Hub stopped".to_string())
     } else {
         let failure = if combined_output.is_empty() {
@@ -944,17 +1010,92 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
         } else {
             format!("docker compose down failed. {}", combined_output)
         };
-        let _ = append_desktop_log_for(&data_dir, "hub.stop", &failure);
+        let _ = append_desktop_log_for(data_dir, "hub.stop", &failure);
         Err(with_view_logs_hint(failure))
     }
+}
+
+/// Docker that isn't installed or isn't running runs no containers. Any other failed `docker info`
+/// (a permission error, or "Too many open files" on a busy host) says nothing about them. They
+/// may well run on (Companion-Hub#2554).
+///
+/// Some failures read as "not running" yet come from a daemon that is up but busy or locked
+/// down, so those don't count either.
+pub(crate) fn docker_runs_nothing(check: &DockerAccessCheck) -> bool {
+    match check.state {
+        DockerAccessState::NotInstalled => true,
+        DockerAccessState::DaemonUnavailable => {
+            let detail = check.detail.as_deref().unwrap_or_default().to_lowercase();
+            !DOCKER_UP_BUT_UNREACHABLE
+                .iter()
+                .any(|marker| detail.contains(marker))
+        }
+        _ => false,
+    }
+}
+
+/// Words in a "daemon unavailable" answer that point at a daemon that timed out, ran out of file
+/// handles or refused this user. Older Docker CLIs file these under "error during connect".
+const DOCKER_UP_BUT_UNREACHABLE: [&str; 5] = [
+    "context deadline exceeded",
+    "timeout",
+    "resource temporarily unavailable",
+    "too many open files",
+    "access is denied",
+];
+
+/// What a message the user reads calls a `docker info` that says nothing about the containers.
+fn docker_check_failure(check: &DockerAccessCheck) -> &'static str {
+    if matches!(check.state, DockerAccessState::PermissionDenied) {
+        "Docker refused this user"
+    } else {
+        "Docker did not answer"
+    }
+}
+
+/// The first line of the check's detail, which is the error. `docker info` prints the client's
+/// version and plugins after it. Those don't belong in a dialog.
+fn docker_check_reason(check: &DockerAccessCheck) -> &str {
+    check
+        .detail
+        .as_deref()
+        .and_then(|detail| detail.lines().map(str::trim).find(|line| !line.is_empty()))
+        .unwrap_or("docker info gave no reason")
+}
+
+/// What Stop Hub makes of a `docker info` that didn't answer: stopped only when Docker runs
+/// nothing (see [`docker_runs_nothing`]), else a failure, since the Hub may still be running.
+pub(crate) fn stop_without_docker(check: &DockerAccessCheck) -> Result<String, String> {
+    if docker_runs_nothing(check) {
+        let reason = check
+            .detail
+            .as_deref()
+            .unwrap_or("Docker daemon is not running.");
+        return Ok(format!(
+            "Docker is not available ({reason}); Hub is effectively stopped."
+        ));
+    }
+    Err(format!(
+        "{}, so the Hub may still be running ({}).",
+        docker_check_failure(check),
+        docker_check_reason(check)
+    ))
 }
 
 /// Stops the running app containers along with the Hub and remembers them for the next start.
 /// `restart: unless-stopped` leaves a container stopped by hand stopped, so nothing else starts
 /// them again.
 pub fn stop_managed_app_containers(data_dir: &Path) -> Result<Option<String>, String> {
-    if !is_docker_available() {
-        return Ok(None);
+    let docker_check = check_docker_access();
+    if !matches!(docker_check.state, DockerAccessState::Available) {
+        if docker_runs_nothing(&docker_check) {
+            return Ok(None);
+        }
+        return Err(format!(
+            "{}, so installed apps may still be running ({}).",
+            docker_check_failure(&docker_check),
+            docker_check_reason(&docker_check)
+        ));
     }
 
     let ids = list_managed_app_container_ids()?;

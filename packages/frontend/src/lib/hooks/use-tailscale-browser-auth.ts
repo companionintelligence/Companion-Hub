@@ -10,6 +10,8 @@ interface AuthStartResponse {
   success: boolean;
   authUrl?: string;
   alreadyAuthenticated?: boolean;
+  /** Set with `alreadyAuthenticated` when the Hub brought back a tailnet connection someone had turned off. */
+  reconnected?: boolean;
   error?: string;
 }
 
@@ -46,7 +48,7 @@ export function useTailscaleBrowserAuth({ onBrowserOpened }: { onBrowserOpened?:
         return;
       }
       if (payload.alreadyAuthenticated) {
-        toast.success(t('SETTINGS_NETWORK_TAILSCALE_ALREADY_CONNECTED'));
+        toast.success(t(payload.reconnected ? 'SETTINGS_NETWORK_TAILSCALE_RECONNECTED' : 'SETTINGS_NETWORK_TAILSCALE_ALREADY_CONNECTED'));
         invalidateTailscaleAndAppContext();
         return;
       }

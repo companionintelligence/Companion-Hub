@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createAppUrn } from '@/common/helpers/app-helpers';
+import { removeLeftoverTemporaries } from '@/common/helpers/bind-mount-helpers';
 import { removeSettingsJsonCopies, writeSettingsJsonFile } from '@/common/helpers/env-helpers';
 import { APP_DATA_DIR, DATA_DIR, TUNNEL_DIR } from '@/common/constants';
 import { TranslatableError } from '@/common/error/translatable-error';
@@ -278,7 +279,7 @@ export class FactoryResetService {
       message:
         portalApps === 'failed'
           ? "Factory reset complete, but Companion Portal still lists this Hub's apps. Delete the device in the Portal to remove them."
-          : 'Factory reset complete. Sign in again to create the first operator account.',
+          : 'Factory reset complete. Pair the Hub again, then sign in to create the first operator account.',
       portalApps,
     };
   }
@@ -467,6 +468,8 @@ export class FactoryResetService {
     const resolvedEnvPath = path.join(DATA_DIR, 'state', '.env.resolved');
 
     await fs.promises.unlink(tokenPath).catch(() => undefined);
+    // A write the Hub never finished leaves the token beside it in a `.tmp` file.
+    await removeLeftoverTemporaries(tokenPath, 0);
     // Remove the marker with its token: the desktop app and CLI start the tunnel when both exist.
     await removeTunnelRegistrationMarker().catch((error: unknown) => {
       this.logger.warn(`Factory reset could not remove the tunnel registration marker: ${error instanceof Error ? error.message : String(error)}`);

@@ -239,3 +239,197 @@ fn config_hash_ignores_the_learned_zone_and_nothing_else() {
         "only DOMAIN itself is left out"
     );
 }
+
+/// A failed Stop Hub left the Hub running and still marked as stopped by the user, so the next
+/// launch and the watchdog would have left it down once it fell over.
+#[test]
+fn a_stop_that_fails_does_not_leave_the_hub_marked_as_stopped() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let data_dir = tempdir.path();
+
+    let result = marking_user_stopped(
+        data_dir,
+        false,
+        || {
+            assert!(
+                is_user_stopped(data_dir),
+                "marked while the stop runs, so nothing starts the Hub meanwhile"
+            );
+            Err("docker compose down failed.".to_string())
+        },
+        || true,
+    );
+
+    assert_eq!(result, Err("docker compose down failed.".to_string()));
+    assert!(!is_user_stopped(data_dir));
+}
+
+#[test]
+fn a_stop_that_works_leaves_the_hub_marked_as_stopped() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+
+    let result = marking_user_stopped(
+        tempdir.path(),
+        false,
+        || Ok("Hub stopped".to_string()),
+        || panic!("a stop that works doesn't ask whether the Hub is up"),
+    );
+
+    assert_eq!(result, Ok("Hub stopped".to_string()));
+    assert!(is_user_stopped(tempdir.path()));
+}
+
+/// `down` can fail after it has removed the Hub's containers. Dropping the mark then would let
+/// the watchdog start the Hub the user just stopped.
+#[test]
+fn a_stop_that_fails_with_the_hub_already_down_keeps_the_mark() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+
+    let result = marking_user_stopped(
+        tempdir.path(),
+        false,
+        || Err("docker compose down failed.".to_string()),
+        || false,
+    );
+
+    assert!(result.is_err());
+    assert!(is_user_stopped(tempdir.path()));
+}
+
+/// A Hub stopped earlier stays stopped when a later stop, such as Clear Tunnel Token's, fails.
+#[test]
+fn a_failed_stop_keeps_the_mark_from_an_earlier_stop() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    mark_user_stopped(tempdir.path());
+
+    let result = marking_user_stopped(
+        tempdir.path(),
+        false,
+        || Err("docker compose down failed.".to_string()),
+        || true,
+    );
+
+    assert!(result.is_err());
+    assert!(is_user_stopped(tempdir.path()));
+}
+
+/// Stack-dev runs the Hub from a source checkout, where Stop Hub never marks it as stopped.
+#[test]
+fn a_stack_dev_stop_leaves_no_mark() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+
+    let result = marking_user_stopped(
+        tempdir.path(),
+        true,
+        || Ok("Hub stopped".to_string()),
+        || panic!("a stop that works doesn't ask whether the Hub is up"),
+    );
+
+    assert_eq!(result, Ok("Hub stopped".to_string()));
+    assert!(!is_user_stopped(tempdir.path()));
+}
+
+/// A stop can fail because Docker didn't answer at all. That stop never ran `down`, so the Hub is
+/// as it was: only Docker saying the container is gone or not running counts as down.
+#[test]
+fn the_hub_counts_as_down_only_when_docker_says_so() {
+    assert!(hub_state_may_be_up(true, "running\n", ""));
+    assert!(hub_state_may_be_up(true, "restarting\n", ""));
+    assert!(!hub_state_may_be_up(true, "exited\n", ""));
+    assert!(!hub_state_may_be_up(
+        false,
+        "",
+        "Error: No such object: ci-hub\n"
+    ));
+
+    assert!(hub_state_may_be_up(
+        false,
+        "",
+        "permission denied while trying to connect to the docker API at unix:///var/run/docker.sock\n"
+    ));
+    assert!(hub_state_may_be_up(
+        false,
+        "",
+        "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?\n"
+    ));
+}
+
+fn docker_check(state: DockerAccessState, detail: &str) -> DockerAccessCheck {
+    DockerAccessCheck {
+        state,
+        detail: Some(detail.to_string()),
+    }
+}
+
+/// `docker info` failed with "Too many open files" while all 22 containers kept running. Stop Hub
+/// took that for "Docker isn't running": Clear Tunnel Token then said it had stopped them.
+#[test]
+fn stop_hub_does_not_take_a_failed_docker_info_for_a_stopped_hub() {
+    for (check, expected) in [
+        (
+            docker_check(
+                DockerAccessState::Error,
+                "Failed to run docker info: Too many open files (os error 24)",
+            ),
+            "Docker did not answer, so the Hub may still be running (Failed to run docker info: Too many open files (os error 24)).",
+        ),
+        (
+            docker_check(
+                DockerAccessState::PermissionDenied,
+                "permission denied while trying to connect to the docker API at unix:///var/run/docker.sock",
+            ),
+            "Docker refused this user, so the Hub may still be running (permission denied while trying to connect to the docker API at unix:///var/run/docker.sock).",
+        ),
+        // Older CLIs file a busy daemon and a refused Windows user under "error during connect".
+        (
+            docker_check(
+                DockerAccessState::DaemonUnavailable,
+                "error during connect: Get \"http://%2Fvar%2Frun%2Fdocker.sock/v1.43/info\": context deadline exceeded",
+            ),
+            "Docker did not answer, so the Hub may still be running (error during connect: Get \"http://%2Fvar%2Frun%2Fdocker.sock/v1.43/info\": context deadline exceeded).",
+        ),
+        (
+            docker_check(
+                DockerAccessState::DaemonUnavailable,
+                "error during connect: This error may indicate that the docker daemon is not running.: Get \"http://%2F%2F.%2Fpipe%2Fdocker_engine/v1.24/info\": open //./pipe/docker_engine: Access is denied.",
+            ),
+            "Docker did not answer, so the Hub may still be running (error during connect: This error may indicate that the docker daemon is not running.: Get \"http://%2F%2F.%2Fpipe%2Fdocker_engine/v1.24/info\": open //./pipe/docker_engine: Access is denied.).",
+        ),
+    ] {
+        assert_eq!(stop_without_docker(&check).expect_err(expected), expected);
+    }
+}
+
+#[test]
+fn stop_hub_failure_names_only_the_error_line_of_docker_info() {
+    let check = docker_check(
+        DockerAccessState::Error,
+        "Error response from daemon: Docker Desktop is unable to start\nClient:\n Version:    29.6.0\n Context:    default",
+    );
+
+    assert_eq!(
+        stop_without_docker(&check).expect_err("may still run"),
+        "Docker did not answer, so the Hub may still be running (Error response from daemon: Docker Desktop is unable to start)."
+    );
+}
+
+#[test]
+fn stop_hub_counts_the_hub_stopped_when_docker_is_missing_or_not_running() {
+    for check in [
+        docker_check(
+            DockerAccessState::DaemonUnavailable,
+            "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?",
+        ),
+        classify_docker_access_result(
+            "failed to connect to the docker API at unix:///Users/me/.docker/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /Users/me/.docker/run/docker.sock: connect: no such file or directory",
+            Some(1),
+        ),
+        docker_check(
+            DockerAccessState::NotInstalled,
+            "Docker CLI was not found on PATH.",
+        ),
+    ] {
+        let message = stop_without_docker(&check).expect("nothing left to stop");
+        assert!(message.ends_with("; Hub is effectively stopped."), "{message}");
+    }
+}

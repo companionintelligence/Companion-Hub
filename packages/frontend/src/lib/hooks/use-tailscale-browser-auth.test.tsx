@@ -80,6 +80,17 @@ describe('useTailscaleBrowserAuth', () => {
     expect(invalidated).toEqual(expect.arrayContaining([['tailscale-status'], ['app-context']]));
   });
 
+  it('says the Hub is connected again when it brought back a tailnet that was turned off', async () => {
+    startAuthMock.mockResolvedValue(sdkOk({ success: true, alreadyAuthenticated: true, reconnected: true }) as never);
+    const { run } = setup();
+
+    await run();
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith(en.SETTINGS_NETWORK_TAILSCALE_RECONNECTED));
+    expect(toast.success).not.toHaveBeenCalledWith(en.SETTINGS_NETWORK_TAILSCALE_ALREADY_CONNECTED);
+    expect(openExternalMock).not.toHaveBeenCalled();
+  });
+
   it('shows the backend error when the Hub refuses to start sign-in, and the not-installed text when it gives none', async () => {
     startAuthMock.mockResolvedValueOnce(sdkOk({ success: false, error: 'tailscaled is not running' }) as never);
     const first = setup();
