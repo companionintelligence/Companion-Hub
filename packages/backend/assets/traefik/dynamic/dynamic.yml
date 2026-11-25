@@ -47,10 +47,15 @@ http:
     # asked for it, signed in or not. Browsers also showed the app from their own cache after the
     # visitor signed out of the Hub. This replaces whatever the app sent. Apps without the sign-in and
     # the Hub's own pages never pass here and keep their caching.
+    # Cloudflare decides from CDN-Cache-Control or Cloudflare-CDN-Cache-Control instead of
+    # Cache-Control when an answer carries one, so an app's own copy of either is removed (empty
+    # removes the header).
     ci-hub-no-store:
       headers:
         customResponseHeaders:
           Cache-Control: "private, no-store"
+          CDN-Cache-Control: ""
+          Cloudflare-CDN-Cache-Control: ""
 
     ci-hub-forward-auth:
       forwardAuth:

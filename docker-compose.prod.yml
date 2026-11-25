@@ -325,6 +325,9 @@ services:
       # below. See `ci-hub` and `ci-hub-no-store` in assets/traefik/dynamic/dynamic.yml.
       traefik.http.middlewares.ci-hub.chain.middlewares: "ci-hub-no-store,ci-hub-forward-auth"
       traefik.http.middlewares.ci-hub-no-store.headers.customresponseheaders.Cache-Control: "private, no-store"
+      # Cloudflare reads these instead of Cache-Control when an answer has one; empty removes the app's copy.
+      traefik.http.middlewares.ci-hub-no-store.headers.customresponseheaders.CDN-Cache-Control: ""
+      traefik.http.middlewares.ci-hub-no-store.headers.customresponseheaders.Cloudflare-CDN-Cache-Control: ""
       traefik.http.middlewares.ci-hub-forward-auth.forwardauth.address: "http://ci-hub:5002/api/auth/traefik"
       # false: decide from the request the router matched, never from forwarded
       # headers that arrived with it (see assets/traefik/dynamic/dynamic.yml).

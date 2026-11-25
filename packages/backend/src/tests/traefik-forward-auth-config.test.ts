@@ -128,7 +128,12 @@ describe('traefik ci-hub forward-auth middleware config', () => {
     const chain: string[] = middlewares['ci-hub'].chain.middlewares;
     // The header first, so the sign-in's own redirects and refusals carry it too.
     expect(chain).toEqual(['ci-hub-no-store', 'ci-hub-forward-auth']);
-    expect(middlewares['ci-hub-no-store'].headers.customResponseHeaders).toEqual({ 'Cache-Control': 'private, no-store' });
+    // Cloudflare goes by these two instead of Cache-Control when an answer has one, so an app's copy is removed.
+    expect(middlewares['ci-hub-no-store'].headers.customResponseHeaders).toEqual({
+      'Cache-Control': 'private, no-store',
+      'CDN-Cache-Control': '',
+      'Cloudflare-CDN-Cache-Control': '',
+    });
     expect(middlewares['ci-hub-forward-auth'].forwardAuth.address).toMatch(/\/api\/auth\/traefik$/);
   });
 
@@ -136,6 +141,8 @@ describe('traefik ci-hub forward-auth middleware config', () => {
     const content = readFileSync(path.join(REPO_ROOT, relativePath), 'utf-8');
     expect(content).toMatch(/traefik\.http\.middlewares\.ci-hub\.chain\.middlewares:\s*"ci-hub-no-store,ci-hub-forward-auth"/);
     expect(content).toMatch(/traefik\.http\.middlewares\.ci-hub-no-store\.headers\.customresponseheaders\.Cache-Control:\s*"private, no-store"/);
+    expect(content).toMatch(/traefik\.http\.middlewares\.ci-hub-no-store\.headers\.customresponseheaders\.CDN-Cache-Control:\s*""\s*$/m);
+    expect(content).toMatch(/traefik\.http\.middlewares\.ci-hub-no-store\.headers\.customresponseheaders\.Cloudflare-CDN-Cache-Control:\s*""\s*$/m);
     // The forward auth is the chain's second entry, not a second definition of `ci-hub`, which
     // Traefik would refuse along with every route that names it.
     expect(content).toMatch(/traefik\.http\.middlewares\.ci-hub-forward-auth\.forwardauth\.address:/);
