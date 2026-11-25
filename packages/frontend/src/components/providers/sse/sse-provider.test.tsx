@@ -170,6 +170,17 @@ describe('SSEProvider', () => {
         'comfyui hit a Docker network range conflict. Retry install or start. Hub will pick a fresh internal network.',
       );
     });
+
+    it('says the app keeps a folder inside another it can write to, and what to do', () => {
+      const send = renderProvider();
+
+      send({ errorCode: 'nested_bind_mounts' });
+
+      expect(mockToastError).toHaveBeenCalledExactlyOnceWith(
+        "comfyui can't start: it keeps one of its folders inside another folder it can write to. Update the app, or give each folder a place of its own if you added it yourself.",
+        { duration: 10000 },
+      );
+    });
   });
 
   it('links app operation failures to the logs tab via "see logs"', async () => {

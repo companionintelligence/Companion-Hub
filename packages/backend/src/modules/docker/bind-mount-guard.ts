@@ -4,6 +4,18 @@ import { type BindMountRef, bindSourceKey } from '@ci-hub/common/schemas';
 import * as yaml from 'yaml';
 
 /**
+ * An app refused because one of its bind mounts sits inside another folder it can write to
+ * (`findNestedBindMounts`). Its own class so the refusal reaches the person as itself, with an error
+ * code the app page and its toasts can name, instead of as a compose file that could not be made.
+ */
+export class NestedBindMountsError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NestedBindMountsError';
+  }
+}
+
+/**
  * The bind mounts in `docker compose config` output: the app's compose as Compose will run it, with
  * the user override merged in and every `${...}` expanded.
  *

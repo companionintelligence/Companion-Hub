@@ -9,6 +9,7 @@ import { appIdOf } from '@/modules/apps/app-id.helpers';
 import { securityGrantsFor } from '@/modules/apps/security-grants';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { publishesCloudflarePublicRoute } from '@/modules/apps/app-public-routing.helpers';
+import { NestedBindMountsError } from '@/modules/docker/bind-mount-guard';
 import { DockerComposeBuilder } from '@/modules/docker/builders/compose.builder';
 import { appUrnLabelSets, listContainersMatchingAnyLabelSets } from '@/modules/docker/hub-container-query';
 import { EnvUtils } from '@/modules/env/env.utils';
@@ -68,13 +69,18 @@ async function knownAppIds(
  * Shared by install, update, start, and restart: each of them must regenerate compose before
  * running it, because domain, exposure mode, resource limits, and the allocated subnet can all
  * have changed since the last run.
+ *
+ * `forTeardown`: the compose is written only to stop or take down the version already installed
+ * (Stop, and an update before it replaces the app's files), so mounts nested inside a folder the app
+ * can write to don't stop it. Nothing starts from that compose, and every start checks them again.
+ * An app installed before the Hub refused that shape can then still be stopped and updated.
  */
 export async function prepareAppComposeDir(
   moduleRef: ModuleRef,
   docker: Dockerode,
   appUrn: AppUrn,
   form: AppEventFormInput,
-  options?: { excludeSubnets?: string[]; createVolumeDirs?: boolean; applyDataMoves?: boolean },
+  options?: { excludeSubnets?: string[]; createVolumeDirs?: boolean; applyDataMoves?: boolean; forTeardown?: boolean },
 ): Promise<void> {
   const appFilesManager = moduleRef.get(AppFilesManager, { strict: false });
   const marketplaceService = moduleRef.get(MarketplaceService, { strict: false });
@@ -276,6 +282,7 @@ export async function prepareAppComposeDir(
       manifest: appInfo ?? undefined,
       // A mount a data move relocated keeps its named volume where the Hub uses one (see `dataMoves`).
       dataMoves: appInfo?.data_moves,
+      refuseNestedBindMounts: options?.forTeardown !== true,
       defaultAppCpuLimit,
       knownAppIds: await knownAppIdsLookup,
       // The hosts the Hub set for this app. compose expands one it left unset from the Hub's own
@@ -300,6 +307,11 @@ export async function prepareAppComposeDir(
 
     await appFilesManager.writeDockerComposeYml(appUrn, composeFile);
   } catch (err) {
+    // Says itself what is wrong and what to do, which "Error generating docker-compose.yml" never did.
+    if (err instanceof NestedBindMountsError) {
+      logger.error(err.message);
+      throw err;
+    }
     logger.error(`Error generating docker-compose.yml file for app ${appUrn}`);
 
     if (err instanceof ZodError) {

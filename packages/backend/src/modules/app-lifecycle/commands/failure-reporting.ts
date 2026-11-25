@@ -7,15 +7,20 @@ import {
   AppLifecycleError,
   translateDockerNetworkOverlapError,
   translateKvmInstallMessage,
+  translateNestedBindMountsError,
   translateRocmKfdInstallMessage,
 } from './app-lifecycle-errors';
 
 /**
  * Turns a thrown lifecycle error into the structured failure result the queue replies with,
- * translating the known host-capability failures (ROCm /dev/kfd, KVM, Docker subnet overlap) into
- * actionable messages and reporting the rest to Sentry.
+ * translating the known host-capability failures (ROCm /dev/kfd, KVM, Docker subnet overlap) and
+ * a refusal for nested mounts into actionable messages and reporting the rest to Sentry.
  */
 export async function reportAndTranslateAppError(moduleRef: ModuleRef, err: unknown, appId: string, event: string): Promise<AppCommandFailureResult> {
+  const nestedMounts = translateNestedBindMountsError(err);
+  if (nestedMounts) {
+    return reportAndTranslateAppError(moduleRef, nestedMounts, appId, event);
+  }
   if (err instanceof AppLifecycleError) {
     const telemetryMessage = err.serviceFailure
       ? describeAppServiceFailure({ ...err.serviceFailure, logLine: undefined })

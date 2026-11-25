@@ -34,7 +34,8 @@ export class StopAppCommand extends AppLifecycleCommand {
       logger.info(`Stopping app ${appUrn}`);
 
       // Stopping never needs volume folders, and making them could block a pending store data copy (#2198).
-      await this.ensureAppDir(appUrn, form, { createVolumeDirs: false });
+      // Nor does it start anything, so an app whose mounts nest (installed before the Hub refused that) can still be stopped.
+      await this.ensureAppDir(appUrn, form, { createVolumeDirs: false, forTeardown: true });
 
       if (!form.skipEnv) {
         logger.info(`Regenerating app.env file for app ${appUrn}`);

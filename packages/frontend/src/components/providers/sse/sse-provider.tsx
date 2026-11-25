@@ -97,9 +97,9 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
   };
 
   /**
-   * A refusal the Hub can name: a missing host device or a Docker network clash. Install, start and
-   * restart all run the same checks, so all three say what stopped them instead of "see logs" (#2376).
-   * Returns whether it showed a toast.
+   * A refusal the Hub can name: a missing host device, a Docker network clash or mounts nested inside a
+   * folder the app can write to. Install, start and restart all run the same checks, so all three say
+   * what stopped them instead of "see logs" (#2376). Returns whether it showed a toast.
    */
   const showRefusalToast = (errorCode: string | undefined, appName: string, settingsPath: string | undefined): boolean => {
     if (errorCode === 'rocm_kfd_missing') {
@@ -118,6 +118,10 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
     }
     if (errorCode === 'network_overlap') {
       toast.error(t('APP_ERROR_NETWORK_OVERLAP_TOAST', { id: appName }));
+      return true;
+    }
+    if (errorCode === 'nested_bind_mounts') {
+      toast.error(t('APP_ERROR_NESTED_BIND_MOUNTS_TOAST', { id: appName }), { duration: 10000 });
       return true;
     }
     return showHostCapabilityToast(errorCode);

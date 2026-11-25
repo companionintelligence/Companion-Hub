@@ -13,6 +13,7 @@ import { RegistrationService } from '@/modules/registration/registration.service
 import { ResourceAllocatorService } from '@/modules/system/resource-allocator.service';
 import { appEventSchema, type AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@ci-hub/common/types';
+import { NestedBindMountsError } from '@/modules/docker/bind-mount-guard';
 import { prepareAppComposeDir } from '../compose-preparation';
 
 /** One captured `DockerComposeBuilder.getDockerCompose(...)` invocation, by parameter name. */
@@ -34,7 +35,13 @@ interface BuilderConstruction {
   domain: string;
   localDomain: string;
   posixPermissionsSupported: boolean;
-  options?: { loopbackHostPort?: boolean; defaultAppCpuLimit?: string; knownAppIds?: Iterable<string>; hostVariables?: Iterable<string> };
+  options?: {
+    loopbackHostPort?: boolean;
+    defaultAppCpuLimit?: string;
+    knownAppIds?: Iterable<string>;
+    hostVariables?: Iterable<string>;
+    refuseNestedBindMounts?: boolean;
+  };
 }
 
 const { builderSpy, posixProbe, schemaSpy } = vi.hoisted(() => ({
@@ -372,6 +379,20 @@ describe('prepareAppComposeDir', () => {
     });
   });
 
+  /*
+   * A version installed before the Hub refused mounts nested inside a folder the app can write to.
+   * Stop and an update write its compose only to take it down; any start builds and checks it again.
+   */
+  it('lets the builder keep nested mounts only for a compose that takes the installed version down', async () => {
+    const { moduleRef, docker } = createHarness();
+
+    await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+    expect(lastConstruction().options?.refuseNestedBindMounts).toBe(true);
+
+    await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm(), { forTeardown: true });
+    expect(lastConstruction().options?.refuseNestedBindMounts).toBe(false);
+  });
+
   it('still sweeps permissions when the volume folders cannot be made, and says why', async () => {
     const { stubs, moduleRef, docker } = createHarness();
     stubs.appFilesManager.createVolumeHostDirs.mockRejectedValue(new Error('EACCES'));
@@ -618,6 +639,18 @@ describe('prepareAppComposeDir', () => {
       expect(stubs.logger.error).toHaveBeenCalledWith(`Error generating docker-compose.yml file for app ${APP_URN}`);
       expect(stubs.logger.error).toHaveBeenCalledWith(fromError(zodError).toString());
       expect(stubs.logger.error).toHaveBeenCalledWith('Report this issue to the appstore maintainer.');
+    });
+
+    it('passes a refusal of nested mounts through as itself, so the person reads why', async () => {
+      const { stubs, moduleRef, docker } = createHarness();
+      const refusal = new NestedBindMountsError('App "nextcloud" mounts a folder inside another folder it can write to: ...');
+      stubs.subnetManager.allocateSubnet.mockRejectedValue(refusal);
+
+      const thrown = await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm()).catch((error: unknown) => error);
+
+      expect(thrown).toBe(refusal);
+      expect(stubs.logger.error).toHaveBeenCalledWith(refusal.message);
+      expect(stubs.appFilesManager.writeDockerComposeYml).not.toHaveBeenCalled();
     });
 
     it('keeps a non-Zod failure on the bare message, with no maintainer instruction', async () => {
@@ -907,7 +940,13 @@ describe('prepareAppComposeDir', () => {
       await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm({ exposureMode: 'local' }));
 
       // The manifest rides along so the route builder can fall back to its edge-auth default.
-      expect(lastConstruction().options).toEqual({ loopbackHostPort: true, manifest, knownAppIds: [], hostVariables: [] });
+      expect(lastConstruction().options).toEqual({
+        loopbackHostPort: true,
+        manifest,
+        knownAppIds: [],
+        hostVariables: [],
+        refuseNestedBindMounts: true,
+      });
     });
 
     it('keeps the host port on loopback for an app that asks for edge auth', async () => {
@@ -922,7 +961,13 @@ describe('prepareAppComposeDir', () => {
       // The stored enableAuth is no opt-out: an install that never decided also reads `false`.
       await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm({ exposureMode: 'local', enableAuth: false }));
 
-      expect(lastConstruction().options).toEqual({ loopbackHostPort: true, manifest, knownAppIds: [], hostVariables: [] });
+      expect(lastConstruction().options).toEqual({
+        loopbackHostPort: true,
+        manifest,
+        knownAppIds: [],
+        hostVariables: [],
+        refuseNestedBindMounts: true,
+      });
     });
 
     it('publishes on every interface for an app with neither', async () => {
@@ -932,7 +977,13 @@ describe('prepareAppComposeDir', () => {
 
       await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm({ exposureMode: 'local', enableAuth: true }));
 
-      expect(lastConstruction().options).toEqual({ loopbackHostPort: false, manifest, knownAppIds: [], hostVariables: [] });
+      expect(lastConstruction().options).toEqual({
+        loopbackHostPort: false,
+        manifest,
+        knownAppIds: [],
+        hostVariables: [],
+        refuseNestedBindMounts: true,
+      });
     });
 
     it('keeps the all-interfaces default and says so when the listing cannot be resolved', async () => {
@@ -942,7 +993,13 @@ describe('prepareAppComposeDir', () => {
       await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
 
       // No manifest to hand the route builder either: it decides from the form and the port alone.
-      expect(lastConstruction().options).toEqual({ loopbackHostPort: false, manifest: undefined, knownAppIds: [], hostVariables: [] });
+      expect(lastConstruction().options).toEqual({
+        loopbackHostPort: false,
+        manifest: undefined,
+        knownAppIds: [],
+        hostVariables: [],
+        refuseNestedBindMounts: true,
+      });
       expect(stubs.logger.warn).toHaveBeenCalledWith(expect.stringContaining(`No manifest for ${APP_URN}`));
     });
   });

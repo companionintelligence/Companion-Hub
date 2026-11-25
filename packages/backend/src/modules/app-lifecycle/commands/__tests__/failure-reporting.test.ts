@@ -8,6 +8,8 @@ import {
   KVM_MISSING_CODE,
   KVM_MISSING_DETAIL,
   KVM_MISSING_USER_MESSAGE,
+  NESTED_BIND_MOUNTS_CODE,
+  NESTED_BIND_MOUNTS_USER_MESSAGE,
   NETWORK_OVERLAP_CODE,
   NETWORK_OVERLAP_USER_MESSAGE,
   ROCM_KFD_MISSING_CODE,
@@ -16,6 +18,7 @@ import {
   ROCM_KFD_MISSING_USER_MESSAGE,
 } from '../app-lifecycle-errors';
 import { reportAndTranslateAppError } from '../failure-reporting';
+import { NestedBindMountsError } from '@/modules/docker/bind-mount-guard';
 
 type ModuleRefLookup = { token: unknown; options: unknown };
 
@@ -126,6 +129,25 @@ describe('reportAndTranslateAppError — result translation', () => {
       errorDetail: 'probe stderr',
       settingsPath: undefined,
     });
+  });
+
+  it('names a refusal of nested mounts with its code, keeping the folders it found as the detail', async () => {
+    const { moduleRef, reported } = createHarness();
+    const refusal = new NestedBindMountsError(
+      'App "ci-openclaw" mounts a folder inside another folder it can write to: "${APP_DATA_DIR}/data/linuxbrew" (ci-openclaw) is inside "${APP_DATA_DIR}/data", which ci-openclaw can write to.',
+    );
+
+    const result = await reportAndTranslateAppError(moduleRef, refusal, 'ci-openclaw:ci-marketplace', 'start');
+
+    expect(result).toMatchObject({
+      success: false,
+      message: NESTED_BIND_MOUNTS_USER_MESSAGE,
+      errorCode: NESTED_BIND_MOUNTS_CODE,
+      errorDetail: refusal.message,
+    });
+    expect(reported).toEqual([
+      { appUrn: 'ci-openclaw:ci-marketplace', phase: 'start', message: refusal.message, errorCode: NESTED_BIND_MOUNTS_CODE },
+    ]);
   });
 
   it('translates a Docker subnet overlap error into the retry guidance instead of the daemon text', async () => {

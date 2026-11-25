@@ -182,6 +182,8 @@
   "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Failed to install app {{id}}, <logsLink>see logs</logsLink> for more details",
   "APP_ERROR_ROCM_KFD_MISSING": "This app needs AMD ROCm. Set up ROCm in AI Settings, then retry.",
   "APP_ERROR_ROCM_KFD_MISSING_TOAST": "{{id}} needs AMD ROCm. Open <settingsLink>AI Settings</settingsLink> to set up ROCm, then retry.",
+  "APP_ERROR_NESTED_BIND_MOUNTS": "This app keeps one of its folders inside another folder it can write to, so the Hub won't start it. Update the app, or give each folder a place of its own if you added the app yourself.",
+  "APP_ERROR_NESTED_BIND_MOUNTS_TOAST": "{{id}} can't start: it keeps one of its folders inside another folder it can write to. Update the app, or give each folder a place of its own if you added it yourself.",
   "APP_ERROR_NETWORK_OVERLAP": "App network range conflict. Hub is reassigning a new internal network. Retry install or start.",
   "APP_ERROR_NETWORK_OVERLAP_TOAST": "{{id}} hit a Docker network range conflict. Retry install or start. Hub will pick a fresh internal network.",
   "APP_ERROR_OPEN_AI_SETTINGS": "Open AI Settings",

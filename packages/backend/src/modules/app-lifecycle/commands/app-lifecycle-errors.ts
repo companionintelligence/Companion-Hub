@@ -1,4 +1,5 @@
 import type { HostPortMove } from '@ci-hub/common/schemas';
+import { NestedBindMountsError } from '@/modules/docker/bind-mount-guard';
 import { extractOverlapCidrsFromError, isDockerNetworkOverlapError } from '@/modules/network/docker-network-errors';
 import type { AppServiceFailure } from '@ci-hub/common/schemas';
 
@@ -9,6 +10,9 @@ export const KVM_MISSING_CODE = 'kvm_missing';
 export const KATA_RUNTIME_MISSING_CODE = 'kata_runtime_missing';
 
 export const NETWORK_OVERLAP_CODE = 'network_overlap';
+
+/** The app's bind mounts nest inside a folder it can write to (`NestedBindMountsError`). */
+export const NESTED_BIND_MOUNTS_CODE = 'nested_bind_mounts';
 
 /** A service did not come up after `compose up`, which the Hub read from Docker (`AppLifecycleCommand.appCameUpError`). */
 export const APP_SERVICE_FAILED_CODE = 'app_service_failed';
@@ -142,6 +146,21 @@ export function translateDockerNetworkOverlapError(error: unknown, conflictingCi
   const fromMessage = extractOverlapCidrsFromError(error);
   const merged = [...new Set([...conflictingCidrs, ...fromMessage])];
   return createNetworkOverlapError(merged);
+}
+
+/** Short user-facing message for an app refused for nested mounts; the frontend maps the code to its own copy. */
+export const NESTED_BIND_MOUNTS_USER_MESSAGE =
+  "The app keeps one of its folders inside another folder it can write to, so the Hub won't start it. Update the app, or give each folder a place of its own if you added the app yourself.";
+
+/**
+ * A refusal for nested mounts, with a code the app page and its toasts name. The message with the
+ * folders, which says why, stays as the detail for the logs and the page's tooltip.
+ */
+export function translateNestedBindMountsError(error: unknown): AppLifecycleError | null {
+  if (!(error instanceof NestedBindMountsError)) {
+    return null;
+  }
+  return new AppLifecycleError(NESTED_BIND_MOUNTS_USER_MESSAGE, { code: NESTED_BIND_MOUNTS_CODE, detail: error.message });
 }
 
 export function translateRocmKfdInstallMessage(message: string): AppLifecycleError | null {
