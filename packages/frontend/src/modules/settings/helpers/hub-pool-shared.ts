@@ -106,7 +106,7 @@ export interface PoolStatus {
   enabled: boolean;
   disabledBy: 'env' | 'setting' | null;
   directions: { outbound: PoolEnabledState; inbound: PoolEnabledState };
-  reason: 'active' | 'no_peers' | 'partially_disabled' | 'disabled_by_env' | 'disabled_by_setting';
+  reason: 'active' | 'no_peers' | 'peers_unreachable' | 'partially_disabled' | 'disabled_by_env' | 'disabled_by_setting';
   routingActive: boolean;
   settings: PoolSettings;
   tailscaleAdminApiConfigured: boolean;

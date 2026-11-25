@@ -593,6 +593,7 @@ export const HubPoolSection = () => {
   const reasonCopy: Record<PoolStatus['reason'], string> = {
     active: t('HUB_POOL_REASON_ACTIVE'),
     no_peers: t('HUB_POOL_REASON_NO_PEERS'),
+    peers_unreachable: t('HUB_POOL_REASON_PEERS_UNREACHABLE'),
     partially_disabled: t('HUB_POOL_REASON_PARTIAL'),
     disabled_by_setting: t('HUB_POOL_REASON_DISABLED_SETTING'),
     disabled_by_env: t('HUB_POOL_REASON_DISABLED_ENV'),

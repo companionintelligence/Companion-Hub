@@ -170,3 +170,27 @@ fn starts_and_logs_when_a_version_cannot_be_read() {
     assert!(!log.contains("Could not read the Docker Compose version"));
     assert!(!log.contains("WARNING"));
 }
+
+#[test]
+fn stop_hub_on_an_old_compose_says_what_to_update_and_logs_it() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+
+    let error = check_docker_compose_for_stop(tempdir.path(), &versions(Some("2.32.4"), None))
+        .expect_err("Compose 2.32 cannot read the stack file to take it down");
+
+    assert_eq!(
+        error,
+        "Companion Hub needs Docker Compose 2.33 or newer. This computer has Compose 2.32.4. Update Docker, then stop the Hub again."
+    );
+    assert!(desktop_log(tempdir.path()).contains(&format!("hub.stop: {error}")));
+}
+
+#[test]
+fn stop_hub_goes_on_with_a_new_or_unreadable_compose() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+
+    for compose in [Some("2.33.0"), Some("5.7.1"), Some("dev"), None] {
+        check_docker_compose_for_stop(tempdir.path(), &versions(compose, None))
+            .unwrap_or_else(|error| panic!("{compose:?}: {error}"));
+    }
+}

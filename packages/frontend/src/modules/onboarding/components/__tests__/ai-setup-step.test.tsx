@@ -287,6 +287,11 @@ const unified128Profile = (installedCatalogIds: string[]): HardwareProfileRespon
   }) as any;
 
 const isTicked = (id: string) => (screen.getByTestId(`model-checkbox-${id}`) as HTMLInputElement).checked;
+/** Opens an Other Models group unless it is open already: one holding a ticked model starts open. */
+const openOtherGroup = async (user: ReturnType<typeof userEvent.setup>, testId: string) => {
+  const toggle = screen.getByTestId(testId);
+  if (toggle.getAttribute('aria-expanded') !== 'true') await user.click(toggle);
+};
 /** Whether a model's grid card or table row carries the Default badge. */
 const isMarkedDefault = (id: string) => within(screen.getByTestId(`model-row-${id}`)).queryByText(/default/i) !== null;
 
@@ -591,6 +596,118 @@ describe('AiSetupStep', () => {
       expect(config).toMatchObject({ selectedModels: ['qwen3-5-0-8b'], preferredModelId: 'qwen3-5-0-8b' });
     });
 
+    // #2550: with Ollama stopped, the profile listed only gemma3-270m, which the Hub had pulled and
+    // pinned. The wizard ticked it as the Default inside a collapsed group and saved it over the chat
+    // model chosen before, and cleared the vision model.
+    it('ticks nothing from what the Hub remembers while Ollama is down, and keeps the saved models', async () => {
+      const base = laptopProfile(['gemma3-270m']);
+      api.profile = {
+        ...base,
+        backends: { ...base.backends, available: [{ type: 'ollama', running: false, healthy: false }] },
+      } as any;
+      api.ollama = ollamaMissing;
+      const user = userEvent.setup();
+      const onConfigChange = vi.fn();
+      renderStep({ embedded: true, onConfigChange });
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      expect(screen.queryByText(/models? selected/)).not.toBeInTheDocument();
+      await openOtherGroup(user, 'other-group-small');
+      expect(screen.getByTestId('model-checkbox-gemma3-270m')).not.toBeChecked();
+      const config = onConfigChange.mock.calls.at(-1)?.[0];
+      expect(config).toMatchObject({ selectedModels: [], keepSavedModels: true, keepSavedEmbeddingModel: true });
+      expect(config.preferredModelId).toBeUndefined();
+      expect(config.preferredVisionModelId).toBeUndefined();
+    });
+
+    it('saves what the person ticks while Ollama is down', async () => {
+      const base = laptopProfile([]);
+      api.profile = {
+        ...base,
+        backends: { ...base.backends, available: [{ type: 'ollama', running: false, healthy: false }] },
+      } as any;
+      api.ollama = ollamaMissing;
+      const user = userEvent.setup();
+      const onConfigChange = vi.fn();
+      renderStep({ embedded: true, onConfigChange });
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      await user.click(screen.getByTestId('model-checkbox-qwen3-5-4b'));
+
+      const config = onConfigChange.mock.calls.at(-1)?.[0];
+      expect(config).toMatchObject({ selectedModels: ['qwen3-5-4b'], preferredModelId: 'qwen3-5-4b' });
+      expect(config.keepSavedModels).toBeUndefined();
+      // No embedder to pick from: the one Memory's index was built with stays saved.
+      expect(config.keepSavedEmbeddingModel).toBe(true);
+    });
+
+    it('ticks what a re-check finds once Ollama answers, though the Hub remembered it while Ollama was down', async () => {
+      const base = laptopProfile(['qwen3-5-4b']);
+      api.profile = {
+        ...base,
+        backends: { ...base.backends, available: [{ type: 'ollama', running: false, healthy: false }] },
+      } as any;
+      api.ollama = ollamaMissing;
+      const user = userEvent.setup();
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+      expect(isTicked('qwen3-5-4b')).toBe(false);
+
+      api.ollama = ollamaReady;
+      api.profile = laptopProfile(['qwen3-5-4b']);
+      await user.click(screen.getByTestId('ollama-recheck-btn'));
+      await waitFor(() => expect(screen.getByText('1 model selected')).toBeInTheDocument());
+
+      const config = await continueWith(onComplete);
+      expect(config).toMatchObject({ selectedModels: ['qwen3-5-4b'], preferredModelId: 'qwen3-5-4b' });
+      expect(config.keepSavedModels).toBeUndefined();
+    });
+
+    it('ticks what a rescan finds once Ollama answers, though the Hub remembered it while Ollama was down', async () => {
+      const base = laptopProfile(['qwen3-5-4b', 'nomic-embed-text']);
+      api.profile = {
+        ...base,
+        backends: { ...base.backends, available: [{ type: 'ollama', running: false, healthy: false }] },
+      } as any;
+      api.ollama = ollamaMissing;
+      const user = userEvent.setup();
+      const onConfigChange = vi.fn();
+      renderStep({ embedded: true, onConfigChange });
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+      expect(isTicked('qwen3-5-4b')).toBe(false);
+
+      api.ollama = ollamaReady;
+      api.profile = laptopProfile(['qwen3-5-4b', 'nomic-embed-text']);
+      await user.click(screen.getByTestId('rescan-btn'));
+      await waitFor(() => expect(screen.getByText('2 models selected')).toBeInTheDocument());
+
+      const config = onConfigChange.mock.calls.at(-1)?.[0];
+      expect(config).toMatchObject({
+        selectedModels: ['qwen3-5-4b', 'nomic-embed-text'],
+        preferredModelId: 'qwen3-5-4b',
+        preferredEmbeddingModelId: 'nomic-embed-text',
+      });
+    });
+
+    it('keeps the saved vision model when a chat model is ticked while Ollama is down', async () => {
+      const base = laptopProfile(['gemma4-e4b']);
+      api.profile = {
+        ...base,
+        backends: { ...base.backends, available: [{ type: 'ollama', running: false, healthy: false }] },
+      } as any;
+      api.ollama = ollamaMissing;
+      const user = userEvent.setup();
+      const onConfigChange = vi.fn();
+      renderStep({ embedded: true, onConfigChange });
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      await user.click(screen.getByTestId('model-checkbox-qwen3-8b'));
+
+      const config = onConfigChange.mock.calls.at(-1)?.[0];
+      expect(config).toMatchObject({ selectedModels: ['qwen3-8b'], preferredModelId: 'qwen3-8b', keepSavedVisionModel: true });
+      expect(config.preferredVisionModelId).toBeUndefined();
+    });
+
     it('keeps an embedder off the list ticked when the engine has no recommended one', async () => {
       api.profile = laptopProfile(['qwen3-5-4b', 'embeddinggemma']);
       const { onComplete } = renderStep();
@@ -627,7 +744,7 @@ describe('AiSetupStep', () => {
       const { onComplete } = renderStep();
       await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
 
-      await user.click(screen.getByTestId('other-group-small'));
+      await openOtherGroup(user, 'other-group-small');
       await user.click(screen.getByTestId('model-checkbox-qwen3-5-0-8b'));
       await user.click(screen.getByTestId('model-checkbox-qwen3-5-4b'));
 
@@ -657,7 +774,7 @@ describe('AiSetupStep', () => {
       await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
 
       await user.click(screen.getByTestId('model-checkbox-qwen3-8b'));
-      await user.click(screen.getByTestId('other-group-small'));
+      await openOtherGroup(user, 'other-group-small');
       await user.click(screen.getByTestId('model-checkbox-qwen3-5-0-8b'));
 
       expect((await continueWith(onComplete)).preferredModelId).toBe('qwen3-8b');
@@ -669,7 +786,7 @@ describe('AiSetupStep', () => {
       const { onComplete } = renderStep();
       await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
 
-      await user.click(screen.getByTestId('other-group-small'));
+      await openOtherGroup(user, 'other-group-small');
       await user.click(screen.getByTestId('model-checkbox-qwen3-5-0-8b'));
       await user.click(screen.getByTestId('model-checkbox-qwen3-5-4b'));
       await user.click(screen.getByTestId('model-checkbox-nomic-embed-text'));
@@ -693,7 +810,7 @@ describe('AiSetupStep', () => {
       await waitFor(() => expect(screen.getByText('1 model selected')).toBeInTheDocument());
 
       // Qwen 3.5 0.8B comes before Gemma 3 270M in the catalog. Neither is recommended.
-      await user.click(screen.getByTestId('other-group-small'));
+      await openOtherGroup(user, 'other-group-small');
       api.profile = laptopProfile(['gemma3-270m', 'qwen3-5-0-8b']);
       await user.click(screen.getByTestId('ollama-recheck-btn'));
       await waitFor(() => expect(within(screen.getByTestId('model-row-qwen3-5-0-8b')).getByText('Installed')).toBeInTheDocument());
@@ -724,7 +841,7 @@ describe('AiSetupStep', () => {
       await user.click(screen.getByTestId('model-checkbox-qwen3-8b'));
       api.profile = laptopProfile(['gemma3-270m']);
       await user.click(screen.getByTestId('ollama-recheck-btn'));
-      await user.click(screen.getByTestId('other-group-small'));
+      await openOtherGroup(user, 'other-group-small');
       await waitFor(() => expect(within(screen.getByTestId('model-row-gemma3-270m')).getByText('Installed')).toBeInTheDocument());
 
       expect(isTicked('gemma3-270m')).toBe(false);
@@ -788,7 +905,7 @@ describe('AiSetupStep', () => {
       await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
 
       // Gemma 3 270M comes after the unticked Qwen 3.5 0.8B in the catalog. Neither is recommended.
-      await user.click(screen.getByTestId('other-group-small'));
+      await openOtherGroup(user, 'other-group-small');
       await user.click(screen.getByTestId('model-checkbox-qwen3-5-0-8b'));
       api.profile = laptopProfile(['qwen3-5-0-8b', 'gemma3-270m']);
       await user.click(screen.getByTestId('ollama-recheck-btn'));
@@ -1117,6 +1234,36 @@ describe('AiSetupStep', () => {
     } finally {
       delete tauriWindow.__TAURI_INTERNALS__;
     }
+  });
+
+  // #2550: the profile's engine list probes vLLM at the saved URL, not the one the wizard lists models from.
+  it('clears the saved models when the person unticks every model a vLLM endpoint not saved yet serves', async () => {
+    const base = vllmProfile(['qwen3-4b-instruct-vllm']);
+    api.profile = {
+      ...base,
+      backends: {
+        ...base.backends,
+        available: [
+          { type: 'ollama', running: true, healthy: true },
+          { type: 'vllm', running: false, healthy: false },
+        ],
+      },
+    } as any;
+    api.vllm = vllmReady;
+    const user = userEvent.setup();
+    const onConfigChange = vi.fn();
+    renderStep({ embedded: true, onConfigChange });
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+    await user.click(screen.getByTestId('backend-option-vllm'));
+    await waitFor(() => expect(screen.getByText('vLLM detected')).toBeInTheDocument());
+    await waitFor(() => expect(isTicked('qwen3-4b-instruct-vllm')).toBe(true));
+
+    await user.click(screen.getByTestId('model-checkbox-qwen3-4b-instruct-vllm'));
+
+    const config = onConfigChange.mock.calls.at(-1)?.[0];
+    expect(config).toMatchObject({ backend: 'vllm', selectedModels: [] });
+    expect(config.keepSavedModels).toBeUndefined();
+    expect(config.keepSavedChatModel).toBeUndefined();
   });
 
   it('refreshes the model list on vLLM re-check so a newly served model reads as installed', async () => {
