@@ -251,7 +251,7 @@
       "source": "packages/tauri-plugin-ci-auth/Cargo.toml",
       "dest": "packages/desktop/src-tauri/vendor/tauri-plugin-ci-auth/Cargo.toml",
       "stamp": "toml",
-      "sha256": "ec6c51429d75bdce057c87ec0c7c81fe89842b40546871f6474fdb232c1e57eb",
+      "sha256": "b981939ae2fc41defe19eacfdcbfa1481ea6f3d503b34e4f5558b544e7f29e2e",
       "mark": "vendored-from: tauri-plugin-ci-auth@0.1.0 packages/tauri-plugin-ci-auth/Cargo.toml"
     },
     {
@@ -262,7 +262,7 @@
       "source": "packages/tauri-plugin-ci-auth/build.rs",
       "dest": "packages/desktop/src-tauri/vendor/tauri-plugin-ci-auth/build.rs",
       "stamp": "js",
-      "sha256": "e4d11688b28a2f04f85fde10cfd8a9bdd0d44d01c5829b99b461a68feceb897b",
+      "sha256": "2941c7b25539b94f1f16d8417072092c311f5cf54b3f89031cb6a120ae50ac95",
       "mark": "vendored-from: tauri-plugin-ci-auth@0.1.0 packages/tauri-plugin-ci-auth/build.rs"
     },
     {
@@ -273,7 +273,7 @@
       "source": "packages/tauri-plugin-ci-auth/src/lib.rs",
       "dest": "packages/desktop/src-tauri/vendor/tauri-plugin-ci-auth/src/lib.rs",
       "stamp": "js",
-      "sha256": "f14655b9316598f90bf1ff3c8510342c9cdd8abd2a59108441144a5014383290",
+      "sha256": "737cc6eab917fcbd50e6bf9c815259a53174403ac4fb6a0d0d2afcd5c2528137",
       "mark": "vendored-from: tauri-plugin-ci-auth@0.1.0 packages/tauri-plugin-ci-auth/src/lib.rs"
     },
     {
@@ -284,7 +284,7 @@
       "source": "packages/tauri-plugin-ci-auth/src/error.rs",
       "dest": "packages/desktop/src-tauri/vendor/tauri-plugin-ci-auth/src/error.rs",
       "stamp": "js",
-      "sha256": "7220a34062f2739b8701183d446435a35f3ed7cdf271a39bbb1612bd36453b59",
+      "sha256": "a4e9f262496ba71e7d8cd7b8172e188fd93fa3be0589331366d84dab7773f242",
       "mark": "vendored-from: tauri-plugin-ci-auth@0.1.0 packages/tauri-plugin-ci-auth/src/error.rs"
     },
     {
@@ -295,7 +295,7 @@
       "source": "packages/tauri-plugin-ci-auth/src/loopback.rs",
       "dest": "packages/desktop/src-tauri/vendor/tauri-plugin-ci-auth/src/loopback.rs",
       "stamp": "js",
-      "sha256": "1abcea258e6883f28d5051859f030da4e0517d5efffb33b45085cb85c18540a2",
+      "sha256": "7e6016bcb7c1b8510c8c9c928a72f3a7bf28eb5b479ff7da63d0f8d54d47868a",
       "mark": "vendored-from: tauri-plugin-ci-auth@0.1.0 packages/tauri-plugin-ci-auth/src/loopback.rs"
     },
     {
@@ -306,7 +306,7 @@
       "source": "packages/tauri-plugin-ci-auth/src/secure.rs",
       "dest": "packages/desktop/src-tauri/vendor/tauri-plugin-ci-auth/src/secure.rs",
       "stamp": "js",
-      "sha256": "ad3712ca1ff458524b2735da7d1ae83bb389e743fa423c37caf87dc30b6c5cd0",
+      "sha256": "596f7e4cbd0eec78f15e0e2c72ba3d05a9acc424c9988b3236e36b22020957b3",
       "mark": "vendored-from: tauri-plugin-ci-auth@0.1.0 packages/tauri-plugin-ci-auth/src/secure.rs"
     },
     {
@@ -317,7 +317,7 @@
       "source": "packages/tauri-plugin-ci-auth/permissions/default.toml",
       "dest": "packages/desktop/src-tauri/vendor/tauri-plugin-ci-auth/permissions/default.toml",
       "stamp": "toml",
-      "sha256": "bffe2e2df0014201d2e3c5ad65c01f0309779cf99320a442dae490838d67aa27",
+      "sha256": "f4bc13806de8fac6b1ca5cc34d63c9d2930a6be28240a98e31e8179140e3df4e",
       "mark": "vendored-from: tauri-plugin-ci-auth@0.1.0 packages/tauri-plugin-ci-auth/permissions/default.toml"
     },
     {
@@ -407,7 +407,7 @@
       "packageJson": "packages/tauri-plugin-ci-auth/Cargo.toml",
       "source": "packages/tauri-plugin-ci-auth/README.md",
       "dest": "packages/desktop/src-tauri/vendor/tauri-plugin-ci-auth/README.md",
-      "sha256": "929ed54c8b7f5eb8d9c3a1dc4410bdd3ff63fc599b0bb922ad6975cc4064dcc0",
+      "sha256": "a9c1bc1db02905bfc51de35d211f6b232a90ec7dbd36c3a6f17fb3318c7fdc97",
       "mark": "vendored-from: tauri-plugin-ci-auth@0.1.0 packages/tauri-plugin-ci-auth/README.md"
     }
   ]

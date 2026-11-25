@@ -64,9 +64,62 @@ describe('MarketplaceController demo video', () => {
       }),
       status: vi.fn(() => res),
       end: vi.fn(() => res),
+      send: vi.fn(() => res),
       headersSent: false,
       writableEnded: true,
     } as never;
+  });
+
+  /*
+   * A store's logo, screenshots and video are served from the Hub's own address, on public routes,
+   * and the browser keeps the Hub session in localStorage. An SVG opened at its own URL would run its
+   * script as the Hub, so every one of these responses sandboxes itself (see storeMediaHeaders).
+   */
+  describe("a store's files on the Hub's address", () => {
+    const SANDBOX = /default-src 'none'.*; sandbox$/;
+
+    it('serves an SVG logo sandboxed, unsniffed and as itself', async () => {
+      marketplaceService.getAppImage.mockResolvedValue({
+        image: Buffer.from('<svg><script>alert(1)</script></svg>'),
+        etag: '"e"',
+        contentType: 'image/svg+xml',
+      });
+
+      await controller.getImage('evil:some-store', res, makeReq());
+
+      expect(headers['Content-Type']).toBe('image/svg+xml');
+      expect(headers['Content-Security-Policy']).toMatch(SANDBOX);
+      expect(headers['X-Content-Type-Options']).toBe('nosniff');
+      expect(res.send).toHaveBeenCalled();
+    });
+
+    it('keeps the sandbox on a 304', async () => {
+      marketplaceService.getAppImage.mockResolvedValue({ image: Buffer.from('x'), etag: '"e"', contentType: 'image/svg+xml' });
+
+      await controller.getImage('evil:some-store', res, makeReq({ 'if-none-match': '"e"' }));
+
+      expect(res.status).toHaveBeenCalledWith(304);
+      expect(headers['Content-Security-Policy']).toMatch(SANDBOX);
+    });
+
+    it('serves a screenshot that came back as a page as bytes, not as a page', async () => {
+      marketplaceService.getAppScreenshot.mockResolvedValue({ image: Buffer.from('<html>'), etag: '"s"', contentType: 'text/html; charset=utf-8' });
+
+      await controller.getAppScreenshot('ci-memory:ci-marketplace', 'shot.png', res, makeReq());
+
+      expect(headers['Content-Type']).toBe('application/octet-stream');
+      expect(headers['Content-Security-Policy']).toMatch(SANDBOX);
+    });
+
+    it('sandboxes the demo video too', async () => {
+      marketplaceService.getAppDemoVideo.mockResolvedValue(DEMO_FILE);
+
+      await controller.getAppDemoVideo('ci-memory:ci-marketplace', res, makeReq());
+
+      expect(headers['Content-Type']).toBe('video/mp4');
+      expect(headers['Content-Security-Policy']).toMatch(SANDBOX);
+      expect(headers['X-Content-Type-Options']).toBe('nosniff');
+    });
   });
 
   it('404s when no local demo video exists', async () => {
