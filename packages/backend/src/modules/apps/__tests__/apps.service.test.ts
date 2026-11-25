@@ -106,6 +106,7 @@ describe('AppsService', () => {
             nodeFqdn: 'hub-tailscale-1.example.ts.net',
             tailnet: 'example.ts.net',
             supportsServices: true,
+            httpsAvailable: true,
           }),
           getServePermission: vi.fn().mockReturnValue({ denied: false, remedy: null, deniedSince: null }),
           getServeStatus: vi.fn().mockResolvedValue({ entries: [] }),
@@ -637,6 +638,7 @@ describe('AppsService', () => {
               nodeFqdn: 'hub-tailscale-1.example.ts.net',
               tailnet: 'example.ts.net',
               supportsServices: true,
+              httpsAvailable: true,
             }),
             getServePermission: vi.fn().mockReturnValue({ denied: false, remedy: null, deniedSince: null }),
             getServeStatus: vi.fn().mockResolvedValue({ entries: [] }),
@@ -671,9 +673,13 @@ describe('AppsService', () => {
         moduleRef.get.mockImplementation(((token: unknown) => {
           if (token === TailscaleService) {
             return {
-              getStatus: vi
-                .fn()
-                .mockResolvedValue({ installed: true, connected: true, nodeFqdn: 'hub-tailscale-1.example.ts.net', supportsServices: true }),
+              getStatus: vi.fn().mockResolvedValue({
+                installed: true,
+                connected: true,
+                nodeFqdn: 'hub-tailscale-1.example.ts.net',
+                supportsServices: true,
+                httpsAvailable: true,
+              }),
               getServePermission: vi.fn().mockReturnValue({ denied: false, remedy: null, deniedSince: null }),
               getServeStatus: vi.fn().mockResolvedValue({ entries: serveEntries }),
             };
