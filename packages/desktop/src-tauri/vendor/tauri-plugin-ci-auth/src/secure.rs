@@ -1,6 +1,5 @@
 // vendored-from: tauri-plugin-ci-auth@0.1.0 packages/tauri-plugin-ci-auth/src/secure.rs
-// Copyright (c) Lifescope Inc. All rights reserved.
-// Private & Confidential — Property of Lifescope Inc. Do not distribute.
+// Copyright (c) Lifescope Inc. Licensed under the PolyForm Noncommercial License 1.0.0; see LICENSE.md.
 
 //! Secure storage behind a trait. Desktop production uses the OS keychain through keyring, and iOS and
 //! Android use the native plugin (mobile.rs). Tests use MemoryBackend. Nothing here writes a secret to
