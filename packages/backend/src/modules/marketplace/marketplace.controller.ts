@@ -23,6 +23,7 @@ import { pipeline } from 'node:stream/promises';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppStoreService } from '../app-stores/app-store.service';
 import { AuthGuard } from '../auth/auth.guard';
+import { storeMediaHeaders } from './store-media-headers';
 import { HubManagerGuard } from '../auth/hub-manager.guard';
 import { RegistrationGuard } from '../registration/registration.guard';
 import { parseByteRange } from './app-media.helpers';
@@ -102,6 +103,7 @@ export class MarketplaceController {
     return AppListingDto.parse({ info, iconUrl }, { reportOnly: true });
   }
 
+  // Public, as an <img> sends no session: a store's file on the Hub's own address, see storeMediaHeaders.
   @Get('apps/:urn/image')
   async getImage(@Param('urn') urn: string, @Res() res: Response, @Req() req: Request) {
     const appUrn = castAppUrn(urn);
@@ -115,7 +117,7 @@ export class MarketplaceController {
     if (req.headers['if-none-match'] === etag) {
       res.set({
         'Cache-Control': 'public, max-age=0, stale-while-revalidate=86400, stale-if-error=86400',
-        'Content-Type': contentType || 'image/jpeg',
+        ...storeMediaHeaders(contentType, 'image/jpeg'),
         ETag: etag,
       });
       return res.status(304).end();
@@ -123,7 +125,7 @@ export class MarketplaceController {
 
     res.set({
       'Cache-Control': 'public, max-age=0, stale-while-revalidate=86400, stale-if-error=86400',
-      'Content-Type': contentType || 'image/jpeg',
+      ...storeMediaHeaders(contentType, 'image/jpeg'),
       ETag: etag,
     });
 
@@ -161,7 +163,7 @@ export class MarketplaceController {
     if (req.headers['if-none-match'] === etag) {
       res.set({
         'Cache-Control': 'public, max-age=0, stale-while-revalidate=86400, stale-if-error=86400',
-        'Content-Type': contentType || 'image/jpeg',
+        ...storeMediaHeaders(contentType, 'image/jpeg'),
         ETag: etag,
       });
       return res.status(304).end();
@@ -169,7 +171,7 @@ export class MarketplaceController {
 
     res.set({
       'Cache-Control': 'public, max-age=0, stale-while-revalidate=86400, stale-if-error=86400',
-      'Content-Type': contentType || 'image/jpeg',
+      ...storeMediaHeaders(contentType, 'image/jpeg'),
       ETag: etag,
     });
 
@@ -190,7 +192,8 @@ export class MarketplaceController {
     const headers: Record<string, string> = {
       'Accept-Ranges': 'bytes',
       'Cache-Control': 'public, max-age=0, stale-while-revalidate=86400, stale-if-error=86400',
-      'Content-Type': contentType || 'video/mp4',
+      // A store's file on the Hub's own address: see storeMediaHeaders.
+      ...storeMediaHeaders(contentType, 'video/mp4'),
     };
     if (etag) {
       headers.ETag = etag;

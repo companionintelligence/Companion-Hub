@@ -534,9 +534,13 @@ export class AppHelpers {
    *
    * @param appUrn App URN to configure.
    * @param form Submitted app configuration.
+   * @param options.allowMissingRequired leave a required field with no value and no default out of
+   *   the env, with a warning, instead of throwing. For an update's first boot of a new version only:
+   *   a field the version adds cannot be filled in before the update, because the settings form shows
+   *   the installed version's fields, and the next start still throws for it.
    * @throws If the manifest is invalid or a required variable is missing.
    */
-  public generateEnvFile = async (appUrn: AppUrn, form: AppEventFormInput) => {
+  public generateEnvFile = async (appUrn: AppUrn, form: AppEventFormInput, options: { allowMissingRequired?: boolean } = {}) => {
     const { internalIp, envFilePath, rootFolderHost, userSettings } = this.config.getConfig();
 
     const config = await this.appFilesManager.getInstalledAppInfo(appUrn);
@@ -789,6 +793,12 @@ export class AppHelpers {
       }
 
       if (field.required) {
+        if (options.allowMissingRequired) {
+          this.logger.warn(
+            `[AppHelpers] ${appUrn} requires ${field.label || field.env_variable} (${envVar}), which has no value yet; it is left unset until it is filled in`,
+          );
+          continue;
+        }
         throw new Error(`Variable ${field.label || field.env_variable} is required`);
       }
     }

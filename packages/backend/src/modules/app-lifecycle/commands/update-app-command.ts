@@ -232,6 +232,9 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       await this.ensureAppDir(appUrn, form, { createVolumeDirs: this.wasRunning, applyDataMoves: false });
       // Written once here so a write that fails (a read-only app.env) fails while the old version still runs.
       await appHelpers.generateEnvFile(appUrn, form);
+      // With no app.env before the update, the one just made from the previous config is what the
+      // previous files go back with if the update fails before the new version is started.
+      previousEnv ||= (await appFilesManager.getAppEnv(appUrn))?.content;
 
       tookDown = true;
       try {
@@ -251,7 +254,11 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       // environment. The start that follows a successful update rewrites app.env from the new files,
       // so compose then saw a changed container and recreated it seconds into its first start, which
       // cut Uptime Kuma 2's data conversion off half-way.
-      await appHelpers.generateEnvFile(appUrn, form);
+      //
+      // A required field this version adds is left unset rather than failing the update: the settings
+      // form shows the installed version's fields, so it cannot be filled in until the update is done,
+      // and the next start still asks for it.
+      await appHelpers.generateEnvFile(appUrn, form, { allowMissingRequired: true });
 
       // An app that was stopped when the update began is updated and left stopped. Starting it here,
       // as every update did, switched on something its owner had switched off.
