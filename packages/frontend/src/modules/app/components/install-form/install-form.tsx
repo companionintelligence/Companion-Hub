@@ -1162,7 +1162,7 @@ export const InstallForm: React.FC<IProps> = ({
             onCheckedChange={onChange}
             label={
               <>
-                {t('APP_INSTALL_FORM_PORT_ON_NETWORK')}
+                {watchPort ? t('APP_INSTALL_FORM_PORT_ON_NETWORK_WITH_PORT', { port: watchPort }) : t('APP_INSTALL_FORM_PORT_ON_NETWORK')}
                 <HintMarker anchorClass="port-on-network-hint" hint={t('APP_INSTALL_FORM_PORT_ON_NETWORK_HINT')} />
               </>
             }

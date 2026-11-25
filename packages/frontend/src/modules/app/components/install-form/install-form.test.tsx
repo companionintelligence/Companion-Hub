@@ -2312,6 +2312,18 @@ describe('InstallForm', () => {
       expect(onSubmit.mock.calls[0]?.[0].portOnNetwork).toBe(true);
     });
 
+    it("names the app's port in its label, and leaves the number out when there is none", async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext());
+      const first = renderWith(exposableInfo());
+      await waitFor(() => expect(portSwitch()).toBeInTheDocument());
+      expect(screen.getByRole('switch', { name: /APP_INSTALL_FORM_PORT_ON_NETWORK_WITH_PORT/ })).toBeInTheDocument();
+      first.unmount();
+
+      renderWith({ ...(exposableInfo() as object), port: undefined } as unknown as AppInfo);
+      await waitFor(() => expect(portSwitch()).toBeInTheDocument());
+      expect(screen.queryByRole('switch', { name: /APP_INSTALL_FORM_PORT_ON_NETWORK_WITH_PORT/ })).not.toBeInTheDocument();
+    });
+
     it('is not on screen in simple mode unless an installed app has it on', async () => {
       vi.mocked(useAppContext).mockReturnValue(exposableContext({ user: { advancedMode: false } }));
       const first = renderWith(exposableInfo());
