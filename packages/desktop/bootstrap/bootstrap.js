@@ -731,13 +731,16 @@
     el.command.hidden = !command;
     el.commandText.textContent = command;
 
+    // Nothing comes before a Windows restart: no install button or "Waiting for Docker…" spinner
+    // to pull the eye away from the line that says to restart.
+    const restartNeeded = page.wslInstallResult?.state === 'needs_restart' || page.installResult?.state === 'needs_restart';
     const shown = {
       startHub: view === 'stopped',
       restartHub: view === 'stuck',
       keepWaiting: view === 'stuck',
       tryAgain: view === 'failed',
-      installDocker: view === 'docker' && access === 'not_installed',
-      installWslEngine: offersWslEngine(view, progress),
+      installDocker: view === 'docker' && access === 'not_installed' && !restartNeeded,
+      installWslEngine: offersWslEngine(view, progress) && !restartNeeded,
       startEngine: view === 'docker' && wslEngineStopped(progress),
       copyError: view === 'failed' && Boolean(errorToCopy(progress)),
       openLogs: view === 'stuck' || view === 'failed' || (view === 'starting' && elapsed > LOGS_LINK_AFTER_S),
@@ -757,9 +760,6 @@
     el.startEngine.setAttribute('aria-busy', starting ? 'true' : 'false');
     el.actions.hidden = !Object.values(shown).some(Boolean);
     el.aside.hidden = view !== 'stopped';
-    // Nothing comes before a Windows restart, so no "Waiting for Docker…" spinner to pull the eye
-    // away from the line that says to restart.
-    const restartNeeded = page.wslInstallResult?.state === 'needs_restart' || page.installResult?.state === 'needs_restart';
     el.waiting.hidden = view !== 'docker' || restartNeeded;
   }
 
