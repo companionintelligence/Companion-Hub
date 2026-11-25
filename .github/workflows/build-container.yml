@@ -125,7 +125,7 @@ jobs:
           echo "✓ All required secrets are present"
 
       - name: Log in to the Container registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -166,7 +166,7 @@ jobs:
 
       - name: Extract metadata (tags, labels) for Docker
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
           images: ${{ steps.tags.outputs.image_repo }}
           # Channel tag always; the versioned tag only when the resolver produced one
@@ -196,7 +196,7 @@ jobs:
             org.opencontainers.image.description=Companion Hub appliance runtime
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
         with:
           # Skip caching the binfmt image — concurrent jobs race on the same
           # cache key ("Unable to reserve cache ... another job may be creating
@@ -205,10 +205,10 @@ jobs:
           cache-image: false
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           push: true
@@ -248,7 +248,7 @@ jobs:
             sentry_auth_token=${{ secrets.SENTRY_AUTH_TOKEN }}
 
       - name: Install crane
-        uses: imjasonh/setup-crane@v0.7
+        uses: imjasonh/setup-crane@feee3b6bb0d4c68370f256a4502498c9227e5c6b # v0.7
 
       - name: Push to Portal registry
         id: portal
@@ -348,12 +348,12 @@ jobs:
     steps:
       # Fresh runner: nothing is inherited from the deploy job, including crane or binfmt.
       - name: Install crane
-        uses: imjasonh/setup-crane@v0.7
+        uses: imjasonh/setup-crane@feee3b6bb0d4c68370f256a4502498c9227e5c6b # v0.7
 
       # linux/arm64 `docker run` on ubuntu-latest needs binfmt; without it the gate reports
       # exec format error even when the pushed arm64 manifest slot is correct.
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
         with:
           cache-image: false
 
