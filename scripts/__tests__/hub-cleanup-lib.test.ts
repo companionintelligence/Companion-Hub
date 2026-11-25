@@ -118,10 +118,12 @@ describe('hub-cleanup-lib', () => {
     expect(isRelatedVolume('runtipi_media')).toBe(true);
     expect(isRelatedVolume('postgres_data')).toBe(false);
     expect(isRelatedVolume('anotherstack_prod_data')).toBe(false);
+    // The cross-domain e2e stack's database, which a match on `ci_hub_pgdata` anywhere in the name used to catch.
+    expect(isRelatedVolume('ci-hub-e2e_ci_hub_pgdata')).toBe(true);
   });
 
   it("matches the Hub stack's volumes by their whole name, never a name that only contains one", () => {
-    // As the prod compose file pins them, and as compose names them in a checkout's ci-hub project.
+    // As the prod compose file pins them and as compose names them in a checkout's ci-hub project.
     for (const name of ['ci_hub_pgdata', 'ci_hub_app_data', 'hub_tailscale_state', 'ci-hub_ci_hub_pgdata', 'ci-os-hub_hub_tailscale_state']) {
       expect(isHubStackVolume(name)).toBe(true);
       expect(isRelatedVolume(name)).toBe(true);

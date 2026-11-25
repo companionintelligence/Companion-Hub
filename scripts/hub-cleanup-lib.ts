@@ -103,6 +103,8 @@ export function isRelatedVolume(volumeName: string): boolean {
     isHubStackVolume(volumeName) ||
     volumeName.startsWith('e2e-') ||
     volumeName.startsWith('test-e2e-') ||
+    // The cross-domain e2e stack runs docker-compose.local.yml as project `ci-hub-e2e` (e2e/pre-test-cleanup.sh).
+    volumeName.startsWith('ci-hub-e2e_') ||
     /^(ci_os_hub|ci-os-hub|ci_hub|ci-hub)[-_].*_data$/.test(volumeName)
   );
 }

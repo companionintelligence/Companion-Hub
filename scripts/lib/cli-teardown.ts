@@ -116,7 +116,7 @@ function applianceDockerTeardown(removeVolumes: boolean, docker: HubDocker): voi
 }
 
 /**
- * The Hub's own volumes on the engine. Compose labels the ones it created for a Hub project, and
+ * The Hub's own volumes on the engine. Compose labels the ones it created for a Hub project and
  * `compose down -v` finds them the same way. That includes the `runtipi` and `runcihub` projects an
  * upgraded appliance still carries. The Hub stack's volumes are also matched by their whole name,
  * since one the desktop app created before compose (`hub_tailscale_state`) has no label. A volume
@@ -646,7 +646,9 @@ export async function resetHub(env: HubEnv, force: boolean, dryRun = false): Pro
   downHub(env, { volumes: true });
   verifyHubVolumesRemoved(docker);
   const hostData = cleanHub(env, { appsAlreadyRemoved: true, docker });
-  const dockerLeft = lingeringDockerState(current, appliance ? ['ci-hub', 'ci-os-hub'] : ['ci-hub'], docker);
+  const dockerLeft = appliance
+    ? lingeringDockerState(current, [...APPLIANCE_PROJECTS], [...APPLIANCE_PROJECTS], docker)
+    : lingeringDockerState(current, ['ci-hub'], [], docker);
   const hostDataLeft = hostData.filter((result) => !result.removed);
   // Every removal above is best-effort, so the success line is printed only once a fresh look finds
   // nothing left. Before this check, reset said "host data were removed" on the 3 of 17 fleet nodes
@@ -712,14 +714,18 @@ type DockerLeftovers = { lines: string[]; commands: string[] };
  * `docker volume rm`, and `compose down` all run best-effort, and a volume still attached to a
  * container survives its `volume rm`; a surviving `ci_hub_pgdata` would hand the "fresh" Hub its
  * old database.
+ *
+ * `labelledVolumeProjects` names the projects whose labelled volumes this reset removed (the
+ * appliance teardown, {@link hubVolumes}). A checkout's reset removes volumes only through compose
+ * and by name, so a labelled volume compose did not declare would be reported on every run.
  */
-function lingeringDockerState(plan: AppTeardownPlan, hubProjects: string[], docker: HubDocker): DockerLeftovers {
+function lingeringDockerState(plan: AppTeardownPlan, hubProjects: string[], labelledVolumeProjects: string[], docker: HubDocker): DockerLeftovers {
   const allContainers = docker.capture(['ps', '-a', '--format', '{{.Names}}']);
   const allVolumes = docker.capture(['volume', 'ls', '--format', '{{.Name}}']);
   const hubContainers = hubProjects.map((project) =>
     docker.capture(['ps', '-a', '--filter', `label=com.docker.compose.project=${project}`, '--format', '{{.Names}}']),
   );
-  const hubProjectVolumes = hubProjects.map((project) =>
+  const hubProjectVolumes = labelledVolumeProjects.map((project) =>
     docker.capture(['volume', 'ls', '--filter', `label=com.docker.compose.project=${project}`, '--format', '{{.Name}}']),
   );
   if (!allContainers.ok || !allVolumes.ok || [...hubContainers, ...hubProjectVolumes].some((listing) => !listing.ok)) {

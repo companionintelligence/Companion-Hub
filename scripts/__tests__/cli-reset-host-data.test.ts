@@ -222,6 +222,26 @@ describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('cihub
     );
   });
 
+  it('in a checkout, does not report a labelled ci-hub volume it never set out to remove', async () => {
+    // A volume from the appliance's `user-config/hub-compose.yml` on the same engine. A checkout's reset
+    // removes volumes through compose and by name only, so listing it would end every reset "incomplete".
+    state.appliance = false;
+    const repo = path.join(state.home, 'repo');
+    const rootFolder = path.join(repo, 'hub-data');
+    mkdirSync(rootFolder, { recursive: true });
+    writeFileSync(path.join(repo, '.env.dev'), `ROOT_FOLDER_HOST=${rootFolder}\n`);
+    process.chdir(repo);
+    state.listings = {
+      'volume ls --filter label=com.docker.compose.project=ci-hub --format {{.Name}}': listed('ci-hub_hub_backups'),
+    };
+
+    await expect(resetHub('dev', true)).resolves.toBe(true);
+
+    expect(state.calls).not.toContain('volume rm ci-hub_hub_backups');
+    expect(box('Reset incomplete')).toBeUndefined();
+    expect(process.exitCode).toBeUndefined();
+  });
+
   it('cihub recreate does not start a Hub on the surviving data', async () => {
     await recreateHub('prod', { detached: true, attached: false }, true);
 
