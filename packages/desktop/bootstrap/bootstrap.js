@@ -223,6 +223,8 @@
     installRunning: false,
     /** True while Install Docker Engine in WSL is running (it can take several minutes). */
     wslInstallRunning: false,
+    /** What the running or last WSL button did: 'install', or 'start' for an engine set up already. */
+    wslAction: 'install',
     /** Why the last WSL engine install didn't finish. */
     wslInstallError: null,
     /** Last install_docker_engine_alternative_command result, kept on screen like installResult. */
@@ -488,7 +490,7 @@
           osType() === 'linux'
             ? 'Companion Hub runs on Docker. Start Docker and Companion Hub will carry on from here.'
             : osType() === 'windows'
-              ? 'Companion Hub runs on Docker. Open Docker Desktop, or install Docker Engine in WSL instead, and Companion Hub will carry on from here.'
+              ? 'Companion Hub runs on Docker. Open Docker Desktop, or use Docker Engine in WSL instead, and Companion Hub will carry on from here.'
               : 'Companion Hub runs on Docker. Open Docker Desktop and Companion Hub will carry on from here.',
         ];
     }
@@ -602,12 +604,19 @@
   function dockerStatusNote() {
     if (engineStarting()) return 'Starting the engine… This can take a minute.';
     if (page.engineError) return `The engine didn't start. ${page.engineError}`;
+    const starting = page.wslAction === 'start';
     if (page.wslInstallRunning) {
-      return 'Installing Docker Engine in WSL… This can take several minutes, and Windows may ask for permission.';
+      return starting
+        ? 'Starting Docker in WSL… This can take a minute.'
+        : 'Installing Docker Engine in WSL… This can take several minutes, and Windows may ask for permission.';
     }
-    if (page.wslInstallError) return `Docker Engine in WSL didn't finish installing. ${page.wslInstallError}`;
+    if (page.wslInstallError) {
+      return starting
+        ? `Docker in WSL didn't start. ${page.wslInstallError}`
+        : `Docker Engine in WSL didn't finish installing. ${page.wslInstallError}`;
+    }
     if (page.wslInstallResult?.state === 'completed' && page.commandRunning) {
-      return 'Docker Engine is installed in WSL. Starting Companion Hub…';
+      return starting ? 'Docker in WSL is running. Starting Companion Hub…' : 'Docker Engine is installed in WSL. Starting Companion Hub…';
     }
     if (page.wslInstallResult?.state === 'needs_restart') {
       return page.wslInstallResult.detail || 'WSL is turned on. Restart Windows, then open Companion Hub to finish setting up Docker.';
@@ -623,7 +632,9 @@
       return result.detail || 'Docker is installed. Companion Hub will carry on once Docker is running.';
     }
     if (offersWslEngine(page.view, page.progress)) {
-      return 'No Docker Desktop needed: Companion Hub can install the free, open-source Docker Engine inside WSL and start itself on it.';
+      return page.progress?.wsl_engine_set_up
+        ? 'Docker Engine is already set up in WSL on this PC. Companion Hub can start it and run on it instead of Docker Desktop.'
+        : 'No Docker Desktop needed: Companion Hub can install the free, open-source Docker Engine inside WSL and start itself on it.';
     }
     return 'Service status shows here once Docker is running.';
   }
@@ -723,6 +734,7 @@
     el.installWslEngine.setAttribute('aria-busy', page.wslInstallRunning ? 'true' : 'false');
     // Second to Install Docker when both show; the way forward when it is the only one.
     el.installWslEngine.className = shown.installDocker ? 'btn btn-outline' : 'btn btn-primary';
+    setText(el.installWslEngine, progress?.wsl_engine_set_up ? 'Start Docker in WSL' : 'Install Docker Engine in WSL');
     const starting = engineStarting();
     el.startEngine.disabled = starting;
     el.startEngine.setAttribute('aria-busy', starting ? 'true' : 'false');
@@ -891,13 +903,22 @@
    */
   async function installWslEngine() {
     if (page.installRunning || page.wslInstallRunning) return;
+    // An engine set up already only needs choosing and starting (start_wsl_engine_command), which
+    // is quicker and says what it does; the installer would skip every step and get there too.
+    const start = Boolean(page.progress?.wsl_engine_set_up);
+    page.wslAction = start ? 'start' : 'install';
     page.wslInstallRunning = true;
     page.wslInstallError = null;
     page.wslInstallResult = null;
     render();
     let installed = false;
     try {
-      page.wslInstallResult = await invoke('install_docker_engine_alternative_command');
+      if (start) {
+        await invoke('start_wsl_engine_command');
+        page.wslInstallResult = { state: 'completed', detail: null };
+      } else {
+        page.wslInstallResult = await invoke('install_docker_engine_alternative_command');
+      }
       installed = page.wslInstallResult?.state === 'completed';
     } catch (error) {
       page.wslInstallError = errorText(error) || 'Try again, or open Docker Desktop instead.';

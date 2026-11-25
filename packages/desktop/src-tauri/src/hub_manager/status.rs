@@ -603,6 +603,7 @@ pub fn get_startup_progress() -> StartupProgress {
         hub_api_live: docker_available && probe_hub_api_live(),
         docker_access,
         docker_engine: hub_docker_engine(&data_dir).map(|engine| engine.kind.as_str().to_string()),
+        wsl_engine_set_up: !docker_available && wsl_engine_set_up(),
     }
 }
 

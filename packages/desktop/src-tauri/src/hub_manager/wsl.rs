@@ -755,12 +755,65 @@ pub(crate) fn wake_wsl_engine_for_start(data_dir: &Path) -> Result<(), String> {
     start_wsl_engine_and_wait(data_dir, &engine)
 }
 
-/// Start engine on the startup screens: start the WSL engine and wait until Docker answers.
+/// Start Docker in WSL for a Hub still saved on another engine (Docker Desktop, stopped), when an
+/// earlier install set the WSL engine up: points the Docker CLI's context at it, then moves it to
+/// TLS if it isn't (which starts the distro, and needs the context first: it acts only for a WSL
+/// engine Hub or context). Returns the engine to wake.
+#[cfg(windows)]
+fn choose_set_up_wsl_engine(
+    data_dir: &Path,
+) -> Result<crate::docker_engine::PinnedDockerEngine, String> {
+    if !wsl_engine_set_up() {
+        return Err(
+            "This Hub doesn't run on the Docker engine inside WSL, and none is set up on this PC."
+                .to_string(),
+        );
+    }
+    let cert_dir = crate::docker_engine::wsl_engine_client_cert_dir().ok_or_else(|| {
+        "There is no user profile with the WSL engine's client certificate.".to_string()
+    })?;
+    point_wsl_engine_context_at_tls(&cert_dir)?;
+    let output = docker_command()
+        .env_remove("DOCKER_HOST")
+        .args(["context", "use", DOCKER_CONTEXT_WSL_ENGINE])
+        .output()
+        .map_err(|error| format!("Couldn't run docker context use: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "docker context use {DOCKER_CONTEXT_WSL_ENGINE} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let _ = append_desktop_log_for(
+        data_dir,
+        "wsl.engine",
+        "Start Docker in WSL: the Docker CLI uses the WSL engine this PC has set up again.",
+    );
+    // Keepalive first. The TLS check boots the distro to run its script, and WSL stops a distro
+    // nothing holds open a few seconds after: seen on Windows, the Hub came up on it, the distro
+    // stopped nine seconds later, and the wait below had to start it again, restarting the Hub.
+    start_wsl_keepalive(data_dir, true)?;
+    ensure_wsl_engine_tls(data_dir)?;
+    wsl_engine_to_wake(data_dir)
+        .ok_or_else(|| "The Docker CLI didn't switch to the WSL engine.".to_string())
+}
+
+/// Start engine on the startup screens: start the WSL engine and wait until Docker answers. For a
+/// Hub saved on another engine, the WSL engine this PC has set up (Start Docker in WSL).
 pub fn start_wsl_engine(data_dir: &Path) -> Result<String, String> {
     #[cfg(windows)]
     {
-        let engine = hub_wsl_engine(data_dir)
-            .ok_or_else(|| "This Hub doesn't run on the Docker engine inside WSL.".to_string())?;
+        let engine = match hub_wsl_engine(data_dir) {
+            Some(engine) => engine,
+            None => choose_set_up_wsl_engine(data_dir).map_err(|error| {
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "wsl.engine",
+                    &format!("Start Docker in WSL: {error}"),
+                );
+                error
+            })?,
+        };
         start_wsl_engine_and_wait(data_dir, &engine).map_err(|error| {
             let _ =
                 append_desktop_log_for(data_dir, "wsl.engine", &format!("Start engine: {error}"));

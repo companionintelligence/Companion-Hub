@@ -123,6 +123,35 @@ pub(crate) const WSL_ENGINE_CLIENT_FILES: [(&str, &str); 3] = [
     ("key.pem", "key.pem"),
 ];
 
+/// Whether `cert_dir` holds all three client files, none of them empty.
+#[cfg(any(test, windows))]
+pub(crate) fn wsl_engine_client_files_present(cert_dir: &std::path::Path) -> bool {
+    WSL_ENGINE_CLIENT_FILES.iter().all(|(name, _)| {
+        cert_dir
+            .join(name)
+            .metadata()
+            .is_ok_and(|meta| meta.len() > 0)
+    })
+}
+
+/// Whether this PC has a Docker engine in WSL that Companion Hub set up: the client certificate it
+/// copies once Docker answers, and an Ubuntu distro for it. Docker inside the distro can't be seen
+/// without starting it, which a status check mustn't do; the certificate comes only after Docker
+/// was up, so it stands in. Lets the startup screen offer Start Docker in WSL instead of an install
+/// to a Hub still saved on Docker Desktop. Cheap: three file checks and a remembered distro listing.
+pub fn wsl_engine_set_up() -> bool {
+    #[cfg(windows)]
+    {
+        crate::docker_engine::wsl_engine_client_cert_dir()
+            .is_some_and(|dir| wsl_engine_client_files_present(&dir))
+            && wsl_engine_distro().is_some()
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
 /// `docker context` `--docker` value that points the `wsl-engine` context at the TLS listener with
 /// the client certificate in `dir`.
 #[cfg(any(test, windows))]
@@ -159,12 +188,7 @@ const CLIENT_COPY_RECHECK: Duration = Duration::from_secs(400 * 24 * 60 * 60);
 fn wsl_engine_tls_in_place(data_dir: &Path, cert_dir: &Path) -> bool {
     let on_tls =
         hub_wsl_engine(data_dir).is_some_and(|engine| engine.docker_host == WSL_ENGINE_TLS_HOST);
-    let files_there = WSL_ENGINE_CLIENT_FILES.iter().all(|(name, _)| {
-        cert_dir
-            .join(name)
-            .metadata()
-            .is_ok_and(|meta| meta.len() > 0)
-    });
+    let files_there = wsl_engine_client_files_present(cert_dir);
     let fresh = cert_dir
         .join("key.pem")
         .metadata()
@@ -243,7 +267,7 @@ pub(crate) fn icacls_owner_only_args(user: &str) -> [String; 4] {
 
 /// Points the `wsl-engine` Docker context at the TLS listener, creating it if it is missing.
 #[cfg(windows)]
-fn point_wsl_engine_context_at_tls(cert_dir: &Path) -> Result<(), String> {
+pub(crate) fn point_wsl_engine_context_at_tls(cert_dir: &Path) -> Result<(), String> {
     let endpoint = wsl_engine_context_endpoint(cert_dir);
     let context = crate::docker_engine::DOCKER_CONTEXT_WSL_ENGINE;
     let exists = docker_command()
@@ -406,6 +430,26 @@ mod tests {
         let installer = crate::hub_manager::wsl2_engine_user_script();
         assert!(!installer.contains("/T /Q"));
         assert!(installer.contains("& icacls.exe $file /reset /Q"));
+    }
+
+    #[test]
+    fn a_set_up_engine_needs_all_three_client_files_and_none_empty() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        assert!(!wsl_engine_client_files_present(dir.path()));
+        for name in ["ca.pem", "cert.pem"] {
+            std::fs::write(dir.path().join(name), "-----BEGIN CERTIFICATE-----\n").unwrap();
+        }
+        assert!(
+            !wsl_engine_client_files_present(dir.path()),
+            "key.pem missing"
+        );
+        std::fs::write(dir.path().join("key.pem"), "").unwrap();
+        assert!(
+            !wsl_engine_client_files_present(dir.path()),
+            "key.pem empty"
+        );
+        std::fs::write(dir.path().join("key.pem"), "-----BEGIN PRIVATE KEY-----\n").unwrap();
+        assert!(wsl_engine_client_files_present(dir.path()));
     }
 
     #[test]

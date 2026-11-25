@@ -550,6 +550,9 @@ pub struct StartupProgress {
     /// The engine the Hub runs on (`wsl-engine`, `desktop`, ...), when known. The startup
     /// screens explain the WSL engine stopping instead of offering Docker Desktop's steps.
     pub docker_engine: Option<String>,
+    /// While Docker doesn't answer: this PC has a Docker engine in WSL set up already
+    /// ([`wsl_engine_set_up`]), so the startup screen offers Start Docker in WSL, not an install.
+    pub wsl_engine_set_up: bool,
 }
 
 /// Get the Hub data directory (platform-specific)
