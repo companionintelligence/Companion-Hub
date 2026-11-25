@@ -1,8 +1,9 @@
 /**
- * A third-party action named by a tag runs whatever its owner points the tag at next, with the
- * job's token and secrets: the signing credentials, the R2 token, the registry passwords. Each is
- * pinned to a full commit SHA, with the tag it was taken from as a comment. GitHub's own actions
- * (`actions/*`, `github/*`) and this repository's (`./`) are left as they are.
+ * An action named by a tag runs whatever its owner points the tag at next, with the job's token and
+ * secrets: the signing credentials, the R2 token, the registry passwords. Each is pinned to a full
+ * commit SHA, with the release it was taken from as a comment. GitHub's own actions (`actions/*`,
+ * `github/*`) too: a smaller risk than a third party's, but a tag of theirs moves just the same.
+ * Only this repository's own (`./`) and `docker://` images are left out.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -28,15 +29,16 @@ const uses = [...workflowFiles(path.join(repoRoot, '.github/workflows')), ...wor
     .map((ref) => ({ file: path.relative(repoRoot, file), ref })),
 );
 
-const thirdParty = uses.filter(({ ref }) => !ref.startsWith('./') && !/^(actions|github)\//.test(ref) && !ref.startsWith('docker://'));
+const remote = uses.filter(({ ref }) => !ref.startsWith('./') && !ref.startsWith('docker://'));
 
-describe('third-party GitHub Actions', () => {
-  it('are found', () => {
-    expect(thirdParty.length).toBeGreaterThan(0);
+describe('GitHub Actions from other repositories', () => {
+  it("are found, GitHub's own among them", () => {
+    expect(remote.length).toBeGreaterThan(0);
+    expect(remote.some(({ ref }) => /^(actions|github)\//.test(ref))).toBe(true);
   });
 
   it('are each pinned to a full commit SHA', () => {
-    const unpinned = thirdParty.filter(({ ref }) => !/@[0-9a-f]{40}$/.test(ref)).map(({ file, ref }) => `${file}: ${ref}`);
+    const unpinned = remote.filter(({ ref }) => !/@[0-9a-f]{40}$/.test(ref)).map(({ file, ref }) => `${file}: ${ref}`);
     expect(unpinned).toEqual([]);
   });
 });
