@@ -1332,7 +1332,9 @@ describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
   it.each(['/dev/sg0', '/dev/sg', '/dev/bsg/0:0:0:0', '/dev/uinput', '/dev/input', '/dev/input/event3', '/dev/hidraw0', '/dev/HIDRAW1'])(
     'flags %s, which reaches a disk or the person at the host',
     (device) => {
-      expect(collectServiceSecurityViolations({ devices: [`${device}:${device}`] }).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_DEVICE_NOT_ALLOWED');
+      expect(collectServiceSecurityViolations({ devices: [`${device}:${device}`] }).map((v) => v.message)).toContain(
+        'CUSTOM_APP_ERROR_DEVICE_NOT_ALLOWED',
+      );
     },
   );
 

@@ -65,8 +65,19 @@ jobs:
       # Runs after a lint, knip, or tsc failure too, so a failing check cannot hide the test results.
       # `!cancelled()` rather than `always()` stops a run that a newer push cancels. The `Install bun`
       # outcome also stands for setup: that step is skipped unless checkout, Node, and dependencies succeeded.
+      # CI-Marketplace checks listings with copies of the Hub's listing rules; this clone lets
+      # common's marketplace-rules-parity test compare them with the Hub's own, and fail when a rule
+      # changed here without the copy (CI_REQUIRE_MARKETPLACE turns a missing clone into a failure).
+      # Anonymous: the marketplace is public. Its dev branch is what ships listings.
+      - name: Fetch CI-Marketplace for the rules comparison
+        if: ${{ !cancelled() && steps.bun.outcome == 'success' }}
+        run: git clone --depth 1 --branch dev https://github.com/companionintelligence/ci-marketplace.git "$RUNNER_TEMP/ci-marketplace"
+
       - name: Run tests
         if: ${{ !cancelled() && steps.bun.outcome == 'success' }}
+        env:
+          CI_MARKETPLACE_DIR: ${{ runner.temp }}/ci-marketplace
+          CI_REQUIRE_MARKETPLACE: "1"
         run: pnpm run test
 
   build:
