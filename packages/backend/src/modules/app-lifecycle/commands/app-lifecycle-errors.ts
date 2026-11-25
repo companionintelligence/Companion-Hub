@@ -14,6 +14,9 @@ export const NETWORK_OVERLAP_CODE = 'network_overlap';
 /** The app's bind mounts nest inside a folder it can write to (`NestedBindMountsError`). */
 export const NESTED_BIND_MOUNTS_CODE = 'nested_bind_mounts';
 
+/** An update refused a new version whose bind mounts nest before it touched the installed one (`nestedBindMountsUpdateError`). */
+export const NESTED_BIND_MOUNTS_UPDATE_CODE = 'nested_bind_mounts_update';
+
 /** A service did not come up after `compose up`, which the Hub read from Docker (`AppLifecycleCommand.appCameUpError`). */
 export const APP_SERVICE_FAILED_CODE = 'app_service_failed';
 
@@ -167,9 +170,13 @@ export function translateNestedBindMountsError(error: unknown): AppLifecycleErro
 export const NESTED_BIND_MOUNTS_UPDATE_USER_MESSAGE =
   "The new version keeps one of its folders inside another folder it can write to, so the Hub didn't install it. The installed version is unchanged.";
 
-/** The update's own refusal of a new version with nested mounts (see `translateNestedBindMountsError`). */
+/**
+ * The update's own refusal of a new version with nested mounts (see `translateNestedBindMountsError`).
+ * A code of its own: an update can also fail with `NESTED_BIND_MOUNTS_CODE` once the installed version
+ * is down (its start or its rollback refused). The page must not say the app is unchanged then.
+ */
 export function nestedBindMountsUpdateError(error: NestedBindMountsError): AppLifecycleError {
-  return new AppLifecycleError(NESTED_BIND_MOUNTS_UPDATE_USER_MESSAGE, { code: NESTED_BIND_MOUNTS_CODE, detail: error.message });
+  return new AppLifecycleError(NESTED_BIND_MOUNTS_UPDATE_USER_MESSAGE, { code: NESTED_BIND_MOUNTS_UPDATE_CODE, detail: error.message });
 }
 
 export function translateRocmKfdInstallMessage(message: string): AppLifecycleError | null {

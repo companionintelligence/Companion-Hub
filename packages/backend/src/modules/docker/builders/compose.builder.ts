@@ -104,9 +104,9 @@ export interface ComposeBuilderOptions {
   /**
    * Whether a bind mount inside another folder the app can write to stops the build, as it does by
    * default. Off only where the compose is written to stop or take down the version already
-   * installed (`prepareAppComposeDir`'s `forTeardown`): nothing starts from it, and every start
-   * checks the mounts again (`DockerService.assertBindMountsSafe`). An app installed from a listing
-   * that nested its folders can then still be stopped, and updated to a version that keeps them apart.
+   * installed (`prepareAppComposeDir`'s `forTeardown`): nothing starts from it. Every start checks
+   * the mounts again (`DockerService.assertBindMountsSafe`). An app installed from a listing that
+   * nested its folders can then still be stopped and updated to a version that keeps them apart.
    */
   refuseNestedBindMounts?: boolean;
 }

@@ -175,7 +175,7 @@ describe('DockerComposeBuilder', () => {
 
     it('builds nested folders when the compose only takes the installed version down', async () => {
       // An app installed from a listing that nested its folders: Stop and an update write its compose
-      // to run `down`, and every start checks the mounts again (DockerService.assertBindMountsSafe).
+      // to run `down`. Every start checks the mounts again (DockerService.assertBindMountsSafe).
       const services: ServiceInput[] = [
         {
           name: 'app',

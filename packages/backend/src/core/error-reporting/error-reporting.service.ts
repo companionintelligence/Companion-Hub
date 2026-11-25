@@ -8,6 +8,7 @@ import {
   KATA_RUNTIME_MISSING_CODE,
   KVM_MISSING_CODE,
   NESTED_BIND_MOUNTS_CODE,
+  NESTED_BIND_MOUNTS_UPDATE_CODE,
   NETWORK_OVERLAP_CODE,
   ROCM_KFD_MISSING_CODE,
 } from '@/modules/app-lifecycle/commands/app-lifecycle-errors';
@@ -148,6 +149,7 @@ const ERROR_CODE_CLASSIFICATIONS: Readonly<Record<string, AppFailureClassificati
   [NETWORK_OVERLAP_CODE]: { category: 'user_environment', errorClass: 'network-overlap' },
   // A listing (or a custom app) that keeps a folder inside another it can write to: the app's layout, not the Hub.
   [NESTED_BIND_MOUNTS_CODE]: { category: 'app_config', errorClass: 'nested-bind-mounts' },
+  [NESTED_BIND_MOUNTS_UPDATE_CODE]: { category: 'app_config', errorClass: 'nested-bind-mounts' },
   // The report's text ends in the app's own log, which can say anything. A crash that logs "Permission denied"
   // would read as the device's, and one that logs a bind on 443 would not be captured at all.
   [APP_SERVICE_FAILED_CODE]: { category: 'app_runtime', errorClass: 'container-exited' },

@@ -133,7 +133,7 @@ describe('UpdateAppCommand', () => {
       }
     });
 
-    it("writes the installed version's compose only to take it down, and the new version's as any start does", async () => {
+    it("writes the installed version's compose only to take it down and the new version's as any start does", async () => {
       // A version installed before the Hub refused mounts nested inside a folder the app can write to:
       // its compose has to be written for the `down`, or the update that brings the new layout can't run.
       const order: string[] = [];
@@ -169,7 +169,7 @@ describe('UpdateAppCommand', () => {
       expect(result).toMatchObject({
         success: false,
         rolledBack: true,
-        errorCode: 'nested_bind_mounts',
+        errorCode: 'nested_bind_mounts_update',
         message: expect.stringContaining('The installed version is unchanged'),
         errorDetail: expect.stringContaining('/data/linuxbrew'),
       });

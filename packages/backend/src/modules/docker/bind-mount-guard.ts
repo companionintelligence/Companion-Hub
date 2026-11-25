@@ -21,8 +21,8 @@ export class NestedBindMountsError extends Error {
 /**
  * The refusal of a manifest whose bind mounts sit inside another folder the app can write to
  * (`findNestedBindMounts`, with the host paths the app is granted allowed), or `null` when none do.
- * Read from the manifest's own paths: the builder refuses an install with it, and an update refuses
- * a new version with it before it takes the running one down.
+ * Read from the manifest's own paths. The builder refuses an install with it. An update refuses a
+ * new version with it before it takes the running one down.
  */
 export function nestedManifestMountsRefusal(
   services: readonly { name: string; volumes?: readonly { hostPath?: string; readOnly?: boolean }[] }[],

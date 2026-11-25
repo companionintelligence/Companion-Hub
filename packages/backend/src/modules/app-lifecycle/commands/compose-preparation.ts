@@ -71,8 +71,8 @@ async function knownAppIds(
  * have changed since the last run.
  *
  * `forTeardown`: the compose is written only to stop or take down the version already installed
- * (Stop, and an update before it replaces the app's files), so mounts nested inside a folder the app
- * can write to don't stop it. Nothing starts from that compose, and every start checks them again.
+ * (Stop and an update before it replaces the app's files), so mounts nested inside a folder the app
+ * can write to don't stop it. Nothing starts from that compose. Every start checks them again.
  * An app installed before the Hub refused that shape can then still be stopped and updated.
  */
 export async function prepareAppComposeDir(

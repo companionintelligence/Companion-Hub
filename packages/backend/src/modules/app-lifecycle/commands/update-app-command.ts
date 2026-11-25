@@ -121,7 +121,7 @@ export class UpdateAppCommand extends AppLifecycleCommand {
     const architecture = this.moduleRef.get(ConfigurationService, { strict: false })?.get('architecture');
     const nestedRefusal = nestedManifestMountsRefusal(mergeArchitectureOverrides(toInstall.services, toInstall.overrides, architecture), appUrn);
     if (nestedRefusal) {
-      // The folders it found are named only here: the reply carries the short message.
+      // The reply's message is the short one. The folders it found go in its detail and in this log line.
       logger.error(nestedRefusal.message);
       return { ...(await this.handleAppError(nestedBindMountsUpdateError(nestedRefusal), appUrn, 'update_error')), rolledBack: true };
     }

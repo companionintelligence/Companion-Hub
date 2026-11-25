@@ -171,7 +171,7 @@ describe('SSEProvider', () => {
       );
     });
 
-    it('says the app keeps a folder inside another it can write to, and what to do', () => {
+    it('says the app keeps a folder inside another it can write to and what to do', () => {
       const send = renderProvider();
 
       send({ errorCode: 'nested_bind_mounts' });
@@ -183,7 +183,7 @@ describe('SSEProvider', () => {
     });
   });
 
-  it('says an update was refused for a new version whose folders nest, and that the installed one is unchanged', () => {
+  it('says an update was refused for a new version whose folders nest and that the installed one is unchanged', () => {
     let onEvent: ((data: unknown) => void) | undefined;
     mockUseSSE.mockImplementation((config: { onEvent: (data: unknown) => void }) => {
       onEvent = config.onEvent;
@@ -198,12 +198,35 @@ describe('SSEProvider', () => {
       </QueryClientProvider>,
     );
 
-    act(() => onEvent?.({ event: 'update_error', appUrn: 'comfyui:ci-marketplace', errorCode: 'nested_bind_mounts' }));
+    act(() => onEvent?.({ event: 'update_error', appUrn: 'comfyui:ci-marketplace', errorCode: 'nested_bind_mounts_update' }));
 
     expect(mockToastError).toHaveBeenCalledExactlyOnceWith(
       "comfyui wasn't updated: its new version keeps one of its folders inside another folder it can write to. The installed version is unchanged.",
       { duration: 10000 },
     );
+  });
+
+  it("doesn't say the installed version is unchanged when the refusal came after it was taken down", () => {
+    let onEvent: ((data: unknown) => void) | undefined;
+    mockUseSSE.mockImplementation((config: { onEvent: (data: unknown) => void }) => {
+      onEvent = config.onEvent;
+    });
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter>
+          <SSEProvider>
+            <div>child</div>
+          </SSEProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    // The new version's start (or the rollback's) refused by the mount check: the app may be stopped.
+    act(() => onEvent?.({ event: 'update_error', appUrn: 'comfyui:ci-marketplace', appStatus: 'stopped', errorCode: 'nested_bind_mounts' }));
+
+    expect(mockToastError).toHaveBeenCalledTimes(1);
+    render(<MemoryRouter>{mockToastError.mock.calls[0]?.[0] as ReactNode}</MemoryRouter>);
+    expect(screen.getByRole('link', { name: 'see logs' })).toBeInTheDocument();
   });
 
   it('links app operation failures to the logs tab via "see logs"', async () => {
