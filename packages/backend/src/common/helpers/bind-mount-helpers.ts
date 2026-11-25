@@ -73,6 +73,11 @@ function isWriteRefusal(error: unknown): boolean {
   return ['EACCES', 'EPERM', 'EBUSY'].some((code) => isFsErrorWithCode(error, code));
 }
 
+/** A rename some mounts (FUSE, vboxsf, SMB) refuse where a write in place still works. */
+function isRenameRefusal(error: unknown): boolean {
+  return isWriteRefusal(error) || ['EXDEV', 'ENOTSUP', 'ETXTBSY'].some((code) => isFsErrorWithCode(error, code));
+}
+
 async function removeQuietly(filePath: string): Promise<void> {
   try {
     await fs.promises.unlink(filePath);
@@ -81,16 +86,62 @@ async function removeQuietly(filePath: string): Promise<void> {
   }
 }
 
-/** Flush the new content to disk before the rename, so a power cut can't leave the target empty. */
+/** A temporary file older than this was left by a write that never reached its rename. */
+const LEFTOVER_TEMPORARY_AGE_MS = 60_000;
+
+/**
+ * Deletes the `.tmp` files a crash or a kill left beside `filePath` between a write and its rename.
+ * The token's copies hold the tunnel secret, so a factory reset removes them with the token.
+ */
+export async function removeLeftoverTemporaries(filePath: string, olderThanMs = LEFTOVER_TEMPORARY_AGE_MS): Promise<void> {
+  const dir = path.dirname(filePath);
+  const prefix = `.${path.basename(filePath)}.`;
+  let entries: string[];
+  try {
+    entries = (await fs.promises.readdir(dir)).map(String);
+  } catch {
+    return;
+  }
+  const now = Date.now();
+  await Promise.all(
+    entries.map(async (entry) => {
+      if (!entry.startsWith(prefix) || !entry.endsWith('.tmp')) return;
+      const stamp = /^\d+-(\d+)-\d+$/.exec(entry.slice(prefix.length, -'.tmp'.length));
+      if (stamp && now - Number(stamp[1]) >= olderThanMs) {
+        await removeQuietly(path.join(dir, entry));
+      }
+    }),
+  );
+}
+
+/**
+ * Flush the new content to disk before the rename, so a power cut can't leave the target empty.
+ * `r+`, not `r`: Windows flushes only a handle opened for writing and refuses the rest.
+ */
 async function syncFile(filePath: string): Promise<void> {
-  const handle = await fs.promises.open(filePath, 'r');
+  const handle = await fs.promises.open(filePath, 'r+');
   try {
     await handle.sync();
-  } catch {
-    /* Some mounts can't fsync. The rename still keeps readers off a half-written file. */
+  } catch (error) {
+    // Some mounts can't fsync at all. The rename still keeps readers off a half-written file.
+    if (!['EINVAL', 'ENOTSUP', 'ENOSYS'].some((code) => isFsErrorWithCode(error, code))) {
+      throw error;
+    }
   } finally {
     await handle.close();
   }
+}
+
+/** A symlinked file is written through, as the write in place did, rather than replaced by a plain file. */
+async function resolveReplaceTarget(filePath: string): Promise<string> {
+  try {
+    if ((await fs.promises.lstat(filePath)).isSymbolicLink()) {
+      return await fs.promises.realpath(filePath);
+    }
+  } catch {
+    /* Missing, or a link that leads nowhere: the path itself is replaced. */
+  }
+  return filePath;
 }
 
 /**
@@ -105,7 +156,10 @@ async function replaceFileContent(filePath: string, content: string, fileMode: n
   try {
     await fs.promises.writeFile(tempPath, content, { encoding: 'utf8', mode: fileMode, flag: 'wx' });
   } catch (error) {
-    await removeQuietly(tempPath);
+    // EEXIST: the file is someone else's, so it stays.
+    if (!isFsErrorWithCode(error, 'EEXIST')) {
+      await removeQuietly(tempPath);
+    }
     if (isWriteRefusal(error)) return 'temp-refused';
     throw error;
   }
@@ -116,10 +170,39 @@ async function replaceFileContent(filePath: string, content: string, fileMode: n
     return 'replaced';
   } catch (error) {
     await removeQuietly(tempPath);
-    if (isWriteRefusal(error)) return 'rename-refused';
+    if (isRenameRefusal(error)) return 'rename-refused';
     throw error;
   }
 }
+
+/** Paths this process has warned about falling back to a write in place; once each is enough. */
+const warnedInPlaceWrites = new Set<string>();
+
+async function writeHealableTextFileNow(filePath: string, content: string, fileMode: number): Promise<void> {
+  await ensureWritableFile(filePath, fileMode);
+
+  const target = await resolveReplaceTarget(filePath);
+  await removeLeftoverTemporaries(target);
+  let outcome = await replaceFileContent(target, content, fileMode);
+  // Only a folder that refused the new file needs the repair. A refused rename (a mount point, a
+  // sticky folder) gets nothing from it and the repair would open the folder to everyone.
+  if (outcome === 'temp-refused') {
+    await retryWritableFile(filePath, fileMode);
+    outcome = await replaceFileContent(target, content, fileMode);
+  }
+  if (outcome !== 'replaced') {
+    if (!warnedInPlaceWrites.has(target)) {
+      warnedInPlaceWrites.add(target);
+      console.warn(
+        `${target}: its folder refused the ${outcome === 'temp-refused' ? 'temporary file' : 'rename'}, so it is written in place and a reader can see it empty`,
+      );
+    }
+    await fs.promises.writeFile(filePath, content, { encoding: 'utf8', mode: fileMode });
+  }
+}
+
+/** The last write queued for each path. Two writes to one file run in the order they were asked for. */
+const queuedWrites = new Map<string, Promise<void>>();
 
 /**
  * Write a bind-mounted file with permission recovery for stale root-owned paths. Readers see the
@@ -127,17 +210,16 @@ async function replaceFileContent(filePath: string, content: string, fileMode: n
  * the file is written in place as before.
  */
 export async function writeHealableTextFile(filePath: string, content: string, fileMode = 0o644): Promise<void> {
-  await ensureWritableFile(filePath, fileMode);
-
-  let outcome = await replaceFileContent(filePath, content, fileMode);
-  // Only a folder that refused the new file needs the repair. A refused rename (a mount point, a
-  // sticky folder) gets nothing from it, and the repair would open the folder to everyone.
-  if (outcome === 'temp-refused') {
-    await retryWritableFile(filePath, fileMode);
-    outcome = await replaceFileContent(filePath, content, fileMode);
-  }
-  if (outcome !== 'replaced') {
-    await fs.promises.writeFile(filePath, content, { encoding: 'utf8', mode: fileMode });
+  const key = path.resolve(filePath);
+  const write = (queuedWrites.get(key) ?? Promise.resolve()).then(() => writeHealableTextFileNow(filePath, content, fileMode));
+  const settled = write.catch(() => undefined);
+  queuedWrites.set(key, settled);
+  try {
+    await write;
+  } finally {
+    if (queuedWrites.get(key) === settled) {
+      queuedWrites.delete(key);
+    }
   }
 }
 

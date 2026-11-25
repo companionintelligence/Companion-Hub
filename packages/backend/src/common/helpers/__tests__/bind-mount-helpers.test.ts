@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import {
   quarantineStalePath,
   readTextFileIfExists,
+  removeLeftoverTemporaries,
   resetPosixPermissionSupportCache,
   supportsPosixPermissions,
   writeHealableTextFile,
@@ -14,6 +15,10 @@ describe('bind-mount-helpers', () => {
 
   beforeEach(() => {
     fs.mkdirSync(tmpRoot, { recursive: true });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   afterAll(() => {
@@ -93,7 +98,7 @@ describe('bind-mount-helpers', () => {
       expect(fs.readdirSync(dir)).toEqual(['apps.yml']);
     });
 
-    it('writes in place where the folder refuses the rename, and cleans up', async () => {
+    it('writes in place where the folder refuses the rename and cleans up', async () => {
       const filePath = join(tmpRoot, 'token');
       fs.writeFileSync(filePath, 'old-token', 'utf-8');
       vi.spyOn(fs.promises, 'rename').mockRejectedValue(Object.assign(new Error('EBUSY'), { code: 'EBUSY' }));
@@ -125,6 +130,58 @@ describe('bind-mount-helpers', () => {
 
       expect(fs.readFileSync(filePath, 'utf-8')).toBe('old');
       expect(fs.readdirSync(tmpRoot).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+    });
+
+    it('removes the copy a killed write left beside the token', async () => {
+      const dir = join(tmpRoot, 'tunnel');
+      fs.mkdirSync(dir, { recursive: true });
+      const leftover = `.token.7-${Date.now() - 120_000}-1.tmp`;
+      const someoneElses = '.token.notes.tmp';
+      fs.writeFileSync(join(dir, leftover), 'old-secret');
+      fs.writeFileSync(join(dir, someoneElses), 'keep');
+
+      await writeHealableTextFile(join(dir, 'token'), 'new-token');
+
+      expect(fs.readdirSync(dir).sort()).toEqual([someoneElses, 'token'].sort());
+    });
+
+    it('removes a fresh leftover when asked to clear everything', async () => {
+      const dir = join(tmpRoot, 'tunnel');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(join(dir, `.token.7-${Date.now()}-1.tmp`), 'secret');
+
+      await removeLeftoverTemporaries(join(dir, 'token'), 0);
+
+      expect(fs.readdirSync(dir)).toEqual([]);
+    });
+
+    it('writes through a symlinked file instead of replacing the link', async () => {
+      const realPath = join(tmpRoot, 'real-token');
+      const linkPath = join(tmpRoot, 'token');
+      fs.writeFileSync(realPath, 'old-token', 'utf-8');
+      fs.symlinkSync(realPath, linkPath);
+
+      await writeHealableTextFile(linkPath, 'new-token');
+
+      expect(fs.lstatSync(linkPath).isSymbolicLink()).toBe(true);
+      expect(fs.readFileSync(realPath, 'utf-8')).toBe('new-token');
+    });
+
+    it('finishes two writes to one file in the order they were asked for', async () => {
+      const filePath = join(tmpRoot, 'apps.yml');
+      fs.writeFileSync(filePath, 'old', 'utf-8');
+      const realRename = fs.promises.rename.bind(fs.promises);
+      let renames = 0;
+      vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+        renames += 1;
+        // The first write is the slow one; without the queue the second would land first.
+        if (renames === 1) await new Promise((resolve) => setTimeout(resolve, 20));
+        return realRename(from, to);
+      });
+
+      await Promise.all([writeHealableTextFile(filePath, 'first'), writeHealableTextFile(filePath, 'second')]);
+
+      expect(fs.readFileSync(filePath, 'utf-8')).toBe('second');
     });
   });
 
