@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { APP_STARTING_MIDDLEWARE, TraefikLabelsBuilder, withAppStartingPage } from '../traefik-labels.builder';
+import { APP_STARTING_MIDDLEWARE, TraefikLabelsBuilder, withAppStartingPage, withSignInUnderFileProvider } from '../traefik-labels.builder';
 
 const base = {
   internalPort: 12002,
@@ -200,5 +200,38 @@ describe('withAppStartingPage', () => {
 
     expect(withAppStartingPage(local)).toEqual(local);
     expect(withAppStartingPage(tcpOnly)).toEqual(tcpOnly);
+  });
+});
+
+describe('withSignInUnderFileProvider', () => {
+  // The Hub container's labels define `ci-hub@docker`, and the Hub's own image update leaves them as
+  // the installed compose file had them. `ci-hub@file` is what the Hub wrote on this boot, so a
+  // manifest's own router gets the current sign-in, cache header included (CI-Engineering#510).
+  it('puts the file provider’s sign-in where a manifest named the Docker provider’s, in the same place', () => {
+    const labels = withSignInUnderFileProvider({
+      'traefik.http.routers.app-api.rule': 'Host(`app.ci.lan`) && PathPrefix(`/api`)',
+      'traefik.http.routers.app-api.middlewares': 'app-strip@docker,CI-HUB@docker',
+      'traefik.http.routers.app-files.middlewares': 'ci-hub@docker',
+    });
+
+    expect(labels['traefik.http.routers.app-api.middlewares']).toBe('app-strip@docker,ci-hub@file');
+    expect(labels['traefik.http.routers.app-files.middlewares']).toBe('ci-hub@file');
+    expect(labels['traefik.http.routers.app-api.rule']).toBe('Host(`app.ci.lan`) && PathPrefix(`/api`)');
+  });
+
+  it('names the sign-in once when a chain already has the file provider’s', () => {
+    const labels = withSignInUnderFileProvider({ 'traefik.http.routers.app.middlewares': 'ci-hub@file,app-headers@docker,ci-hub@docker' });
+
+    expect(labels['traefik.http.routers.app.middlewares']).toBe('ci-hub@file,app-headers@docker');
+  });
+
+  it('leaves chains without the Docker provider’s sign-in and every other label alone', () => {
+    const labels = {
+      'traefik.http.routers.app.middlewares': 'app-headers@docker, ci-hub@file',
+      'traefik.http.middlewares.app-headers.headers.customresponseheaders.X-Note': 'ci-hub@docker',
+      'traefik.tcp.routers.db.middlewares': 'ci-hub@docker',
+    };
+
+    expect(withSignInUnderFileProvider(labels)).toEqual(labels);
   });
 });

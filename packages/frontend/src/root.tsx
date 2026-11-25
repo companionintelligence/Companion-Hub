@@ -427,10 +427,11 @@ async function runClientLoader(request: Request) {
     }
   }
 
+  // An unpaired Hub opens on pairing, whatever page was asked for, `/login` included. A signed-in page
+  // lands on `/login` when its session ends. A reset, a removal in the Portal and a factory reset all
+  // end it. Signing in leads nowhere there: every page after it comes back here. Letting `/login`
+  // through left the person on a sign-in form until they loaded the Hub's address again (#2555).
   if (registration.kind === 'ok' && requiresDeviceRegistration(registration.status)) {
-    if (url.pathname === '/login') {
-      return null;
-    }
     if (url.pathname !== '/device-registration') {
       return redirect('/device-registration');
     }
