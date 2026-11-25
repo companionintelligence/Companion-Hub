@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useAppContext } from '@/context/app-context';
 import { useDnsAvailability } from '@/modules/app/components/install-form/use-dns-availability';
 import { fetchDnsAvailability } from '@/lib/cloudflare-api';
+import { CloudflareSubdomainField } from '@/modules/app/components/install-form/cloudflare-subdomain-field';
 import PortExposeCreatePage from './port-expose-create-page';
 import { TranslatableError } from '@/types/error.types';
 
@@ -55,7 +56,7 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
  * is read instead.
  */
 vi.mock('@/modules/app/components/install-form/cloudflare-subdomain-field', () => ({
-  CloudflareSubdomainField: () => null,
+  CloudflareSubdomainField: vi.fn(() => null),
 }));
 
 // The check the form makes on submit finds every name free, so the tests reach what follows it.
@@ -261,6 +262,24 @@ describe('PortExposeCreatePage', () => {
       fireEvent.change(screen.getByPlaceholderText('CUSTOM_APP_NAME_PLACEHOLDER'), { target: { value: 'Hub' } });
 
       await waitFor(() => expect(checkEnabled()).toBe(false));
+    });
+
+    // The check stops for the Hub's name, so the answer it gave the name before would stay under the field.
+    it("clears an earlier answer under Subdomain once the name becomes the Hub's", async () => {
+      DOMAINS.domains = [{ id: '2', domain: 'ci1.pw', isDefault: true, offered: true }];
+      renderPage();
+      const subdomainError = () => vi.mocked(CloudflareSubdomainField).mock.lastCall?.[0].localSubdomainError;
+
+      fireEvent.change(screen.getByPlaceholderText('CUSTOM_APP_NAME_PLACEHOLDER'), { target: { value: 'Hubs' } });
+      await waitFor(() => expect(checkEnabled()).toBe(true));
+      act(() => {
+        vi.mocked(useDnsAvailability).mock.lastCall?.[0].setError('localSubdomain', { message: 'hubs is taken' });
+      });
+      await waitFor(() => expect(subdomainError()).toBe('hubs is taken'));
+
+      fireEvent.change(screen.getByPlaceholderText('CUSTOM_APP_NAME_PLACEHOLDER'), { target: { value: 'Hub' } });
+
+      await waitFor(() => expect(subdomainError()).toBeUndefined());
     });
   });
 
