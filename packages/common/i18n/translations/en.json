@@ -1180,6 +1180,7 @@
   "SETTINGS_NETWORK_TAILSCALE_PREAUTH_HELP": "Create a reusable or one-off key in the Tailscale admin console, then paste it here to join without a browser on the server.",
   "SETTINGS_NETWORK_TAILSCALE_CONNECT_KEY_SUBMIT": "Connect with key",
   "SETTINGS_NETWORK_TAILSCALE_ALREADY_CONNECTED": "Already connected to Tailscale.",
+  "SETTINGS_NETWORK_TAILSCALE_RECONNECTED": "Connected to Tailscale again.",
   "SETTINGS_NETWORK_TAILSCALE_AUTH_OPENING": "Complete sign-in in the new browser tab, then return here.",
   "SETTINGS_NETWORK_TAILSCALE_STATE": "Daemon state",
   "SETTINGS_NETWORK_TAILSCALE_GET_KEY": "Get pre-auth key",
