@@ -95,6 +95,49 @@ pub(crate) fn save_window_geometry(app_handle: &tauri::AppHandle) {
     }
 }
 
+/// The tray's first item reads **Hide Hub** while the main window shows and **Show Hub** while it
+/// is in the tray.
+pub(crate) fn show_hide_label(shown: bool) -> &'static str {
+    if shown {
+        "Hide Hub"
+    } else {
+        "Show Hub"
+    }
+}
+
+/// Whether the main window shows. `create_tray` sets where it starts. After that only the main
+/// thread changes it: the tray menu, the window's close button and `note_main_window_shown`, which
+/// queues its update there.
+static MAIN_WINDOW_SHOWN: AtomicBool = AtomicBool::new(false);
+
+/// The tray's first item. It lives in app state so that whatever shows the window outside the
+/// tray (opening the app again, a deep link) can keep the label in step. Otherwise the item kept
+/// reading **Show Hub** over a window that was back and hiding it took two clicks
+/// (Companion-Hub#2537).
+struct ShowHideItem(MenuItem<tauri::Wry>);
+
+fn main_window_shown() -> bool {
+    MAIN_WINDOW_SHOWN.load(Ordering::SeqCst)
+}
+
+fn set_main_window_shown(app: &tauri::AppHandle, shown: bool) {
+    MAIN_WINDOW_SHOWN.store(shown, Ordering::SeqCst);
+    if let Some(show_hide) = app.try_state::<ShowHideItem>() {
+        let _ = show_hide.0.set_text(show_hide_label(shown));
+    }
+}
+
+/// Records that the main window was shown from outside the tray, so the tray offers to hide it.
+///
+/// The update runs on the main thread, queued behind the window's own show request. A second launch
+/// on Linux calls this from the single-instance D-Bus thread. Setting the label there would hold
+/// that thread until the main thread is free. A close or tray click handled in between could also
+/// leave the flag saying hidden under a window that then shows.
+pub(crate) fn note_main_window_shown(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || set_main_window_shown(&handle, true));
+}
+
 fn describe_hub_status(status: &crate::hub_manager::HubStatus) -> String {
     match status {
         crate::hub_manager::HubStatus::DockerNotAvailable => "docker not available".to_string(),
@@ -141,8 +184,15 @@ async fn hub_health_ok(client: &reqwest::Client, base_url: &str) -> bool {
     false
 }
 
-pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
-    let show_hide = MenuItem::with_id(app, "show_hide", "Hide Hub", true, None::<&str>)?;
+/// `window_shown` says whether setup showed the main window: a login start leaves it in the tray.
+pub fn create_tray(app: &App, window_shown: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let show_hide = MenuItem::with_id(
+        app,
+        "show_hide",
+        show_hide_label(window_shown),
+        true,
+        None::<&str>,
+    )?;
     let sep1 = PredefinedMenuItem::separator(app)?;
     let start_hub = MenuItem::with_id(app, "start_hub", "Start Hub", true, None::<&str>)?;
     let stop_hub = MenuItem::with_id(app, "stop_hub", "Stop Hub", false, None::<&str>)?;
@@ -180,19 +230,14 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
         ],
     )?;
 
-    // Track window visibility
-    let window_visible = Arc::new(AtomicBool::new(true));
-    let visible_for_event = Arc::clone(&window_visible);
+    // A second launch during setup queues its update behind setup, so it lands on this item.
+    MAIN_WINDOW_SHOWN.store(window_shown, Ordering::SeqCst);
+    app.manage(ShowHideItem(show_hide));
 
     // Keep refs for background updates
     let status_item = Arc::new(status);
     let start_item = Arc::new(start_hub);
     let stop_item = Arc::new(stop_hub);
-    let show_hide_item = Arc::new(show_hide);
-
-    // Share show_hide_item with the window close event handler
-    let show_hide_for_close = Arc::clone(&show_hide_item);
-    let visible_for_close = Arc::clone(&window_visible);
 
     // Register close-requested handler to hide instead of quit
     if let Some(window) = app.get_webview_window("main") {
@@ -203,14 +248,11 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(win) = app_handle.get_webview_window("main") {
                     save_window_geometry(&app_handle);
                     let _ = win.hide();
-                    visible_for_close.store(false, Ordering::Relaxed);
-                    let _ = show_hide_for_close.set_text("Show Hub");
+                    set_main_window_shown(&app_handle, false);
                 }
             }
         });
     }
-
-    let show_hide_for_menu = Arc::clone(&show_hide_item);
 
     // Load the tray icon defensively: prefer the packaged file, fall back to the
     // embedded bytes, and if both fail (corrupt asset / unusual packaging) build
@@ -233,15 +275,13 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
         .on_menu_event(move |app, event| match event.id.as_ref() {
             "show_hide" => {
                 if let Some(window) = app.get_webview_window("main") {
-                    if visible_for_event.load(Ordering::Relaxed) {
+                    if main_window_shown() {
                         let _ = window.hide();
-                        visible_for_event.store(false, Ordering::Relaxed);
-                        let _ = show_hide_for_menu.set_text("Show Hub");
+                        set_main_window_shown(app, false);
                     } else {
                         let _ = window.show();
                         let _ = window.set_focus();
-                        visible_for_event.store(true, Ordering::Relaxed);
-                        let _ = show_hide_for_menu.set_text("Hide Hub");
+                        set_main_window_shown(app, true);
                     }
                 }
             }
