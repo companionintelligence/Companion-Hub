@@ -59,8 +59,25 @@ vi.mock('../session-token', async (importOriginal) => {
       actual.mintSessionToken(String(sessionId), typeof secret === 'string' && secret ? secret : TEST_JWT_SECRET),
   };
 });
-/** A redirect that lands a sign-in on `url` with the session token in its fragment, the way the Hub page takes it. */
-const signedInAt = (url: string) => expect.stringMatching(new RegExp(`^${url.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}#ci_hub_session=[^#]+$`));
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+/**
+ * A redirect that lands a sign-in on `url` with the session token in its fragment, the way the Hub
+ * page takes it, beside the hand-off value (`nonce` when the test knows it) the page checks.
+ */
+const signedInAt = (url: string, nonce?: string) =>
+  expect.stringMatching(new RegExp(`^${escapeRegExp(url)}#ci_hub_session=[^&#]+&ci_hub_nonce=${nonce ? escapeRegExp(nonce) : '[^&#]+'}$`));
+/** The fragment a token redirect hands `token` over with. */
+const fragmentFor = (token: string, nonce: string) => `#ci_hub_session=${encodeURIComponent(token)}&ci_hub_nonce=${encodeURIComponent(nonce)}`;
+/**
+ * The value of the one cookie a token redirect sets, the hand-off cookie (`sessionHandoffCookie`):
+ * readable by the page, Lax, for the whole Hub. No other cookie, the session above all.
+ */
+function handoffNonce(res: Response): string {
+  const calls = vi.mocked(res.cookie).mock.calls;
+  expect(calls.map(([name]) => name)).toEqual([expect.stringMatching(/^(__Host-)?ci-hub-handoff$/)]);
+  expect(calls[0]?.[2]).toMatchObject({ httpOnly: false, sameSite: 'lax', path: '/' });
+  return calls[0]?.[1] as string;
+}
 /** The token the controller hands out for `sessionId` in this file. */
 const tokenFor = (sessionId: string) =>
   `${sessionId}.${createHmac('sha256', createHmac('sha256', TEST_JWT_SECRET).update('ci-hub/session-token/v1').digest()).update(sessionId).digest('base64url')}`;
@@ -2277,7 +2294,9 @@ describe('AuthController', () => {
     const signedInAs = (sub: string | null) =>
       vi.mocked(verifyPortalIdToken).mockResolvedValue(sub === null ? null : { sub, email: 'demo-1@lifescope.io', name: null, emailVerified: true });
     const userinfoFor = (subject: string) =>
-      vi.mocked(fetchPortalUserinfo).mockResolvedValue({ ok: true, email: 'demo-1@lifescope.io', subject, issuer: 'https://hub.ci.computer', status: 200 });
+      vi
+        .mocked(fetchPortalUserinfo)
+        .mockResolvedValue({ ok: true, email: 'demo-1@lifescope.io', subject, issuer: 'https://hub.ci.computer', status: 200 });
 
     beforeEach(() => {
       // Module-level mock, so its calls outlive a test unless cleared here.
@@ -3309,6 +3328,13 @@ describe('AuthController', () => {
         await authController.portalCallback(proxiedRequest(scheme, { ...jar }), res, 'auth-code', signIn.state);
 
         expect(res.redirect).toHaveBeenCalledWith(signedInAt(scheme === 'https' ? 'https://hub.example.com/home' : 'http://ci.lan/home'));
+        // The hand-off cookie the page checks the fragment against: `__Host-` over https, so no other
+        // host can plant one, and holding exactly the value the fragment carries.
+        const handoff = vi.mocked(res.cookie).mock.calls.find(([name]) => String(name).endsWith('ci-hub-handoff'));
+        expect(handoff?.[0]).toBe(scheme === 'https' ? '__Host-ci-hub-handoff' : 'ci-hub-handoff');
+        expect(handoff?.[2]).toMatchObject({ secure: scheme === 'https', path: '/', httpOnly: false });
+        const landed = new URL(vi.mocked(res.redirect).mock.calls[0]?.[0] as unknown as string);
+        expect(new URLSearchParams(landed.hash.slice(1)).get('ci_hub_nonce')).toBe(handoff?.[1]);
         // Each callback clears only its own binding, so the other sign-in's cookie survives it.
         // The binding cookie alone; a sign-in also clears the `ci-hub-sid` an older Hub planted.
         expect(vi.mocked(res.clearCookie).mock.calls.filter(([name]) => name !== 'ci-hub-sid')).toHaveLength(1);
@@ -3894,9 +3920,9 @@ describe('AuthController', () => {
       // The browser must NOT receive the minting (desktop) session id: sharing one id
       // let the browser's first-load rotation delete the desktop's session (#944).
       expect(sessionManager.createSession).toHaveBeenCalledWith(7);
-      // No session cookie: it reached every app on the Hub's host. The body carries the signed token.
-      expect(res.cookie).not.toHaveBeenCalled();
-      expect(res.redirect).toHaveBeenCalledWith(signedInAt(next));
+      // No session cookie: it reached every app on the Hub's host. Only the hand-off cookie, whose
+      // value the fragment repeats (`handoffNonce`); the body carries the signed token.
+      expect(res.redirect).toHaveBeenCalledWith(signedInAt(next, handoffNonce(res)));
     });
 
     it('consume mints a fresh browser session whatever cookie the browser brings', async () => {
@@ -3921,8 +3947,7 @@ describe('AuthController', () => {
 
       expect(sessionManager.createSession).toHaveBeenCalledWith(7);
       expect(sessionManager.touchSession).not.toHaveBeenCalled();
-      expect(res.cookie).not.toHaveBeenCalled();
-      expect(res.redirect).toHaveBeenCalledWith(`${next}#ci_hub_session=${encodeURIComponent(tokenFor('browser-sess'))}`);
+      expect(res.redirect).toHaveBeenCalledWith(`${next}${fragmentFor(tokenFor('browser-sess'), handoffNonce(res))}`);
     });
 
     it('consume sends a handoff to an app through the Hub page that signs in to it, never with the token on the app', async () => {
@@ -3942,7 +3967,7 @@ describe('AuthController', () => {
       expect(location.origin).toBe(hubOrigin);
       expect(location.pathname).toBe('/sso');
       expect(location.searchParams.get('redirect')).toBe(next);
-      expect(location.hash).toBe(`#ci_hub_session=${encodeURIComponent(tokenFor('browser-sess'))}`);
+      expect(location.hash).toBe(fragmentFor(tokenFor('browser-sess'), handoffNonce(res)));
     });
 
     it('consume replaces a browser session that is only in its rotation-grace window', async () => {
@@ -3966,9 +3991,9 @@ describe('AuthController', () => {
 
       // Reusing it would hand the flow a cookie that dies part-way through consent.
       expect(sessionManager.createSession).toHaveBeenCalledWith(7);
-      // No session cookie: it reached every app on the Hub's host. The body carries the signed token.
-      expect(res.cookie).not.toHaveBeenCalled();
-      expect(res.redirect).toHaveBeenCalledWith(signedInAt(next));
+      // No session cookie: it reached every app on the Hub's host. Only the hand-off cookie, whose
+      // value the fragment repeats (`handoffNonce`); the body carries the signed token.
+      expect(res.redirect).toHaveBeenCalledWith(signedInAt(next, handoffNonce(res)));
     });
 
     it('consume replaces a session the browser holds for a DIFFERENT user', async () => {
@@ -3989,9 +4014,9 @@ describe('AuthController', () => {
       await authController.consumeBrowserHandoff('ticket-abc', req, res);
 
       expect(sessionManager.createSession).toHaveBeenCalledWith(7);
-      // No session cookie: it reached every app on the Hub's host. The body carries the signed token.
-      expect(res.cookie).not.toHaveBeenCalled();
-      expect(res.redirect).toHaveBeenCalledWith(signedInAt(next));
+      // No session cookie: it reached every app on the Hub's host. Only the hand-off cookie, whose
+      // value the fragment repeats (`handoffNonce`); the body carries the signed token.
+      expect(res.redirect).toHaveBeenCalledWith(signedInAt(next, handoffNonce(res)));
     });
 
     it('consume redirects home without delegating when the minting session died inside the ticket window', async () => {
@@ -4235,9 +4260,9 @@ describe('AuthController', () => {
         await authController.confirmBrowserHandoff('ticket-abc', post({ 'sec-fetch-site': 'same-origin', origin: hubOrigin }), res);
 
         expect(cache.del).toHaveBeenCalledWith('browser_handoff:ticket-abc');
-        // No session cookie: it reached every app on the Hub's host. The body carries the signed token.
-        expect(res.cookie).not.toHaveBeenCalled();
-        expect(res.redirect).toHaveBeenCalledWith(303, signedInAt(next));
+        // No session cookie: it reached every app on the Hub's host. Only the hand-off cookie, whose
+        // value the fragment repeats (`handoffNonce`); the body carries the signed token.
+        expect(res.redirect).toHaveBeenCalledWith(303, signedInAt(next, handoffNonce(res)));
       });
 
       it('accepts the null Origin Chrome sends for a same-origin post when the page hides its referrer', async () => {
