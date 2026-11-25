@@ -328,3 +328,28 @@ fn a_stack_dev_stop_leaves_no_mark() {
     assert_eq!(result, Ok("Hub stopped".to_string()));
     assert!(!is_user_stopped(tempdir.path()));
 }
+
+/// A stop can fail because Docker didn't answer at all. That stop never ran `down`, so the Hub is
+/// as it was: only Docker saying the container is gone or not running counts as down.
+#[test]
+fn the_hub_counts_as_down_only_when_docker_says_so() {
+    assert!(hub_state_may_be_up(true, "running\n", ""));
+    assert!(hub_state_may_be_up(true, "restarting\n", ""));
+    assert!(!hub_state_may_be_up(true, "exited\n", ""));
+    assert!(!hub_state_may_be_up(
+        false,
+        "",
+        "Error: No such object: ci-hub\n"
+    ));
+
+    assert!(hub_state_may_be_up(
+        false,
+        "",
+        "permission denied while trying to connect to the docker API at unix:///var/run/docker.sock\n"
+    ));
+    assert!(hub_state_may_be_up(
+        false,
+        "",
+        "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?\n"
+    ));
+}

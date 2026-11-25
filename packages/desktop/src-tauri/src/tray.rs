@@ -342,7 +342,7 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                     };
                     if let Err(error) = stop_hub_then_apps(
                         || crate::hub_manager::stop_hub(&compose, &env),
-                        crate::hub_manager::hub_container_still_up,
+                        crate::hub_manager::hub_may_still_be_up,
                         || crate::hub_manager::stop_managed_app_containers(&data),
                         log,
                     ) {

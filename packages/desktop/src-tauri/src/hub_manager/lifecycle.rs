@@ -868,7 +868,7 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
         &data_dir,
         stack_dev_mode_enabled(),
         || stop_hub_stack(compose_path, env_path, &data_dir),
-        hub_container_still_up,
+        hub_may_still_be_up,
     )
 }
 
@@ -895,16 +895,41 @@ pub(crate) fn marking_user_stopped(
         let _ = append_desktop_log_for(
             data_dir,
             "hub.stop",
-            "The Hub is still running after the failed stop, so it is no longer marked as stopped by the user.",
+            "The Hub may still be running after the failed stop, so it is no longer marked as stopped by the user.",
         );
     }
     result
 }
 
-/// Whether the Hub container is running (or restarting) right now.
-pub(crate) fn hub_container_still_up() -> bool {
-    let state = inspect_container_state_health(hub_container_name());
-    state.starts_with("running:") || state.starts_with("restarting:")
+/// Whether the Hub may still be running after a stop that failed: its container is running or
+/// restarting, or Docker couldn't say. A stop that Docker didn't answer left the Hub as it was.
+pub(crate) fn hub_may_still_be_up() -> bool {
+    match docker_command()
+        .args([
+            "inspect",
+            "--format",
+            "{{.State.Status}}",
+            hub_container_name(),
+        ])
+        .output()
+    {
+        Ok(output) => hub_state_may_be_up(
+            output.status.success(),
+            &String::from_utf8_lossy(&output.stdout),
+            &String::from_utf8_lossy(&output.stderr),
+        ),
+        Err(_) => true,
+    }
+}
+
+/// [`hub_may_still_be_up`] on what `docker inspect` printed. Only Docker saying the container is
+/// gone or not running counts as down.
+pub(crate) fn hub_state_may_be_up(inspected: bool, stdout: &str, stderr: &str) -> bool {
+    if inspected {
+        return matches!(stdout.trim(), "running" | "restarting");
+    }
+    let stderr = stderr.to_lowercase();
+    !(stderr.contains("no such object") || stderr.contains("no such container"))
 }
 
 fn stop_hub_stack(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Result<String, String> {
