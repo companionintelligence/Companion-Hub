@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   APPLIANCE_DEFAULT_CI_CLOUD_URL,
@@ -17,6 +18,7 @@ import {
   HUB_STACK_IMAGE_REPO,
   isPublishedReleaseVersion,
   pickHubResource,
+  promptHiddenPassword,
   renderApplianceEnvContent,
   resolveApplianceHubImage,
   resolveAppliancePortalUrl,
@@ -40,6 +42,53 @@ describe('validateSeedPassword', () => {
 
   it('accepts a matching password of at least 8 characters', () => {
     expect(validateSeedPassword('long-enough', 'long-enough')).toBeNull();
+  });
+});
+
+describe('promptHiddenPassword', () => {
+  /** A terminal on both ends, as `promptHiddenPassword` requires: stdin with a raw mode to switch. */
+  function fakeTerminal() {
+    const stdin = Object.assign(new PassThrough(), {
+      isTTY: true,
+      isRaw: false,
+      setRawMode(mode: boolean) {
+        stdin.isRaw = mode;
+        return stdin;
+      },
+    });
+    const stdout = Object.assign(new PassThrough(), { isTTY: true });
+    return { stdin: stdin as unknown as typeof process.stdin, stdout: stdout as unknown as typeof process.stdout };
+  }
+
+  // A stdin left reading keeps Node's event loop alive: `cihub up prod` started the Hub after the
+  // password prompt and then never exited (#2552).
+  it('stops reading stdin once the password is entered, so the command can exit', async () => {
+    const { stdin, stdout } = fakeTerminal();
+    const answer = promptHiddenPassword('Password: ', stdin, stdout);
+    stdin.write('long-enough\r');
+
+    await expect(answer).resolves.toBe('long-enough');
+    expect(stdin.readableFlowing).toBe(false);
+    expect(stdin.isRaw).toBe(false);
+  });
+
+  it('stops reading stdin when the prompt is cancelled with Ctrl+C', async () => {
+    const { stdin, stdout } = fakeTerminal();
+    const answer = promptHiddenPassword('Password: ', stdin, stdout);
+    stdin.write('lon\u0003');
+
+    await expect(answer).rejects.toThrow('Cancelled.');
+    expect(stdin.readableFlowing).toBe(false);
+  });
+
+  it('leaves stdin reading when it already was before the prompt', async () => {
+    const { stdin, stdout } = fakeTerminal();
+    stdin.resume();
+    const answer = promptHiddenPassword('Password: ', stdin, stdout);
+    stdin.write('long-enough\n');
+
+    await expect(answer).resolves.toBe('long-enough');
+    expect(stdin.readableFlowing).toBe(true);
   });
 });
 

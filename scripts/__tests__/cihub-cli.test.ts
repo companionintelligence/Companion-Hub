@@ -2123,6 +2123,32 @@ describe('runPoolCommand', () => {
     expect(text).not.toContain('changed nothing in effect');
   });
 
+  it('sends an enable whose paired peers are all unreachable to pool status, not to discover', async () => {
+    poolApi.fetchPoolStatus.mockResolvedValue({
+      enabled: false,
+      disabledBy: 'setting',
+      reason: 'disabled_by_setting',
+      routingActive: false,
+      directions: { outbound: { enabled: false, disabledBy: 'setting' }, inbound: { enabled: false, disabledBy: 'setting' } },
+      settings: { poolEnabled: false, poolOutboundEnabled: true, poolInboundEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 },
+      peerCounts: { total: 1, connected: 0, pending: 0, unreachable: 1, disabled: 0 },
+    });
+    poolApi.setPoolEnabledSetting.mockResolvedValue({
+      poolEnabled: true,
+      poolOutboundEnabled: true,
+      poolInboundEnabled: true,
+      poolLocalAffinity: 1,
+      poolHealthPollSeconds: 30,
+    });
+
+    await runPoolCommand(['enable', '--yes']);
+
+    const text = boxText();
+    expect(text).toContain('No paired peer can be reached right now');
+    expect(text).toContain('cihub pool status');
+    expect(text).not.toContain('pool discover');
+  });
+
   it('points an unpaired Hub at cihub register instead of a raw 401', async () => {
     poolApiKey = undefined;
 

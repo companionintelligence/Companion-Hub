@@ -277,6 +277,17 @@ describe('RestoreAppsPage', () => {
       expect(navigate).not.toHaveBeenCalled();
     });
 
+    // Store apps and custom apps on This machine only or Private VPN never reach the Portal, so the lists above can't name them (#2553).
+    it('says which apps a reinstall does not bring back', async () => {
+      await act(async () => {
+        render(<RestoreAppsPage />);
+      });
+
+      expect(await screen.findByTestId('restore-summary-local-apps')).toHaveTextContent(
+        "Your CI Account doesn't keep App Store apps or custom apps on This machine only or Private VPN, so pairing again can't bring them back.",
+      );
+    });
+
     it('does not call an app restored when its install failed after the restore queued it', async () => {
       const failedEverywhere = {
         ...summary,

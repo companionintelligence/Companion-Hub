@@ -5,8 +5,9 @@ import type { AppInfo } from '@/types/app.types';
 import { Card, CardContent } from '@/components/ui/Card/Card';
 import { useAppContext } from '@/context/app-context';
 import { useQuery } from '@tanstack/react-query';
-import { useMemo } from 'react';
-import { redirect, useParams } from 'react-router';
+import { useEffect, useMemo } from 'react';
+import { redirect, useParams, useSearchParams } from 'react-router';
+import { toast } from 'sonner';
 import { AppStatus } from '../components/app-status/app-status';
 import { AppActions } from '../containers/app-actions/app-actions';
 import { AppDetailsTabs } from '../containers/app-details-tabs/app-details-tabs';
@@ -121,6 +122,19 @@ export default () => {
   const { appId, storeId } = useParams<{ appId: string; storeId: string }>();
   const appUrn = `${appId}:${storeId}`;
   const { t } = useTranslation();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // A Connect Memory that failed after consent lands here with `?memoryConnect=error` (#2544), on the
+  // page with the Connect Memory button. Toast once, then drop the marker, as on the dashboard.
+  useEffect(() => {
+    if (searchParams.get('memoryConnect') !== 'error') return;
+
+    toast.error(t('MEMORY_CONNECT_ERROR_TOAST'), { id: 'memory-connect-result' });
+
+    const next = new URLSearchParams(searchParams);
+    next.delete('memoryConnect');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams, t]);
 
   const listing = useQuery({
     queryKey: ['app-listing', appUrn],

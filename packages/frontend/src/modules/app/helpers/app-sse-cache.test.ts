@@ -1,7 +1,7 @@
 import { QueryClient } from '@tanstack/react-query';
 import { describe, expect, it } from 'vitest';
 import { getAppQueryKey, getInstalledAppsQueryKey, appContextQueryKey, getUpdatesAvailableQueryKey } from '@/api-client/@tanstack/react-query.gen';
-import { handleAppSseEvent, invalidateAppRecords } from './app-sse-cache';
+import { handleAppSseEvent, appHubAccessQueryKey, invalidateAppRecords } from './app-sse-cache';
 
 describe('invalidateAppRecords', () => {
   it('marks every app record and the installed list stale but leaves the rest alone', () => {
@@ -20,6 +20,21 @@ describe('invalidateAppRecords', () => {
     expect(client.getQueryState(otherApp)?.isInvalidated).toBe(true);
     expect(client.getQueryState(installed)?.isInvalidated).toBe(true);
     expect(client.getQueryState(context)?.isInvalidated).toBe(false);
+  });
+
+  // A rotate's restart can finish while the stream is down, and its restart_success never arrives (#2540).
+  it('marks every Hub access panel stale', () => {
+    const client = new QueryClient();
+    const panels = [appHubAccessQueryKey('one:store'), appHubAccessQueryKey('other:store')];
+    for (const key of panels) {
+      client.setQueryData(key, {});
+    }
+
+    invalidateAppRecords(client);
+
+    for (const key of panels) {
+      expect(client.getQueryState(key)?.isInvalidated).toBe(true);
+    }
   });
 
   it('marks a listing that failed while the Hub was away stale and leaves a loaded one alone', async () => {
@@ -53,5 +68,27 @@ describe('ignored_version_changed', () => {
     expect(client.getQueryState(app)?.isInvalidated).toBe(true);
     expect(client.getQueryState(updates)?.isInvalidated).toBe(true);
     expect(client.getQueryState(otherApp)?.isInvalidated).toBe(false);
+  });
+});
+
+// CI-Hub#2540: Rotate restarts the app, which is when it gets its new key. The open panel had read the
+// status while the app was still restarting and kept "not provisioned" until Settings was reopened.
+describe('Hub access panel', () => {
+  it.each([
+    ['restart_success', 'running'],
+    ['start_success', 'running'],
+    ['restart_error', 'stopped'],
+  ])('marks the panel of the app stale on %s and leaves other apps alone', (event, appStatus) => {
+    const client = new QueryClient();
+    const panel = appHubAccessQueryKey('one:store');
+    const otherPanel = appHubAccessQueryKey('other:store');
+    for (const key of [panel, otherPanel]) {
+      client.setQueryData(key, {});
+    }
+
+    handleAppSseEvent(client, { event, appUrn: 'one:store', appStatus });
+
+    expect(client.getQueryState(panel)?.isInvalidated).toBe(true);
+    expect(client.getQueryState(otherPanel)?.isInvalidated).toBe(false);
   });
 });
