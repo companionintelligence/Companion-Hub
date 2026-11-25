@@ -31,6 +31,8 @@ const MISSING_KEY_MESSAGE =
   'This route needs an API key when reached from outside the appliance network. Mint one on the Hub with `cihub api-key create --scope inference` and send it as `Authorization: Bearer <key>`.';
 const TAILNET_KEY_MESSAGE =
   'This Hub requires an API key from callers on the tailnet (HUB_INFERENCE_TAILNET_AUTH=require-key). Mint one on the Hub with `cihub api-key create --scope inference` and send it as `Authorization: Bearer <key>`.';
+const LAN_KEY_MESSAGE =
+  'This Hub requires an API key from devices on your network. Mint one on the Hub with `cihub api-key create --scope inference` and send it as `Authorization: Bearer <key>`, or set HUB_INFERENCE_LAN_AUTH=trust on the Hub to let the network in without one.';
 const INVALID_KEY_MESSAGE = "Invalid API key: it is not in this Hub's key store, has expired, or does not carry the inference scope.";
 const STORE_UNAVAILABLE_MESSAGE = 'Authentication temporarily unavailable — API key store unreachable';
 
@@ -48,6 +50,25 @@ const STORE_UNAVAILABLE_MESSAGE = 'Authentication temporarily unavailable — AP
  * at once. Only this guard asks: `InternalOriginGuard`, `AppContainerOriginGuard` and Portal SSO keep the tailnet inside.
  */
 export type InferenceTailnetAuth = 'trust' | 'require-key';
+
+/**
+ * Whether a caller on the LAN needs an `inference` key, from `HUB_INFERENCE_LAN_AUTH`.
+ *
+ * - `require-key` (default, and any other value): only the Hub's own networks are inside. A container
+ *   on an app network, the Hub's Docker networks, and this machine through the Docker gateway get in by
+ *   origin with no key; a device on the LAN does not, whether it reaches the published API port
+ *   directly or through Traefik (it is then a forwarded hop). The API port is published on every
+ *   interface, so before this any device on the network could spend this Hub's GPU, and its paired
+ *   peers', with no key (2026-11-20 audit).
+ * - `trust`: every private address is inside, as before, for an operator whose other machines use the
+ *   endpoint without a key.
+ *
+ * Read per request, like {@link inferenceTailnetAuth}. Tailnet callers are decided by that one alone.
+ */
+export type InferenceLanAuth = 'trust' | 'require-key';
+export function inferenceLanAuth(env: Record<string, string | undefined> = process.env): InferenceLanAuth {
+  return (env.HUB_INFERENCE_LAN_AUTH ?? '').trim().toLowerCase() === 'trust' ? 'trust' : 'require-key';
+}
 export function inferenceTailnetAuth(env: Record<string, string | undefined> = process.env): InferenceTailnetAuth {
   return (env.HUB_INFERENCE_TAILNET_AUTH ?? '').trim().toLowerCase() === 'require-key' ? 'require-key' : 'trust';
 }
@@ -106,7 +127,10 @@ export class InferenceAccessGuard implements CanActivate {
     const http = context.switchToHttp();
     const request = http.getRequest<InferenceAuthenticatedRequest>();
 
-    const origin = internalOriginRefusal(request, { tailnetIsOutside: inferenceTailnetAuth() === 'require-key' });
+    const origin = internalOriginRefusal(request, {
+      tailnetIsOutside: inferenceTailnetAuth() === 'require-key',
+      lanIsOutside: inferenceLanAuth() === 'require-key',
+    });
     if (origin === null) {
       return true;
     }
@@ -165,7 +189,8 @@ export class InferenceAccessGuard implements CanActivate {
     code: InferenceAuthErrorCode,
     reason: string,
   ): never {
-    const message = code === 'missing_api_key' ? (origin === 'tailnet-address' ? TAILNET_KEY_MESSAGE : MISSING_KEY_MESSAGE) : INVALID_KEY_MESSAGE;
+    const missingKeyMessage = origin === 'tailnet-address' ? TAILNET_KEY_MESSAGE : origin === 'lan-address' ? LAN_KEY_MESSAGE : MISSING_KEY_MESSAGE;
+    const message = code === 'missing_api_key' ? missingKeyMessage : INVALID_KEY_MESSAGE;
     this.logger.warn(`Inference auth failure: ${reason}`, pathOf(request), `origin=${origin}`);
     response.setHeader('WWW-Authenticate', 'Bearer realm="ci-hub-inference"');
     response.status(401).json({ error: { message, type: 'authentication_error', code } });
