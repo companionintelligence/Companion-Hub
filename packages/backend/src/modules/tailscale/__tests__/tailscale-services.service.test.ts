@@ -205,6 +205,57 @@ describe('TailscaleServicesService', () => {
 
       expect([...result.published.keys()]).toEqual([WEBUI]);
     });
+    // On the dev Hub one call to Tailscale's API timed out, and the app's working Service was deleted
+    // and only put back on the next pass, five minutes later.
+    it.each([
+      ['checking the Service', 'getService'],
+      ['checking its hosts', 'listServiceHosts'],
+    ])('keeps a working Service when %s fails, and checks it again on the next pass', async (_name, call) => {
+      const { service, adminApi, tailscale } = makeService();
+      await service.sync([{ appUrn: MEMORY, label: 'memory' }], null);
+      const restarted = makeService();
+      restarted.adminApi[call as 'getService' | 'listServiceHosts'].mockRejectedValue(new Error('The operation was aborted due to timeout'));
+
+      const result = await restarted.service.sync([{ appUrn: MEMORY, label: 'memory' }], null);
+
+      expect(result.published.get(MEMORY)).toEqual({ name: 'svc:memory', fqdn: 'memory.tail123.ts.net' });
+      expect(restarted.tailscale.clearServiceOnServicesNode).not.toHaveBeenCalled();
+      expect(restarted.adminApi.deleteService).not.toHaveBeenCalled();
+      expect(tailscaleServicesStore.appForServiceHost('memory.tail123.ts.net')).toBe(MEMORY);
+
+      restarted.adminApi[call as 'getService' | 'listServiceHosts'].mockReset();
+      restarted.adminApi.getService.mockResolvedValue(null);
+      restarted.adminApi.listServiceHosts.mockResolvedValue([]);
+      const next = await restarted.service.sync([{ appUrn: MEMORY, label: 'memory' }], null);
+
+      expect(next.published.get(MEMORY)).toEqual({ name: 'svc:memory', fqdn: 'memory.tail123.ts.net' });
+      expect(restarted.adminApi.approveServiceHost).toHaveBeenCalledWith('svc:memory', 'nNODE1CNTRL');
+      expect(adminApi.deleteService).not.toHaveBeenCalled();
+      expect(tailscale.clearServiceOnServicesNode).not.toHaveBeenCalled();
+    });
+
+    it('still removes the Service of an app that left while another check fails', async () => {
+      const { service } = makeService();
+      await service.sync(
+        [
+          { appUrn: MEMORY, label: 'memory' },
+          { appUrn: WEBUI, label: 'open-webui' },
+        ],
+        null,
+      );
+      const restarted = makeService();
+      const ours = await marker();
+      restarted.adminApi.getService.mockImplementation(async (name: string) => {
+        if (name === 'svc:memory') throw new Error('The operation was aborted due to timeout');
+        return { name, comment: ours, ports: ['tcp:443'], tags: ['tag:ci-hub'] };
+      });
+
+      const result = await restarted.service.sync([{ appUrn: MEMORY, label: 'memory' }], null);
+
+      expect([...result.published.keys()]).toEqual([MEMORY]);
+      expect(restarted.adminApi.deleteService).toHaveBeenCalledWith('svc:open-webui');
+      expect(restarted.adminApi.deleteService).not.toHaveBeenCalledWith('svc:memory');
+    });
   });
 
   describe('setUp', () => {

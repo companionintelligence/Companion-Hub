@@ -200,16 +200,26 @@ export class TailscaleServicesService {
     const taken = new Set<string>();
 
     for (const want of desired) {
+      const before = previous.get(want.appUrn);
       try {
-        const service = await this.ensureService(want, previous.get(want.appUrn), { client, node, marker, upstream, serveConfig, taken });
+        const service = await this.ensureService(want, before, { client, node, marker, upstream, serveConfig, taken });
         if (service) {
           published.set(want.appUrn, service);
           taken.add(service.name);
         }
       } catch (error) {
-        this.logger.warn(
-          `[Tailscale Services] ${want.appUrn} stays on its per-port address: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        const reason = error instanceof Error ? error.message : String(error);
+        // A failed check is not the app leaving. Dropping it here sent the cleanup below to delete a
+        // Service that was working: one Tailscale API call that timed out took the app off its
+        // address until the next pass. So it keeps its Service as it was, and the next pass checks
+        // again; only an app that is no longer wanted loses its Service.
+        if (before) {
+          published.set(want.appUrn, before);
+          taken.add(before.name);
+          this.logger.warn(`[Tailscale Services] ${want.appUrn} keeps ${before.name} as it was; checking it again on the next pass: ${reason}`);
+        } else {
+          this.logger.warn(`[Tailscale Services] ${want.appUrn} stays on its per-port address: ${reason}`);
+        }
       }
     }
 
