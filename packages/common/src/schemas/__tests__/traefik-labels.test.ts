@@ -460,6 +460,16 @@ describe('collectTraefikLabelIssues', () => {
       ]);
     });
 
+    // `ci-hub` is a chain of these two. An app's copy of either in apps.yml, which Traefik reads
+    // before dynamic.yml, would stand in for that half of every app's sign-in.
+    it.each([
+      ['ci-hub-forward', '{{CI_HUB_APP_ID}}-auth'],
+      ['ci-hub-no', '{{CI_HUB_APP_ID}}-store'],
+    ])('keeps the halves of the sign-in the Hub’s from app %s', (appId, name) => {
+      const label = `traefik.http.middlewares.${name}.chain.middlewares`;
+      expect(owned({ [label]: '{{CI_HUB_APP_ID}}-x@docker' }, appId, [appId])).toEqual([[label, 'CUSTOM_APP_ERROR_TRAEFIK_NAME_NOT_OWN', 'the Hub']]);
+    });
+
     // TraefikConfigService copies an app's middlewares into the file provider, where the Hub's
     // `ci-hub-sw-reset` sits in front of the forward auth on every app's `/sw.js` routers.
     it('keeps the service worker reset middleware the Hub’s', () => {

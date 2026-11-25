@@ -299,21 +299,28 @@ services:
       # Traefik to the canonical network and prod port instead of letting its
       # Docker provider choose an arbitrary network/first exposed port.
       traefik.docker.network: "ci-hub_network"
-      traefik.http.middlewares.ci-hub.forwardauth.address: "http://ci-hub:5002/api/auth/traefik"
+      # `ci-hub` is the sign-in that apps name in their chains: the cache header, then the forward
+      # auth below. See `ci-hub` and `ci-hub-no-store` in assets/traefik/dynamic/dynamic.yml.
+      traefik.http.middlewares.ci-hub.chain.middlewares: "ci-hub-no-store,ci-hub-forward-auth"
+      traefik.http.middlewares.ci-hub-no-store.headers.customresponseheaders.Cache-Control: "private, no-store"
+      # Cloudflare reads these instead of Cache-Control when an answer has one; empty removes the app's copy.
+      traefik.http.middlewares.ci-hub-no-store.headers.customresponseheaders.CDN-Cache-Control: ""
+      traefik.http.middlewares.ci-hub-no-store.headers.customresponseheaders.Cloudflare-CDN-Cache-Control: ""
+      traefik.http.middlewares.ci-hub-forward-auth.forwardauth.address: "http://ci-hub:5002/api/auth/traefik"
       # false: decide from the request the router matched, never from forwarded
       # headers that arrived with it (see assets/traefik/dynamic/dynamic.yml).
-      traefik.http.middlewares.ci-hub.forwardauth.trustForwardHeader: "false"
+      traefik.http.middlewares.ci-hub-forward-auth.forwardauth.trustForwardHeader: "false"
       # Bound what Traefik will read back from the auth reply. The Hub answers forward auth with a
       # redirect or a short JSON error, so this is a ceiling on a misbehaving auth server, not a limit
       # anything legitimate approaches. Needs Traefik 3.6.9 or later.
-      traefik.http.middlewares.ci-hub.forwardauth.maxResponseBodySize: "16384"
+      traefik.http.middlewares.ci-hub-forward-auth.forwardauth.maxResponseBodySize: "16384"
       # Every signed identity header must ride through — Traefik copies ONLY the headers
       # listed here onto the forwarded request, and consumers verifying the signature fail
       # closed on a missing timestamp/signature (CI-Engineering#74). Listing a name also strips
       # a visitor's own copy, which keeps the stable-id trio from ever arriving unsigned.
       # The last three names (AID, AID, KEL digest) are reserved: the Hub never sets them and no
       # signature covers them. They are listed only so a visitor's own copy is deleted too.
-      traefik.http.middlewares.ci-hub.forwardauth.authResponseHeaders: "X-CI-Hub-User,X-CI-Hub-User-Timestamp,X-CI-Hub-User-Signature,X-CI-Hub-User-Issuer,X-CI-Hub-User-Id,X-CI-Hub-User-Id-Signature,X-CI-Hub-User-Assertion,X-CI-Hub-User-AID,X-CI-Hub-AID,X-CI-Hub-KEL-Digest"
+      traefik.http.middlewares.ci-hub-forward-auth.forwardauth.authResponseHeaders: "X-CI-Hub-User,X-CI-Hub-User-Timestamp,X-CI-Hub-User-Signature,X-CI-Hub-User-Issuer,X-CI-Hub-User-Id,X-CI-Hub-User-Id-Signature,X-CI-Hub-User-Assertion,X-CI-Hub-User-AID,X-CI-Hub-AID,X-CI-Hub-KEL-Digest"
       # Prevent Traefik from creating a default router on websecure (which triggers ACME)
       traefik.http.routers.ci-hub.entrypoints: "web"
       traefik.http.routers.ci-hub.rule: "Host(`ci-hub.local`)"

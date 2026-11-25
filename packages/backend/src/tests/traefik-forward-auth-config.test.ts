@@ -95,12 +95,12 @@ describe('traefik ci-hub forward-auth middleware config', () => {
    */
   it('backend traefik dynamic.yml does not use a field only a newer Traefik knows', () => {
     const dynamic = YAML.parse(readFileSync(path.join(REPO_ROOT, 'packages/backend/assets/traefik/dynamic/dynamic.yml'), 'utf-8'));
-    expect(dynamic.http.middlewares['ci-hub'].forwardAuth).not.toHaveProperty('maxResponseBodySize');
+    expect(dynamic.http.middlewares['ci-hub-forward-auth'].forwardAuth).not.toHaveProperty('maxResponseBodySize');
   });
 
   it('backend traefik dynamic.yml decides forward auth from the matched request, and strips visitor-set headers on tunnel routes', () => {
     const dynamic = YAML.parse(readFileSync(path.join(REPO_ROOT, 'packages/backend/assets/traefik/dynamic/dynamic.yml'), 'utf-8'));
-    expect(dynamic.http.middlewares['ci-hub'].forwardAuth.trustForwardHeader).toBe(false);
+    expect(dynamic.http.middlewares['ci-hub-forward-auth'].forwardAuth.trustForwardHeader).toBe(false);
 
     // The name the label builder puts first on every tunnel route must exist, or Traefik disables the route.
     const [name, provider] = EDGE_HEADERS_MIDDLEWARE.split('@');
@@ -113,6 +113,40 @@ describe('traefik ci-hub forward-auth middleware config', () => {
     // Cloudflare rewrites these two, and the Hub and apps rely on them, so they must survive.
     expect(stripped).not.toHaveProperty('X-Forwarded-For');
     expect(stripped).not.toHaveProperty('X-Forwarded-Proto');
+  });
+
+  /*
+   * Every answer on a route behind the sign-in is for the visitor who signed in. Without a header that
+   * says so, Cloudflare cached an app's scripts, images and PDFs by their extension after one signed-in
+   * visit and handed them to anyone. Browsers showed the app from their cache after a sign-out
+   * (CI-Engineering#510). Routes name `ci-hub`, so `ci-hub` has to carry the header itself.
+   */
+  it('backend traefik dynamic.yml marks every answer behind the sign-in as one nobody may keep', () => {
+    const dynamic = YAML.parse(readFileSync(path.join(REPO_ROOT, 'packages/backend/assets/traefik/dynamic/dynamic.yml'), 'utf-8'));
+    const { middlewares } = dynamic.http;
+
+    const chain: string[] = middlewares['ci-hub'].chain.middlewares;
+    // The header first, so the sign-in's own redirects and refusals carry it too.
+    expect(chain).toEqual(['ci-hub-no-store', 'ci-hub-forward-auth']);
+    // Cloudflare goes by these two instead of Cache-Control when an answer has one, so an app's copy is removed.
+    expect(middlewares['ci-hub-no-store'].headers.customResponseHeaders).toEqual({
+      'Cache-Control': 'private, no-store',
+      'CDN-Cache-Control': '',
+      'Cloudflare-CDN-Cache-Control': '',
+    });
+    expect(middlewares['ci-hub-forward-auth'].forwardAuth.address).toMatch(/\/api\/auth\/traefik$/);
+  });
+
+  it.each(COMPOSE_COPIES)('%s gives the Docker provider the same sign-in chain', (relativePath) => {
+    const content = readFileSync(path.join(REPO_ROOT, relativePath), 'utf-8');
+    expect(content).toMatch(/traefik\.http\.middlewares\.ci-hub\.chain\.middlewares:\s*"ci-hub-no-store,ci-hub-forward-auth"/);
+    expect(content).toMatch(/traefik\.http\.middlewares\.ci-hub-no-store\.headers\.customresponseheaders\.Cache-Control:\s*"private, no-store"/);
+    expect(content).toMatch(/traefik\.http\.middlewares\.ci-hub-no-store\.headers\.customresponseheaders\.CDN-Cache-Control:\s*""\s*$/m);
+    expect(content).toMatch(/traefik\.http\.middlewares\.ci-hub-no-store\.headers\.customresponseheaders\.Cloudflare-CDN-Cache-Control:\s*""\s*$/m);
+    // The forward auth is the chain's second entry, not a second definition of `ci-hub`, which
+    // Traefik would refuse along with every route that names it.
+    expect(content).toMatch(/traefik\.http\.middlewares\.ci-hub-forward-auth\.forwardauth\.address:/);
+    expect(content).not.toMatch(/traefik\.http\.middlewares\.ci-hub\.forwardauth\./i);
   });
 
   it('backend traefik dynamic.yml forwards every signed identity header', () => {
