@@ -945,7 +945,13 @@ export const AiSetupStep = ({
             onToggleModel={handleToggleModel}
             preferredModelId={preferredModelId}
             chatBackend={selectedBackend}
-            notice={<AgentModelFitNotice model={profile.availableModels.find((m) => m.id === preferredModelId)} frameworks={agentFrameworks} />}
+            notice={
+              <AgentModelFitNotice
+                model={profile.availableModels.find((m) => m.id === preferredModelId)}
+                frameworks={agentFrameworks}
+                backend={selectedBackend}
+              />
+            }
           >
             <OtherModelsSection
               recommendedModels={backendRecommendedModels}

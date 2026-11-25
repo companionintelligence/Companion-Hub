@@ -1220,6 +1220,8 @@
   "ONBOARDING_MODELS_CALLOUT": "We pre-select a good default for your hardware. Each card shows download size and what the model is for. You can add more models anytime from Settings.",
   "ONBOARDING_MODELS_OPENCLAW_NEEDS": "{{app}} needs a model marked Tools. The Default, {{model}}, isn't one. The Hub will give {{app}} another model and may download one for it. To choose it yourself, untick {{model}} and tick a model marked Tools.",
   "ONBOARDING_MODELS_HERMES_NEEDS": "{{app}} needs a model marked Tools with a context window of at least 64k. The Default, {{model}}, isn't one. The Hub will give {{app}} another model and may download one for it. To choose it yourself, untick {{model}} and tick a model that has both.",
+  "ONBOARDING_MODELS_OPENCLAW_NEEDS_SERVED": "{{app}} needs a model marked Tools. The Default, {{model}}, isn't one. On this engine the Hub can only give {{app}} a model the engine already serves. To choose it yourself, untick {{model}} and tick a model marked Tools.",
+  "ONBOARDING_MODELS_HERMES_NEEDS_SERVED": "{{app}} needs a model marked Tools with a context window of at least 64k. The Default, {{model}}, isn't one. On this engine the Hub can only give {{app}} a model the engine already serves. To choose it yourself, untick {{model}} and tick a model that has both.",
   "ONBOARDING_MODELS_INSTALL_DURING_DOWNLOAD": "Apps install while your selected models download.",
   "ONBOARDING_COMPANION_MEMORY_TITLE": "Personal Memory Database",
   "ONBOARDING_COMPANION_MEMORY_SECTION_DESC": "Your personal knowledge base. Your AI can answer questions using your messages, email, documents, and notes, not just public knowledge.",

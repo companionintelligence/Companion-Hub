@@ -1804,9 +1804,29 @@ describe('AppCredentialsService', () => {
       await new Promise((resolve) => setImmediate(resolve));
 
       expect(config.env.DEFAULT_MODEL).toBe('hermes4:8b');
-      // Nobody chose hermes4-70b, and the app runs on hermes4:8b, so the removed model stays removed.
+      // Nobody chose hermes4-70b. The app runs on hermes4:8b, so the removed model stays removed.
       expect(config.prePull.find((decision) => decision.kind === 'chat')).toMatchObject({ catalogId: 'hermes4-70b', pull: false });
       expect(modelPuller.startPull).not.toHaveBeenCalledWith('hermes4-70b', expect.anything());
+    });
+
+    // No substitute download comes along to make this true later, so the tag Ollama lists has to.
+    it('reports a tag the operator named and Ollama lists as ready without pulling a substitute', async () => {
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'ollama',
+        preferredModel: 'qwen3:32b-q6_K',
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+      } as never);
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['qwen3:32b-q6_K'] });
+      service.invalidateCache();
+
+      const config = await service.getCredentials('openclaw');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(config.env.DEFAULT_MODEL).toBe('qwen3:32b-q6_K');
+      expect(config.chatModelReady).toBe(true);
+      expect(config.prePull.find((decision) => decision.kind === 'chat')).toMatchObject({ catalogId: 'hermes4-70b', pull: false });
+      expect(modelPuller.startPull).not.toHaveBeenCalled();
     });
 
     // #2538: a preferred gemma3-270m fails OpenClaw, so the recommender named MiniMax M2 230B and the

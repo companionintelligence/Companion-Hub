@@ -6,7 +6,7 @@ export const HERMES_MIN_CONTEXT = 64_000;
 
 /**
  * The agents among `frameworks` that cannot run on `model`: OpenClaw and Hermes call tools on every
- * turn, and Hermes also needs a 64k window. Mirrors the table the Hub's handout filters on, so the
+ * turn. Hermes also needs a 64k window. Mirrors the table the Hub's handout filters on, so the
  * wizard says what the handout will do: hand such an agent another model, or download one for it.
  */
 export function agentsUnsuitedTo(model: CuratedModel | undefined, frameworks: readonly AgentFramework[]): AgentFramework[] {

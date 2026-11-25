@@ -871,7 +871,7 @@ describe('AiSetupStep', () => {
     });
 
     // #2538: with Gemma 3 270M the only ticked chat model, it became the Default, which OpenClaw cannot
-    // run on, and the Hub went and found OpenClaw another model without a word on this page.
+    // run on. The Hub went and found OpenClaw another model without a word on this page.
     it('says when the Default cannot run a chosen agent', async () => {
       const gemma270mNoTools = { ...gemma270m, metadata: { capabilities: { tools: false, vision: false } } };
       const base = unified128Profile(['gemma3-270m']);

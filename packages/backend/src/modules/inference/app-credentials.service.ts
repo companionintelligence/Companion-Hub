@@ -446,10 +446,12 @@ export class AppCredentialsService implements OnApplicationShutdown {
       // Host-managed servers can expose an operator-chosen model that is not in the Hub catalog.
       // A healthy endpoint with at least one served model is therefore ready even when there is no
       // curated `recommendedLlm` to match (the speculative inference model alias is configured at server startup).
-      // The model handed out is one the engine has (`pickIfAvailable`), even when the recommender
-      // named another, such as a substitute for a preferred model the app cannot run (#2538).
+      // The model handed out is one the engine has (`pickIfAvailable`, or an engine id it lists), even
+      // when the recommender named another, such as a substitute for a preferred model the app cannot
+      // run (#2538). The pre-pull below no longer fetches that substitute, so it cannot be what makes this true.
       chatModelReady =
         Boolean(localChat.model) ||
+        Boolean(localChat.engineId) ||
         (recommendedLlm ? this.isModelPulled(recommendedLlm.id, endpointHealth.modelsLoaded, backendType, endpointReady) : false) ||
         (isHostServedBackend(backendType) && endpointReady && endpointHealth.modelsLoaded.length > 0);
       if (!chatModelId && localChat.rejected.length > 0) {
