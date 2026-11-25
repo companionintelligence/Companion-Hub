@@ -119,37 +119,41 @@ const PSQL_SIGN_IN = ['psql', '-h', DB_CONTAINER, '-p', '6543', '-U', 'companion
  * Signs in from inside ci-hub-db to its own name, which resolves to its address on its network, not to
  * loopback: the postgres image trusts loopback connections (`host all all 127.0.0.1/32 trust`), so a
  * loopback check would sign in whatever the password. True or false when Postgres answered, undefined
- * when the check could not run. The password reaches psql through `docker exec -e`, never an argument,
- * and the reader copies the result out on an engine that loses `docker exec` output (the desktop app's
+ * when the check could not run. The password reaches psql through `docker exec -e`, never an argument.
+ * The reader copies the result out on an engine that loses `docker exec` output (the desktop app's
  * WSL2 engine, where a plain `docker exec` exits 0 whatever psql did).
  */
-function signInFromDatabaseContainer(password: string): boolean | undefined {
+function signInFromDatabaseContainer(password: string): { answer: boolean | undefined; stderr: string } {
   const result = readContainerOutput(DB_CONTAINER, PSQL_SIGN_IN, { env: { PGPASSWORD: password } });
-  if (result.status === 0 && result.stdout.split('\n').some((line) => line.trim() === '1')) return true;
-  if (/password authentication failed/i.test(result.stderr)) return false;
-  return undefined;
+  if (result.status === 0 && result.stdout.split('\n').some((line) => line.trim() === '1')) return { answer: true, stderr: result.stderr };
+  if (/password authentication failed/i.test(result.stderr)) return { answer: false, stderr: result.stderr };
+  return { answer: undefined, stderr: result.stderr };
 }
 
-function postgresTcpAuthWorks(password: string): boolean {
-  const answer = signInFromDatabaseContainer(password);
-  if (answer !== undefined) return answer;
+/**
+ * Postgres not taking TCP connections yet. The healthcheck's `pg_isready` uses the local socket, so it
+ * passes while the image's first-run server listens on the socket only, and during the restart after.
+ */
+const POSTGRES_NOT_LISTENING = /connection refused|could not connect to server|the database system is (starting up|shutting down)/i;
+const SIGN_IN_ATTEMPTS = 5;
+const SIGN_IN_RETRY_DELAY_MS = 1000;
+
+async function postgresTcpAuthWorks(password: string): Promise<boolean> {
+  for (let attempt = 1; ; attempt++) {
+    const { answer, stderr } = signInFromDatabaseContainer(password);
+    if (answer !== undefined) return answer;
+    if (attempt >= SIGN_IN_ATTEMPTS || !POSTGRES_NOT_LISTENING.test(stderr)) break;
+    await new Promise((resolve) => setTimeout(resolve, SIGN_IN_RETRY_DELAY_MS));
+  }
   // The check inside could not run. A client on the database's networks still works on a stack whose
   // database is on a network that takes new members (one built before `ci-hub_internal` had a range).
   for (const network of tcpProbeNetworks(dbContainerNetworks())) {
-    const result = spawnSync(
-      'docker',
-      [
-        'run',
-        '--rm',
-        '--network',
-        network,
-        'postgres:14',
-        'bash',
-        '-lc',
-        `PGPASSWORD='${password.replace(/'/g, `'\\''`)}' psql -h ${DB_CONTAINER} -p 6543 -U companion -d companiondb -qt -c 'SELECT 1'`,
-      ],
-      { encoding: 'utf-8', stdio: 'pipe' },
-    );
+    // As inside, the password goes in through the environment (`-e PGPASSWORD`), not an argument.
+    const result = spawnSync('docker', ['run', '--rm', '-e', 'PGPASSWORD', '--network', network, 'postgres:14', ...PSQL_SIGN_IN], {
+      encoding: 'utf-8',
+      stdio: 'pipe',
+      env: { ...process.env, PGPASSWORD: password },
+    });
     if (result.status === 0) return true;
   }
   return false;
@@ -182,7 +186,7 @@ export async function syncPostgresPasswordFromEnv(envFile = process.env.ENV_FILE
     throw new Error(`${DB_CONTAINER} did not become healthy`);
   }
 
-  if (postgresTcpAuthWorks(password)) {
+  if (await postgresTcpAuthWorks(password)) {
     console.log('sync-postgres-password: Postgres password already matches env');
     return;
   }
@@ -202,7 +206,7 @@ export async function syncPostgresPasswordFromEnv(envFile = process.env.ENV_FILE
     throw new Error('failed to ALTER USER companion');
   }
 
-  if (!postgresTcpAuthWorks(password)) {
+  if (!(await postgresTcpAuthWorks(password))) {
     throw new Error('password sync did not fix TCP authentication');
   }
 

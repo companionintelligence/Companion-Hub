@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { copiedCommandFolder } from './docker-cp-archive';
+import { dockerCpArchive } from './docker-cp-archive';
 
 const spawnSync = vi.fn();
 vi.mock('node:child_process', () => ({ spawnSync: (...args: unknown[]) => spawnSync(...args) }));
@@ -46,7 +46,7 @@ function engine(options: {
   networks?: string[];
   lostExec?: boolean;
   onRun?: (network: string) => Result;
-  onExec?: () => Result | undefined;
+  onExec?: (command: string[]) => Result | undefined;
 }) {
   const state = { password: options.password };
   const outputByDir = new Map<string, Result>();
@@ -85,14 +85,15 @@ function engine(options: {
       const dir = String(args[1]).slice(String(args[1]).indexOf(':') + 1);
       const result = outputByDir.get(dir);
       if (!result) return { status: 1, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
-      return {
-        status: 0,
-        stdout: copiedCommandFolder(dir.split('/').pop() ?? '', String(result.stdout), result.status ?? 1),
-        stderr: Buffer.alloc(0),
-      };
+      const folder = dockerCpArchive(dir.split('/').pop() ?? '', {
+        out: String(result.stdout),
+        err: String(result.stderr),
+        status: `${result.status ?? 1}\n`,
+      });
+      return { status: 0, stdout: folder, stderr: Buffer.alloc(0) };
     }
     if (verb === 'exec') {
-      const override = options.onExec?.();
+      const override = options.onExec?.(args);
       if (override) return override;
       const result = runInDb(args.slice(args.indexOf('ci-hub-db') + 1), spawnOptions?.env);
       return options.lostExec ? { status: 0, stdout: '', stderr: '' } : result;
@@ -185,6 +186,35 @@ describe('syncPostgresPasswordFromEnv', () => {
     expect(db.password).toBe('from-env-file');
     expect(logged()).toContain('Postgres password synced successfully');
     expect(dockerCalls().some((args) => args[0] === 'cp')).toBe(true);
+    expect(containersStarted()).toEqual([]);
+  });
+
+  it('waits for Postgres to take TCP connections instead of calling the password wrong', async () => {
+    vi.useFakeTimers();
+    try {
+      let refusals = 2;
+      engine({
+        password: 'from-env-file',
+        onExec: (args) =>
+          args.includes('-h') && refusals-- > 0
+            ? {
+                status: 2,
+                stdout: '',
+                stderr: 'psql: error: connection to server at "ci-hub-db" (10.128.0.11), port 6543 failed: Connection refused',
+              }
+            : undefined,
+      });
+
+      const sync = syncPostgresPasswordFromEnv('.env');
+      await vi.runAllTimersAsync();
+      await sync;
+
+      expect(logged()).toContain('Postgres password already matches env');
+      expect(alterUserCalls()).toEqual([]);
+      expect(containersStarted()).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('falls back to a client on the database networks when the check inside cannot run', async () => {
