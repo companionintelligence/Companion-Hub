@@ -265,6 +265,16 @@ visitor. Routes without the sign-in keep the app's own headers. A manifest that 
 in traefik-labels.builder.ts). The Hub writes dynamic.yml on every boot, while its container's labels
 change only with the installed compose file.
 
+Routes without the sign-in still serve apps with a login of their own, whose answers to a signed-in
+visitor are just as private. Next to every app router on the `web` entry point, and every port-expose
+route, apps.yml holds a `-session` copy (`sessionRouter` in traefik-config.service.ts). It matches the
+same requests only when they carry a `Cookie` or `Authorization` header, ranks one above the router
+and puts `ci-hub-session-no-edge-cache` first in the same chain. That middleware sets
+`Cloudflare-CDN-Cache-Control: no-store`, which only Cloudflare reads and which it does not pass on,
+so browsers keep the app's own `Cache-Control`. Requests without either header go to the router
+itself and a public site's files stay cached at the edge. The copies live only in the file provider
+and outrank the Docker provider's routers, so the Hub container's labels don't change.
+
 Every app router ends with `ci-hub-app-starting@file`, an `errors` middleware for 502 and 504.
 It leaves 503 alone: apps send that on purpose, with a body their own clients read. While an
 app's container is up but the app does not answer yet, Traefik fetches

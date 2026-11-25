@@ -16,6 +16,7 @@ import {
   FORWARD_AUTH_USER_ISSUER_HEADER,
 } from '@/modules/auth/utils/forward-auth-signing';
 import { EDGE_HEADERS_MIDDLEWARE } from '@/modules/docker/builders/traefik-labels.builder';
+import { SESSION_NO_EDGE_CACHE_MIDDLEWARE } from '@/modules/docker/traefik-config.service';
 import YAML from 'yaml';
 
 /**
@@ -135,6 +136,19 @@ describe('traefik ci-hub forward-auth middleware config', () => {
       'Cloudflare-CDN-Cache-Control': '',
     });
     expect(middlewares['ci-hub-forward-auth'].forwardAuth.address).toMatch(/\/api\/auth\/traefik$/);
+  });
+
+  /*
+   * An app with a login of its own and no Hub sign-in sends a signed-in visitor their own files with no
+   * Cache-Control, and Cloudflare cached them by extension for anyone who asked. The `-session` copy
+   * of every app route names this middleware for requests that carry a cookie or an Authorization header.
+   */
+  it('backend traefik dynamic.yml tells Cloudflare not to keep an answer to a signed-in request, and nothing else', () => {
+    const dynamic = YAML.parse(readFileSync(path.join(REPO_ROOT, 'packages/backend/assets/traefik/dynamic/dynamic.yml'), 'utf-8'));
+    const [name, provider] = SESSION_NO_EDGE_CACHE_MIDDLEWARE.split('@');
+    expect(provider).toBe('file');
+    // Only the header Cloudflare reads and does not pass on: the browser keeps the app's own Cache-Control.
+    expect(dynamic.http.middlewares[name as string]).toEqual({ headers: { customResponseHeaders: { 'Cloudflare-CDN-Cache-Control': 'no-store' } } });
   });
 
   it.each(COMPOSE_COPIES)('%s gives the Docker provider the same sign-in chain', (relativePath) => {

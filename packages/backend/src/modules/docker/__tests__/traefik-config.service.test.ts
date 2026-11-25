@@ -10,7 +10,7 @@ import type { AppStatus } from '@/core/database/drizzle/types';
 import type { LoggerService } from '@/core/logger/logger.service';
 import type { AppsRepository } from '@/modules/apps/apps.repository';
 import { APP_STARTING_MIDDLEWARE, TraefikLabelsBuilder, withAppStartingPage } from '../builders/traefik-labels.builder';
-import { APP_DOWN_ROUTER_SUFFIX, TraefikConfigService } from '../traefik-config.service';
+import { APP_DOWN_ROUTER_SUFFIX, SESSION_NO_EDGE_CACHE_MIDDLEWARE, SESSION_ROUTER_SUFFIX, TraefikConfigService } from '../traefik-config.service';
 
 const written = new Map<string, string>();
 vi.mock('@/common/helpers/bind-mount-helpers', async (importOriginal) => ({
@@ -146,14 +146,24 @@ describe('TraefikConfigService — routes while an app restarts', () => {
    * A Public Web app from the marketplace behind Hub sign-in (WordPress unless said otherwise),
    * labelled the way the compose builder labels it and compose names its project.
    */
-  const publicWebLabels = ({ appId = 'wordpress', host = ORIGIN_HOST, chain }: { appId?: string; host?: string; chain?: string } = {}) => {
+  const publicWebLabels = ({
+    appId = 'wordpress',
+    host = ORIGIN_HOST,
+    chain,
+    enableAuth = true,
+  }: {
+    appId?: string;
+    host?: string;
+    chain?: string;
+    enableAuth?: boolean;
+  } = {}) => {
     const labels = withAppStartingPage({
       ...new TraefikLabelsBuilder({
         internalPort: 80,
         appId,
         storeId: 'ci-marketplace',
         exposureMode: 'cloudflare',
-        enableAuth: true,
+        enableAuth,
         cloudflareOriginHostname: host,
         cloudflarePublicHostname: host.replace('.localhost', '.ci0.pw'),
       })
@@ -462,6 +472,130 @@ describe('TraefikConfigService — routes while an app restarts', () => {
     const { routers } = parsed('apps.yml').http;
     expect(routers).not.toHaveProperty(`nextcloud-ci-marketplace-insecure${APP_DOWN_ROUTER_SUFFIX}`);
     expect(routers).toHaveProperty('wordpress-ci-marketplace-insecure');
+  });
+
+  describe('requests that carry a session', () => {
+    const SESSION_RULE = 'HeaderRegexp(`Cookie`, `.`) || HeaderRegexp(`Authorization`, `.`)';
+    const HOST_RULE = `Host(\`${ORIGIN_HOST}\`)`;
+    const route = (name: string, rule: string, extra: Record<string, string> = {}) => ({
+      [`traefik.http.routers.${name}.rule`]: rule,
+      [`traefik.http.routers.${name}.entrypoints`]: 'web',
+      [`traefik.http.routers.${name}.service`]: 'wordpress-ci-marketplace',
+      ...Object.fromEntries(Object.entries(extra).map(([key, value]) => [`traefik.http.routers.${name}.${key}`, value])),
+    });
+    type Router = { rule: string; service: string; entryPoints: string[]; middlewares?: string[]; priority?: number };
+    const routers = (): Record<string, Router> => parsed('apps.yml').http.routers;
+
+    it('sends them on an app route without the Hub sign-in through a copy that tells Cloudflare not to keep the answer', async () => {
+      runningContainers(publicWebLabels({ enableAuth: false }));
+      await service.generateTraefikConfig();
+
+      const own = routers()['wordpress-ci-marketplace-insecure'];
+      const copy = routers()[`wordpress-ci-marketplace-insecure${SESSION_ROUTER_SUFFIX}`];
+
+      expect(own?.middlewares).not.toContain('ci-hub@file');
+      expect(own?.middlewares).not.toContain(SESSION_NO_EDGE_CACHE_MIDDLEWARE);
+      expect(copy).toEqual({
+        rule: `(${HOST_RULE}) && (${SESSION_RULE})`,
+        service: own?.service,
+        entryPoints: ['web'],
+        // First, so it has the last word on the answer; then the app route's own chain.
+        middlewares: [SESSION_NO_EDGE_CACHE_MIDDLEWARE, ...(own?.middlewares ?? [])],
+        // Traefik ranks the app route by the length of its rule.
+        priority: HOST_RULE.length + 1,
+      });
+    });
+
+    it('leaves requests without a cookie or Authorization header to the app route, so a public site stays cached', async () => {
+      runningContainers(publicWebLabels({ enableAuth: false }));
+      await service.generateTraefikConfig();
+
+      const plain = Object.entries(routers()).filter(([, router]) => router.rule === HOST_RULE && router.service === 'wordpress-ci-marketplace');
+
+      expect(plain.map(([name]) => name)).toEqual(['wordpress-ci-marketplace-insecure']);
+      expect(plain[0]?.[1].middlewares).not.toContain(SESSION_NO_EDGE_CACHE_MIDDLEWARE);
+      expect(plain[0]?.[1]).not.toHaveProperty('priority');
+    });
+
+    it("keeps the order Traefik gives the app's routers, so a path behind the sign-in still gets it", async () => {
+      // A path behind the Hub sign-in with a priority of its own, as Skyvern's API has, and a longer
+      // rule without one. A copy that outranked either would hand its requests to the open route.
+      runningContainers({
+        ...publicWebLabels({ enableAuth: false }),
+        ...route('wordpress-ci-marketplace-api', `${HOST_RULE} && PathPrefix(\`/api\`)`, {
+          priority: '100',
+          middlewares: 'ci-hub@file,ci-hub-app-starting@file',
+        }),
+        ...route('wordpress-ci-marketplace-files', `${HOST_RULE} && PathPrefix(\`/files\`)`),
+      });
+      await service.generateTraefikConfig();
+
+      const copy = (name: string) => routers()[`wordpress-ci-marketplace-${name}${SESSION_ROUTER_SUFFIX}`];
+
+      expect(copy('api')?.middlewares).toContain('ci-hub@file');
+      expect(copy('api')?.priority).toBe(101);
+      expect(copy('files')?.priority).toBe(`${HOST_RULE} && PathPrefix(\`/files\`)`.length + 1);
+      expect(copy('insecure')?.priority).toBe(HOST_RULE.length + 1);
+      // Each copy over its own route, and under every route that ranks above that one.
+      expect(copy('insecure')?.priority).toBeLessThan(`${HOST_RULE} && PathPrefix(\`/files\`)`.length);
+      expect(copy('files')?.priority).toBeLessThan(100);
+    });
+
+    it("ranks a copy over both of its route's ranks when the label sets a priority lower than the rule length", async () => {
+      // The Docker router ranks by the label, its copy in apps.yml by the length of its rule.
+      runningContainers({ ...publicWebLabels({ enableAuth: false }), 'traefik.http.routers.wordpress-ci-marketplace-insecure.priority': '5' });
+      await service.generateTraefikConfig();
+
+      expect(routers()[`wordpress-ci-marketplace-insecure${SESSION_ROUTER_SUFFIX}`]?.priority).toBe(HOST_RULE.length + 1);
+    });
+
+    it('gives a route behind the Hub sign-in a copy too, with the sign-in', async () => {
+      runningContainers(publicWebLabels());
+      await service.generateTraefikConfig();
+
+      const copy = routers()[`wordpress-ci-marketplace-insecure${SESSION_ROUTER_SUFFIX}`];
+
+      expect(copy?.middlewares?.[0]).toBe(SESSION_NO_EDGE_CACHE_MIDDLEWARE);
+      expect(copy?.middlewares).toContain('ci-hub@file');
+      expect(copy?.middlewares?.indexOf('ci-hub@file')).toBeLessThan(copy?.middlewares?.indexOf(APP_STARTING_MIDDLEWARE) ?? -1);
+    });
+
+    it('never replaces an app router whose name is taken by a copy', async () => {
+      runningContainers({
+        ...publicWebLabels({ enableAuth: false }),
+        ...route(`wordpress-ci-marketplace-insecure${SESSION_ROUTER_SUFFIX}`, `${HOST_RULE} && PathPrefix(\`/session\`)`),
+      });
+      await service.generateTraefikConfig();
+
+      expect(routers()[`wordpress-ci-marketplace-insecure${SESSION_ROUTER_SUFFIX}`]?.rule).toBe(`${HOST_RULE} && PathPrefix(\`/session\`)`);
+    });
+
+    it('keeps no copy once Stop has taken the containers down', async () => {
+      runningContainers(publicWebLabels({ enableAuth: false }));
+      await service.generateTraefikConfig();
+
+      appsInDb({ appId: 'wordpress', status: 'stopping' });
+      docker.listContainers.mockResolvedValue([] as never);
+      await service.generateTraefikConfig();
+
+      expect(Object.keys(routers()).filter((name) => name.endsWith(SESSION_ROUTER_SUFFIX))).toEqual([]);
+    });
+
+    it('sends them on a port-expose route through the same kind of copy', async () => {
+      await service.syncPortExposeRoutes([{ appUrn: 'my-service:_user' as AppUrn, traefikHost: 'my-service-hub1-acme.ci.lan', upstreamPort: 8123 }]);
+
+      const portRouters: Record<string, Router> = parsed('port-expose.yml').http.routers;
+      const rule = 'Host(`my-service-hub1-acme.ci.lan`)';
+
+      expect(portRouters[`my-service-_user${SESSION_ROUTER_SUFFIX}`]).toEqual({
+        rule: `(${rule}) && (${SESSION_RULE})`,
+        service: 'my-service-_user',
+        entryPoints: ['web'],
+        middlewares: [SESSION_NO_EDGE_CACHE_MIDDLEWARE, APP_STARTING_MIDDLEWARE],
+        priority: rule.length + 1,
+      });
+      expect(portRouters['my-service-_user']?.middlewares).toEqual([APP_STARTING_MIDDLEWARE]);
+    });
   });
 
   it('keeps it after the Hub itself restarts, from the apps.yml it wrote', async () => {

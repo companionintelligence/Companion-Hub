@@ -470,6 +470,15 @@ describe('collectTraefikLabelIssues', () => {
       expect(owned({ [label]: '{{CI_HUB_APP_ID}}-x@docker' }, appId, [appId])).toEqual([[label, 'CUSTOM_APP_ERROR_TRAEFIK_NAME_NOT_OWN', 'the Hub']]);
     });
 
+    // First on the `-session` copy of every app route. An app's copy in apps.yml would decide what
+    // Cloudflare keeps of every app's answers to signed-in visitors.
+    it('keeps the middleware that keeps signed-in answers out of the edge cache the Hub’s', () => {
+      const label = 'traefik.http.middlewares.{{CI_HUB_APP_ID}}-no-edge-cache.headers.customresponseheaders.Cloudflare-CDN-Cache-Control';
+      expect(owned({ [label]: 'max-age=86400' }, 'ci-hub-session', ['ci-hub-session'])).toEqual([
+        [label, 'CUSTOM_APP_ERROR_TRAEFIK_NAME_NOT_OWN', 'the Hub'],
+      ]);
+    });
+
     // TraefikConfigService copies an app's middlewares into the file provider, where the Hub's
     // `ci-hub-sw-reset` sits in front of the forward auth on every app's `/sw.js` routers.
     it('keeps the service worker reset middleware the Hub’s', () => {

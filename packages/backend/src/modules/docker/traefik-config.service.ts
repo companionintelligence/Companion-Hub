@@ -139,6 +139,47 @@ function isAppDownRouter(value: unknown): value is TraefikRouter {
   );
 }
 
+/** Suffix of the router {@link sessionRouter} adds next to each app router in apps.yml. */
+export const SESSION_ROUTER_SUFFIX = '-session';
+
+/** See `ci-hub-session-no-edge-cache` in assets/traefik/dynamic/dynamic.yml. */
+export const SESSION_NO_EDGE_CACHE_MIDDLEWARE = 'ci-hub-session-no-edge-cache@file';
+
+/** A request from someone signed in to the app: it carries a cookie or an Authorization header. */
+const SESSION_RULE = 'HeaderRegexp(`Cookie`, `.`) || HeaderRegexp(`Authorization`, `.`)';
+
+/**
+ * The copy of an app router that answers the requests of signed-in visitors, and tells Cloudflare not
+ * to keep the answer.
+ *
+ * An app on Public Web with its own login and no Hub sign-in serves a person's private files to the
+ * tunnel like any other answer. Cloudflare caches by file extension when the app sends no
+ * Cache-Control, which most apps don't send on their files, so a PDF or image one signed-in visitor
+ * opened was handed to anyone who asked for the same address. Traefik can't set a response header by
+ * what the request carried, so this router matches the same requests as the app's router only when
+ * they carry a cookie or an Authorization header, and puts `ci-hub-session-no-edge-cache` in front of
+ * the same chain. Requests without either still go to the app's router, so a public site's files stay
+ * cached at the edge.
+ *
+ * `priority` is one above the higher of the router's two ranks: Traefik ranks its Docker router by
+ * the priority its labels set, its copy in apps.yml by the length of its rule. Every app router gets
+ * this copy, with or without the Hub sign-in, so for a signed-in request the app's routers keep the
+ * order Traefik gives them: a copy can't win over a router that wins over its original, because that
+ * router's own copy ranks higher still.
+ */
+function sessionRouter(router: TraefikRouter, priority: number): TraefikRouter {
+  return {
+    rule: `(${router.rule}) && (${SESSION_RULE})`,
+    service: router.service,
+    entryPoints: [...router.entryPoints],
+    // First, so it is the last to touch the answer: whatever the app or a middleware of its own sets,
+    // Cloudflare reads this.
+    middlewares: [SESSION_NO_EDGE_CACHE_MIDDLEWARE, ...(router.middlewares ?? []).filter((name) => name !== SESSION_NO_EDGE_CACHE_MIDDLEWARE)],
+    ...(router.tls !== undefined && { tls: router.tls }),
+    priority: priority + 1,
+  };
+}
+
 /** The app's compose project, the name DockerReadFacade.getComposeProjectName gives it. */
 function composeProjectOf(app: { appName: string; appStoreSlug: string }): string {
   return createAppUrn(app.appName, app.appStoreSlug).replace(':', '_');
@@ -185,7 +226,7 @@ export class TraefikConfigService {
 
       for (const route of routes) {
         const routerId = route.appUrn.replace(':', '-');
-        config.http.routers[routerId] = {
+        const router: TraefikRouter = {
           rule: `Host(\`${route.traefikHost}\`)`,
           service: routerId,
           entryPoints: ['web'],
@@ -193,6 +234,9 @@ export class TraefikConfigService {
           // Traefik answered the same bare 502 (CI-Hub#1764).
           middlewares: [APP_STARTING_MIDDLEWARE],
         };
+        config.http.routers[routerId] = router;
+        // A service behind a port never has the Hub sign-in, and one on Public Web may have a login of its own.
+        config.http.routers[`${routerId}${SESSION_ROUTER_SUFFIX}`] = sessionRouter(router, router.rule.length);
         config.http.services[routerId] = {
           loadBalancer: {
             servers: [{ url: `http://host.docker.internal:${route.upstreamPort}` }],
@@ -261,6 +305,8 @@ export class TraefikConfigService {
        * with the priority Traefik gives it, and the middlewares any of its containers define.
        */
       const apps = new Map<string, { routers: Array<{ name: string; router: TraefikRouter; priority: number }>; middlewares: Set<string> }>();
+      /** Every app router on the web entry point, with the highest priority Traefik gives it. See {@link sessionRouter}. */
+      const sessionRouters: Array<{ name: string; router: TraefikRouter; priority: number }> = [];
 
       // Process each container
       for (const containerInfo of containers) {
@@ -415,6 +461,9 @@ export class TraefikConfigService {
               const explicitPriority = routerPriorities[routerName];
               const priority = explicitPriority !== undefined && explicitPriority > 0 ? explicitPriority : router.rule.length;
               app?.routers.push({ name: routerName, router, priority });
+              // Above both of the router's ranks: its Docker router's and this copy's, which is the
+              // length of its rule.
+              sessionRouters.push({ name: routerName, router, priority: Math.max(priority, router.rule.length) });
             }
           }
         }
@@ -428,6 +477,14 @@ export class TraefikConfigService {
             config.http.middlewares = {};
           }
           Object.assign(config.http.middlewares, middlewares);
+        }
+      }
+
+      // After every container's routers, so a router of that name an app defines keeps it.
+      for (const { name, router, priority } of sessionRouters) {
+        const sessionName = `${name}${SESSION_ROUTER_SUFFIX}`;
+        if (!(sessionName in config.http.routers)) {
+          config.http.routers[sessionName] = sessionRouter(router, priority);
         }
       }
 
