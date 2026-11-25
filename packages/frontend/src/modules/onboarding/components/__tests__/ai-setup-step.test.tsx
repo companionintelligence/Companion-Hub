@@ -1034,8 +1034,10 @@ describe('AiSetupStep', () => {
       renderStep();
       await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
 
-      // Off the recommended list: the Hub used to pass it over and download another.
-      await user.click(screen.getByTestId('other-group-small'));
+      // Off the recommended list: the Hub used to pass it over and download another. The group opens by
+      // itself when it holds a ticked model, as it does here.
+      const smallGroup = screen.getByTestId('other-group-small');
+      if (smallGroup.getAttribute('aria-expanded') !== 'true') await user.click(smallGroup);
       await user.click(screen.getByTestId('model-checkbox-gemma4-e4b'));
       expect(isMarkedDefault('gemma3-270m')).toBe(true);
       expect(screen.getByTestId('agent-model-unsuited-openclaw')).toHaveTextContent(
