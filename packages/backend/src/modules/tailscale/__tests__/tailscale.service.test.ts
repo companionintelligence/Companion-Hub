@@ -246,6 +246,92 @@ describe('TailscaleService', () => {
 
       expect(upCalls()).toEqual([['up', '--auth-key', 'tskey-auth-testkey']]);
     });
+
+    /** Refuses every `up` that does not restate the settings in REFUSED_UP_STDERR's suggested command. */
+    const RESTATED = [
+      '--accept-routes',
+      '--advertise-routes=172.18.0.0/16,172.19.0.0/16',
+      '--login-server=https://controlplane.tailscale.com',
+      '--operator=hub',
+      '--ssh',
+    ];
+    function refuseUnlessRestated(args: string[], cb: ExecCallback, onAccepted: ExecCallback) {
+      if (RESTATED.every((flag) => args.includes(flag))) {
+        onAccepted(null);
+        return;
+      }
+      const message = `Command failed: /usr/bin/tailscale ${args.join(' ')}\n${REFUSED_UP_STDERR}`;
+      process.nextTick(() => cb(Object.assign(new Error(message), { stdout: '', stderr: REFUSED_UP_STDERR }), '', REFUSED_UP_STDERR));
+    }
+
+    it('signs a logged-out host back in by restating the settings tailscaled says a bare up left out', async () => {
+      vi.spyOn((service as any).logger, 'warn').mockImplementation(() => undefined);
+      const prompt = '\nTo authenticate, visit:\n\n\thttps://login.tailscale.com/a/after-restate\n\n';
+      hostTailscaled('NeedsLogin', (args, cb) => refuseUnlessRestated(args, cb, () => process.nextTick(() => cb(null, '', prompt))));
+
+      const result = await service.startAuth();
+
+      expect(result.authUrl).toBe('https://login.tailscale.com/a/after-restate');
+      expect(upCalls()).toEqual([['up'], ['up', ...RESTATED]]);
+    });
+
+    it('connectWithAuthKey restates the same settings and keeps the key, without logging it', async () => {
+      const warned = vi.spyOn((service as any).logger, 'warn').mockImplementation(() => undefined);
+      // tailscaled's suggestion repeats the flags it was given first, the key included.
+      const refusedWithKey = REFUSED_UP_STDERR.replace(
+        '\ttailscale up --accept-routes',
+        '\ttailscale up --auth-key=tskey-auth-testkey --accept-routes',
+      );
+      hostTailscaled('NeedsLogin', (args, cb) => {
+        if (RESTATED.every((flag) => args.includes(flag))) {
+          process.nextTick(() => cb(null, '', ''));
+          return;
+        }
+        const message = `Command failed: /usr/bin/tailscale ${args.join(' ')}\n${refusedWithKey}`;
+        process.nextTick(() => cb(Object.assign(new Error(message), { stdout: '', stderr: refusedWithKey }), '', refusedWithKey));
+      });
+
+      await service.connectWithAuthKey('tskey-auth-testkey');
+
+      expect(upCalls()).toEqual([
+        ['up', '--auth-key', 'tskey-auth-testkey'],
+        ['up', '--auth-key', 'tskey-auth-testkey', ...RESTATED],
+      ]);
+      expect(warned.mock.calls.flat().join('\n')).not.toContain('tskey-auth-testkey');
+    });
+
+    it('keeps the auth key out of the error and the log when tailscale up fails', async () => {
+      const logged = vi.spyOn((service as any).logger, 'error').mockImplementation(() => undefined);
+      hostTailscaled('NeedsLogin', (args, cb) => {
+        const stderr = 'backend error: invalid key: unable to validate API key\n';
+        process.nextTick(() =>
+          cb(Object.assign(new Error(`Command failed: /usr/bin/tailscale ${args.join(' ')}\n${stderr}`), { stdout: '', stderr }), '', stderr),
+        );
+      });
+
+      const failure = await service.connectWithAuthKey('tskey-auth-secret123').catch((error: Error) => error);
+
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).not.toContain('tskey-auth-secret123');
+      expect(logged).toHaveBeenCalledWith(expect.stringContaining('invalid key'));
+      expect(logged.mock.calls.flat().join('\n')).not.toContain('tskey-auth-secret123');
+    });
+  });
+
+  it('getStatusCached does not keep a read that began before an invalidation', async () => {
+    let finishStaleRead: (status: unknown) => void = () => undefined;
+    const getStatus = vi
+      .spyOn(service, 'getStatus')
+      .mockImplementationOnce(() => new Promise((resolve) => (finishStaleRead = resolve as (status: unknown) => void)))
+      .mockResolvedValue({ backendState: 'Running' } as never);
+
+    const staleRead = service.getStatusCached();
+    (service as any).invalidateStatusCache();
+    finishStaleRead({ backendState: 'Stopped' });
+    await staleRead;
+
+    expect((await service.getStatusCached()).backendState).toBe('Running');
+    expect(getStatus).toHaveBeenCalledTimes(2);
   });
 
   it('does not take a login server given after a space for a sign-in link either', async () => {

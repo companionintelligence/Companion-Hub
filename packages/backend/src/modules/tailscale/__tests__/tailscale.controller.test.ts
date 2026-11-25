@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
+
+// startAuth imports the lifecycle service for its Private VPN sync; the real module drags in most of the backend.
+vi.mock('../../app-lifecycle/app-lifecycle.service', () => ({ AppLifecycleService: class AppLifecycleService {} }));
+
 import { TailscaleController } from '../tailscale.controller';
 import { servePermissionCommand, TailscaleService, type TailscaleStatus } from '../tailscale.service';
 
@@ -47,7 +51,7 @@ describe('POST /tailscale/auth/start', () => {
     const service = new TailscaleService();
     vi.spyOn(service, 'isCliAvailable').mockResolvedValue(true);
     vi.spyOn(service, 'startAuth').mockResolvedValue(result);
-    // The sync after a connect is best-effort; a module ref that resolves nothing is enough here.
+    // The sync after a connect is best-effort, so a module ref that resolves no lifecycle service skips it.
     const moduleRef = { get: vi.fn(() => null) };
     const logger = { warn: vi.fn(), debug: vi.fn(), error: vi.fn(), info: vi.fn() };
     return new TailscaleController(service, moduleRef as never, logger as never);
