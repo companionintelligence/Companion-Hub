@@ -57,6 +57,7 @@ import {
   apiFetch,
   clearMobileSession,
   clearStaleTauriSession,
+  forgetStoredHubSession,
   getTauriSessionId,
   hydrateMobileSession,
   resetMobileSessionStoreForTests,
@@ -129,6 +130,17 @@ describe('api-fetch session storage', () => {
 
     expect(getTauriSessionId()).toBeNull();
     expect(localStorage.getItem(TAURI_SESSION_STORAGE_KEY)).toBeNull();
+    expect(sessionStorage.getItem(TAURI_SESSION_STORAGE_KEY)).toBeNull();
+  });
+
+  it('forgets the stored session and keeps sending the one in memory', () => {
+    setTauriSessionId('browser-session');
+
+    forgetStoredHubSession();
+
+    expect(getTauriSessionId()).toBe('browser-session');
+    expect(localStorage.getItem(TAURI_SESSION_STORAGE_KEY)).toBeNull();
+    expect(localStorage.getItem(HUB_SESSION_ISSUED_AT_KEY)).toBeNull();
     expect(sessionStorage.getItem(TAURI_SESSION_STORAGE_KEY)).toBeNull();
   });
 });

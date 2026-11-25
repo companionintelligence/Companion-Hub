@@ -2,6 +2,7 @@ import { resetRegistration } from '@/api-client/sdk.gen';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
+import { forgetStoredHubSession } from '@/lib/api-fetch';
 import { clearClientHubState } from '@/lib/clear-client-hub-state';
 import { openExternal } from '@/lib/helpers/open-external';
 import { useDemoMode } from '@/lib/hooks/use-demo-mode';
@@ -22,14 +23,16 @@ const REDIRECT_DELAY_MS = 1500;
 type WatchState = 'idle' | 'watching' | Exclude<HubRemovalWatchEnd, 'removed' | 'timed_out'>;
 
 /**
- * The session is dropped as the page leaves, not before the delay. Dropped first, the page's next
- * request in those 1.5 s was refused and sent it to sign-in, with the toast cut short (#2555).
- * What the session doesn't need goes at once: a page closed or reloaded in those 1.5 s never runs
- * the timer, and a registration cache left behind answers "paired" while the status API is down.
+ * The page keeps sending its session until it leaves. Dropped first, the page's next request in those
+ * 1.5 s was refused and sent it to sign-in, with the toast cut short (#2555). What it doesn't need goes
+ * at once, because a page closed or reloaded in those 1.5 s never runs the timer: the stored copies of
+ * the session, and a registration cache that answers "paired" while the status API is down. The
+ * keychain removals also need the time, since the page unloads as soon as it leaves.
  */
 function goToPairing() {
   clearRegistrationCache();
   clearStoredDriftChoice();
+  forgetStoredHubSession();
   setTimeout(() => {
     clearClientHubState({ keepPortalEmail: true });
     window.location.href = PAIRING_ROUTE;
@@ -53,6 +56,9 @@ export const HubAccountSection = () => {
   const [watchState, setWatchState] = useState<WatchState>('idle');
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
+  // Set once the Hub is reset and the page is on its way to pairing. The session still works in that
+  // time, so a second click would reset or watch again instead of being refused.
+  const [leaving, setLeaving] = useState(false);
   const stopWatchRef = useRef<(() => void) | null>(null);
 
   const removeUrl = portalConfig?.portalUrl && portalConfig.deviceId ? portalRemoveDeviceUrl(portalConfig.portalUrl, portalConfig.deviceId) : null;
@@ -70,6 +76,7 @@ export const HubAccountSection = () => {
 
       if (end === 'removed') {
         setWatchState('idle');
+        setLeaving(true);
         toast.success(t('SETTINGS_HUB_ACCOUNT_REMOVED'));
         goToPairing();
         return;
@@ -117,6 +124,7 @@ export const HubAccountSection = () => {
         return;
       }
       stopWatch();
+      setLeaving(true);
       toast.success(t('SETTINGS_NETWORK_RESET_REGISTRATION_SUCCESS'));
       goToPairing();
     } catch {
@@ -173,7 +181,7 @@ export const HubAccountSection = () => {
             intent="danger"
             variant="outline"
             className="shrink-0"
-            disabled={demoMode || !removeUrl}
+            disabled={demoMode || !removeUrl || leaving}
             onClick={handleRemove}
             data-testid="remove-hub-from-account-btn"
           >
@@ -191,7 +199,7 @@ export const HubAccountSection = () => {
             size="sm"
             variant="outline"
             className="shrink-0"
-            disabled={demoMode}
+            disabled={demoMode || leaving}
             loading={isResetting}
             onClick={() => setResetConfirmOpen(true)}
             data-testid="reregister-device-btn"

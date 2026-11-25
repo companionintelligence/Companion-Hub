@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { toast } from 'sonner';
 import { resetRegistration } from '@/api-client/sdk.gen';
+import { TAURI_SESSION_STORAGE_KEY, getTauriSessionId, setTauriSessionId } from '@/lib/api-fetch';
 import { clearClientHubState } from '@/lib/clear-client-hub-state';
 import { openExternal } from '@/lib/helpers/open-external';
 import { type HubRemovalWatchEnd, watchForHubRemoval } from '@/lib/hub-removal-watch';
@@ -37,6 +38,29 @@ const renderSection = () => {
       <HubAccountSection />
     </QueryClientProvider>,
   );
+};
+
+/**
+ * Holds back only the redirect's timer, so a test can look at the page before it leaves, and no timer
+ * from one test fires in the next one.
+ */
+const holdRedirect = () => {
+  const timers: Array<() => void> = [];
+  const realSetTimeout = globalThis.setTimeout;
+  const spy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((callback: () => void, delay?: number) => {
+    if (delay === 1500) {
+      timers.push(callback);
+      return 0;
+    }
+    return realSetTimeout(callback, delay);
+  }) as typeof globalThis.setTimeout);
+  return {
+    leave: () =>
+      act(() => {
+        for (const timer of timers.splice(0)) timer();
+      }),
+    restore: () => spy.mockRestore(),
+  };
 };
 
 /** Starts the removal flow and hands back the watch's `onEnd` and stop function. */
@@ -168,33 +192,30 @@ describe('HubAccountSection', () => {
 
   it('resets only this Hub after confirmation, warning that the Portal keeps the device', async () => {
     vi.mocked(resetRegistration).mockResolvedValue({ data: { success: true }, error: undefined } as never);
+    const redirect = holdRedirect();
 
-    renderSection();
-    await userEvent.click(await screen.findByTestId('reregister-device-btn'));
+    try {
+      renderSection();
+      await userEvent.click(await screen.findByTestId('reregister-device-btn'));
 
-    expect(await screen.findByText('SETTINGS_HUB_ACCOUNT_RESET_CONFIRM')).toBeTruthy();
-    await userEvent.click(screen.getByTestId('reregister-confirm-btn'));
+      expect(await screen.findByText('SETTINGS_HUB_ACCOUNT_RESET_CONFIRM')).toBeTruthy();
+      await userEvent.click(screen.getByTestId('reregister-confirm-btn'));
 
-    await waitFor(() => expect(resetRegistration).toHaveBeenCalledWith());
-    expect(toast.success).toHaveBeenCalledWith('SETTINGS_NETWORK_RESET_REGISTRATION_SUCCESS');
-    expect(openExternal).not.toHaveBeenCalled();
+      await waitFor(() => expect(resetRegistration).toHaveBeenCalledWith());
+      expect(toast.success).toHaveBeenCalledWith('SETTINGS_NETWORK_RESET_REGISTRATION_SUCCESS');
+      expect(openExternal).not.toHaveBeenCalled();
+    } finally {
+      redirect.restore();
+    }
   });
 
   it('keeps the session until the reset leaves for the pairing screen', async () => {
     vi.mocked(resetRegistration).mockResolvedValue({ data: { success: true }, error: undefined } as never);
-    // Holds back only the redirect's timer, so the page can be looked at before it leaves.
-    const timers: Array<() => void> = [];
-    const realSetTimeout = globalThis.setTimeout;
-    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((callback: () => void, delay?: number) => {
-      if (delay === 1500) {
-        timers.push(callback);
-        return 0;
-      }
-      return realSetTimeout(callback, delay);
-    }) as typeof globalThis.setTimeout);
+    const redirect = holdRedirect();
 
     sessionStorage.setItem('device-registered', 'true');
     sessionStorage.setItem('device-registered-at', String(Date.now()));
+    setTauriSessionId('hub-session');
 
     try {
       renderSection();
@@ -203,17 +224,23 @@ describe('HubAccountSection', () => {
       await waitFor(() => expect(toast.success).toHaveBeenCalledWith('SETTINGS_NETWORK_RESET_REGISTRATION_SUCCESS'));
 
       expect(clearClientHubState).not.toHaveBeenCalled();
-      // Gone before the delay, so a page closed in those 1.5 s doesn't keep calling the Hub paired.
+      // The page still sends its session. The stored copies are gone before the delay, so a page closed
+      // or reloaded in those 1.5 s starts signed out and doesn't keep calling the Hub paired.
+      expect(getTauriSessionId()).toBe('hub-session');
+      expect(localStorage.getItem(TAURI_SESSION_STORAGE_KEY)).toBeNull();
+      expect(sessionStorage.getItem(TAURI_SESSION_STORAGE_KEY)).toBeNull();
       expect(sessionStorage.getItem('device-registered')).toBeNull();
       expect(window.location.href).toBe('http://hub.local/settings');
+      // Nothing to start again while the page leaves.
+      expect(screen.getByTestId('reregister-device-btn')).toBeDisabled();
+      expect(screen.getByTestId('remove-hub-from-account-btn')).toBeDisabled();
 
-      act(() => {
-        for (const timer of timers) timer();
-      });
+      redirect.leave();
       expect(clearClientHubState).toHaveBeenCalledWith({ keepPortalEmail: true });
       expect(window.location.href).toBe('/device-registration');
     } finally {
-      setTimeoutSpy.mockRestore();
+      redirect.restore();
+      setTauriSessionId(null);
     }
   });
 });
