@@ -57,21 +57,20 @@ cleanup_hub_tunnel_dir() {
 # END hub tunnel folder cleanup
 
 # BEGIN hub docker volume list (identical in every Linux uninstall script)
-# Prints the Hub's own Docker volumes, one per line: every volume compose labelled
-# for the Hub's compose project (ci-hub, or ci-os-hub before the rename), and the
-# Hub stack's three volumes by their whole names, bare as the prod compose file pins
-# them or with a Hub project's name in front (isHubStackVolume in
-# scripts/hub-cleanup-lib.ts, which `cihub reset` uses). hub_tailscale_state can
-# exist without a label (the desktop app creates it before compose does). A volume
-# whose name only contains one of these, such as a database backup called
-# ci_hub_pgdata_backup or another stack's ci-os-hub-staging_ci_hub_pgdata, is not
-# the Hub's and stays. So do volumes labelled runtipi, the name of a separate
-# product as well as of old appliances. Names outside Docker's charset are dropped,
-# so no caller can read one into a command string.
+# Prints the Hub's volumes, dropping names outside Docker's charset. The Hub stack's three go by
+# their whole names, bare or behind a Hub project's name (isHubStackVolume in
+# scripts/hub-cleanup-lib.ts): hub_tailscale_state can exist without a label, while a backup such
+# as ci_hub_pgdata_backup or another stack's ci-os-hub-staging_ci_hub_pgdata must stay. Volumes
+# labelled for the pre-rename ci-os-hub project go on every removal, as their names always matched.
+# Other ones labelled ci-hub, such as one declared in hub-compose.yml, go only with `purge`
+# (apt purge), since a plain remove kept them. Other runtipi-labelled volumes stay, as Runtipi is
+# also a separate product.
 list_hub_volumes() {
   {
     for hub_project in ci-os-hub ci-hub; do
-      docker volume ls --filter "label=com.docker.compose.project=$hub_project" --format '{{.Name}}' 2>/dev/null || true
+      if [ "$hub_project" = ci-os-hub ] || [ "${1:-}" = purge ]; then
+        docker volume ls --filter "label=com.docker.compose.project=$hub_project" --format '{{.Name}}' 2>/dev/null || true
+      fi
     done
     docker volume ls --format '{{.Name}}' 2>/dev/null | while IFS= read -r hub_volume; do
       for hub_key in ci_hub_pgdata ci_hub_app_data hub_tailscale_state; do

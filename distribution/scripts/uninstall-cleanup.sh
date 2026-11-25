@@ -8,12 +8,13 @@ log() {
   printf '[cleanup][%s] %s\n' "$level" "$*"
 }
 
+# Runs a command given as separate words, never through a shell: the names it gets come from Docker,
+# and a network name may hold `;` or `$(...)`, which an app's compose file can choose.
 run_cmd() {
-  cmd="$1"
-  if sh -c "$cmd" >/dev/null 2>&1; then
+  if "$@" >/dev/null 2>&1; then
     return 0
   fi
-  log WARN "command failed: $cmd"
+  log WARN "command failed: $*"
   return 1
 }
 
@@ -78,21 +79,20 @@ cleanup_hub_tunnel_dir() {
 # END hub tunnel folder cleanup
 
 # BEGIN hub docker volume list (identical in every Linux uninstall script)
-# Prints the Hub's own Docker volumes, one per line: every volume compose labelled
-# for the Hub's compose project (ci-hub, or ci-os-hub before the rename), and the
-# Hub stack's three volumes by their whole names, bare as the prod compose file pins
-# them or with a Hub project's name in front (isHubStackVolume in
-# scripts/hub-cleanup-lib.ts, which `cihub reset` uses). hub_tailscale_state can
-# exist without a label (the desktop app creates it before compose does). A volume
-# whose name only contains one of these, such as a database backup called
-# ci_hub_pgdata_backup or another stack's ci-os-hub-staging_ci_hub_pgdata, is not
-# the Hub's and stays. So do volumes labelled runtipi, the name of a separate
-# product as well as of old appliances. Names outside Docker's charset are dropped,
-# so no caller can read one into a command string.
+# Prints the Hub's volumes, dropping names outside Docker's charset. The Hub stack's three go by
+# their whole names, bare or behind a Hub project's name (isHubStackVolume in
+# scripts/hub-cleanup-lib.ts): hub_tailscale_state can exist without a label, while a backup such
+# as ci_hub_pgdata_backup or another stack's ci-os-hub-staging_ci_hub_pgdata must stay. Volumes
+# labelled for the pre-rename ci-os-hub project go on every removal, as their names always matched.
+# Other ones labelled ci-hub, such as one declared in hub-compose.yml, go only with `purge`
+# (apt purge), since a plain remove kept them. Other runtipi-labelled volumes stay, as Runtipi is
+# also a separate product.
 list_hub_volumes() {
   {
     for hub_project in ci-os-hub ci-hub; do
-      docker volume ls --filter "label=com.docker.compose.project=$hub_project" --format '{{.Name}}' 2>/dev/null || true
+      if [ "$hub_project" = ci-os-hub ] || [ "${1:-}" = purge ]; then
+        docker volume ls --filter "label=com.docker.compose.project=$hub_project" --format '{{.Name}}' 2>/dev/null || true
+      fi
     done
     docker volume ls --format '{{.Name}}' 2>/dev/null | while IFS= read -r hub_volume; do
       for hub_key in ci_hub_pgdata ci_hub_app_data hub_tailscale_state; do
@@ -147,7 +147,7 @@ if command -v docker >/dev/null 2>&1; then
 
   remove_images() {
     while IFS= read -r img; do
-      [ -n "$img" ] && run_cmd "docker image rm -f $img" || true
+      [ -n "$img" ] && run_cmd docker image rm -f "$img" || true
     done
   }
 
@@ -170,16 +170,16 @@ if command -v docker >/dev/null 2>&1; then
       case "$project" in ci-os-hub|ci-hub) continue ;; esac
       project_images="$(snapshot_project_images "$project")"
       docker ps -a --filter "label=com.docker.compose.project=$project" --format '{{.ID}}' 2>/dev/null |
-        while IFS= read -r cid; do [ -n "$cid" ] && run_cmd "docker rm -f $cid" || true; done
+        while IFS= read -r cid; do [ -n "$cid" ] && run_cmd docker rm -f "$cid" || true; done
       docker network ls --filter "label=com.docker.compose.project=$project" --format '{{.Name}}' 2>/dev/null |
         while IFS= read -r net; do
           case "$net" in
             ''|bridge|host|none|ci_hub_network|ci-hub_network|ci_os_hub_network|ci-os-hub_network) ;;
-            *) run_cmd "docker network rm $net" || true ;;
+            *) run_cmd docker network rm "$net" || true ;;
           esac
         done
       docker volume ls --filter "label=com.docker.compose.project=$project" --format '{{.Name}}' 2>/dev/null |
-        while IFS= read -r vol; do [ -n "$vol" ] && run_cmd "docker volume rm $vol" || true; done
+        while IFS= read -r vol; do [ -n "$vol" ] && run_cmd docker volume rm "$vol" || true; done
       printf '%s\n' "$project_images" | remove_images
     done
 
@@ -198,16 +198,16 @@ if command -v docker >/dev/null 2>&1; then
 
   if [ -n "$all_containers" ]; then
     echo "$all_containers" | while IFS= read -r name; do
-      run_cmd "docker rm -f $name" || true
+      run_cmd docker rm -f "$name" || true
     done
   fi
 
   for network in ci_hub_network ci-hub_network ci_os_hub_network ci-os-hub_network; do
-    run_cmd "docker network rm $network" || true
+    run_cmd docker network rm "$network" || true
   done
 
   list_hub_volumes | while IFS= read -r volume; do
-    run_cmd "docker volume rm $volume" || true
+    run_cmd docker volume rm "$volume" || true
   done
 
   printf '%s\n' "$hub_images" | remove_images

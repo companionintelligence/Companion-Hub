@@ -3,9 +3,11 @@
  *
  * They matched volume names by substring, so a purge also removed a database copy kept as
  * `ci_hub_pgdata_backup` and the database of a CI-OS test deploy (`ci-os-hub-staging_ci_hub_pgdata`).
- * They now take every volume compose labelled for the Hub's compose project (ci-hub, or ci-os-hub before the
- * rename), plus the Hub stack's three volumes by their whole names (isHubStackVolume in
- * scripts/hub-cleanup-lib.ts, which `cihub reset` uses).
+ * They now take the Hub stack's three volumes by their whole names (isHubStackVolume in
+ * scripts/hub-cleanup-lib.ts, which `cihub reset` uses) and every volume labelled for the pre-rename ci-os-hub
+ * project, whose names the old match always took. `apt purge` also takes the other volumes compose labelled
+ * for the ci-hub project, such as one declared in hub-compose.yml. A plain remove and the uninstallers that
+ * have no purge keep those, as they did before.
  *
  * Each script runs for real in a sandbox, as in uninstall-tunnel-cleanup.test.ts: PATH holds only a few
  * coreutils, a fake `getent` that lists one temp home and a fake `docker` that answers `volume ls` from
@@ -16,7 +18,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { isHubStackVolume } from '../hub-cleanup-lib';
+import { HUB_STACK_PROJECT_NAMES, HUB_STACK_VOLUME_KEYS, isHubStackVolume } from '../hub-cleanup-lib';
 
 const repoRoot = path.resolve(import.meta.dirname, '../..');
 const read = (relative: string) => fs.readFileSync(path.join(repoRoot, relative), 'utf-8');
@@ -70,12 +72,16 @@ const HUB_VOLUMES: [string, string][] = [
   ['ci_hub_app_data', ''],
   // A checkout's stack, where compose puts the project name in front.
   ['ci-hub_ci_hub_pgdata', 'ci-hub'],
-  // A volume declared in the operator's hub-compose.yml, in the Hub's own project.
-  ['ci-hub_hub_backups', 'ci-hub'],
   // Installs from before the rename to ci-hub, and an appliance that still carries its first project name.
-  ['ci-os-hub_pgdata', 'ci-os-hub'],
   ['ci-os-hub_ci_hub_pgdata', ''],
   ['runtipi_ci_hub_pgdata', 'runtipi'],
+  // Any other volume of the pre-rename project.
+  ['ci-os-hub_pgdata', 'ci-os-hub'],
+];
+/** Made by compose for the ci-hub project under other names: only `apt purge` removes them. */
+const PURGE_ONLY_VOLUMES: [string, string][] = [
+  // A volume declared in the operator's hub-compose.yml, in the Hub's own project.
+  ['ci-hub_hub_backups', 'ci-hub'],
 ];
 const OTHER_VOLUMES: [string, string][] = [
   ['ci_hub_pgdata_backup', ''],
@@ -102,7 +108,7 @@ describe('Linux uninstall scripts list the Hub volumes', () => {
 
   it.each(Object.entries(LINUX_SCRIPTS))('%s removes volumes only from that list, never by part of a name', (_name, file) => {
     const source = read(file);
-    expect(source).toMatch(/list_hub_volumes \| while IFS= read -r \w+; do/);
+    expect(source).toMatch(/list_hub_volumes( "\$\{1:-\}")? \| while IFS= read -r \w+; do/);
     expect(source).not.toMatch(/\*ci_hub_pgdata\*|\*ci-os-hub\*|\*hub_tailscale_state\*/);
   });
 
@@ -113,9 +119,28 @@ describe('Linux uninstall scripts list the Hub volumes', () => {
     const names = keys.flatMap((key) => prefixes.map((prefix) => `${prefix}${key}`));
     expect(names.length).toBeGreaterThan(0);
     for (const name of names) expect(isHubStackVolume(name), name).toBe(true);
-    for (const [name] of [...HUB_VOLUMES, ...OTHER_VOLUMES]) {
+    for (const [name] of [...HUB_VOLUMES, ...PURGE_ONLY_VOLUMES, ...OTHER_VOLUMES]) {
       expect(names.includes(name), name).toBe(isHubStackVolume(name));
     }
+    // Both ways: a project or volume added in hub-cleanup-lib.ts must reach the scripts too.
+    expect([...keys].sort()).toEqual([...HUB_STACK_VOLUME_KEYS].sort());
+    expect([...prefixes].sort()).toEqual(['', ...HUB_STACK_PROJECT_NAMES.map((project) => `${project}_`)].sort());
+  });
+
+  it("names the same Hub projects in the Windows cleanup's volume list as isHubStackVolume", () => {
+    const source = read('distribution/scripts/uninstall-cleanup.ps1');
+    const projects =
+      /\$hubVolumeProjects = @\(([^)]*)\)/
+        .exec(source)?.[1]
+        ?.split(',')
+        .map((entry) => entry.trim().replace(/^'|'$/g, '')) ?? [];
+    const keys =
+      /foreach \(\$key in @\(([^)]*)\)\)/
+        .exec(source.slice(source.indexOf('$hubVolumeProjects')))?.[1]
+        ?.split(',')
+        .map((entry) => entry.trim().replace(/^'|'$/g, '')) ?? [];
+    expect([...projects].sort()).toEqual([...HUB_STACK_PROJECT_NAMES].sort());
+    expect([...keys].sort()).toEqual([...HUB_STACK_VOLUME_KEYS].sort());
   });
 });
 
@@ -146,11 +171,17 @@ describe.skipIf(process.platform === 'win32')('Linux uninstall scripts in a sand
       { mode: 0o755 },
     );
     // `volume ls [--filter label=com.docker.compose.project=<p>]` from the fixture, `volume rm` recorded,
-    // and nothing for everything else (no containers, images or networks).
+    // and nothing for everything else (no containers, images or networks). With FAKE_APP_PROJECT set, one
+    // managed app container of that project and its network FAKE_APP_NETWORK, whose `network rm` is recorded.
     fs.writeFileSync(
       path.join(bin, 'docker'),
       [
         `#!${realShell}`,
+        'case "$1 $*" in',
+        '  "ps "*label=ci-hub.managed=true*) [ -z "${FAKE_APP_PROJECT:-}" ] || printf \'%s\\n\' "$FAKE_APP_PROJECT"; exit 0 ;;',
+        '  "network "*"network ls"*"label=com.docker.compose.project=${FAKE_APP_PROJECT:-}"*) [ -z "${FAKE_APP_PROJECT:-}" ] || printf \'%s\\n\' "$FAKE_APP_NETWORK"; exit 0 ;;',
+        '  "network "*"network rm "*) shift 2; for network in "$@"; do printf \'%s\\n\' "$network" >>"${FAKE_NETWORKS_REMOVED:-/dev/null}"; done; exit 0 ;;',
+        'esac',
         '[ "$1" = volume ] || exit 0',
         'case "$2" in',
         '  ls)',
@@ -177,14 +208,14 @@ describe.skipIf(process.platform === 'win32')('Linux uninstall scripts in a sand
     if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
   });
 
-  function run(command: string, args: string[]) {
+  function run(command: string, args: string[], extraEnv: Record<string, string> = {}) {
     const work = fs.mkdtempSync(path.join(sandbox, 'run-'));
     const home = path.join(work, 'home');
     fs.mkdirSync(home);
     const volumes = path.join(work, 'volumes.tsv');
-    fs.writeFileSync(volumes, [...HUB_VOLUMES, ...OTHER_VOLUMES].map(([name, project]) => `${name}\t${project}\n`).join(''));
+    fs.writeFileSync(volumes, [...HUB_VOLUMES, ...PURGE_ONLY_VOLUMES, ...OTHER_VOLUMES].map(([name, project]) => `${name}\t${project}\n`).join(''));
     const removed = path.join(work, 'removed');
-    const env = { PATH: bin, HOME: home, FAKE_HOME: home, FAKE_VOLUMES: volumes, FAKE_REMOVED: removed, LC_ALL: 'C' };
+    const env = { PATH: bin, HOME: home, FAKE_HOME: home, FAKE_VOLUMES: volumes, FAKE_REMOVED: removed, LC_ALL: 'C', ...extraEnv };
     const probe = spawnSync(shell, ['-c', 'command -v getent; command -v docker'], { encoding: 'utf-8', env });
     expect(probe.stdout).toBe(`${path.join(bin, 'getent')}\n${path.join(bin, 'docker')}\n`);
     const result = spawnSync(command, args, { cwd: home, encoding: 'utf-8', env });
@@ -193,6 +224,7 @@ describe.skipIf(process.platform === 'win32')('Linux uninstall scripts in a sand
   }
 
   const hubVolumeNames = HUB_VOLUMES.map(([name]) => name).sort();
+  const purgedVolumeNames = [...HUB_VOLUMES, ...PURGE_ONLY_VOLUMES].map(([name]) => name).sort();
 
   function expectHubVolumesOnly(removed: string[]) {
     expect([...removed].sort()).toEqual(hubVolumeNames);
@@ -201,10 +233,12 @@ describe.skipIf(process.platform === 'win32')('Linux uninstall scripts in a sand
   // postrm's CLI-symlink step acts on /usr/bin/cihub, which only root could change.
   const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
 
-  it.skipIf(isRoot)('deb postrm remove and purge remove the Hub volumes once each and keep the rest', () => {
-    for (const action of ['remove', 'purge']) {
-      expectHubVolumesOnly(run(shell, [path.join(repoRoot, LINUX_SCRIPTS.deb), action]));
-    }
+  it.skipIf(isRoot)('deb postrm remove takes the Hub stack volumes and keeps the rest, hub-compose.yml ones included', () => {
+    expectHubVolumesOnly(run(shell, [path.join(repoRoot, LINUX_SCRIPTS.deb), 'remove']));
+  });
+
+  it.skipIf(isRoot)('deb postrm purge also takes the other volumes compose labelled ci-hub, and nothing else', () => {
+    expect(run(shell, [path.join(repoRoot, LINUX_SCRIPTS.deb), 'purge']).sort()).toEqual(purgedVolumeNames);
   });
 
   it('deb postrm upgrade removes no volume', () => {
@@ -229,5 +263,23 @@ describe.skipIf(process.platform === 'win32')('Linux uninstall scripts in a sand
 
   it('shared uninstall-cleanup.sh removes the Hub volumes and keeps the rest', () => {
     expectHubVolumesOnly(run(shell, [path.join(repoRoot, LINUX_SCRIPTS.shared)]));
+  });
+
+  /**
+   * Docker takes `;`, spaces and `$(...)` in a network name, and an app's compose file chooses its network names.
+   * The shared script ran each `docker ... rm <name>` through `sh -c`, as root during an uninstall, so such a
+   * name ran as a command. Each name must reach docker as one argument.
+   */
+  it("shared uninstall-cleanup.sh hands an app network's name to docker whole, never to a shell", () => {
+    const networksRemoved = path.join(sandbox, 'networks-removed');
+    const network = 'appnet;touch pwned $(id)';
+    run(shell, [path.join(repoRoot, LINUX_SCRIPTS.shared)], {
+      FAKE_APP_PROJECT: 'someapp_somestore',
+      FAKE_APP_NETWORK: network,
+      FAKE_NETWORKS_REMOVED: networksRemoved,
+    });
+    const removed = fs.readFileSync(networksRemoved, 'utf-8').split('\n').filter(Boolean);
+    expect(removed).toContain(network);
+    expect(removed).not.toContain('appnet');
   });
 });
