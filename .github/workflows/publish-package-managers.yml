@@ -31,7 +31,7 @@ jobs:
     environment: production
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # workflow_call inherits the parent run's SHA (hours old after a desktop
           # release). Land the bookkeeping commit on the live branch tip instead.
