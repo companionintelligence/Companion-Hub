@@ -1174,11 +1174,10 @@ fn command_on_path(binary: &str) -> Option<PathBuf> {
         .ok()
         .filter(|output| output.status.success())
         .and_then(|output| {
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .map(str::trim)
-                .find(|line| !line.is_empty())
-                .map(PathBuf::from)
+            crate::docker_engine::first_program_in_locator_output(
+                &String::from_utf8_lossy(&output.stdout),
+                cfg!(target_os = "windows"),
+            )
         });
 
     if resolved.is_some() {

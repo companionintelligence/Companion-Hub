@@ -240,6 +240,28 @@ fn label_for(kind: DockerEngineKind, context_name: Option<&str>, host: &str) -> 
     }
 }
 
+/// The program to run from a `where` (Windows) or `which` listing: the first line, but on Windows
+/// the first that Windows can start directly (`.exe` or `.com`). `where docker` lists Docker
+/// Desktop's extensionless `docker` shell script (for WSL) before `docker.exe`; with docker.exe
+/// gone (a half-removed Docker Desktop), that script was taken, and every docker call failed with
+/// "%1 is not a valid Win32 application" (seen on Windows).
+pub(crate) fn first_program_in_locator_output(output: &str, windows: bool) -> Option<PathBuf> {
+    output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .find(|line| {
+            !windows
+                || Path::new(line)
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| {
+                        ext.eq_ignore_ascii_case("exe") || ext.eq_ignore_ascii_case("com")
+                    })
+        })
+        .map(PathBuf::from)
+}
+
 fn find_docker_binary() -> PathBuf {
     let locator = if cfg!(target_os = "windows") {
         "where"
@@ -255,11 +277,10 @@ fn find_docker_binary() -> PathBuf {
         .ok()
         .filter(|output| output.status.success())
         .and_then(|output| {
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .map(str::trim)
-                .find(|line| !line.is_empty())
-                .map(PathBuf::from)
+            first_program_in_locator_output(
+                &String::from_utf8_lossy(&output.stdout),
+                cfg!(target_os = "windows"),
+            )
         })
         .unwrap_or_else(|| PathBuf::from("docker"))
 }
@@ -1021,6 +1042,32 @@ pub fn format_postgres_probe_failure(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_takes_the_first_program_it_can_start_from_a_where_listing() {
+        // `where docker` on Windows with Docker Desktop: its WSL shell script comes first.
+        let both = "C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker\r\nC:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe\r\n";
+        assert_eq!(
+            first_program_in_locator_output(both, true),
+            Some(PathBuf::from(
+                "C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe"
+            ))
+        );
+        // docker.exe gone (seen on Windows): nothing runnable, so the caller falls back to
+        // `docker` on PATH instead of a script Windows can't start.
+        let script_only = "C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker\r\n";
+        assert_eq!(first_program_in_locator_output(script_only, true), None);
+        assert_eq!(
+            first_program_in_locator_output("C:\\Tools\\DOCKER.EXE\r\n", true),
+            Some(PathBuf::from("C:\\Tools\\DOCKER.EXE"))
+        );
+        assert_eq!(first_program_in_locator_output("", true), None);
+        // `which` elsewhere: the first line, as before.
+        assert_eq!(
+            first_program_in_locator_output("\n/usr/bin/docker\n/snap/bin/docker\n", false),
+            Some(PathBuf::from("/usr/bin/docker"))
+        );
+    }
 
     fn candidate(label: &str, host: &str, kind: DockerEngineKind) -> DockerEngineCandidate {
         DockerEngineCandidate {
