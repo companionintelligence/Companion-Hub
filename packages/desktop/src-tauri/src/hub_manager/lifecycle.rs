@@ -945,14 +945,14 @@ fn stop_hub_stack(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Resu
             "Docker is not available ({}); Hub is effectively stopped.",
             reason
         );
-        let _ = append_desktop_log_for(&data_dir, "hub.stop", &message);
+        let _ = append_desktop_log_for(data_dir, "hub.stop", &message);
         return Ok(message);
     }
 
-    ensure_docker_compose_can_stop_hub_stack(&data_dir)?;
+    ensure_docker_compose_can_stop_hub_stack(data_dir)?;
 
     let _ = append_desktop_log_for(
-        &data_dir,
+        data_dir,
         "hub.stop",
         &format!(
             "Requested stop via docker compose down{}\ncompose={}\nenv={}",
@@ -982,7 +982,7 @@ fn stop_hub_stack(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Resu
         .output()
         .map_err(|e| {
             let message = format!("Failed to run docker compose down: {}", e);
-            let _ = append_desktop_log_for(&data_dir, "hub.stop", &message);
+            let _ = append_desktop_log_for(data_dir, "hub.stop", &message);
             with_view_logs_hint(message)
         })?;
 
@@ -997,7 +997,7 @@ fn stop_hub_stack(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Resu
         } else {
             format!("docker compose down succeeded. {}", combined_output)
         };
-        let _ = append_desktop_log_for(&data_dir, "hub.stop", &message);
+        let _ = append_desktop_log_for(data_dir, "hub.stop", &message);
         Ok("Hub stopped".to_string())
     } else {
         let failure = if combined_output.is_empty() {
@@ -1008,7 +1008,7 @@ fn stop_hub_stack(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Resu
         } else {
             format!("docker compose down failed. {}", combined_output)
         };
-        let _ = append_desktop_log_for(&data_dir, "hub.stop", &failure);
+        let _ = append_desktop_log_for(data_dir, "hub.stop", &failure);
         Err(with_view_logs_hint(failure))
     }
 }
