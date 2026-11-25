@@ -106,12 +106,14 @@ function withTimeout<T>(request: Promise<T>, ms: number): Promise<T> {
   });
 }
 
-/** The defaults the step stores. Each is the chosen id, or null while that model is not usable. */
+/**
+ * The defaults the step stores. Each is the chosen id, or null while that model is not usable. Undefined
+ * leaves it out of the save, which keeps the stored one.
+ */
 interface PreferenceModels {
-  model: string | null;
-  /** Left out of the save when undefined, which keeps the stored one. */
+  model: string | null | undefined;
   embeddingModel: string | null | undefined;
-  visionModel: string | null;
+  visionModel: string | null | undefined;
 }
 
 const samePreferences = (a: PreferenceModels, b: PreferenceModels) =>
@@ -237,12 +239,16 @@ export const InstallStep = ({
       // reason. A refused download is never tracked, so the download polling reads these (see takeRound).
       // Filled as the answers arrive, so one that comes after the step stopped waiting still counts.
       const pullRefusals: Record<string, string> = {};
+      // The saved defaults every save leaves alone. Set before the first save (see `AiSetupConfig.keepSavedModels`).
+      const keepSaved = { model: false, embeddingModel: !!aiSetupConfig?.keepSavedEmbeddingModel, visionModel: false };
       const preferenceModels = (tracked: TrackedModel[]): PreferenceModels => ({
-        model: preferenceModelId(aiSetupConfig?.preferredModelId, availablePreferenceModelIds, tracked),
-        embeddingModel: aiSetupConfig?.keepSavedEmbeddingModel
+        model: keepSaved.model ? undefined : preferenceModelId(aiSetupConfig?.preferredModelId, availablePreferenceModelIds, tracked),
+        embeddingModel: keepSaved.embeddingModel
           ? undefined
           : preferenceModelId(aiSetupConfig?.preferredEmbeddingModelId, availablePreferenceModelIds, tracked),
-        visionModel: preferenceModelId(aiSetupConfig?.preferredVisionModelId, availablePreferenceModelIds, tracked),
+        visionModel: keepSaved.visionModel
+          ? undefined
+          : preferenceModelId(aiSetupConfig?.preferredVisionModelId, availablePreferenceModelIds, tracked),
       });
       // What the last save stored, so the download polling can correct it.
       let savedModels: PreferenceModels | null = null;
@@ -325,12 +331,18 @@ export const InstallStep = ({
         try {
           // Left out of the save, which keeps what is stored (see `AiSetupConfig.keepSavedModels`). Only
           // on the engine they were saved for: kept across a switch, another engine's model is handed out.
-          // A Hub that does not say which engine it has keeps them.
-          const savedBackend = aiSetupConfig.keepSavedModels
+          // A Hub that does not say which engine it has keeps them. Embedders come from Ollama whatever
+          // the chat engine, so `keepSavedEmbeddingModel` holds across a switch.
+          const keepChatEngineModels = aiSetupConfig.keepSavedModels || aiSetupConfig.keepSavedChatModel || aiSetupConfig.keepSavedVisionModel;
+          const savedBackend = keepChatEngineModels
             ? ((await withTimeout(fetchInferencePreferences(), REQUEST_TIMEOUT_MS).catch(() => null))?.preferredBackend ?? null)
             : null;
-          const keepModels = aiSetupConfig.keepSavedModels && (savedBackend === null || savedBackend === aiSetupConfig.backend);
-          const models = keepModels ? null : preferenceModels(latestTracked);
+          const sameEngine = savedBackend === null || savedBackend === aiSetupConfig.backend;
+          const keepModels = !!aiSetupConfig.keepSavedModels && sameEngine;
+          keepSaved.model = keepModels || (!!aiSetupConfig.keepSavedChatModel && sameEngine);
+          keepSaved.visionModel = keepModels || (!!aiSetupConfig.keepSavedVisionModel && sameEngine);
+          keepSaved.embeddingModel ||= keepModels;
+          const models = preferenceModels(latestTracked);
           await saveInferencePreferences({
             backend: aiSetupConfig.backend,
             ...models,

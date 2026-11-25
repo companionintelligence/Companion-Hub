@@ -238,10 +238,66 @@ describe('InstallStep', () => {
     await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalledTimes(1));
     const saved = saveInferencePreferences.mock.calls[0]?.[0];
     expect(saved).toMatchObject({ backend: 'ollama' });
-    expect(saved).not.toHaveProperty('model');
-    expect(saved).not.toHaveProperty('embeddingModel');
-    expect(saved).not.toHaveProperty('visionModel');
+    // Undefined is left out of the request, which keeps what the Hub stores.
+    expect(saved.model).toBeUndefined();
+    expect(saved.embeddingModel).toBeUndefined();
+    expect(saved.visionModel).toBeUndefined();
     expect(pinInferenceModel).not.toHaveBeenCalled();
+  });
+
+  it('saves the ticked embedder and keeps the chat and vision models when the chat engine had nothing to pick from', async () => {
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'omlx' });
+    render(
+      <InstallStep
+        apps={[]}
+        onComplete={onComplete}
+        aiSetupConfig={{
+          agentFrameworks: [],
+          remoteAccess: [],
+          selectedModels: ['nomic-embed-text'],
+          installedCatalogIds: ['nomic-embed-text'],
+          backend: 'omlx',
+          cloudProviders: [],
+          preferredEmbeddingModelId: 'nomic-embed-text',
+          keepSavedChatModel: true,
+          keepSavedVisionModel: true,
+          skipped: false,
+        }}
+      />,
+    );
+
+    await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalledTimes(1));
+    const saved = saveInferencePreferences.mock.calls[0]?.[0];
+    expect(saved).toMatchObject({ backend: 'omlx', embeddingModel: 'nomic-embed-text' });
+    expect(saved.model).toBeUndefined();
+    expect(saved.visionModel).toBeUndefined();
+  });
+
+  it('keeps the saved vision model when the person ticked a chat model that sees no images while Ollama was down', async () => {
+    render(
+      <InstallStep
+        apps={[]}
+        onComplete={onComplete}
+        aiSetupConfig={{
+          agentFrameworks: [],
+          remoteAccess: [],
+          selectedModels: ['qwen3-8b'],
+          installedCatalogIds: ['qwen3-8b'],
+          backend: 'ollama',
+          cloudProviders: [],
+          preferredModelId: 'qwen3-8b',
+          keepSavedEmbeddingModel: true,
+          keepSavedVisionModel: true,
+          skipped: false,
+        }}
+      />,
+    );
+
+    await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalledTimes(1));
+    const saved = saveInferencePreferences.mock.calls[0]?.[0];
+    expect(saved).toMatchObject({ backend: 'ollama', model: 'qwen3-8b' });
+    expect(saved.embeddingModel).toBeUndefined();
+    expect(saved.visionModel).toBeUndefined();
   });
 
   it('clears the saved models when the wizard moves to another engine, even with nothing to pick from', async () => {

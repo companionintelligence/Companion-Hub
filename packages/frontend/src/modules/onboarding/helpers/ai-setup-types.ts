@@ -43,6 +43,16 @@ export interface AiSetupConfig {
    */
   keepSavedModels?: boolean;
   /**
+   * Leave the saved chat model as it is: no chat model was picked, and the chat engine did not answer.
+   * An embedder from Ollama may still be ticked, which `keepSavedModels` does not cover.
+   */
+  keepSavedChatModel?: boolean;
+  /**
+   * Leave the saved vision model as it is: none was picked, and the chat engine, which serves it, did not
+   * answer. Its installed list is then empty or only what the Hub remembers.
+   */
+  keepSavedVisionModel?: boolean;
+  /**
    * Leave the saved embedding model as it is: none was picked, and Ollama, which serves embedders, did
    * not answer (#2550).
    */

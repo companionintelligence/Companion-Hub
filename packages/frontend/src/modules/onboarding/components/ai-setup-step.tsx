@@ -293,9 +293,29 @@ export const AiSetupStep = ({
         untickedModelIdsRef.current = new Set();
         defaultClearedRef.current = false;
       }
-      const defaultSelected = keptSelection ?? getDefaultSelectedModelIds(data, resolvedBackend);
-      setSelectedModelIds(defaultSelected);
       const keptPreferred = preferredModelIdRef.current;
+      // Ollama's models on a list read while it was down were only remembered, so none was ticked. Once it
+      // answers, a rescan ticks them as a re-check does (see `refreshInstalledModels`), or Continue clears
+      // the saved models.
+      const ollamaCameBack = profile !== null && !engineAnswered(profile, 'ollama') && engineAnswered(data, 'ollama');
+      const arrived =
+        keptSelection && ollamaCameBack
+          ? getDefaultSelectedModelIds(
+              {
+                ...data,
+                installedCatalogIds: (data.installedCatalogIds ?? []).filter(
+                  (id) => data.availableModels.find((m) => m.id === id)?.backend === 'ollama' && !untickedModelIdsRef.current.has(id),
+                ),
+              },
+              resolvedBackend,
+              keptPreferred && keptSelection.includes(keptPreferred)
+                ? keptPreferred
+                : getDefaultPreferredModelId(data, resolvedBackend, keptSelection, true),
+              keptSelection,
+            )
+          : [];
+      const defaultSelected = keptSelection ? [...new Set([...keptSelection, ...arrived])] : getDefaultSelectedModelIds(data, resolvedBackend);
+      setSelectedModelIds(defaultSelected);
       // As on a re-check: someone who unticked every chat model keeps no Default through a rescan, so
       // the badge does not land on a card left unticked.
       const nextPreferred =
@@ -675,6 +695,15 @@ export const AiSetupStep = ({
               : installedCatalogIds.filter((id) => !untickedModelIdsRef.current.has(id)),
           )
         : undefined);
+    // Whether the chat engine answered, so the wizard had a list of its own to pick from. vLLM and oMLX
+    // are listed from the URL and key typed here, which the profile's engine list probes only once they
+    // are saved, so the wizard's own probe of them decides.
+    const chatEngineAnswered =
+      selectedBackend === 'vllm'
+        ? vllmStatus?.ready === true
+        : selectedBackend === 'omlx'
+          ? omlxStatus?.ready === true
+          : engineAnswered(profile, selectedBackend);
 
     const backendOf = (id: string) => profile.availableModels.find((m) => m.id === id)?.backend;
     return {
@@ -687,7 +716,11 @@ export const AiSetupStep = ({
       cloudProviders: validProviders,
       preferredModelId: effectivePreferredModelId,
       // Nothing picked, and an engine that did not answer to pick from: the models saved before stay.
-      ...(selectedModels.length === 0 && !engineAnswered(profile, selectedBackend) ? { keepSavedModels: true } : {}),
+      ...(selectedModels.length === 0 && !chatEngineAnswered ? { keepSavedModels: true } : {}),
+      // The chat and vision models come from the chat engine. With none ticked and that engine not
+      // answering, the saved ones stay, though an embedder from Ollama is ticked or a chat model is.
+      ...(!effectivePreferredModelId && !chatEngineAnswered ? { keepSavedChatModel: true } : {}),
+      ...(!effectivePreferredVisionModelId && !chatEngineAnswered ? { keepSavedVisionModel: true } : {}),
       // Embedders come from Ollama. With none ticked and Ollama not answering, the saved one stays, or
       // Memory is handed another in place of the one its index was built with.
       ...(!effectivePreferredEmbeddingModelId && !engineAnswered(profile, EMBEDDING_INFERENCE_BACKEND) ? { keepSavedEmbeddingModel: true } : {}),
