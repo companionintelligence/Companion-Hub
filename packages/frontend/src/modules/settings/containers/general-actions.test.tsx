@@ -17,6 +17,7 @@ import {
   type UpdateInfo,
 } from '@/lib/update-service';
 import { factoryReset } from '@/api-client/sdk.gen';
+import { handleSessionExpired, holdPageOnSessionExpiry } from '@/lib/session-expired';
 import { keepStackUpdateOutcome, markStackUpdatePending, readKeptStackUpdateOutcome, resolveStackUpdate } from '@/lib/desktop-stack-session';
 import { TranslatableError } from '@/types/error.types';
 import { sdkFail, sdkOk } from '@/tests/sdk-mock-helpers';
@@ -85,8 +86,15 @@ vi.mock('sonner', () => ({
   toast: {
     success: vi.fn(),
     error: vi.fn(),
+    warning: vi.fn(),
   },
 }));
+
+// The real holds, watched so a test can let go of one the panel keeps after it is gone.
+vi.mock('@/lib/session-expired', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/session-expired')>();
+  return { ...actual, holdPageOnSessionExpiry: vi.fn(actual.holdPageOnSessionExpiry) };
+});
 
 vi.mock('../components/update-repo-modal/update-repo-modal', () => ({
   UpdateRepoModal: () => <div>Update repo</div>,
@@ -109,6 +117,7 @@ const mockToastError = vi.mocked(toast.error);
 const mockInstallDesktopUpdate = vi.mocked(installDesktopUpdate);
 const mockOpenDesktopDownloadPage = vi.mocked(openDesktopDownloadPage);
 const mockToastSuccess = vi.mocked(toast.success);
+const mockToastWarning = vi.mocked(toast.warning);
 const mockFactoryReset = vi.mocked(factoryReset);
 const jsdomUserAgent = navigator.userAgent;
 
@@ -1423,7 +1432,7 @@ describe('GeneralActionsContainer', () => {
       await userEvent.click(screen.getByTestId('factory-reset-confirm-btn'));
 
       expect(await screen.findByTestId('factory-reset-portal-apps-left')).toHaveTextContent('delete this device in the Portal');
-      expect(screen.getByTestId('factory-reset-continue-btn')).toHaveTextContent('Continue to sign in');
+      expect(screen.getByTestId('factory-reset-continue-btn')).toHaveTextContent('Continue to pairing');
       expect(screen.queryByTestId('factory-reset-confirm-btn')).not.toBeInTheDocument();
     });
 
@@ -1450,6 +1459,157 @@ describe('GeneralActionsContainer', () => {
 
       await userEvent.click(await screen.findByTestId('factory-reset-btn'));
       expect(screen.getByLabelText("Also remove this Hub's apps from Companion Portal")).not.toBeChecked();
+    });
+  });
+
+  // A factory reset deletes every user, so the open page's requests are refused from then on. Each
+  // refusal used to send the page to sign-in, taking the reset's toast and warning with it (#2557).
+  describe('what the page says after a factory reset', () => {
+    const originalLocation = window.location;
+    let assign: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      assign = vi.fn();
+      Object.defineProperty(window, 'location', {
+        configurable: true,
+        value: { ...originalLocation, href: 'http://hub.local/settings?tab=system', pathname: '/settings', assign },
+      });
+      mockUseAppContext.mockReturnValue({
+        version: { current: '4.7.0', latest: '4.7.0', body: '', releases: [] },
+        refreshAppContext: vi.fn(),
+        userSettings: { ciHubDeviceSlug: 'core' },
+      } as unknown as ReturnType<typeof useAppContext>);
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      Object.defineProperty(window, 'location', { configurable: true, value: originalLocation });
+    });
+
+    async function resetWith(answer: Awaited<ReturnType<typeof factoryReset>>, { removeFromPortal = false } = {}) {
+      mockFactoryReset.mockResolvedValue(answer);
+      const view = render(<GeneralActionsContainer />);
+      await userEvent.click(await screen.findByTestId('factory-reset-btn'));
+      await userEvent.type(screen.getByTestId('factory-reset-confirmation-input'), 'core');
+      if (removeFromPortal) {
+        await userEvent.click(screen.getByLabelText("Also remove this Hub's apps from Companion Portal"));
+      }
+      await userEvent.click(screen.getByTestId('factory-reset-confirm-btn'));
+      return view;
+    }
+
+    it('keeps the warning that the Portal still lists the apps on screen until the person moves on', async () => {
+      await resetWith({ data: { success: true, portalApps: 'failed' } } as Awaited<ReturnType<typeof factoryReset>>, { removeFromPortal: true });
+      expect(await screen.findByTestId('factory-reset-portal-apps-left')).toBeInTheDocument();
+
+      // The Settings page's next request, refused now that its user is gone.
+      await handleSessionExpired();
+
+      expect(assign).not.toHaveBeenCalled();
+      expect(screen.getByTestId('factory-reset-portal-apps-left')).toBeInTheDocument();
+
+      await userEvent.click(screen.getByTestId('factory-reset-continue-btn'));
+      expect(window.location.href).toBe('/device-registration');
+    });
+
+    it('leaves the toast on screen, then opens the pairing page', async () => {
+      const timers: Array<{ callback: () => void; delay?: number }> = [];
+      const realSetTimeout = globalThis.setTimeout;
+      const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((callback: () => void, delay?: number) => {
+        if (delay === 3000) {
+          timers.push({ callback, delay });
+          return 0;
+        }
+        return realSetTimeout(callback, delay);
+      }) as typeof globalThis.setTimeout);
+
+      try {
+        await resetWith({ data: { success: true, portalApps: 'kept' } } as Awaited<ReturnType<typeof factoryReset>>);
+        await waitFor(() => expect(mockToastSuccess).toHaveBeenCalledWith('Factory reset complete. Opening the pairing screen…'));
+        expect(screen.getByTestId('factory-reset-btn')).toBeDisabled();
+
+        await handleSessionExpired();
+        expect(assign).not.toHaveBeenCalled();
+        expect(window.location.href).toBe('http://hub.local/settings?tab=system');
+
+        for (const timer of timers) timer.callback();
+        expect(window.location.href).toBe('/device-registration');
+      } finally {
+        setTimeoutSpy.mockRestore();
+      }
+    });
+
+    it('opens the pairing page at once when the panel goes away while the toast is up', async () => {
+      const { unmount } = await resetWith({ data: { success: true, portalApps: 'kept' } } as Awaited<ReturnType<typeof factoryReset>>);
+      await waitFor(() => expect(mockToastSuccess).toHaveBeenCalled());
+      expect(window.location.href).toBe('http://hub.local/settings?tab=system');
+
+      // Another Settings tab.
+      unmount();
+
+      expect(window.location.href).toBe('/device-registration');
+      expect(assign).not.toHaveBeenCalled();
+    });
+
+    it('keeps the page off sign-in when the panel goes away while the reset runs, then opens pairing', async () => {
+      let answer: (value: Awaited<ReturnType<typeof factoryReset>>) => void = () => undefined;
+      mockFactoryReset.mockImplementation(() => new Promise((resolve) => (answer = resolve)) as unknown as ReturnType<typeof factoryReset>);
+      const timers: Array<() => void> = [];
+      const realSetTimeout = globalThis.setTimeout;
+      const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((callback: () => void, delay?: number) => {
+        if (delay === 3000) {
+          timers.push(callback);
+          return 0;
+        }
+        return realSetTimeout(callback, delay);
+      }) as typeof globalThis.setTimeout);
+
+      try {
+        const { unmount } = render(<GeneralActionsContainer />);
+        await userEvent.click(await screen.findByTestId('factory-reset-btn'));
+        await userEvent.type(screen.getByTestId('factory-reset-confirmation-input'), 'core');
+        await userEvent.click(screen.getByLabelText("Also remove this Hub's apps from Companion Portal"));
+        await userEvent.click(screen.getByTestId('factory-reset-confirm-btn'));
+
+        // Another Settings tab, say Logs, while the Hub deletes its users.
+        unmount();
+        await handleSessionExpired();
+        expect(assign).not.toHaveBeenCalled();
+
+        answer({ data: { success: true, portalApps: 'failed' } } as Awaited<ReturnType<typeof factoryReset>>);
+        await waitFor(() => expect(mockToastWarning).toHaveBeenCalledWith(expect.stringContaining('delete this device in the Portal')));
+        await handleSessionExpired();
+        expect(assign).not.toHaveBeenCalled();
+
+        for (const timer of timers) timer();
+        expect(window.location.href).toBe('/device-registration');
+      } finally {
+        setTimeoutSpy.mockRestore();
+        // A browser has left the page by now. This one is still loaded, so the next test gets it unheld.
+        for (const hold of vi.mocked(holdPageOnSessionExpiry).mock.results) (hold.value as () => void)();
+      }
+    });
+
+    it('lets a refused request send the page to sign-in again when the reset failed', async () => {
+      await resetWith({ error: new Error('uninstall failed'), response: new Response(null, { status: 500 }) } as Awaited<
+        ReturnType<typeof factoryReset>
+      >);
+      await waitFor(() => expect(mockToastError).toHaveBeenCalled());
+
+      await handleSessionExpired();
+
+      expect(assign).toHaveBeenCalledWith('/login');
+    });
+
+    it('goes to sign-in when the reset itself is refused, instead of saying it stopped halfway', async () => {
+      mockFactoryReset.mockRejectedValue(new TranslatableError('COMMON_UNAUTHORIZED', {}, { status: 401, url: '/api/system/factory-reset' }));
+      render(<GeneralActionsContainer />);
+      await userEvent.click(await screen.findByTestId('factory-reset-btn'));
+      await userEvent.type(screen.getByTestId('factory-reset-confirmation-input'), 'core');
+      await userEvent.click(screen.getByTestId('factory-reset-confirm-btn'));
+
+      await waitFor(() => expect(assign).toHaveBeenCalledWith('/login'));
+      expect(mockToastError).not.toHaveBeenCalled();
     });
   });
 

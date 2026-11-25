@@ -278,7 +278,7 @@ export class FactoryResetService {
       message:
         portalApps === 'failed'
           ? "Factory reset complete, but Companion Portal still lists this Hub's apps. Delete the device in the Portal to remove them."
-          : 'Factory reset complete. Sign in again to create the first operator account.',
+          : 'Factory reset complete. Pair the Hub again, then sign in to create the first operator account.',
       portalApps,
     };
   }
