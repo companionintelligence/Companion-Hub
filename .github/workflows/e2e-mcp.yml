@@ -72,7 +72,7 @@ jobs:
         with:
           node-version: '22'
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6
 
       - run: pnpm install --frozen-lockfile
 
