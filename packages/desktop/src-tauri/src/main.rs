@@ -1589,9 +1589,8 @@ mod tests {
     use super::{
         deep_link_urls_from_payload, extract_install_intent, extract_pairing_code,
         extract_portal_auth, is_plain_launch, launch_mode_from_args, sanitize_download_filename,
-        stack_dev_mode_enabled, stack_dev_override_paths, validate_open_path,
-        window_shown_at_launch, LaunchMode, STACK_DEV_COMPOSE_PATH_ENV, STACK_DEV_ENV,
-        STACK_DEV_ENV_PATH_ENV,
+        stack_dev_mode_enabled, stack_dev_override_paths, validate_open_path, LaunchMode,
+        STACK_DEV_COMPOSE_PATH_ENV, STACK_DEV_ENV, STACK_DEV_ENV_PATH_ENV,
     };
     use std::path::{Path, PathBuf};
 
@@ -1600,6 +1599,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_login_start_leaves_the_window_in_the_tray() {
+        // The test runs on Linux only. A shared import would go unused on macOS and Windows.
+        use super::window_shown_at_launch;
         assert!(!window_shown_at_launch(&["--login-start".to_string()]));
         assert!(window_shown_at_launch(&[]));
         assert!(window_shown_at_launch(&[

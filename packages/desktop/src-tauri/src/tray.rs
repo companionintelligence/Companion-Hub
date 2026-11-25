@@ -105,14 +105,14 @@ pub(crate) fn show_hide_label(shown: bool) -> &'static str {
     }
 }
 
-/// Whether the main window shows. A static rather than app state because a second launch can show
-/// the window from the single-instance D-Bus thread while setup still runs, before the tray exists;
-/// `create_tray` reads it after managing the item so that launch isn't lost.
+/// Whether the main window shows. `create_tray` sets where it starts. After that only the main
+/// thread changes it: the tray menu, the window's close button and `note_main_window_shown`, which
+/// queues its update there.
 static MAIN_WINDOW_SHOWN: AtomicBool = AtomicBool::new(false);
 
 /// The tray's first item. It lives in app state so that whatever shows the window outside the
 /// tray (opening the app again, a deep link) can keep the label in step. Otherwise the item kept
-/// reading **Show Hub** over a window that was back, and hiding it took two clicks
+/// reading **Show Hub** over a window that was back and hiding it took two clicks
 /// (Companion-Hub#2537).
 struct ShowHideItem(MenuItem<tauri::Wry>);
 
@@ -128,8 +128,14 @@ fn set_main_window_shown(app: &tauri::AppHandle, shown: bool) {
 }
 
 /// Records that the main window was shown from outside the tray, so the tray offers to hide it.
+///
+/// The update runs on the main thread, queued behind the window's own show request. A second launch
+/// on Linux calls this from the single-instance D-Bus thread. Setting the label there would hold
+/// that thread until the main thread is free. A close or tray click handled in between could also
+/// leave the flag saying hidden under a window that then shows.
 pub(crate) fn note_main_window_shown(app: &tauri::AppHandle) {
-    set_main_window_shown(app, true);
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || set_main_window_shown(&handle, true));
 }
 
 fn describe_hub_status(status: &crate::hub_manager::HubStatus) -> String {
@@ -224,18 +230,9 @@ pub fn create_tray(app: &App, window_shown: bool) -> Result<(), Box<dyn std::err
         ],
     )?;
 
-    if window_shown {
-        MAIN_WINDOW_SHOWN.store(true, Ordering::SeqCst);
-    }
+    // A second launch during setup queues its update behind setup, so it lands on this item.
+    MAIN_WINDOW_SHOWN.store(window_shown, Ordering::SeqCst);
     app.manage(ShowHideItem(show_hide));
-    // A second launch during setup may have shown the window before the item existed. Hiding
-    // only happens on the main thread once setup is over, so this can only turn the label on.
-    if !window_shown && main_window_shown() {
-        let _ = app
-            .state::<ShowHideItem>()
-            .0
-            .set_text(show_hide_label(true));
-    }
 
     // Keep refs for background updates
     let status_item = Arc::new(status);
