@@ -11,7 +11,7 @@ import { SSEService } from '@/core/sse/sse.service';
 import { HttpException, HttpStatus, Inject, Injectable, OnApplicationBootstrap, OnModuleDestroy, Optional } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn, McpAccessChoice } from '@ci-hub/common/types';
-import { normalizeStoredHostname, sanitizeAppSubdomain, servedExposureMode } from '@ci-hub/common/types';
+import { isHubReservedSubdomain, normalizeStoredHostname, sanitizeAppSubdomain, servedExposureMode } from '@ci-hub/common/types';
 import { type CustomDomainForm, type CustomDomainState, requestsCustomDomainChange } from './custom-domain-authority';
 import { customDomainAuditLine } from './custom-domain-audit';
 import validator from 'validator';
@@ -216,6 +216,16 @@ function uniqueRoutingLocalSubdomain(parsedForm: AppFormForSubdomain): string | 
     return sanitizeAppSubdomain(trimmed) || undefined;
   }
   return undefined;
+}
+
+/**
+ * Refuses the subdomain Companion Portal gives the Hub itself. An app published on it lands on the
+ * Hub's own entry in the Portal, which took the Hub's public address down (CI-Portal#1091).
+ */
+function assertNotHubSubdomain(routingSubdomain: string | undefined): void {
+  if (routingSubdomain && isHubReservedSubdomain(routingSubdomain)) {
+    throw new TranslatableError('APP_SUBDOMAIN_RESERVED_FOR_HUB', { subdomain: routingSubdomain }, HttpStatus.BAD_REQUEST);
+  }
 }
 
 /**
@@ -2072,6 +2082,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     const routingSubdomain = uniqueRoutingLocalSubdomain(parsedForm);
+    assertNotHubSubdomain(routingSubdomain);
     if (routingSubdomain) {
       const appsWithSameLocalSubdomain = conflictsOtherApp(await this.appRepository.getAppsByLocalSubdomain(routingSubdomain));
 
@@ -3276,6 +3287,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     const routingSubdomain = uniqueRoutingLocalSubdomain(parsedForm);
+    assertNotHubSubdomain(routingSubdomain);
     if (routingSubdomain) {
       const appsWithSameLocalSubdomain = await this.appRepository.getAppsByLocalSubdomain(routingSubdomain, app.id);
 

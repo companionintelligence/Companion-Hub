@@ -7,7 +7,14 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { PortalClientService } from '@/core/portal/portal-client.service';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
-import { buildOriginServerName, deriveAppSlug, PORT_EXPOSE_DEFAULT_SHORT_DESC, RESERVED_APP_NAMES, sanitizeAppSubdomain } from '@ci-hub/common/types';
+import {
+  buildOriginServerName,
+  deriveAppSlug,
+  isHubReservedSubdomain,
+  PORT_EXPOSE_DEFAULT_SHORT_DESC,
+  RESERVED_APP_NAMES,
+  sanitizeAppSubdomain,
+} from '@ci-hub/common/types';
 import { isPortExposeApp, PORT_EXPOSE_KIND, type AppInfo } from '@ci-hub/common/schemas';
 import path from 'node:path';
 import { AppsRepository } from '../apps/apps.repository';
@@ -61,6 +68,9 @@ export class PortExposeService {
     if (exposureMode === 'cloudflare' && !localSubdomain?.trim()) {
       throw new TranslatableError('PORT_EXPOSE_SUBDOMAIN_REQUIRED', undefined, HttpStatus.BAD_REQUEST);
     }
+
+    // Every mode: This Machine Only and Private VPN reach Companion Portal through the registry under this name too.
+    assertNotHubSubdomain(localSubdomain?.trim() || slug);
 
     await assertHubCanReachPort(port);
 
@@ -161,6 +171,8 @@ export class PortExposeService {
     if (exposureMode === 'cloudflare' && !localSubdomain?.trim()) {
       throw new TranslatableError('PORT_EXPOSE_SUBDOMAIN_REQUIRED', undefined, HttpStatus.BAD_REQUEST);
     }
+
+    assertNotHubSubdomain(localSubdomain?.trim() || extractAppUrn(appUrn).appName);
 
     const appsWithSamePort = await this.appsRepository.getAppsByPort(port, app.id);
     if (appsWithSamePort.length > 0) {
@@ -556,6 +568,17 @@ export class PortExposeService {
     const appPath = path.join(dataDir, 'apps', appStoreId, appName);
     const dataPath = path.join(appDataDir, appStoreId, appName);
     await Promise.all([this.filesystem.removeDirectory(appPath), this.filesystem.removeDirectory(dataPath)]);
+  }
+}
+
+/**
+ * Refuses the subdomain Companion Portal gives the Hub itself (CI-Portal#1091). The registry and the
+ * tunnel sync both key the Portal's entry by this name, so a port called "Hub" landed on the Hub's
+ * own entry and took its public address down.
+ */
+function assertNotHubSubdomain(subdomain: string): void {
+  if (isHubReservedSubdomain(subdomain)) {
+    throw new TranslatableError('APP_SUBDOMAIN_RESERVED_FOR_HUB', { subdomain: sanitizeAppSubdomain(subdomain) }, HttpStatus.BAD_REQUEST);
   }
 }
 

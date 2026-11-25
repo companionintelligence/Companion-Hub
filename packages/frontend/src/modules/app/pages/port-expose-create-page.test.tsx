@@ -215,6 +215,39 @@ describe('PortExposeCreatePage', () => {
     });
   });
 
+  // Companion Portal files the port under `hub`, the Hub's own entry there (CI-Portal#1091).
+  describe("refuses the name Hub, which is the Hub's own address", () => {
+    const submitAs = async (name: string) => {
+      fireEvent.change(screen.getByPlaceholderText('CUSTOM_APP_NAME_PLACEHOLDER'), { target: { value: name } });
+      fireEvent.change(screen.getByPlaceholderText('PORT_EXPOSE_PORT_PLACEHOLDER'), { target: { value: '3000' } });
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'PORT_EXPOSE_SUBMIT' }));
+      });
+    };
+
+    it.each([
+      ['This machine only', 'APP_INSTALL_FORM_EXPOSURE_LOCAL'],
+      ['Private VPN', 'COMMON_PRIVATE_VPN'],
+    ])('under the name on %s', async (_label, button) => {
+      renderPage({ tailscaleAvailable: true });
+
+      fireEvent.click(screen.getByRole('button', { name: button }));
+      await submitAs('Hub');
+
+      expect(await screen.findByText('APP_SUBDOMAIN_RESERVED_FOR_HUB')).toBeInTheDocument();
+      expect(createMutation.mutate).not.toHaveBeenCalled();
+    });
+
+    it('on Public web before asking anything', async () => {
+      renderPage();
+
+      await submitAs('hub');
+
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(createMutation.mutate).not.toHaveBeenCalled();
+    });
+  });
+
   it('puts "nothing is listening on that port" under the port field instead of in a toast', async () => {
     renderPage();
 

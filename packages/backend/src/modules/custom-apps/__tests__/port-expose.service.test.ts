@@ -141,6 +141,38 @@ describe('PortExposeService', () => {
       ).rejects.toMatchObject({ message: 'CUSTOM_APP_NAME_RESERVED' });
     });
 
+    /*
+     * Companion Portal files the port under `hub`, which is the Hub's own entry there. Taking it
+     * cleared the Hub's route, so its public address answered 404 (CI-Portal#1091).
+     */
+    it.each(['local', 'tailscale'] as const)('refuses a port named Hub on %s before anything is written or sent', async (exposureMode) => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as any);
+
+      const refusal = service.createPortExposeApp({ name: 'Hub', port: 8080, exposureMode });
+
+      await expect(refusal).rejects.toBeInstanceOf(TranslatableError);
+      await expect(refusal).rejects.toMatchObject({
+        message: 'APP_SUBDOMAIN_RESERVED_FOR_HUB',
+        response: expect.objectContaining({ intlParams: { subdomain: 'hub' } }),
+      });
+      expect(filesystem.createDirectories).not.toHaveBeenCalled();
+      expect(appsRepository.createApp).not.toHaveBeenCalled();
+      expect(portalClient.postDeviceApplicationsRegistry).not.toHaveBeenCalled();
+    });
+
+    it('refuses the subdomain hub on Public Web, whatever the name', async () => {
+      await expect(
+        service.createPortExposeApp({ name: 'Grafana', port: 8080, exposureMode: 'cloudflare', localSubdomain: 'HUB' }),
+      ).rejects.toMatchObject({ message: 'APP_SUBDOMAIN_RESERVED_FOR_HUB' });
+      expect(appsRepository.createApp).not.toHaveBeenCalled();
+    });
+
+    it('lets a port called Hub on Public Web take another subdomain', async () => {
+      await service.createPortExposeApp({ name: 'Hub', port: 8080, exposureMode: 'cloudflare', localSubdomain: 'my-hub' });
+
+      expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ appName: 'hub', localSubdomain: 'my-hub' }));
+    });
+
     it('throws when cloudflare mode is missing a subdomain', async () => {
       await expect(
         service.createPortExposeApp({
@@ -239,6 +271,14 @@ describe('PortExposeService', () => {
           exposureMode: 'cloudflare',
         }),
       ).rejects.toMatchObject({ message: 'PORT_EXPOSE_SUBDOMAIN_REQUIRED' });
+    });
+
+    it("refuses to move a port onto the Hub's own subdomain, changing nothing", async () => {
+      await expect(
+        service.updatePortExposeApp('my-workload:_user', { port: 8080, exposureMode: 'tailscale', localSubdomain: 'hub' }),
+      ).rejects.toMatchObject({ message: 'APP_SUBDOMAIN_RESERVED_FOR_HUB' });
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      expect(portalClient.postDeviceApplicationsRegistry).not.toHaveBeenCalled();
     });
 
     it('throws when another app already uses the port', async () => {

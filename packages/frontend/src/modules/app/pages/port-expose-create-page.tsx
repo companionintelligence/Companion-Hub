@@ -23,7 +23,14 @@ import { useDnsAvailability } from '@/modules/app/components/install-form/use-dn
 import { PublicPortConfirmDialog } from '@/modules/app/components/dialogs/public-port-confirm-dialog/public-port-confirm-dialog';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { fetchDnsAvailability } from '@/lib/cloudflare-api';
-import { buildPublicWebIdentity, deriveAppSlug, RESERVED_APP_NAMES, sanitizeAppSubdomain, selectOfferedDomains } from '@ci-hub/common/types';
+import {
+  buildPublicWebIdentity,
+  deriveAppSlug,
+  isHubReservedSubdomain,
+  RESERVED_APP_NAMES,
+  sanitizeAppSubdomain,
+  selectOfferedDomains,
+} from '@ci-hub/common/types';
 import type { AvailableDomain } from '@ci-hub/common/types';
 import type { TranslatableError } from '@/types/error.types';
 
@@ -205,6 +212,15 @@ export default function PortExposeCreatePage() {
     }
 
     const exposureMode = resolveExposureMode(values.exposureMode, { cloudflareAvailable, tailscaleAvailable });
+
+    // Companion Portal files every mode under this name, and `hub` is the Hub's own (CI-Portal#1091).
+    const routingSubdomain = exposureMode === 'cloudflare' ? values.localSubdomain || slug : slug;
+    if (isHubReservedSubdomain(routingSubdomain)) {
+      setError(exposureMode === 'cloudflare' ? 'localSubdomain' : 'name', {
+        message: t('APP_SUBDOMAIN_RESERVED_FOR_HUB', { subdomain: sanitizeAppSubdomain(routingSubdomain) }),
+      });
+      return;
+    }
 
     if (exposureMode === 'cloudflare') {
       const subdomain = (values.localSubdomain || slug).trim();

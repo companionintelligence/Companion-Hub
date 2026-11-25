@@ -33,6 +33,7 @@ export {
   buildOriginServerName,
   deriveAppSlug,
   extractDeviceSlug,
+  isHubReservedSubdomain,
   resolvePublicDomainRoot,
   resolveRoutingSubdomain,
   RESERVED_APP_NAMES,

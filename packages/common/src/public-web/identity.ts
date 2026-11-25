@@ -65,6 +65,20 @@ export function resolveRoutingSubdomain(subdomain: string | null | undefined, ap
 export const RESERVED_APP_NAMES = ['create', 'expose'];
 
 /**
+ * Subdomains Companion Portal gives the Hub itself on every device: `hub-<device>-<org>.<domain>`.
+ *
+ * An app or exposed port with one of these lands on the Hub's own entry in the Portal. Before the
+ * Portal refused it, that took the Hub's public address down (CI-Portal#1091). Refused here first,
+ * so the person sees why before anything reaches the Portal.
+ */
+const HUB_RESERVED_SUBDOMAINS = ['hub'];
+
+/** Whether `subdomain`, as the Portal would read it, is the Hub's own. */
+export function isHubReservedSubdomain(subdomain: string): boolean {
+  return HUB_RESERVED_SUBDOMAINS.includes(sanitizeAppSubdomain(subdomain));
+}
+
+/**
  * Derive a URL-safe app slug from a free-form display name. Unlike
  * {@link sanitizeAppSubdomain}, dots are treated like any other separator
  * (replaced with a hyphen) rather than truncating the name — a display name is

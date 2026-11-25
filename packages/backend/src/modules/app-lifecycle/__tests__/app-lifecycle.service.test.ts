@@ -2451,6 +2451,18 @@ describe('AppLifecycleService', () => {
       expect(appsRepository.createApp).not.toHaveBeenCalled();
     });
 
+    it("refuses the Hub's own subdomain on Public Web (CI-Portal#1091)", async () => {
+      await expect(
+        service.installApp({
+          actor: TEST_ACTOR,
+          appUrn,
+          form: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false, localSubdomain: 'Hub' },
+        } as any),
+      ).rejects.toMatchObject({ message: 'APP_SUBDOMAIN_RESERVED_FOR_HUB' });
+
+      expect(appsRepository.createApp).not.toHaveBeenCalled();
+    });
+
     it('records a takeover confirmed at install time, not only at settings time', async () => {
       /*
        * The install dialog is where this picker primarily lives, and the
@@ -6627,6 +6639,24 @@ describe('AppLifecycleService', () => {
 
       expect(appsRepository.getAppsByLocalSubdomain).toHaveBeenCalledWith('my-app', 1);
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ localSubdomain: 'my-app' }));
+    });
+
+    it("refuses to move an app onto the Hub's own subdomain (CI-Portal#1091)", async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        status: 'stopped',
+        config: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false },
+      } as any);
+
+      await expect(
+        service.updateAppConfig({
+          actor: TEST_ACTOR,
+          appUrn,
+          form: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false, localSubdomain: 'hub' },
+        } as any),
+      ).rejects.toMatchObject({ message: 'APP_SUBDOMAIN_RESERVED_FOR_HUB' });
+
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
     });
 
     it('re-records a choice the Hub cleared, even though the saved snapshot still names it', async () => {
