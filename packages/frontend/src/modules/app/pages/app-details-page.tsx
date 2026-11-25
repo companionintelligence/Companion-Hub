@@ -124,8 +124,8 @@ export default () => {
   const { t } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  // A Connect Memory that failed after consent lands here with `?memoryConnect=error` (#2544): the
-  // Hub says so beside the Connect Memory button. Once, then the marker goes, as on the dashboard.
+  // A Connect Memory that failed after consent lands here with `?memoryConnect=error` (#2544), on the
+  // page with the Connect Memory button. Toast once, then drop the marker, as on the dashboard.
   useEffect(() => {
     if (searchParams.get('memoryConnect') !== 'error') return;
 

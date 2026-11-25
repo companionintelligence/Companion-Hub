@@ -570,6 +570,16 @@ describe('MemoryConnectService.handleCallback', () => {
     await expect(service.handleCallback('the-code', 'state-nonce', 'user-1')).rejects.toThrow('database gone');
     expect(pending.recordOutcome).toHaveBeenCalledWith('state-nonce', CONNECT_FAILED);
   });
+
+  it("records the app's page with the failure marker when the grant check throws, before anything is exchanged", async () => {
+    const { service, exchange, pending } = makeService();
+    pending.consume.mockReturnValue(CONSUMED);
+    const mayConnect = vi.fn().mockRejectedValue(new Error('Portal unreachable'));
+
+    await expect(service.handleCallback('the-code', 'state-nonce', 'user-1', mayConnect)).rejects.toThrow('Portal unreachable');
+    expect(exchange.exchange).not.toHaveBeenCalled();
+    expect(pending.recordOutcome).toHaveBeenCalledWith('state-nonce', CONNECT_FAILED);
+  });
 });
 
 describe('MemoryConnectService.abandonConnect', () => {
@@ -1438,7 +1448,7 @@ describe('MemoryConnectService with two Hub people', () => {
     expect(lifecycle.held.restart).toHaveBeenCalled();
   });
 
-  it("revokes an unstored key on a plain connect too, and lands on the app's page in the Hub", async () => {
+  it("revokes an unstored key on a plain connect too and lands on the app's page in the Hub", async () => {
     const { service, exchange, connections, pending, lifecycle } = withPerson2Connected();
     connections.listConnected.mockResolvedValue([]);
     connections.getActiveConnection.mockResolvedValue(undefined);

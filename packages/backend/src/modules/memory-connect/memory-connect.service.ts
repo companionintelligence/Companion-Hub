@@ -457,7 +457,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     }
 
     // Refused before the exchange, so CI Memory never mints a key and nobody's connection is touched.
-    if (mayConnect && !(await mayConnect(attempt.appUrn))) {
+    if (mayConnect && !(await this.recordFailureIfThrows(state, attempt.appUrn, () => mayConnect(attempt.appUrn)))) {
       this.logger.warn(`[MemoryConnect] connect refused at the callback for ${attempt.appUrn}: the restart grant is gone`);
       this.pending.recordOutcome(state, CONNECT_DENIED_REDIRECT);
 
@@ -467,15 +467,9 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     // Held before anything is revoked or exchanged, and before the connection lock. A busy app sends
     // the person back with `busy` at once: nothing is revoked and the request never waits for the
     // app. The single-use code is spent, so connecting again goes through consent again.
-    const held = await this.lifecycle()
-      .withAppHeldUnlessBusy(attempt.appUrn, (app) => this.connectHeld(app, attempt.appUrn, attempt.next, code, currentUserId))
-      .catch((err: unknown) => {
-        // The code is spent. Without this a refresh would replay the state's default redirect, the
-        // app's own address, which says nothing about the failure.
-        this.pending.recordOutcome(state, connectFailedRedirect(attempt.appUrn));
-
-        throw err;
-      });
+    const held = await this.recordFailureIfThrows(state, attempt.appUrn, () =>
+      this.lifecycle().withAppHeldUnlessBusy(attempt.appUrn, (app) => this.connectHeld(app, attempt.appUrn, attempt.next, code, currentUserId)),
+    );
 
     if ('busy' in held) {
       this.logger.info(`[MemoryConnect] connect refused at the callback for ${attempt.appUrn}: a ${held.busy} is under way`);
@@ -489,6 +483,21 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     this.pending.recordOutcome(state, held.result.next);
 
     return held.result;
+  }
+
+  /**
+   * Runs a step of a consumed callback. The code is spent, so a step that throws records the failure
+   * landing first. Without it a refresh replays the state's default redirect, the app's own address,
+   * which says nothing about the failure.
+   */
+  private async recordFailureIfThrows<T>(state: string, appUrn: AppUrn, step: () => Promise<T>): Promise<T> {
+    try {
+      return await step();
+    } catch (err) {
+      this.pending.recordOutcome(state, connectFailedRedirect(appUrn));
+
+      throw err;
+    }
   }
 
   /** A connect with the app held: its locked part, then the restart that applies it, under the hold and after the lock. */
