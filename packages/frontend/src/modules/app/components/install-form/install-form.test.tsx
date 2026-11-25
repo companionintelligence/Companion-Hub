@@ -2249,6 +2249,38 @@ describe('InstallForm', () => {
       expect(onSubmit.mock.calls[0]?.[0].publicPaths).toEqual(['/webhook']);
     });
 
+    // Emptying the box once read as no change, so Update stayed off and a saved path could not be removed.
+    it('counts an emptied box as a change, and the saved paths typed back as none', async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext());
+      const onDirtyChange = vi.fn();
+      const onSubmit = vi.fn();
+      const { container } = render(
+        <MemoryRouter>
+          <InstallForm
+            info={exposableInfo()}
+            onSubmit={onSubmit}
+            formId="test-form"
+            formFields={[]}
+            initialValues={{ exposureMode: 'cloudflare', publicPaths: ['/hook'] }}
+            isEdit
+            onDirtyChange={onDirtyChange}
+          />
+        </MemoryRouter>,
+      );
+
+      await waitFor(() => expect(pathsField()).toHaveValue('/hook'));
+      fireEvent.change(pathsField() as HTMLElement, { target: { value: '' } });
+      await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true));
+
+      fireEvent.change(pathsField() as HTMLElement, { target: { value: ' /hook ' } });
+      await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false));
+
+      fireEvent.change(pathsField() as HTMLElement, { target: { value: '' } });
+      await submit(container);
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+      expect(onSubmit.mock.calls[0]?.[0].publicPaths).toEqual([]);
+    });
+
     it('saves typed paths as a list', async () => {
       vi.mocked(useAppContext).mockReturnValue(exposableContext());
       const onSubmit = vi.fn();

@@ -676,11 +676,17 @@ export const InstallForm: React.FC<IProps> = ({
   // disabled. Derived during render: `dirtyFields` is mutated in place, so an effect keyed on it
   // alone never re-runs.
   // The routing name is what a field with nothing stored opened on, and a save sends none for it.
-  const hasEdits = Object.keys(dirtyFields).some(
-    (key) =>
+  // The paths box edits `publicPaths` as text, so it is compared as that list: an emptied box was
+  // compared with a stored `publicPathsText` that never exists, read as unchanged, and kept Update off.
+  const hasEdits = Object.keys(dirtyFields).some((key) => {
+    if (key === 'publicPathsText') {
+      return !isSameFormValue(publicPathList(watchedFormValues.publicPathsText), publicPathList(initialValues?.publicPaths));
+    }
+    return (
       !(key === 'localSubdomain' && holdsRoutingName(watchedFormValues.localSubdomain)) &&
-      !isSameFormValue(watchedFormValues[key], initialValues?.[key]),
-  );
+      !isSameFormValue(watchedFormValues[key], initialValues?.[key])
+    );
+  });
 
   useEffect(() => {
     onDirtyChange?.(hasEdits);
