@@ -139,3 +139,33 @@ describe('internalOriginRefusal with tailnetIsOutside', () => {
     expect(internalOriginRefusal({ ip: '172.18.0.2', headers: { 'x-forwarded-for': ',, ,' } }, strict)).toBeNull();
   });
 });
+
+describe('lanIsOutside', () => {
+  const ownSubnets = [
+    { address: '172.18.0.3', prefix: 16, family: 'ipv4' as const },
+    { address: '10.128.0.5', prefix: 16, family: 'ipv4' as const },
+  ];
+  const refusal = (ip: string, forwardedFor?: string, lanIsOutside = true) =>
+    internalOriginRefusal({ ip, headers: forwardedFor ? { 'x-forwarded-for': forwardedFor } : {} }, { lanIsOutside, ownSubnets });
+
+  it('refuses a LAN device, on the port or as a forwarded hop', () => {
+    expect(refusal('192.168.86.40')).toBe('lan-address');
+    expect(refusal('172.18.0.9', '192.168.86.40')).toBe('lan-address');
+  });
+
+  it("keeps the Hub's own networks and loopback inside, and leaves the tailnet to its own option", () => {
+    expect(refusal('172.18.0.5')).toBeNull();
+    expect(refusal('10.128.12.5', '10.128.1.9')).toBeNull();
+    expect(refusal('127.0.0.1')).toBeNull();
+    expect(refusal('172.18.0.2', '100.101.102.103')).toBeNull();
+  });
+
+  it('changes nothing when not asked for', () => {
+    expect(refusal('192.168.86.40', undefined, false)).toBeNull();
+  });
+
+  it('keeps every reason that came before it', () => {
+    expect(refusal('203.0.113.9')).toBe('public-address');
+    expect(refusal('172.18.0.9', '203.0.113.9, 192.168.86.40')).toBe('forwarded-hop');
+  });
+});

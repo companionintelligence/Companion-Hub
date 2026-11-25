@@ -352,6 +352,14 @@ is set, so the source-address check alone passed public tunnel traffic with no c
   `{ tailnetIsOutside: true }` and `internalOriginRefusal` answers `tailnet-address` for a resolved
   address or forwarded hop on the tailnet, which sends the caller to leg 2. Only this guard asks; the
   app-only guards (`InternalOriginGuard`, `AppContainerOriginGuard`) and Portal SSO keep the default.
+  A device on the LAN is outside by default: the guard passes `{ lanIsOutside: true }`, and
+  `internalOriginRefusal` answers `lan-address` for a private address, resolved or forwarded, that is
+  on none of the Hub's own networks (`isOnOwnNetwork` in `common/helpers/ip-address.ts`: loopback and
+  the subnets of the Hub container's interfaces, so its Docker networks and every app network it
+  joins). The API port is published on every interface, so before this any device on the network
+  spent this Hub's GPU, and its peers', with no key. `HUB_INFERENCE_LAN_AUTH=trust` lets the LAN in by
+  origin again. Run natively (not in its container) the Hub's interfaces include the host's LAN, so
+  there the LAN stays inside.
 - **Leg 2, key.** Otherwise the request needs `Authorization: Bearer <key>` where the token is
   64 lowercase hex (`HUB_API_KEY_SHAPE` in `api-key.service.ts` — the one definition `AuthMiddleware`
   screens `qa:read` tokens with too) and resolves with the `inference` scope. The guard sets
