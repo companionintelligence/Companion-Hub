@@ -184,7 +184,7 @@ describe('UpdateAppCommand', () => {
       const result = await command.execute(appUrn, {});
 
       expect(result.success).toBe(false);
-      expect(backupManager.restoreApp).toHaveBeenCalledWith(appUrn, 'test-app-backup.tar.gz', undefined);
+      expect(backupManager.restoreApp).toHaveBeenCalledWith(appUrn, 'test-app-backup.tar.gz', undefined, { appFiles: 'from-backup' });
       // The new version never started: the only `up` is the rollback's, after the data came back.
       const ups = dockerService.composeApp.mock.calls
         .map((call, index) => ({ cmd: call[1], order: dockerService.composeApp.mock.invocationCallOrder[index] as number }))
@@ -260,7 +260,7 @@ describe('UpdateAppCommand', () => {
     const result = await command.execute(appUrn, {});
 
     expect(result.success).toBe(false);
-    expect(backupManager.restoreApp).toHaveBeenCalledWith(appUrn, 'test-app-backup.tar.gz', undefined);
+    expect(backupManager.restoreApp).toHaveBeenCalledWith(appUrn, 'test-app-backup.tar.gz', undefined, { appFiles: 'from-backup' });
     expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'down --remove-orphans');
     expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'up --detach --force-recreate --remove-orphans');
   });
@@ -813,7 +813,7 @@ describe('UpdateAppCommand', () => {
       const result = await command.execute(appUrn, {});
 
       expect(result).toMatchObject({ success: false, rolledBack: true });
-      expect(backupManager.restoreApp).toHaveBeenCalledWith(appUrn, 'test-app-backup.tar.gz', undefined);
+      expect(backupManager.restoreApp).toHaveBeenCalledWith(appUrn, 'test-app-backup.tar.gz', undefined, { appFiles: 'from-backup' });
     });
 
     it('keeps the snapshot, and says it could not roll back, when the backup cannot be restored', async () => {
@@ -1000,7 +1000,7 @@ describe('UpdateAppCommand', () => {
       const result = await command.execute(appUrn, {}, ctx);
 
       expect(result).toMatchObject({ success: false, cancelled: true, rolledBack: true });
-      expect(backupManager.restoreApp).toHaveBeenCalledWith(appUrn, 'test-app-backup.tar.gz', ctx.deadline);
+      expect(backupManager.restoreApp).toHaveBeenCalledWith(appUrn, 'test-app-backup.tar.gz', ctx.deadline, { appFiles: 'from-backup' });
       expect(dockerService.composeApp).toHaveBeenLastCalledWith(appUrn, 'up --detach --force-recreate --remove-orphans');
       expect(phasesShown().at(-1)).toBe('rolling_back');
     });
@@ -1290,7 +1290,7 @@ describe('UpdateAppCommand', () => {
       const result = await command.execute(appUrn, {}, ctx);
 
       expect(result).toMatchObject({ success: false, cancelled: true, rolledBack: true });
-      expect(backupManager.restoreApp).toHaveBeenCalledWith(appUrn, 'test-app-backup.tar.gz', ctx.deadline);
+      expect(backupManager.restoreApp).toHaveBeenCalledWith(appUrn, 'test-app-backup.tar.gz', ctx.deadline, { appFiles: 'from-backup' });
       expect(phasesShown()).not.toContain('finalizing');
     });
 

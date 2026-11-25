@@ -414,7 +414,8 @@ export class UpdateAppCommand extends AppLifecycleCommand {
         try {
           // Until the reply is due, not a fresh budget: a restore that outlasted it went on writing data
           // after the page had already shown the update as failed.
-          await backupManager.restoreApp(appUrn, state.backupFile, this.deadline);
+          // The backup the Hub took before this update, so its app files are the version to go back to.
+          await backupManager.restoreApp(appUrn, state.backupFile, this.deadline, { appFiles: 'from-backup' });
           restored = true;
           logger.info(`Restored ${appUrn} app files and data from backup ${state.backupFile}`);
         } catch (restoreErr) {
