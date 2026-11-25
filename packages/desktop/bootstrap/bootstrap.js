@@ -430,6 +430,20 @@
     return node;
   }
 
+  const RESTART_WINDOWS = 'Restart Windows';
+
+  /** The Docker screen's note, with "Restart Windows" in bold where it says so: the one step left. */
+  function dockerNoteNode(text) {
+    const node = textNode('p', '', 'rows-note');
+    const at = text.indexOf(RESTART_WINDOWS);
+    if (at < 0) {
+      node.textContent = text;
+    } else {
+      node.append(text.slice(0, at), textNode('strong', RESTART_WINDOWS), text.slice(at + RESTART_WINDOWS.length));
+    }
+    return node;
+  }
+
   /**
    * One SVG, so the dot stays centred in the ring. Drawn as a bordered box with an inset
    * dot, each box was rounded to device pixels separately, and with desktop text scaling
@@ -668,7 +682,7 @@
     } else {
       el.rows.dataset.signature = signature;
       if (view === 'docker') {
-        el.rows.replaceChildren(textNode('p', dockerStatusNote(), 'rows-note'));
+        el.rows.replaceChildren(dockerNoteNode(dockerStatusNote()));
       } else {
         const stuck = view === 'stuck' ? stuckService(core) : null;
         el.rows.replaceChildren(...core.map((service) => serviceRow(service, service === stuck)));
@@ -743,7 +757,10 @@
     el.startEngine.setAttribute('aria-busy', starting ? 'true' : 'false');
     el.actions.hidden = !Object.values(shown).some(Boolean);
     el.aside.hidden = view !== 'stopped';
-    el.waiting.hidden = view !== 'docker';
+    // Nothing comes before a Windows restart, so no "Waiting for Docker…" spinner to pull the eye
+    // away from the line that says to restart.
+    const restartNeeded = page.wslInstallResult?.state === 'needs_restart' || page.installResult?.state === 'needs_restart';
+    el.waiting.hidden = view !== 'docker' || restartNeeded;
   }
 
   function giveUpChecking(now) {
