@@ -180,7 +180,7 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
 
     await manager.restoreApp(appUrn, name);
 
-    await expect(readLive()).resolves.toEqual({ data: 'restored-data', compose: '{"restored":true}', env: 'RESTORED=true\n' });
+    await expect(readLive()).resolves.toEqual({ data: 'restored-data', compose: '{"live":true}', env: 'LIVE=true\n' });
   });
 
   it('restores a backup written by the real backupApp tar invocation', async () => {
@@ -192,7 +192,8 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
     await fs.promises.mkdir(backupDir, { recursive: true });
     execFileSync('tar', ['-czpf', path.join(backupDir, 'real.tar.gz'), '-C', stage, '.']);
 
-    await manager.restoreApp(appUrn, 'real.tar.gz');
+    // As the update rollback restores, so the app files from the archive are put back too.
+    await manager.restoreApp(appUrn, 'real.tar.gz', undefined, { appFiles: 'from-backup' });
 
     await expect(fs.promises.readFile(path.join(appDataDir, 'nested', 'file with spaces.txt'), 'utf8')).resolves.toBe('nested-ok');
     await expect(fs.promises.readFile(path.join(appInstalledDir, 'docker-compose.json'), 'utf8')).resolves.toBe('{"from":"tar"}');
@@ -580,7 +581,7 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
 
     await manager.restoreApp(appUrn, name, AppCommandDeadline.after(0));
 
-    await expect(readLive()).resolves.toEqual({ data: 'restored-data', compose: '{"restored":true}', env: 'RESTORED=true\n' });
+    await expect(readLive()).resolves.toEqual({ data: 'restored-data', compose: '{"live":true}', env: 'LIVE=true\n' });
   });
 
   it('reports a restore that could not write the data, instead of "succeeding"', async () => {
@@ -672,7 +673,7 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
       expect(docker.removeAppDataDirAsRoot).toHaveBeenCalledWith(appUrn, expect.any(AppCommandDeadline));
       await expect(fs.promises.readFile(path.join(appDataDir, 'data', 'kuma.db'), 'utf8')).resolves.toBe('backed-up-db');
       await expect(fs.promises.access(path.join(appDataDir, 'data', 'docker-tls'))).rejects.toThrow();
-      await expect(readLive()).resolves.toEqual({ data: 'restored-data', compose: '{"restored":true}', env: 'RESTORED=true\n' });
+      await expect(readLive()).resolves.toEqual({ data: 'restored-data', compose: '{"live":true}', env: 'LIVE=true\n' });
     });
 
     it('stops before copying anything when the helper cannot empty it either', async () => {
@@ -717,7 +718,7 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
 
       expect(docker.extractBackupAppDataAsRoot).toHaveBeenCalledWith(appUrn, 'backup-test-app-1', './app-data', expect.any(AppCommandDeadline));
       expect(copy).not.toHaveBeenCalledWith(expect.stringContaining('app-data'), appDataDir, expect.anything());
-      await expect(readLive()).resolves.toEqual({ data: 'restored-data', compose: '{"restored":true}', env: 'RESTORED=true\n' });
+      await expect(readLive()).resolves.toEqual({ data: 'restored-data', compose: '{"live":true}', env: 'LIVE=true\n' });
       // The staged archive goes with the restore.
       await expect(fs.promises.access(stagingDir)).rejects.toThrow();
     });
