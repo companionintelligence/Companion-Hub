@@ -487,7 +487,16 @@
     return state === 'not_installed' || state === 'daemon_unavailable' || state === 'error';
   }
 
-  function dockerHead(access, wslEngineDown) {
+  /**
+   * Why the Hub's WSL engine can't start (no hypervisor: virtualization off in the firmware, or
+   * Virtual Machine Platform off), from the app. Start engine can't help then.
+   */
+  function wslEngineCannotStart(progress) {
+    return wslEngineStopped(progress) && typeof progress?.wsl_engine_cannot_start === 'string' ? progress.wsl_engine_cannot_start : '';
+  }
+
+  function dockerHead(access, wslEngineDown, cannotStart) {
+    if (cannotStart) return ["Docker in WSL can't start", cannotStart];
     if (wslEngineDown) {
       return [
         "Docker in WSL isn't running",
@@ -518,7 +527,7 @@
       case 'checking':
         return ['Checking Companion Hub', "Looking at Docker and the Hub's services…"];
       case 'docker':
-        return dockerHead(progress.docker_access, wslEngineStopped(progress));
+        return dockerHead(progress.docker_access, wslEngineStopped(progress), wslEngineCannotStart(progress));
       case 'failed': {
         const failed = failedService(core);
         if (!failed) return ["Companion Hub couldn't start", "Companion Hub won't retry on its own until you try again."];
@@ -741,7 +750,7 @@
       tryAgain: view === 'failed',
       installDocker: view === 'docker' && access === 'not_installed' && !restartNeeded,
       installWslEngine: offersWslEngine(view, progress) && !restartNeeded,
-      startEngine: view === 'docker' && wslEngineStopped(progress),
+      startEngine: view === 'docker' && wslEngineStopped(progress) && !wslEngineCannotStart(progress),
       copyError: view === 'failed' && Boolean(errorToCopy(progress)),
       openLogs: view === 'stuck' || view === 'failed' || (view === 'starting' && elapsed > LOGS_LINK_AFTER_S),
     };
@@ -772,7 +781,8 @@
    * for it to start.)
    */
   function waitingForDocker(view, access, shown, restartNeeded) {
-    if (view !== 'docker' || restartNeeded) return false;
+    // Nothing to wait for while the engine can't start: the person has to change a setting first.
+    if (view !== 'docker' || restartNeeded || wslEngineCannotStart(page.progress)) return false;
     const clickable = ['installDocker', 'installWslEngine', 'startEngine'].some((key) => shown[key] && !el[key].disabled);
     if (clickable) return false;
     const running = page.installRunning || page.wslInstallRunning || engineStarting();

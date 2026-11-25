@@ -635,10 +635,12 @@ fn start_wsl_keepalive(data_dir: &Path, force: bool) -> Result<KeepaliveStart, S
 #[cfg(windows)]
 pub(crate) fn revive_wsl_engine(data_dir: &Path) {
     static REVIVING: AtomicBool = AtomicBool::new(false);
+    // No hypervisor, no distro to start: wsl.exe would fail at once, every poll.
     if !wsl_engine_should_revive(
         hub_docker_engine(data_dir).as_ref(),
         is_user_stopped(data_dir),
-    ) || REVIVING.swap(true, Ordering::SeqCst)
+    ) || !hypervisor_running()
+        || REVIVING.swap(true, Ordering::SeqCst)
     {
         return;
     }
@@ -651,6 +653,88 @@ pub(crate) fn revive_wsl_engine(data_dir: &Path) {
         });
     if spawned.is_err() {
         REVIVING.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Why the WSL engine can't start, when Windows' hypervisor isn't running: from whether the
+/// processor reports virtualization on in the firmware (`None` when Windows couldn't say).
+#[cfg(any(test, windows))]
+pub(crate) fn wsl_cannot_start_reason(firmware_virtualization: Option<bool>) -> String {
+    const FIRMWARE: &str = "virtualization is turned off in this PC's firmware (BIOS or UEFI settings). Turn on the setting called Virtualization Technology, VT-x or SVM there, restart, then try again.";
+    const FEATURE: &str = "Turn on Virtual Machine Platform: run wsl.exe --install --no-distribution as administrator, then restart Windows.";
+    match firmware_virtualization {
+        Some(false) => format!("WSL can't start because {FIRMWARE}"),
+        Some(true) => format!("WSL can't start because Windows' hypervisor isn't running. {FEATURE}"),
+        None => format!(
+            "WSL can't start because Windows' hypervisor isn't running. Either {FIRMWARE} Or: {FEATURE}"
+        ),
+    }
+}
+
+/// `VirtualizationFirmwareEnabled` for the processors, from Windows. Read while no hypervisor runs,
+/// which is when Windows reports it (with one running, it reads as off). A PowerShell call, so only
+/// on the way to a failure.
+#[cfg(windows)]
+fn firmware_virtualization_enabled() -> Option<bool> {
+    let mut command = Command::new("powershell.exe");
+    command.creation_flags(CREATE_NO_WINDOW);
+    let output = command
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "(Get-CimInstance Win32_Processor).VirtualizationFirmwareEnabled",
+        ])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let answers: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    (!answers.is_empty()).then(|| {
+        answers
+            .iter()
+            .any(|answer| answer.eq_ignore_ascii_case("True"))
+    })
+}
+
+/// Why the WSL engine can't start right now, or `None` when Windows' hypervisor runs. A Hub on the
+/// WSL engine whose PC lost virtualization (turned off in the BIOS, or reset by a BIOS update)
+/// waited 90 seconds at every launch, Hub start and Start engine for an engine that couldn't
+/// start, and was told only that Docker didn't answer. Cheap when it runs (one CPU instruction).
+#[cfg(windows)]
+pub(crate) fn wsl_engine_cannot_start() -> Option<String> {
+    if hypervisor_running() {
+        return None;
+    }
+    Some(wsl_cannot_start_reason(firmware_virtualization_enabled()))
+}
+
+/// [`wsl_engine_cannot_start`] for the startup screen's polls, for a Hub on the WSL engine only,
+/// and remembered for 30 seconds: on the failing path it runs PowerShell, and the screen asks every
+/// few seconds.
+pub fn wsl_engine_cannot_start_for_screen(data_dir: &Path) -> Option<String> {
+    #[cfg(windows)]
+    {
+        hub_wsl_engine(data_dir)?;
+        static LAST: Mutex<Option<(Instant, Option<String>)>> = Mutex::new(None);
+        let mut last = lock_recovering(&LAST);
+        if let Some((asked_at, why)) = last.as_ref() {
+            if asked_at.elapsed() < Duration::from_secs(30) {
+                return why.clone();
+            }
+        }
+        let why = wsl_engine_cannot_start();
+        *last = Some((Instant::now(), why.clone()));
+        why
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = data_dir;
+        None
     }
 }
 
@@ -706,6 +790,9 @@ fn start_wsl_engine_and_wait(
     if probe() {
         forget_docker_access_check();
         return Ok(());
+    }
+    if let Some(why) = wsl_engine_cannot_start() {
+        return Err(why);
     }
     let deadline = Instant::now() + WSL_ENGINE_START_TIMEOUT;
     let outcome = wait_for_wsl_engine(

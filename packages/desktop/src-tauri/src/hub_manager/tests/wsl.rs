@@ -9,9 +9,9 @@ use crate::docker_engine::{DockerEngineKind, PinnedDockerEngine};
 use crate::hub_manager::{
     default_gateway_from_route_table, docker_answers_for_launch, engine_distro_from_listing,
     is_own_address, restore_wsl_engine_logon_script, wait_for_wsl_engine,
-    write_update_listener_host, wsl2_engine_user_script, wsl_engine_backend_from,
-    wsl_engine_logon_script, wsl_engine_should_revive, wsl_keepalive_args, wsl_script_failure,
-    EngineWait, KeepaliveProcess, KeepaliveStart, KeepaliveState, WslKeepalive,
+    write_update_listener_host, wsl2_engine_user_script, wsl_cannot_start_reason,
+    wsl_engine_backend_from, wsl_engine_logon_script, wsl_engine_should_revive, wsl_keepalive_args,
+    wsl_script_failure, EngineWait, KeepaliveProcess, KeepaliveStart, KeepaliveState, WslKeepalive,
 };
 
 fn engine(kind: DockerEngineKind) -> PinnedDockerEngine {
@@ -563,4 +563,22 @@ fn without_a_hub_engine_or_known_context_the_daemon_says_which_engine_it_is() {
         daemon("Ubuntu 24.04", "6.8.0-generic")
     ));
     assert!(!wsl_engine_backend_from(None, None, no_daemon_answer));
+}
+
+#[test]
+fn without_a_hypervisor_the_wsl_engine_says_which_setting_to_change() {
+    // Virtualization off in the BIOS: the processor says so (seen on Windows with VT-x off).
+    let firmware = wsl_cannot_start_reason(Some(false));
+    assert!(firmware
+        .starts_with("WSL can't start because virtualization is turned off in this PC's firmware"));
+    assert!(firmware.contains("VT-x or SVM"));
+    assert!(!firmware.contains("Virtual Machine Platform"));
+    // Firmware fine, so it's the Windows feature.
+    let feature = wsl_cannot_start_reason(Some(true));
+    assert!(feature
+        .contains("Turn on Virtual Machine Platform: run wsl.exe --install --no-distribution"));
+    assert!(!feature.contains("BIOS"));
+    // Windows couldn't say: both, so neither is ruled out.
+    let unknown = wsl_cannot_start_reason(None);
+    assert!(unknown.contains("BIOS or UEFI") && unknown.contains("Virtual Machine Platform"));
 }

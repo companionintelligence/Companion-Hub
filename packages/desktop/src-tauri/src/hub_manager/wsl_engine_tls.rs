@@ -337,6 +337,11 @@ pub(crate) fn ensure_wsl_engine_tls(data_dir: &Path) -> Result<(), String> {
     if wsl_engine_tls_in_place(data_dir, &cert_dir) {
         return Ok(());
     }
+    // Its script runs in the distro, which can't start without Windows' hypervisor: say why,
+    // rather than WSL's error from a script that never ran.
+    if let Some(why) = wsl_engine_cannot_start() {
+        return Err(why);
+    }
     let distro = wsl_engine_distro()
         .ok_or_else(|| "No Ubuntu WSL distro was found for the Docker engine.".to_string())?;
 
