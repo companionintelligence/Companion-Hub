@@ -1574,7 +1574,6 @@ describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
       'dnsmasq',
       'duix-avatar',
       'falco',
-      'filebrowser-quantum',
       'gluetun',
       'home-assistant',
       'hunyuan3d-rocm',
@@ -1614,7 +1613,8 @@ describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
     expect(
       collectServiceSecurityViolations({ volumes: [{ hostPath: '/var/run/docker.sock' }] }, TRUSTED_APP_SECURITY_ALLOWLIST.torollo),
     ).toHaveLength(0);
-    expect(collectServiceSecurityViolations({ volumes: [{ hostPath: '/' }] }, TRUSTED_APP_SECURITY_ALLOWLIST['filebrowser-quantum'])).toHaveLength(0);
+    // No app may bind the host's root: filebrowser-quantum, the one that could, serves its own folder since 2026-11-25.
+    expect(collectServiceSecurityViolations({ volumes: [{ hostPath: '/' }] }, TRUSTED_APP_SECURITY_ALLOWLIST['filebrowser-quantum'])).toHaveLength(1);
     // torollo's grant is per-path: privileged and other denied paths stay rejected
     expect(
       collectServiceSecurityViolations({ privileged: true, volumes: [{ hostPath: '/proc' }] }, TRUSTED_APP_SECURITY_ALLOWLIST.torollo),

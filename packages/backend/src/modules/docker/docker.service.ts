@@ -1216,7 +1216,7 @@ export class DockerService {
           `App "${extractAppUrn(appUrn).appName}" shares host folders with other apps, and the mounts of "${installed.appName}" could not be read to check them: ${String(error)}`,
         );
       });
-      // A host path an app is granted outright already gives it everything under it (`filebrowser-quantum`'s `/`).
+      // A host path an app is granted outright already gives it everything under it (falco's `/etc`, say).
       const granted = new Set(securityGrantsFor(otherUrn).hostPaths ?? []);
       others.push(
         ...theirs.filter((mount) => !granted.has(mount.source)).map((mount) => ({ ...mount, service: `${installed.appName}/${mount.service}` })),

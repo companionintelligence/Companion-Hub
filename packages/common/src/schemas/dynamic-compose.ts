@@ -277,8 +277,6 @@ export const TRUSTED_APP_SECURITY_ALLOWLIST: Record<string, AppSecurityGrants> =
   // to isolate arbitrary AI-agent-generated code, matching upstream's own
   // docker-compose.yml.
   refly: { privileged: true },
-  // Host file explorer: bind-mounts Hub root so the UI can browse/edit device files.
-  'filebrowser-quantum': { hostPaths: ['/'] },
 
   /*
    * NET_ADMIN for apps whose whole function is the network stack: a VPN or tunnel endpoint
