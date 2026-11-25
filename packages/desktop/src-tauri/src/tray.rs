@@ -27,6 +27,34 @@ pub(crate) fn clear_tunnel_token_result(problems: &[String]) -> String {
     }
 }
 
+/// Tray Stop Hub: the Hub, then the apps it runs. A Hub that didn't stop keeps running, so its
+/// apps are left running too. The error then comes back for the tray to show. A failed `down`
+/// can still have taken the Hub down (it removes the networks last), so the apps go down with it.
+/// Before, the error only reached the log and Stop Hub seemed to do nothing (Companion-Hub#2536).
+pub(crate) fn stop_hub_then_apps(
+    stop_hub: impl FnOnce() -> Result<String, String>,
+    hub_still_up: impl FnOnce() -> bool,
+    stop_apps: impl FnOnce() -> Result<Option<String>, String>,
+    log: impl Fn(&str),
+) -> Result<(), String> {
+    match stop_hub() {
+        Ok(message) => log(&message),
+        Err(error) => {
+            log(&format!("Tray stop request failed: {error}"));
+            if hub_still_up() {
+                return Err(error);
+            }
+            log("The Hub is down after the failed stop, so its apps are stopped too.");
+        }
+    }
+    match stop_apps() {
+        Ok(Some(summary)) => log(&summary),
+        Ok(None) => {}
+        Err(error) => log(&format!("Managed app containers cleanup failed: {error}")),
+    }
+    Ok(())
+}
+
 /// What saving the window geometry reads from the window, so a test can stand in for one.
 pub(crate) trait GeometrySource {
     fn is_maximized(&self) -> bool;
@@ -341,40 +369,29 @@ pub fn create_tray(app: &App, window_shown: bool) -> Result<(), Box<dyn std::err
                     "tray.stop",
                     "Stop Hub requested from the tray menu.",
                 );
-                tauri::async_runtime::spawn(async move {
-                    match crate::hub_manager::stop_hub(&compose, &env) {
-                        Ok(message) => {
-                            let _ = crate::hub_manager::append_desktop_log_for(
-                                &data,
-                                "tray.stop",
-                                &message,
-                            );
-                        }
-                        Err(error) => {
-                            let _ = crate::hub_manager::append_desktop_log_for(
-                                &data,
-                                "tray.stop",
-                                &format!("Tray stop request failed: {}", error),
-                            );
-                        }
-                    }
-
-                    match crate::hub_manager::stop_managed_app_containers(&data) {
-                        Ok(Some(summary)) => {
-                            let _ = crate::hub_manager::append_desktop_log_for(
-                                &data,
-                                "tray.stop",
-                                &summary,
-                            );
-                        }
-                        Ok(None) => {}
-                        Err(error) => {
-                            let _ = crate::hub_manager::append_desktop_log_for(
-                                &data,
-                                "tray.stop",
-                                &format!("Managed app containers cleanup failed: {}", error),
-                            );
-                        }
+                let app_handle = app.clone();
+                // `docker compose down` and `docker stop` block, for as long as the containers
+                // take to go down, so they run off the async runtime's workers.
+                tauri::async_runtime::spawn_blocking(move || {
+                    let log = |message: &str| {
+                        let _ = crate::hub_manager::append_desktop_log_for(
+                            &data,
+                            "tray.stop",
+                            message,
+                        );
+                    };
+                    if let Err(error) = stop_hub_then_apps(
+                        || crate::hub_manager::stop_hub(&compose, &env),
+                        crate::hub_manager::hub_may_still_be_up,
+                        || crate::hub_manager::stop_managed_app_containers(&data),
+                        log,
+                    ) {
+                        app_handle
+                            .dialog()
+                            .message(error)
+                            .title("Couldn't stop the Hub")
+                            .kind(MessageDialogKind::Error)
+                            .show(|_| {});
                     }
                 });
             }
@@ -727,9 +744,10 @@ pub fn create_tray(app: &App, window_shown: bool) -> Result<(), Box<dyn std::err
 #[cfg(test)]
 mod tests {
     use super::{
-        clear_tunnel_token_result, window_geometry_to_save, GeometrySource,
+        clear_tunnel_token_result, stop_hub_then_apps, window_geometry_to_save, GeometrySource,
         CLEAR_TUNNEL_TOKEN_CONFIRM,
     };
+    use std::cell::RefCell;
     use tauri::{PhysicalPosition, PhysicalSize};
 
     /// The main window as Windows lays it out at 125% scaling. Decorations are off, but tao keeps
@@ -831,6 +849,78 @@ mod tests {
             assert_eq!(window.visible_size(), size, "size after launch {launch}");
             assert_eq!(window.position, place, "place after launch {launch}");
         }
+    }
+
+    /// With a Compose too old for the stack file, Stop Hub failed and then stopped every app while
+    /// the Hub kept running. It said nothing.
+    #[test]
+    fn a_hub_that_did_not_stop_keeps_its_apps_and_reports_why() {
+        let log = RefCell::new(Vec::new());
+        let apps_stopped = RefCell::new(false);
+
+        let result = stop_hub_then_apps(
+            || Err("Companion Hub needs Docker Compose 2.33 or newer.".to_string()),
+            || true,
+            || {
+                *apps_stopped.borrow_mut() = true;
+                Ok(Some("Stopped 8 running app container(s).".to_string()))
+            },
+            |line| log.borrow_mut().push(line.to_string()),
+        );
+
+        assert_eq!(
+            result,
+            Err("Companion Hub needs Docker Compose 2.33 or newer.".to_string())
+        );
+        assert!(!*apps_stopped.borrow(), "the apps were stopped");
+        assert_eq!(
+            *log.borrow(),
+            ["Tray stop request failed: Companion Hub needs Docker Compose 2.33 or newer."]
+        );
+    }
+
+    #[test]
+    fn a_hub_that_stopped_takes_its_apps_with_it() {
+        let log = RefCell::new(Vec::new());
+
+        let result = stop_hub_then_apps(
+            || Ok("Hub stopped".to_string()),
+            || panic!("a stop that works doesn't ask whether the Hub is up"),
+            || Ok(Some("Stopped 8 running app container(s).".to_string())),
+            |line| log.borrow_mut().push(line.to_string()),
+        );
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            *log.borrow(),
+            ["Hub stopped", "Stopped 8 running app container(s)."]
+        );
+    }
+
+    /// `down` removes the containers before the networks, so it can fail on a network an app still
+    /// holds after the Hub is gone. The apps go down with the Hub then.
+    #[test]
+    fn a_failed_stop_that_took_the_hub_down_takes_its_apps_with_it() {
+        const DOWN_FAILED: &str =
+            "docker compose down failed. network ci-hub_network has active endpoints";
+        let log = RefCell::new(Vec::new());
+
+        let result = stop_hub_then_apps(
+            || Err(DOWN_FAILED.to_string()),
+            || false,
+            || Ok(Some("Stopped 2 running app container(s).".to_string())),
+            |line| log.borrow_mut().push(line.to_string()),
+        );
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            *log.borrow(),
+            [
+                format!("Tray stop request failed: {DOWN_FAILED}").as_str(),
+                "The Hub is down after the failed stop, so its apps are stopped too.",
+                "Stopped 2 running app container(s).",
+            ]
+        );
     }
 
     #[test]
