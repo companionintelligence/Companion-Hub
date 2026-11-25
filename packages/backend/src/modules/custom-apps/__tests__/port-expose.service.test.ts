@@ -479,7 +479,7 @@ describe('PortExposeService', () => {
     });
 
     // The Portal answers 200 for an entry over the organization's public address allowance and keeps
-    // nothing. A reinstall then had no record of the port, and nothing on the Hub said why (#2553).
+    // nothing. A reinstall then had no record of the port. Nothing on the Hub said why (#2553).
     it('names each port the Portal answered for but did not keep', async () => {
       appsRepository.getApps.mockResolvedValue([portExposeRow('notes', 'tailscale'), portExposeRow('dev', 'local', 8092)]);
       portalClient.postDeviceApplicationsRegistry.mockResolvedValue({
@@ -492,6 +492,21 @@ describe('PortExposeService', () => {
       expect(logger.warn).toHaveBeenCalledTimes(1);
       expect(logger.warn).toHaveBeenCalledWith(
         expect.stringContaining('did not keep exposed port dev (subdomain_quota_exceeded): Your plan includes 3'),
+      );
+    });
+
+    it('skips a malformed refusal and names a port by its slug when the name is empty', async () => {
+      appsRepository.getApps.mockResolvedValue([portExposeRow('dev', 'local', 8092)]);
+      portalClient.postDeviceApplicationsRegistry.mockResolvedValue({
+        success: true,
+        refused: [null, 'dev', { app: '', slug: 'dev', reason: 'subdomain_quota_exceeded', message: 'Remove an app to publish another.' }] as any,
+      });
+
+      await expect(service.syncAllPortalRegistryEntries()).resolves.toBeUndefined();
+
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('did not keep exposed port dev (subdomain_quota_exceeded): Remove an app to publish another. It is not'),
       );
     });
 
