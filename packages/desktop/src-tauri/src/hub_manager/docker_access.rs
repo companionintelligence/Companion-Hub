@@ -68,21 +68,37 @@ fn check_docker_access_uncached() -> DockerAccessCheck {
         }
     };
 
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    docker_access_from_info_output(
+        output.status.success(),
+        output.status.code(),
+        &String::from_utf8_lossy(&output.stdout),
+        &String::from_utf8_lossy(&output.stderr),
+    )
+}
+
+/// What a finished `docker info` says about this user's access to Docker.
+pub(crate) fn docker_access_from_info_output(
+    succeeded: bool,
+    exit_code: Option<i32>,
+    stdout: &str,
+    stderr: &str,
+) -> DockerAccessCheck {
+    let stderr = without_config_file_warnings(stderr);
+    let stderr = stderr.trim();
+    let stdout = stdout.trim();
     let combined = if !stderr.is_empty() && !stdout.is_empty() {
         format!("{}\n{}", stderr, stdout)
     } else if !stderr.is_empty() {
-        stderr.clone()
+        stderr.to_string()
     } else {
-        stdout.clone()
+        stdout.to_string()
     };
 
-    if output.status.success() {
+    if succeeded {
         // `docker info` can exit 0 while printing daemon-unreachable errors to
         // stderr (e.g. when Docker Desktop is paused or still starting).  Run
         // the same classifier used for non-zero exits so those cases are caught.
-        let check = classify_docker_access_result(&combined, output.status.code());
+        let check = classify_docker_access_result(&combined, exit_code);
         if matches!(
             check.state,
             DockerAccessState::DaemonUnavailable | DockerAccessState::PermissionDenied
@@ -95,7 +111,24 @@ fn check_docker_access_uncached() -> DockerAccessCheck {
         };
     }
 
-    classify_docker_access_result(&combined, output.status.code())
+    classify_docker_access_result(&combined, exit_code)
+}
+
+/// The Docker CLI prints "WARNING: Error loading config file: <why>" when it can't read its
+/// config file and then carries on. `sudo docker login` leaves `~/.docker/config.json` owned by
+/// root, so the reason is often "permission denied". That is about the file, not the daemon, so
+/// it must not read as Docker refusing this user, nor become the first line of a real error.
+fn without_config_file_warnings(stderr: &str) -> String {
+    stderr
+        .lines()
+        .filter(|line| {
+            !line
+                .trim_start()
+                .to_lowercase()
+                .starts_with("warning: error loading config file")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub(crate) fn classify_docker_access_result(

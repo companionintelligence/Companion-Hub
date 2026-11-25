@@ -55,17 +55,18 @@ use super::wsl2_engine_elevated_script;
 use super::wsl2_engine_user_script;
 use super::{
     append_desktop_log_for, classify_docker_access_result, clear_traefik_recreate_required,
-    clear_tunnel_token, derive_optional_service_state, desktop_log_path_for, files_match,
-    format_command_output, generate_container_docker_config, host_docker_socket_path,
-    is_container_name_conflict, is_host_port_bind_conflict, is_oci_runtime_error,
-    is_traefik_recreate_required, legacy_managed_app_container_ps_args, logs_open_target_for,
-    managed_app_container_ps_args, mark_traefik_recreate_required, merge_compose_profiles,
-    parse_container_ids, paths_match_by_components, prepare_traefik_runtime_state,
-    private_vpn_enabled_from_map, seeded_traefik_config_contents,
-    should_defer_docker_bind_mount_probe, startup_service_definitions, truncate_command_output,
-    tunnel_dir_for, tunnel_token_path_for, tunnel_user_cleared_marker_path_for, DockerAccessState,
-    ServiceState, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE, TRAEFIK_CONFIG_FILE,
-    TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
+    clear_tunnel_token, derive_optional_service_state, desktop_log_path_for,
+    docker_access_from_info_output, files_match, format_command_output,
+    generate_container_docker_config, host_docker_socket_path, is_container_name_conflict,
+    is_host_port_bind_conflict, is_oci_runtime_error, is_traefik_recreate_required,
+    legacy_managed_app_container_ps_args, logs_open_target_for, managed_app_container_ps_args,
+    mark_traefik_recreate_required, merge_compose_profiles, parse_container_ids,
+    paths_match_by_components, prepare_traefik_runtime_state, private_vpn_enabled_from_map,
+    seeded_traefik_config_contents, should_defer_docker_bind_mount_probe,
+    startup_service_definitions, truncate_command_output, tunnel_dir_for, tunnel_token_path_for,
+    tunnel_user_cleared_marker_path_for, DockerAccessState, ServiceState, MAX_COMMAND_OUTPUT_CHARS,
+    TRAEFIK_ACME_FILE, TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE,
+    TRAEFIK_TLS_DIR,
 };
 #[cfg(any(test, target_os = "macos"))]
 use super::{colima_macos_binary_install_script, colima_macos_start_script};

@@ -117,6 +117,80 @@ fn classifies_windows_access_denied_as_permission_issue() {
     assert!(matches!(result.state, DockerAccessState::PermissionDenied));
 }
 
+/// What `docker info` prints when the daemon answered: the client part, then the server's.
+const DOCKER_INFO_ANSWERED: &str = "Client: Docker Engine - Community\n Version:    29.9.3\n Context:    default\n\nServer:\n Containers: 5\n  Running: 5\n Server Version: 29.9.3";
+
+#[test]
+fn an_unreadable_docker_config_file_does_not_read_as_refused_access() {
+    // `sudo docker login` leaves the config file owned by root. The CLI warns and carries on.
+    let result = docker_access_from_info_output(
+        true,
+        Some(0),
+        DOCKER_INFO_ANSWERED,
+        "WARNING: Error loading config file: open /home/me/.docker/config.json: permission denied",
+    );
+
+    assert!(matches!(result.state, DockerAccessState::Available));
+}
+
+#[test]
+fn an_unreadable_docker_config_file_on_windows_does_not_read_as_refused_access() {
+    let result = docker_access_from_info_output(
+        true,
+        Some(0),
+        DOCKER_INFO_ANSWERED,
+        "WARNING: Error loading config file: open C:\\Users\\me\\.docker\\config.json: Access is denied.",
+    );
+
+    assert!(matches!(result.state, DockerAccessState::Available));
+}
+
+#[test]
+fn a_refused_user_with_an_unreadable_config_file_gets_docker_error_first() {
+    let result = docker_access_from_info_output(
+        false,
+        Some(1),
+        "",
+        "WARNING: Error loading config file: open /home/me/.docker/config.json: permission denied\n\
+         permission denied while trying to connect to the docker API at unix:///var/run/docker.sock",
+    );
+
+    assert!(matches!(result.state, DockerAccessState::PermissionDenied));
+    assert_eq!(
+        result.detail.as_deref().and_then(|detail| detail.lines().next()),
+        Some("permission denied while trying to connect to the docker API at unix:///var/run/docker.sock")
+    );
+}
+
+#[test]
+fn a_stopped_daemon_with_an_unreadable_config_file_reads_as_not_running() {
+    let result = docker_access_from_info_output(
+        false,
+        Some(1),
+        "",
+        "WARNING: Error loading config file: open /home/me/.docker/config.json: permission denied\n\
+         Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?",
+    );
+
+    assert!(matches!(result.state, DockerAccessState::DaemonUnavailable));
+    assert_eq!(
+        result.detail.as_deref().and_then(|detail| detail.lines().next()),
+        Some("Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?")
+    );
+}
+
+#[test]
+fn a_daemon_refusing_access_still_reads_as_refused_when_docker_info_exits_zero() {
+    let result = docker_access_from_info_output(
+        true,
+        Some(0),
+        "Client: Docker Engine - Community\n Version:    29.9.3\n\nServer:",
+        "permission denied while trying to connect to the docker API at unix:///var/run/docker.sock",
+    );
+
+    assert!(matches!(result.state, DockerAccessState::PermissionDenied));
+}
+
 #[test]
 fn defers_bind_mount_probe_until_docker_is_ready() {
     assert!(!should_defer_docker_bind_mount_probe(
