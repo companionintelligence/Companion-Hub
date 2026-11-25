@@ -12,7 +12,9 @@ const ATSPI_DISABLE_P2P: &str = "ATSPI_DISABLE_P2P";
 
 pub fn prepare() {
     if should_disable_atspi_peer_to_peer(std::env::var_os(ATSPI_DISABLE_P2P).as_deref()) {
-        std::env::set_var(ATSPI_DISABLE_P2P, "1");
+        // SAFETY: `main` calls this first, before GTK or anything else has started a thread that
+        // could read the environment while it changes.
+        unsafe { std::env::set_var(ATSPI_DISABLE_P2P, "1") };
     }
     raise_open_file_limit();
 }
