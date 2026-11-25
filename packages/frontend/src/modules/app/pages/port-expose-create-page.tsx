@@ -139,6 +139,8 @@ export default function PortExposeCreatePage() {
     [],
   );
 
+  const hubNameOnPublicWeb = watchExposureMode === 'cloudflare' && isHubReservedSubdomain(watchLocalSubdomain || defaultAppSubdomain);
+
   const { isCheckingDns, dnsAvailabilityError, domainAvailabilityError } = useDnsAvailability<FormValues>({
     // Only once there is a domain to ask about: none while Companion Portal's list is on its way. Not
     // for the Hub's own name either: its answer landed on the field after submit and replaced the
@@ -147,7 +149,7 @@ export default function PortExposeCreatePage() {
       watchExposureMode === 'cloudflare' &&
       Boolean(publicDomain) &&
       Boolean((watchLocalSubdomain || defaultAppSubdomain).trim()) &&
-      !isHubReservedSubdomain(watchLocalSubdomain || defaultAppSubdomain),
+      !hubNameOnPublicWeb,
     subdomain: watchLocalSubdomain || defaultAppSubdomain,
     selectedDomain: publicDomain,
     checkDnsAvailability,
@@ -155,6 +157,14 @@ export default function PortExposeCreatePage() {
     clearErrors,
     t: asLegacyTranslate(t),
   });
+
+  // The check stops for the Hub's name but leaves the answer it gave the name before ("hubs" taken)
+  // under the field. Cleared when the name turns into the Hub's; submit then gives the reason.
+  useEffect(() => {
+    if (hubNameOnPublicWeb) {
+      clearErrors('localSubdomain');
+    }
+  }, [clearErrors, hubNameOnPublicWeb]);
 
   // A Public web port waiting on the person to agree that anyone with the address can open it.
   const [publicPortBody, setPublicPortBody] = useState<CreatePortExposeAppDto | null>(null);

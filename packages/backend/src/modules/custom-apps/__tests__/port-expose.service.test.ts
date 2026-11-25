@@ -167,6 +167,14 @@ describe('PortExposeService', () => {
       expect(appsRepository.createApp).not.toHaveBeenCalled();
     });
 
+    // The DTO lets "-" through. It sanitizes to nothing, so the row and the registry fall back to the name.
+    it('refuses a port named Hub whose subdomain sanitizes to nothing', async () => {
+      await expect(service.createPortExposeApp({ name: 'Hub', port: 8080, exposureMode: 'local', localSubdomain: '-' })).rejects.toMatchObject({
+        message: 'APP_SUBDOMAIN_RESERVED_FOR_HUB',
+      });
+      expect(appsRepository.createApp).not.toHaveBeenCalled();
+    });
+
     it('lets a port called Hub on Public Web take another subdomain', async () => {
       await service.createPortExposeApp({ name: 'Hub', port: 8080, exposureMode: 'cloudflare', localSubdomain: 'my-hub' });
 
@@ -277,6 +285,15 @@ describe('PortExposeService', () => {
       appsRepository.getAppByUrn.mockResolvedValue({ ...existingApp, appName: 'hub', localSubdomain: 'hub' } as any);
 
       await expect(service.updatePortExposeApp('hub:_user', { port: 8081, exposureMode: 'local' })).rejects.toMatchObject({
+        message: 'PORT_EXPOSE_NAME_RESERVED_FOR_HUB',
+      });
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+    });
+
+    it('says how to fix a port named Hub when the subdomain sent sanitizes to nothing', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ ...existingApp, appName: 'hub', localSubdomain: 'hub' } as any);
+
+      await expect(service.updatePortExposeApp('hub:_user', { port: 8081, exposureMode: 'local', localSubdomain: '-' })).rejects.toMatchObject({
         message: 'PORT_EXPOSE_NAME_RESERVED_FOR_HUB',
       });
       expect(appsRepository.updateAppById).not.toHaveBeenCalled();
@@ -568,6 +585,30 @@ describe('PortExposeService', () => {
       expect(logger.warn).not.toHaveBeenCalled();
     });
 
+    /*
+     * A port named Hub before the refusal holds the Hub's own slug. On a Portal row whose Hub kind it
+     * already cleared, a `remove` released the Hub's DNS record with the row (CI-Portal#1091).
+     */
+    it("sends no removal under the Hub's own slug when a port named Hub is removed", async () => {
+      appsRepository.getAppByUrn.mockResolvedValue(portExposeRow('hub', 'local'));
+      appFilesManager.getInstalledAppInfo.mockResolvedValue(null as any);
+
+      await service.beforePortExposeUninstall('hub:_user');
+
+      expect(portalClient.postDeviceApplicationsRegistry).not.toHaveBeenCalled();
+    });
+
+    it('leaves a port named Hub out of the entries sent at start', async () => {
+      appsRepository.getApps.mockResolvedValue([portExposeRow('hub', 'local'), portExposeRow('notes', 'tailscale', 8092)]);
+
+      await service.syncAllPortalRegistryEntries();
+
+      expect(portalClient.postDeviceApplicationsRegistry).toHaveBeenCalledWith({
+        organizationId: 'org-1',
+        apps: [{ name: 'notes', slug: 'notes', port: 8092, publicDomain: undefined, kind: PORT_EXPOSE_KIND, exposureMode: 'tailscale' }],
+      });
+    });
+
     it('sends nothing when there is nothing to send, or the Hub is not registered', async () => {
       await service.syncAllPortalRegistryEntries();
 
@@ -608,6 +649,19 @@ describe('PortExposeService', () => {
           { name: 'notes', slug: 'notes', port: 8091, remove: true },
           { name: 'old', slug: 'old', port: 8092, remove: true },
         ],
+      });
+    });
+
+    // A port named Hub could leave the Hub's own row pinned (CI-Portal#1091).
+    it("never removes the Hub's own row", async () => {
+      appsRepository.getApps.mockResolvedValue([]);
+
+      const released = await service.releaseUnrestoredRegistryEntries([portalEntry('hub'), portalEntry('notes')]);
+
+      expect(released).toEqual(['notes']);
+      expect(portalClient.postDeviceApplicationsRegistry).toHaveBeenCalledWith({
+        organizationId: 'org-1',
+        apps: [{ name: 'notes', slug: 'notes', port: 8091, remove: true }],
       });
     });
 

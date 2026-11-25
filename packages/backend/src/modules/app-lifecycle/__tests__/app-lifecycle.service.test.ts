@@ -6659,6 +6659,25 @@ describe('AppLifecycleService', () => {
       expect(appsRepository.updateAppById).not.toHaveBeenCalled();
     });
 
+    // An exposed port reaches Companion Portal's registry under its subdomain on This Machine Only too.
+    it("refuses the Hub's own subdomain for an exposed port saved here on This Machine Only", async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        status: 'running',
+        config: { kind: 'port-expose', port: 8080, exposureMode: 'local', openPort: true },
+      } as any);
+
+      await expect(
+        service.updateAppConfig({
+          actor: TEST_ACTOR,
+          appUrn,
+          form: { port: 8080, exposureMode: 'local', openPort: true, localSubdomain: 'hub' },
+        } as any),
+      ).rejects.toMatchObject({ message: 'APP_SUBDOMAIN_RESERVED_FOR_HUB' });
+
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+    });
+
     it('re-records a choice the Hub cleared, even though the saved snapshot still names it', async () => {
       /*
        * The choice is compared against the row, not the snapshot. The Hub clears

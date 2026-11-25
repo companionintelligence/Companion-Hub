@@ -221,10 +221,14 @@ function uniqueRoutingLocalSubdomain(parsedForm: AppFormForSubdomain): string | 
 /**
  * Refuses the subdomain Companion Portal gives the Hub itself. An app published on it lands on the
  * Hub's own entry in the Portal, which took the Hub's public address down (CI-Portal#1091).
+ *
+ * `exposedPort`: a port made with "Expose a port" reaches the Portal's registry under its subdomain on
+ * This Machine Only and Private VPN too, so a save through this route is held to it in every mode.
  */
-function assertNotHubSubdomain(routingSubdomain: string | undefined): void {
-  if (routingSubdomain && isHubReservedSubdomain(routingSubdomain)) {
-    throw new TranslatableError('APP_SUBDOMAIN_RESERVED_FOR_HUB', { subdomain: routingSubdomain }, HttpStatus.BAD_REQUEST);
+function assertNotHubSubdomain(parsedForm: AppFormForSubdomain, routingSubdomain: string | undefined, exposedPort: boolean): void {
+  const subdomain = routingSubdomain ?? (exposedPort ? parsedForm.localSubdomain?.trim() : undefined);
+  if (subdomain && isHubReservedSubdomain(subdomain)) {
+    throw new TranslatableError('APP_SUBDOMAIN_RESERVED_FOR_HUB', { subdomain: sanitizeAppSubdomain(subdomain) }, HttpStatus.BAD_REQUEST);
   }
 }
 
@@ -2082,7 +2086,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     const routingSubdomain = uniqueRoutingLocalSubdomain(parsedForm);
-    assertNotHubSubdomain(routingSubdomain);
+    assertNotHubSubdomain(parsedForm, routingSubdomain, isPortExposeApp(appInfo) || isPortExposeApp(existingApp?.config));
     if (routingSubdomain) {
       const appsWithSameLocalSubdomain = conflictsOtherApp(await this.appRepository.getAppsByLocalSubdomain(routingSubdomain));
 
@@ -3287,7 +3291,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     const routingSubdomain = uniqueRoutingLocalSubdomain(parsedForm);
-    assertNotHubSubdomain(routingSubdomain);
+    assertNotHubSubdomain(parsedForm, routingSubdomain, isPortExposeApp(appInfo) || isPortExposeApp(app.config));
     if (routingSubdomain) {
       const appsWithSameLocalSubdomain = await this.appRepository.getAppsByLocalSubdomain(routingSubdomain, app.id);
 

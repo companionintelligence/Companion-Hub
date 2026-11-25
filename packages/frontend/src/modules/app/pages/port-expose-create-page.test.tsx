@@ -3,6 +3,7 @@ import { MemoryRouter } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useAppContext } from '@/context/app-context';
 import { useDnsAvailability } from '@/modules/app/components/install-form/use-dns-availability';
+import { fetchDnsAvailability } from '@/lib/cloudflare-api';
 import PortExposeCreatePage from './port-expose-create-page';
 import { TranslatableError } from '@/types/error.types';
 
@@ -239,10 +240,14 @@ describe('PortExposeCreatePage', () => {
     });
 
     it('on Public web before asking anything', async () => {
+      // A domain to ask about, so the check on submit would reach Companion Portal if nothing stopped it first.
+      DOMAINS.domains = [{ id: '2', domain: 'ci1.pw', isDefault: true, offered: true }];
       renderPage();
+      await waitFor(() => expect(checkedDomain()).toBe('ci1.pw'));
 
       await submitAs('hub');
 
+      expect(fetchDnsAvailability).not.toHaveBeenCalled();
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
       expect(createMutation.mutate).not.toHaveBeenCalled();
     });
