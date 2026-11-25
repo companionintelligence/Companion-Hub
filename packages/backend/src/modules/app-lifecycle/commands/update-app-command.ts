@@ -11,7 +11,7 @@ import { AppHelpers } from '@/modules/apps/app.helpers';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { BackupManager } from '@/modules/backups/backup.manager';
 import { removeAppDataDirWithRootFallback } from '@/modules/docker/app-data-removal';
-import { nestedManifestMountsRefusal } from '@/modules/docker/builders/compose.builder';
+import { nestedManifestMountsRefusal } from '@/modules/docker/bind-mount-guard';
 import { DockerService } from '@/modules/docker/docker.service';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';

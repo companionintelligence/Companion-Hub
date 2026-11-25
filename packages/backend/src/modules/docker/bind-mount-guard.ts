@@ -1,6 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { type BindMountRef, bindSourceKey } from '@ci-hub/common/schemas';
+import { extractAppUrn } from '@/common/helpers/app-helpers';
+import { securityGrantsFor } from '@/modules/apps/security-grants';
+import { type BindMountRef, bindSourceKey, describeNestedBindMounts, findNestedBindMounts } from '@ci-hub/common/schemas';
+import type { AppUrn } from '@ci-hub/common/types';
 import * as yaml from 'yaml';
 
 /**
@@ -13,6 +16,33 @@ export class NestedBindMountsError extends Error {
     super(message);
     this.name = 'NestedBindMountsError';
   }
+}
+
+/**
+ * The refusal of a manifest whose bind mounts sit inside another folder the app can write to
+ * (`findNestedBindMounts`, with the host paths the app is granted allowed), or `null` when none do.
+ * Read from the manifest's own paths: the builder refuses an install with it, and an update refuses
+ * a new version with it before it takes the running one down.
+ */
+export function nestedManifestMountsRefusal(
+  services: readonly { name: string; volumes?: readonly { hostPath?: string; readOnly?: boolean }[] }[],
+  appUrn: AppUrn,
+): NestedBindMountsError | null {
+  const nestedMounts = findNestedBindMounts(
+    services.flatMap((service) =>
+      (service.volumes ?? []).flatMap((volume) =>
+        volume.hostPath === undefined ? [] : [{ service: service.name, source: volume.hostPath, readOnly: volume.readOnly === true }],
+      ),
+    ),
+    { grantedHostPaths: securityGrantsFor(appUrn).hostPaths },
+  );
+  if (nestedMounts.length === 0) {
+    return null;
+  }
+  return new NestedBindMountsError(
+    `App "${extractAppUrn(appUrn).appName}" mounts a folder inside another folder it can write to: ${describeNestedBindMounts(nestedMounts)}. ` +
+      'Code in the app could replace the inner folder with a link to anywhere on this computer. Give each mount a folder of its own, side by side.',
+  );
 }
 
 /**

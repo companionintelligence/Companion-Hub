@@ -7,8 +7,6 @@ import {
   type ServiceInput,
   serviceSchema,
   collectServiceSecurityViolations,
-  describeNestedBindMounts,
-  findNestedBindMounts,
   collectTraefikLabelIssues,
   isReservedHubLabel,
   LOOPBACK_HOST_PORT_INTERFACE,
@@ -26,7 +24,7 @@ import {
 import { publishesHostPort } from '@/modules/apps/app-exposure.helpers';
 import { requiresHubLoginOnPublicRoute } from '@/modules/apps/app-public-routing.helpers';
 import { securityGrantsFor } from '@/modules/apps/security-grants';
-import { NestedBindMountsError } from '@/modules/docker/bind-mount-guard';
+import { nestedManifestMountsRefusal } from '@/modules/docker/bind-mount-guard';
 import { isHubReservedServiceName } from '@/modules/network/network-constants';
 import { z } from 'zod';
 
@@ -192,33 +190,6 @@ function deriveVolumeName(hostPath: string): string {
  * decided on the value's shape rather than on what it grants.
  */
 const UNGRANTABLE_SECURITY_VIOLATIONS = new Set(['CUSTOM_APP_ERROR_VOLUME_NAME_INVALID', 'CUSTOM_APP_ERROR_NETWORK_MODE_NOT_ALLOWED']);
-
-/**
- * The refusal of a manifest whose bind mounts sit inside another folder the app can write to
- * (`findNestedBindMounts`, with the host paths the app is granted allowed), or `null` when none do.
- * Read from the manifest's own paths: the builder refuses an install with it, and an update refuses
- * a new version with it before it takes the running one down.
- */
-export function nestedManifestMountsRefusal(
-  services: readonly { name: string; volumes?: readonly { hostPath?: string; readOnly?: boolean }[] }[],
-  appUrn: AppUrn,
-): NestedBindMountsError | null {
-  const nestedMounts = findNestedBindMounts(
-    services.flatMap((service) =>
-      (service.volumes ?? []).flatMap((volume) =>
-        volume.hostPath === undefined ? [] : [{ service: service.name, source: volume.hostPath, readOnly: volume.readOnly === true }],
-      ),
-    ),
-    { grantedHostPaths: securityGrantsFor(appUrn).hostPaths },
-  );
-  if (nestedMounts.length === 0) {
-    return null;
-  }
-  return new NestedBindMountsError(
-    `App "${extractAppUrn(appUrn).appName}" mounts a folder inside another folder it can write to: ${describeNestedBindMounts(nestedMounts)}. ` +
-      'Code in the app could replace the inner folder with a link to anywhere on this computer. Give each mount a folder of its own, side by side.',
-  );
-}
 
 export class DockerComposeBuilder {
   private services: Record<string, BuiltService> = {};
