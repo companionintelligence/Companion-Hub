@@ -44,18 +44,30 @@ pub(crate) fn docker_server_os_and_kernel() -> Option<(String, String)> {
 /// and the TLS move rely on the context while the Hub is still saved on Docker Desktop.
 #[cfg(windows)]
 pub(crate) fn is_wsl_engine_docker_backend() -> bool {
-    if hub_wsl_engine(&get_hub_data_dir()).is_some() {
+    wsl_engine_backend_from(
+        hub_docker_engine(&get_hub_data_dir()).map(|engine| engine.kind),
+        current_docker_context_name(None).as_deref(),
+        docker_server_os_and_kernel,
+    )
+}
+
+/// [`is_wsl_engine_docker_backend`]'s answer from what it reads: the Hub's engine, the Docker CLI's
+/// current context, and the daemon's own OS and kernel (asked only when the first two don't say).
+#[cfg(any(test, windows))]
+pub(crate) fn wsl_engine_backend_from(
+    hub_engine: Option<crate::docker_engine::DockerEngineKind>,
+    cli_context: Option<&str>,
+    server_os_and_kernel: impl FnOnce() -> Option<(String, String)>,
+) -> bool {
+    if hub_engine == Some(crate::docker_engine::DockerEngineKind::WslEngine) {
         return true;
     }
-    if let Some(context) = current_docker_context_name(None) {
-        if context == DOCKER_CONTEXT_WSL_ENGINE {
-            return true;
-        }
-        if context == "desktop-linux" || context == "desktop-windows" {
-            return false;
-        }
+    match cli_context {
+        Some(crate::docker_engine::DOCKER_CONTEXT_WSL_ENGINE) => return true,
+        Some("desktop-linux" | "desktop-windows") => return false,
+        _ => {}
     }
-    if let Some((os, kernel)) = docker_server_os_and_kernel() {
+    if let Some((os, kernel)) = server_os_and_kernel() {
         if os.contains("Docker Desktop") {
             return false;
         }

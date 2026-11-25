@@ -138,3 +138,40 @@ fn detect_style_round_trips_through_host_path() {
         }
     }
 }
+
+#[test]
+fn the_pinned_engine_picks_the_path_style_before_the_cli_or_the_daemon() {
+    use crate::hub_manager::windows_docker_host_style_from as style_from;
+    use crate::hub_manager::WindowsDockerHostStyle::{Drive, WslMnt};
+    let unasked = |what: &'static str| {
+        move || -> Option<crate::hub_manager::WindowsDockerHostStyle> {
+            panic!("{what} asked although the pin decided")
+        }
+    };
+    let no_guess = || -> crate::hub_manager::WindowsDockerHostStyle {
+        panic!("daemon guessed although an earlier signal decided")
+    };
+
+    // Pinned to the WSL engine while the CLI's context says Docker Desktop: the pin wins.
+    assert_eq!(
+        style_from(Some("wsl-mnt"), unasked("CLI"), no_guess),
+        WslMnt
+    );
+    assert_eq!(style_from(Some("drive"), unasked("CLI"), no_guess), Drive);
+    // No pin (or one this build doesn't know): the CLI's signals, then the daemon's guess.
+    assert_eq!(style_from(None, || Some(WslMnt), no_guess), WslMnt);
+    assert_eq!(style_from(Some("other"), || Some(Drive), no_guess), Drive);
+    assert_eq!(style_from(None, || None, || WslMnt), WslMnt);
+}
+
+/// Every render in a test build uses the same style, whatever this computer's Docker says: renders
+/// used to flip between `/c` and `/mnt/c` mid-test once another test had pinned the real engine.
+/// (This test doesn't pin one itself: the pin is process-wide, and other tests would see it.)
+#[cfg(windows)]
+#[test]
+fn a_test_build_renders_one_path_style_whatever_this_computers_docker_is() {
+    assert_eq!(
+        crate::hub_manager::windows_docker_host_style(),
+        crate::hub_manager::WindowsDockerHostStyle::Drive
+    );
+}
