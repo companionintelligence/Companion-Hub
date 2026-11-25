@@ -708,7 +708,7 @@ describe('AppHelpers', () => {
           }
         });
 
-        it('keeps a LAN APP_URL written while the Hub was unregistered', async () => {
+        it('keeps a LAN APP_URL written while the Hub was unregistered on another address', async () => {
           withAppBaseUrlField('APP_BASE_URL=http://192.168.1.20:9091\n');
 
           await appHelpers.generateEnvFile(testAppUrn, openPortForm);
@@ -717,8 +717,8 @@ describe('AppHelpers', () => {
         });
 
         it('does not move a previous platform address while the Hub has no organization', async () => {
-          // The only thing to move it to would be the LAN APP_URL, and a brief
-          // unregistered window should not move a public address there.
+          // The only thing to move it to would be the LAN APP_URL. A brief unregistered
+          // window should not move a public address there.
           deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(undefined);
           const previousOrg = 'https://test-app-test-store-core2-bill-co.example.com';
           withAppBaseUrlField(`APP_BASE_URL=${previousOrg}\n`);
@@ -760,7 +760,7 @@ describe('AppHelpers', () => {
         });
 
         it('moves a base URL field off the public address the app had on Public web', async () => {
-          // The install dialog filled the field with the public URL, and the stored form replays it.
+          // The install dialog filled the field with the public URL. The stored form replays it.
           withAppBaseUrlField(`APP_PUBLIC_URL=${PLATFORM_URL}\nAPP_BASE_URL=${PLATFORM_URL}\n`);
 
           await appHelpers.generateEnvFile(testAppUrn, { ...thisMachineOnlyForm, APP_BASE_URL: PLATFORM_URL });
@@ -784,12 +784,38 @@ describe('AppHelpers', () => {
         });
 
         it('moves the localhost address the install dialog filled in when the app goes to Public web', async () => {
-          // The dialog suggests `http://localhost:<port>` on This machine only, and the stored form replays it.
+          // The dialog suggests `http://localhost:<port>` on This machine only. The stored form replays it.
           withAppBaseUrlField('APP_BASE_URL=http://localhost:9091\n');
 
           await appHelpers.generateEnvFile(testAppUrn, { ...exposedForm, APP_BASE_URL: 'http://localhost:9091' });
 
           expect(written().get('APP_BASE_URL')).toBe(PLATFORM_URL);
+        });
+
+        it('follows the app to its new port', async () => {
+          // The last env build gave the app port 9091. Its form now asks for 9095.
+          withAppBaseUrlField(`APP_PORT=9091\nAPP_BASE_URL=${LOCAL_URL}\n`);
+
+          await appHelpers.generateEnvFile(testAppUrn, { ...thisMachineOnlyForm, port: 9095 });
+
+          expect(written().get('APP_BASE_URL')).toBe('http://127.0.0.1:9095');
+        });
+
+        it('moves a localhost address on a port the app has left when the app goes to Public web', async () => {
+          // The settings dialog keeps a filled-in base URL field when the port changes.
+          withAppBaseUrlField('APP_PORT=9095\nAPP_BASE_URL=http://localhost:9091\n');
+
+          await appHelpers.generateEnvFile(testAppUrn, { ...exposedForm, port: 9095, APP_BASE_URL: 'http://localhost:9091' });
+
+          expect(written().get('APP_BASE_URL')).toBe(PLATFORM_URL);
+        });
+
+        it('keeps a localhost address the operator entered while the app stays on This machine only', async () => {
+          withAppBaseUrlField('');
+
+          await appHelpers.generateEnvFile(testAppUrn, { ...thisMachineOnlyForm, APP_BASE_URL: 'http://localhost:3000' });
+
+          expect(written().get('APP_BASE_URL')).toBe('http://localhost:3000');
         });
 
         it('keeps a base URL the operator entered', async () => {
@@ -815,6 +841,34 @@ describe('AppHelpers', () => {
           expect(env.has('APP_BASE_URL')).toBe(false);
           expect(env.has('APP_BASE_HOST')).toBe(false);
           expect(env.has('APP_BASE_WSS_ORIGIN')).toBe(false);
+        });
+
+        it('gives a CI Memory source build no base URL either', async () => {
+          appFilesManager.getInstalledAppInfo.mockResolvedValue({
+            ...mockAppInfo,
+            source: 'https://github.com/companionintelligence/CI-Server',
+            urn: SOURCE_BUILD_URN,
+          });
+
+          await appHelpers.generateEnvFile(SOURCE_BUILD_URN, thisMachineOnlyForm);
+
+          const env = written();
+          expect(env.get('APP_URL')).toBe(LOCAL_URL);
+          expect(env.has('APP_BASE_URL')).toBe(false);
+        });
+
+        it('gives no other app the CI Memory exemption', async () => {
+          // The store slug decides, not the manifest: a lookalike from another store is an ordinary app.
+          appFilesManager.getInstalledAppInfo.mockResolvedValue({
+            ...mockAppInfo,
+            id: 'ci-memory',
+            source: 'https://github.com/companionintelligence/CI-Server',
+            urn: createAppUrn('ci-memory', 'someones-store'),
+          });
+
+          await appHelpers.generateEnvFile(createAppUrn('ci-memory', 'someones-store'), thisMachineOnlyForm);
+
+          expect(written().get('APP_BASE_URL')).toBe(LOCAL_URL);
         });
 
         it('still gives CI Memory its public address on Public web', async () => {

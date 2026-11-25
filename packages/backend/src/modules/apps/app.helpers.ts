@@ -351,6 +351,29 @@ export function isPlatformIdentityUrlFor(url: string, shape: PlatformIdentitySha
   return Boolean(routingSubdomain && deviceSlug && continuesPast(`${routingSubdomain}-${deviceSlug}-`));
 }
 
+/**
+ * Whether `url` is a bare `http` origin on loopback (`localhost`, `127.0.0.1` or `[::1]`), on any port.
+ * Only a browser on the Hub itself can follow one, so it is never the address of an app on Public web.
+ */
+function isLoopbackOrigin(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+
+  return (
+    parsed.protocol === 'http:' &&
+    ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname) &&
+    !parsed.username &&
+    !parsed.password &&
+    !parsed.search &&
+    !parsed.hash &&
+    parsed.pathname === '/'
+  );
+}
+
 @Injectable()
 export class AppHelpers {
   constructor(
@@ -916,10 +939,10 @@ export class AppHelpers {
      * apps build OAuth `redirect_uri` from this value, so a platform hostname
      * here breaks custom-domain sign-in even when `APP_PUBLIC_URL` is correct.
      *
-     * An app on This machine only has no public address: Companion Portal
+     * An app on This machine only has no public address. Companion Portal
      * publishes only Public web routes, so its platform hostname has no DNS
-     * record, and an app that signs in or redirects there sends every browser to
-     * a dead name (#2545). Its base URL is its local address, as on a Hub that
+     * record. An app that signs in or redirects there sends every browser to a
+     * dead name (#2545). Its base URL is its local address, as on a Hub that
      * isn't paired. The platform URL is still worked out above, because
      * `isAutoBaseUrl` reads it to move a value it wrote before.
      */
@@ -937,18 +960,22 @@ export class AppHelpers {
      * This method writes `APP_PUBLIC_URL`, so equality with the previously derived
      * value identifies an automatic base URL without storing the old binding. The
      * current platform URL also qualifies so public-domain moves are corrected.
-     * So does the app's own local address, the value an app on This machine only
-     * gets, so the app takes its public address again when it goes back to
-     * Public web. On Public web, `http://localhost:<port>` qualifies too: the
-     * install dialog fills a base URL field with it for This machine only, and
-     * the stored form replays it. A LAN `APP_URL` created while the Hub was
-     * unregistered on another address matches none of these and remains unchanged.
+     * So does the app's own local address, which is what an app on This machine
+     * only gets. It counts on the current port and on the port the last env build
+     * gave the app, so a port change does not leave it behind. The app then takes
+     * its public address again when it goes back to Public web. On Public web a
+     * loopback address on any port qualifies too. The install dialog fills a base
+     * URL field with `http://localhost:<port>` for This machine only and the stored
+     * form replays it, even after the app moved to another port. A LAN `APP_URL`
+     * created while the Hub was unregistered on another address matches none of
+     * these and remains unchanged.
      */
     const localAppUrl = internalAuthority ? `http://${internalAuthority}` : undefined;
-    const appPort = form.port ? form.port : config.port;
-    const dialogLocalUrl = getEffectiveExposureMode(form) === 'cloudflare' && appPort ? `http://localhost:${appPort}` : undefined;
+    const previousAppPort = existingAppEnvMap.get('APP_PORT')?.trim();
+    const previousLocalAppUrl = previousAppPort ? `http://${browserHost}:${previousAppPort}` : undefined;
+    const onPublicWeb = getEffectiveExposureMode(form) === 'cloudflare';
     const supersededAutoBaseUrls = new Set(
-      [existingAppEnvMap.get('APP_PUBLIC_URL'), platformPublicUrl, localAppUrl, dialogLocalUrl]
+      [existingAppEnvMap.get('APP_PUBLIC_URL'), platformPublicUrl, localAppUrl, previousLocalAppUrl]
         .filter((url): url is string => typeof url === 'string' && url.trim().length > 0)
         .map((url) => url.replace(/\/+$/, '')),
     );
@@ -960,8 +987,8 @@ export class AppHelpers {
      * after moving to `demopool1`/ci.computer. A value with this app's platform
      * shape is automatic whichever registration wrote it. The shape is read
      * narrowly (`isPlatformIdentityUrlFor`), because a match overwrites the value.
-     * The rule waits for a current platform identity, because an unregistered Hub
-     * falls back to the LAN `APP_URL`, and a brief unregistered window should not
+     * The rule waits for a current platform identity. An unregistered Hub falls
+     * back to the LAN `APP_URL`, so a brief unregistered window would otherwise
      * move a public address there.
      */
     const deviceSlug = org?.slug ? extractDeviceSlug(org.hubSubdomain, org.slug) : null;
@@ -973,7 +1000,9 @@ export class AppHelpers {
       localDomainRoot: envMap.get('LOCAL_DOMAIN') || this.config.getConfig().localDomain,
     };
     const isAutoBaseUrl = (baseUrl: string): boolean =>
-      supersededAutoBaseUrls.has(baseUrl) || (Boolean(platformPublicUrl) && isPlatformIdentityUrlFor(baseUrl, platformIdentityShape));
+      supersededAutoBaseUrls.has(baseUrl) ||
+      (onPublicWeb && isLoopbackOrigin(baseUrl)) ||
+      (Boolean(platformPublicUrl) && isPlatformIdentityUrlFor(baseUrl, platformIdentityShape));
 
     /*
      * Apply the identity update to both the form value and existing environment.
@@ -1047,13 +1076,14 @@ export class AppHelpers {
     }
 
     /*
-     * CI Memory on This machine only gets no base URL. A browser reaches it on whatever address it
-     * used for the Hub, with CI Memory's port (Connect Memory sends it there), and CI Memory moves
-     * a browser to its base URL's host before signing it in. The local address is 127.0.0.1 on a
-     * Hub that listens on every address, which is the browser's own machine anywhere but on the Hub.
-     * Without a base URL, CI Memory signs the browser in on the address it came in on.
+     * First-party CI Memory on This machine only gets no base URL, from the store or as a source
+     * build. A browser reaches it on whatever address it used for the Hub, with CI Memory's port
+     * (Connect Memory sends it there). CI Memory moves a browser to its base URL's host before
+     * signing it in. The local address is 127.0.0.1 on a Hub that listens on every address, which is
+     * the browser's own machine anywhere but on the Hub. Without a base URL, CI Memory signs the
+     * browser in on the address it came in on. An app with an `exposed` domain has an address.
      */
-    const signsInWhereReached = onThisMachineOnly && isMemoryProviderApp({ urn: appUrn });
+    const signsInWhereReached = onThisMachineOnly && !isExposed && receivesPortalDeviceKey({ urn: appUrn, source: config.source });
     if (config.exposable && !envMap.has('APP_BASE_URL') && defaultAppBaseUrl && !signsInWhereReached) {
       envMap.set('APP_BASE_URL', defaultAppBaseUrl);
     }
