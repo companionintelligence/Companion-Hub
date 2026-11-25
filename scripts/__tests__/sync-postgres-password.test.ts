@@ -51,15 +51,19 @@ function engine(options: {
   const state = { password: options.password };
   const outputByDir = new Map<string, Result>();
 
-  /** Runs a command in ci-hub-db: a psql sign-in over TCP, or ALTER USER over the local socket. */
+  /**
+   * Runs a command in ci-hub-db: a psql sign-in over TCP, or ALTER USER over the local socket with the
+   * new password in CIHUB_POSTGRES_PASSWORD.
+   */
   const runInDb = (command: string[], env: NodeJS.ProcessEnv | undefined): Result => {
     if (command.includes('-h')) {
       return env?.PGPASSWORD === state.password ? { status: 0, stdout: '        1\n\n', stderr: '' } : { status: 2, stdout: '', stderr: AUTH_FAILED };
     }
-    const sql = command[command.indexOf('-c') + 1] ?? '';
-    const changed = /PASSWORD '(.*)';$/.exec(sql);
-    if (changed?.[1] !== undefined) state.password = changed[1];
-    return { status: 0, stdout: 'ALTER ROLE\n', stderr: '' };
+    if (command.some((arg) => arg.includes('ALTER USER')) && env?.CIHUB_POSTGRES_PASSWORD !== undefined) {
+      state.password = env.CIHUB_POSTGRES_PASSWORD;
+      return { status: 0, stdout: 'ALTER ROLE\n', stderr: '' };
+    }
+    return { status: 3, stdout: '', stderr: `unexpected command in ci-hub-db: ${command.join(' ')}` };
   };
 
   spawnSync.mockImplementation((_command: string, args: string[], spawnOptions?: { env?: NodeJS.ProcessEnv }): Result => {
@@ -106,7 +110,7 @@ function engine(options: {
 const dockerCalls = (): string[][] => spawnSync.mock.calls.map(([, args]) => args as string[]);
 const signInCalls = () => dockerCalls().filter((args) => args.includes('-h'));
 const containersStarted = () => dockerCalls().filter((args) => args[0] === 'run');
-const alterUserCalls = () => dockerCalls().filter((args) => args.some((arg) => arg.startsWith('ALTER USER')));
+const alterUserCalls = () => dockerCalls().filter((args) => args.some((arg) => arg.includes('ALTER USER')));
 
 describe('syncPostgresPasswordFromEnv', () => {
   let savedPassword: string | undefined;
@@ -129,8 +133,8 @@ describe('syncPostgresPasswordFromEnv', () => {
 
   /**
    * A fresh install: compose created ci-hub_internal with an ip_range that holds only the network
-   * address and the gateway, so `docker run --network ci-hub_internal` gets no address, and the
-   * shared networks don't exist yet. Checking from a throwaway client there failed `cihub up` with
+   * address and the gateway, so `docker run --network ci-hub_internal` gets no address. The shared
+   * networks don't exist yet either. Checking from a throwaway client there failed `cihub up` with
    * "password sync did not fix TCP authentication".
    */
   it('finds the right password on a fresh install, where no container can join ci-hub_internal', async () => {
@@ -144,7 +148,7 @@ describe('syncPostgresPasswordFromEnv', () => {
     expect(signInCalls()[0]?.slice(0, 2)).toEqual(['exec', '-e']);
   });
 
-  it('changes a password that does not match, and checks it again from inside the database', async () => {
+  it('changes a password that does not match and checks it again from inside the database', async () => {
     const db = engine({ password: 'older-password' });
 
     await syncPostgresPasswordFromEnv('.env');
@@ -164,13 +168,14 @@ describe('syncPostgresPasswordFromEnv', () => {
     expect(signIn?.[signIn.indexOf('-h') + 1]).toBe('ci-hub-db');
   });
 
-  it('keeps the password out of the sign-in arguments', async () => {
+  it('keeps the password out of every docker argument, the change of password included', async () => {
     engine({ password: 'older-password' });
 
     await syncPostgresPasswordFromEnv('.env');
 
     expect(signInCalls().length).toBeGreaterThan(0);
-    for (const args of signInCalls()) expect(args.join(' ')).not.toContain('from-env-file');
+    expect(alterUserCalls()).toHaveLength(1);
+    for (const args of dockerCalls()) expect(args.join(' ')).not.toContain('from-env-file');
   });
 
   /**
@@ -183,6 +188,8 @@ describe('syncPostgresPasswordFromEnv', () => {
     await syncPostgresPasswordFromEnv('.env');
 
     expect(alterUserCalls()).toHaveLength(1);
+    // A plain `docker exec` would come back before ALTER USER had run, so it goes through the copy route.
+    expect(alterUserCalls()[0]?.slice(0, 2)).toEqual(['exec', '-d']);
     expect(db.password).toBe('from-env-file');
     expect(logged()).toContain('Postgres password synced successfully');
     expect(dockerCalls().some((args) => args[0] === 'cp')).toBe(true);
@@ -192,17 +199,16 @@ describe('syncPostgresPasswordFromEnv', () => {
   it('waits for Postgres to take TCP connections instead of calling the password wrong', async () => {
     vi.useFakeTimers();
     try {
-      let refusals = 2;
+      const notReady = [
+        'psql: error: connection to server at "ci-hub-db" (10.128.0.11), port 6543 failed: Connection refused',
+        'psql: error: connection to server at "ci-hub-db" (10.128.0.11), port 6543 failed: FATAL:  the database system is in recovery mode',
+      ];
       engine({
         password: 'from-env-file',
-        onExec: (args) =>
-          args.includes('-h') && refusals-- > 0
-            ? {
-                status: 2,
-                stdout: '',
-                stderr: 'psql: error: connection to server at "ci-hub-db" (10.128.0.11), port 6543 failed: Connection refused',
-              }
-            : undefined,
+        onExec: (args) => {
+          const stderr = args.includes('-h') ? notReady.shift() : undefined;
+          return stderr ? { status: 2, stdout: '', stderr } : undefined;
+        },
       });
 
       const sync = syncPostgresPasswordFromEnv('.env');
@@ -233,6 +239,17 @@ describe('syncPostgresPasswordFromEnv', () => {
 
     expect(runs).toEqual(['ci-hub_network']);
     expect(logged()).toContain('Postgres password already matches env');
+  });
+
+  it('says why when no check can run, instead of calling the password wrong', async () => {
+    const execFailed = 'OCI runtime exec failed: exec failed: unable to start container process';
+    engine({
+      password: 'from-env-file',
+      onExec: (args) => (args.includes('-h') ? { status: 126, stdout: '', stderr: execFailed } : undefined),
+    });
+
+    await expect(syncPostgresPasswordFromEnv('.env')).rejects.toThrow(`could not sign in over TCP to check the new Postgres password: ${execFailed}`);
+    expect(logged()).toContain(`could not check the password over TCP (${execFailed})`);
   });
 
   it('does not try the networks when Postgres itself refused the password', async () => {
