@@ -145,11 +145,17 @@ pub(crate) fn wsl_engine_client_files_present(cert_dir: &std::path::Path) -> boo
 /// the distro and certificate were there, so the screen offered Start, which can't work, and never
 /// the install whose admin step turns the feature on (seen on Windows). `wsl --status` is asked at
 /// most every 30 seconds, since the startup screen polls every few.
+///
+/// So do the Docker CLI and the Compose plugin in Program Files: Start needs the CLI to switch the
+/// context, and the Hub start after it needs Compose. Without them (Docker Desktop uninstalled,
+/// which takes both along), only the install's admin step puts them back. The installer's own
+/// check ([`program_files_docker_tools_present`]): two file lookups.
 pub fn wsl_engine_set_up() -> bool {
     #[cfg(windows)]
     {
         crate::docker_engine::wsl_engine_client_cert_dir()
             .is_some_and(|dir| wsl_engine_client_files_present(&dir))
+            && program_files_docker_tools_present()
             && wsl_engine_distro().is_some()
             && wsl_platform_ready_recently()
     }

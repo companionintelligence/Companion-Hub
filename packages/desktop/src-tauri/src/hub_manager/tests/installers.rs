@@ -155,10 +155,64 @@ fn wsl2_engine_elevated_script_installs_the_pinned_docker_cli() {
 
 #[test]
 fn pinned_docker_cli_sha256_is_a_full_hex_digest() {
-    assert_eq!(WINDOWS_STATIC_DOCKER_CLI_SHA256.len(), 64);
-    assert!(WINDOWS_STATIC_DOCKER_CLI_SHA256
-        .chars()
-        .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)));
+    for pinned in [
+        WINDOWS_STATIC_DOCKER_CLI_SHA256,
+        WINDOWS_DOCKER_COMPOSE_SHA256,
+    ] {
+        assert_eq!(pinned.len(), 64, "{pinned}");
+        assert!(
+            pinned
+                .chars()
+                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+            "{pinned}"
+        );
+    }
+}
+
+#[test]
+fn wsl2_engine_elevated_script_installs_the_pinned_compose_plugin_after_the_cli() {
+    // The static CLI is docker.exe alone, and the Hub runs `docker compose` for every start: a PC
+    // that never had Docker Desktop had an engine and no way to start the Hub on it.
+    let script = wsl2_engine_elevated_script();
+    assert!(script.contains(&format!(
+        "$composeVersion = '{WINDOWS_DOCKER_COMPOSE_VERSION}'"
+    )));
+    assert!(script.contains(&format!("'x86_64' = '{WINDOWS_DOCKER_COMPOSE_SHA256}'")));
+    assert!(script.contains(
+        "https://github.com/docker/compose/releases/download/v$composeVersion/$composeName"
+    ));
+    // The system plugin folder the docker CLI searches, where Docker Desktop keeps its own.
+    assert!(script.contains("$pluginDir = Join-Path $programFiles 'Docker\\cli-plugins'"));
+    assert!(script.contains("if (-not (Test-Path (Join-Path $pluginDir 'docker-compose.exe'))) {"));
+    assert!(script.contains(
+        "Install-CompanionHubComposePlugin -Exe $composeExe -Name $composeName -ExpectedSha256 $composeSha256[$arch]"
+    ));
+    let cli = script
+        .find("Install-CompanionHubDockerCli -Zip")
+        .expect("CLI step");
+    let compose = script
+        .find("Install-CompanionHubComposePlugin -Exe")
+        .expect("compose step");
+    let done = script.rfind("exit 0").expect("exit 0");
+    assert!(cli < compose && compose < done);
+}
+
+#[test]
+fn the_admin_step_is_skipped_only_with_both_the_cli_and_compose_in_program_files() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let file = |parts: &[&str]| {
+        let path = parts
+            .iter()
+            .fold(root.path().to_path_buf(), |path, part| path.join(part));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"MZ").unwrap();
+    };
+    assert!(!program_files_docker_tools_present_in(root.path()));
+    // Docker Desktop's CLI without its plugins: still needs the admin step for Compose.
+    file(&["Docker", "Docker", "resources", "bin", "docker.exe"]);
+    assert!(!program_files_docker_tools_present_in(root.path()));
+    file(&["Docker", "cli-plugins", "docker-compose.exe"]);
+    assert!(program_files_docker_tools_present_in(root.path()));
 }
 
 #[test]
@@ -429,6 +483,8 @@ $root = '{root}'
 $genuine = Join-Path $root 'src\docker\docker.exe'
 New-Item -ItemType Directory -Path (Join-Path $root 'src\docker'), (Join-Path $root 'temp'), (Join-Path $root 'Program Files') | Out-Null
 Add-Type -TypeDefinition 'public static class P {{ public static void Main() {{ }} }}' -OutputAssembly $genuine -OutputType ConsoleApplication
+$global:TestCompose = Join-Path $root 'src\docker-compose.exe'
+Add-Type -TypeDefinition 'public static class Q {{ public static void Main() {{ }} }}' -OutputAssembly $global:TestCompose -OutputType ConsoleApplication
 $global:TestZip = Join-Path $root 'docker.zip'
 Compress-Archive -Path (Join-Path $root 'src\docker') -DestinationPath $global:TestZip
 function Get-TestSha256([string]$Path) {{
@@ -436,7 +492,7 @@ function Get-TestSha256([string]$Path) {{
   try {{ ([System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash($stream)) -replace '-', '').ToLowerInvariant() }} finally {{ $stream.Dispose() }}
 }}
 $elevated = Join-Path $root 'elevated.ps1'
-[System.IO.File]::WriteAllText($elevated, [System.IO.File]::ReadAllText((Join-Path $root 'template.ps1')).Replace('{pinned}', (Get-TestSha256 $global:TestZip)))
+[System.IO.File]::WriteAllText($elevated, [System.IO.File]::ReadAllText((Join-Path $root 'template.ps1')).Replace('{pinned}', (Get-TestSha256 $global:TestZip)).Replace('{compose_pinned}', (Get-TestSha256 $global:TestCompose)))
 
 $global:TestTemp = Join-Path $root 'temp'
 $global:TestSwapped = @()
@@ -445,7 +501,8 @@ function wsl.exe {{ $global:LASTEXITCODE = 0 }}
 function Invoke-WebRequest {{
   param([switch]$UseBasicParsing, [string]$Uri, [string]$OutFile)
   $global:TestDownloads += $Uri
-  $bytes = [System.IO.File]::ReadAllBytes($global:TestZip)
+  $served = if ($Uri -like '*/docker/compose/*') {{ $global:TestCompose }} else {{ $global:TestZip }}
+  $bytes = [System.IO.File]::ReadAllBytes($served)
   if ($OutFile) {{ [System.IO.File]::WriteAllBytes($OutFile, $bytes); return }}
   [pscustomobject]@{{ Content = $bytes; RawContentStream = (New-Object System.IO.MemoryStream -ArgumentList @(,$bytes)) }}
 }}
@@ -471,11 +528,14 @@ $errorFile = Join-Path $root 'error.txt'
 "swapped=$($global:TestSwapped -join ',')"
 $installed = Join-Path $env:ProgramW6432 'Docker\Docker\resources\bin\docker.exe'
 "genuine=$((Test-Path $installed) -and (Get-TestSha256 $installed) -eq (Get-TestSha256 $genuine))"
+$installedCompose = Join-Path $env:ProgramW6432 'Docker\cli-plugins\docker-compose.exe'
+"compose=$((Test-Path $installedCompose) -and (Get-TestSha256 $installedCompose) -eq (Get-TestSha256 $global:TestCompose))"
 "temp=$(@(Get-ChildItem -LiteralPath $global:TestTemp -Recurse -Force).Count)"
 if (Test-Path $errorFile) {{ "error=$([System.IO.File]::ReadAllText($errorFile))" }}
 "#,
         root = escape_powershell_single_quoted(&dir.path().to_string_lossy()),
         pinned = WINDOWS_STATIC_DOCKER_CLI_SHA256,
+        compose_pinned = WINDOWS_DOCKER_COMPOSE_SHA256,
     );
     let output = run_windows_powershell(dir.path(), &script, &[]);
     assert!(
@@ -495,10 +555,13 @@ fn elevated_script_installs_the_checked_docker_exe_even_if_temp_files_change() {
     assert!(lines.contains(&"exit=0"), "stdout: {stdout}");
     assert!(
         lines.contains(&format!(
-            "downloads=https://download.docker.com/win/static/stable/x86_64/docker-{WINDOWS_STATIC_DOCKER_CLI_VERSION}.zip"
+            "downloads=https://download.docker.com/win/static/stable/x86_64/docker-{WINDOWS_STATIC_DOCKER_CLI_VERSION}.zip,\
+             https://github.com/docker/compose/releases/download/v{WINDOWS_DOCKER_COMPOSE_VERSION}/docker-compose-windows-x86_64.exe"
         ).as_str()),
         "stdout: {stdout}"
     );
+    // The Compose plugin the Hub needs for every start, the one the hash check passed.
+    assert!(lines.contains(&"compose=True"), "stdout: {stdout}");
     // Nothing the check passed sits in %TEMP%, where the user's own
     // processes could change it before the copy into Program Files.
     assert!(lines.contains(&"swapped="), "stdout: {stdout}");

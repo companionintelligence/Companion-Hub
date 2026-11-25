@@ -263,6 +263,18 @@ pub(crate) const WINDOWS_STATIC_DOCKER_CLI_VERSION: &str = "29.9.0";
 pub(crate) const WINDOWS_STATIC_DOCKER_CLI_SHA256: &str =
     "e3ff5d2e4cd1ad7e1c9bcb76f0df28a84853c43416a915323f08659d8487ad83";
 
+/// The Docker Compose plugin the WSL engine setup puts in Program Files, beside where Docker
+/// Desktop keeps its own (`Docker\cli-plugins`, which the docker CLI searches). The Hub runs `docker
+/// compose` for every start, stop and pull, and the static CLI above is docker.exe alone: a PC that
+/// never had Docker Desktop had a working engine and no way to start the Hub on it. One release,
+/// pinned by the SHA-256 that GitHub records for the asset and that the release's checksums.txt
+/// and .sha256 file list. Change both together.
+#[cfg(any(test, target_os = "windows"))]
+pub(crate) const WINDOWS_DOCKER_COMPOSE_VERSION: &str = "5.8.0";
+#[cfg(any(test, target_os = "windows"))]
+pub(crate) const WINDOWS_DOCKER_COMPOSE_SHA256: &str =
+    "0c2d9245a5f61e8e3cc85009b8b4888fa82fded08239d28bd6da5ca818eda2b2";
+
 /// Start of the elevated script. Start-Process -Verb RunAs hands the app nothing
 /// but the exit code, so a failure writes its message to -ErrorFile, which the app
 /// reads and shows. -Program is the app's own executable, for the firewall rule.
@@ -329,6 +341,38 @@ pub(crate) fn windows_docker_cli_install_function() -> &'static str {
 "#
 }
 
+/// Install-CompanionHubComposePlugin: checks the Docker Compose plugin against the pinned SHA-256
+/// and writes it to `$Target`. Kept in memory from download to Program Files, for the reason
+/// Install-CompanionHubDockerCli gives. A signed plugin must be signed by Docker; an unsigned one
+/// passes on the hash alone. A refused or half-written file is removed, since setup skips this
+/// step once one exists.
+#[cfg(any(test, target_os = "windows"))]
+pub(crate) fn windows_docker_compose_install_function() -> &'static str {
+    r#"function Install-CompanionHubComposePlugin {
+  param([byte[]]$Exe, [string]$Name, [string]$ExpectedSha256, [string]$Target)
+  $actual = [System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash($Exe)) -replace '-', ''
+  if ($actual -ne $ExpectedSha256) {
+    throw "Downloaded Docker Compose $Name has SHA-256 $($actual.ToLowerInvariant()), expected $ExpectedSha256."
+  }
+  try {
+    [System.IO.File]::WriteAllBytes($Target, $Exe)
+    $signature = Get-CompanionHubAuthenticodeSignature $Target
+    if ($signature.Status -ne 'NotSigned') {
+      if ($signature.Status -ne 'Valid') {
+        throw "Downloaded Docker Compose signature validation failed: $($signature.Status)"
+      }
+      if (-not $signature.SignerCertificate -or $signature.SignerCertificate.Subject -notmatch 'Docker') {
+        throw "Downloaded Docker Compose signer was not recognized as Docker."
+      }
+    }
+  } catch {
+    Remove-Item -LiteralPath $Target -Force -ErrorAction SilentlyContinue
+    throw
+  }
+}
+"#
+}
+
 /// Set-CompanionHubUpdateListenerFirewall: lets the Hub on the WSL engine reach
 /// the desktop app's update listener (`updater.rs`, TCP 17400). The Hub calls it
 /// at this PC's address on the WSL adapter, which Windows filters with the Public
@@ -384,18 +428,21 @@ pub(crate) fn update_listener_firewall_function() -> &'static str {
 
 /// Elevated phase, for the steps that need Windows admin: the firewall rule for
 /// the update listener, enabling the WSL platform (reboot via exit 100 the first
-/// time), and writing the static docker CLI into Program Files where
-/// `find_docker_binary()` looks. Run with -Program and -ErrorFile (see the prelude).
+/// time), and writing the static docker CLI and the Compose plugin into Program Files where
+/// `find_docker_binary()` and the CLI look. Run with -Program and -ErrorFile (see the prelude).
 #[cfg(any(test, target_os = "windows"))]
 pub(crate) fn wsl2_engine_elevated_script() -> String {
     format!(
-        "{prelude}{authenticode}{docker_cli_install}{firewall}$dockerCliVersion = '{version}'\n$dockerCliSha256 = @{{ 'x86_64' = '{sha256}' }}\n{body}",
+        "{prelude}{authenticode}{docker_cli_install}{compose_install}{firewall}$dockerCliVersion = '{version}'\n$dockerCliSha256 = @{{ 'x86_64' = '{sha256}' }}\n$composeVersion = '{compose_version}'\n$composeSha256 = @{{ 'x86_64' = '{compose_sha256}' }}\n{body}",
         prelude = wsl2_engine_elevated_script_prelude(),
         authenticode = powershell_authenticode_helper(),
         docker_cli_install = windows_docker_cli_install_function(),
+        compose_install = windows_docker_compose_install_function(),
         firewall = update_listener_firewall_function(),
         version = WINDOWS_STATIC_DOCKER_CLI_VERSION,
         sha256 = WINDOWS_STATIC_DOCKER_CLI_SHA256,
+        compose_version = WINDOWS_DOCKER_COMPOSE_VERSION,
+        compose_sha256 = WINDOWS_DOCKER_COMPOSE_SHA256,
         body = r#"$ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $env:WSL_UTF8 = '1'
@@ -453,6 +500,21 @@ if (-not (Test-Path (Join-Path $dockerBin 'docker.exe'))) {
   $zip = (Invoke-WebRequest -UseBasicParsing -Uri "https://download.docker.com/win/static/stable/$arch/$zipName").RawContentStream.ToArray()
   New-Item -ItemType Directory -Force -Path $dockerBin | Out-Null
   Install-CompanionHubDockerCli -Zip $zip -ZipName $zipName -ExpectedSha256 $dockerCliSha256[$arch] -Target (Join-Path $dockerBin 'docker.exe')
+}
+
+# Phase 2b: the Docker Compose plugin, which the Hub runs for every start and the static CLI
+# doesn't include, in the system plugin folder the docker CLI searches (Docker Desktop keeps its
+# own there too). Idempotent: skip when one is already present.
+$pluginDir = Join-Path $programFiles 'Docker\cli-plugins'
+if (-not (Test-Path (Join-Path $pluginDir 'docker-compose.exe'))) {
+  # The pinned binary, checked against its SHA-256 (WINDOWS_DOCKER_COMPOSE_* in engine_alt.rs).
+  if (-not $composeSha256.ContainsKey($arch)) {
+    throw "Companion Hub has no pinned Docker Compose for Windows on $arch."
+  }
+  $composeName = "docker-compose-windows-$arch.exe"
+  $composeExe = (Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/docker/compose/releases/download/v$composeVersion/$composeName").RawContentStream.ToArray()
+  New-Item -ItemType Directory -Force -Path $pluginDir | Out-Null
+  Install-CompanionHubComposePlugin -Exe $composeExe -Name $composeName -ExpectedSha256 $composeSha256[$arch] -Target (Join-Path $pluginDir 'docker-compose.exe')
 }
 exit 0
 "#
@@ -621,28 +683,32 @@ pub(crate) fn wsl_platform_present() -> bool {
         .unwrap_or(false)
 }
 
-/// True when the static docker CLI is already in Program Files (where the
-/// elevated phase would otherwise place it). Resolves the root with the same
+/// True when what the elevated phase puts in Program Files is already there: the docker CLI and
+/// the Compose plugin, which the Hub needs for every start. Resolves the root with the same
 /// ProgramW6432-first preference the install scripts use, so the pre-check looks
 /// at exactly the path the elevated phase writes and the user phase reads —
 /// otherwise a CLI present only under Program Files (x86) could wrongly skip the
 /// elevated phase and make the user phase throw "missing".
 #[cfg(target_os = "windows")]
-fn program_files_docker_present() -> bool {
+pub(crate) fn program_files_docker_tools_present() -> bool {
     let root = std::env::var("ProgramW6432")
         .ok()
         .filter(|s| !s.is_empty())
         .or_else(|| std::env::var("ProgramFiles").ok());
-    match root {
-        Some(root) => Path::new(&root)
-            .join("Docker")
-            .join("Docker")
-            .join("resources")
-            .join("bin")
-            .join("docker.exe")
-            .exists(),
-        None => false,
-    }
+    root.is_some_and(|root| program_files_docker_tools_present_in(Path::new(&root)))
+}
+
+/// [`program_files_docker_tools_present`] for the Program Files folder `root`.
+#[cfg(any(test, target_os = "windows"))]
+pub(crate) fn program_files_docker_tools_present_in(root: &Path) -> bool {
+    let docker = ["Docker", "Docker", "resources", "bin", "docker.exe"];
+    let compose = ["Docker", "cli-plugins", "docker-compose.exe"];
+    [&docker[..], &compose[..]].iter().all(|parts| {
+        parts
+            .iter()
+            .fold(root.to_path_buf(), |path, part| path.join(part))
+            .exists()
+    })
 }
 
 /// The error for a failed elevated phase: the message the script wrote to its
@@ -753,7 +819,7 @@ fn install_docker_wsl2_windows() -> Result<DockerInstallResult, String> {
     // Elevation is only needed when the WSL platform must be enabled or the
     // static docker CLI is missing from Program Files. Skipping it on re-runs
     // avoids an unnecessary UAC prompt.
-    if !wsl_platform_present() || !program_files_docker_present() {
+    if !wsl_platform_present() || !program_files_docker_tools_present() {
         // The elevated script writes why it failed here; the launcher only sees
         // its exit code. Kept in the user's temp folder, which an elevated
         // administrator account can write too.
