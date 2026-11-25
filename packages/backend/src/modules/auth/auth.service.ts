@@ -53,7 +53,7 @@ export function totpSessionCacheKey(totpSessionId: string): string | null {
   return typeof totpSessionId === 'string' && TOTP_SESSION_ID.test(totpSessionId) ? `totp-session:${totpSessionId.toLowerCase()}` : null;
 }
 
-function newTotpSessionId(): { totpSessionId: string; key: string } {
+function newTotpSessionId(): { totpSessionId: ReturnType<typeof crypto.randomUUID>; key: string } {
   const totpSessionId = crypto.randomUUID();
   return { totpSessionId, key: totpSessionCacheKey(totpSessionId) as string };
 }
