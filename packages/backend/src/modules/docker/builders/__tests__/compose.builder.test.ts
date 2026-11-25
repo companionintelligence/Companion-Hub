@@ -794,6 +794,20 @@ describe('DockerComposeBuilder', () => {
     expect(yamlObject.services.service.labels['traefik.enable']).toBeUndefined();
   });
 
+  // Tailscale Serve listens on the app's port at the tailnet address. A publish on 0.0.0.0 took the Hub's own
+  // computer's connections to that address, so the Private VPN link reached plain HTTP there.
+  it('publishes no host port for Private VPN, even with openPort or exposedLocal', async () => {
+    const main: ServiceInput = { name: 'service', image: 'image', internalPort: 3001, isMain: true };
+    for (const form of [
+      { exposureMode: 'tailscale' as const, openPort: true },
+      { exposureMode: 'tailscale' as const, exposedLocal: true, openPort: false },
+      { exposureMode: 'tailscale' as const },
+    ]) {
+      const yamlObject = yaml.parse(await composeBuilder.getDockerCompose([main], form, urn, subnet, 'example.com', 'ci.lan'));
+      expect(yamlObject.services.service.ports, JSON.stringify(form)).toBeUndefined();
+    }
+  });
+
   describe('loopbackHostPort', () => {
     const main: ServiceInput = { name: 'service', image: 'image', internalPort: 18789, isMain: true };
 
@@ -802,18 +816,23 @@ describe('DockerComposeBuilder', () => {
       for (const form of [
         { exposureMode: 'local' as const, openPort: false },
         { exposureMode: 'cloudflare' as const, exposedLocal: true, openPort: false },
-        { exposureMode: 'tailscale' as const, openPort: true },
+        { exposureMode: 'cloudflare' as const, openPort: true },
       ]) {
         const yamlObject = yaml.parse(await loopbackBuilder.getDockerCompose([main], form, urn, subnet));
         expect(yamlObject.services.service.ports, form.exposureMode).toEqual(['127.0.0.1:${APP_PORT}:18789']);
       }
     });
 
-    it('still publishes nothing where no host port was asked for', async () => {
+    it('still publishes nothing where no host port was asked for, or on Private VPN', async () => {
       const loopbackBuilder = new DockerComposeBuilder('ci.computer', 'ci.lan', true, { loopbackHostPort: true });
-      const yamlObject = yaml.parse(await loopbackBuilder.getDockerCompose([main], { exposureMode: 'tailscale', openPort: false }, urn, subnet));
-
-      expect(yamlObject.services.service.ports).toBeUndefined();
+      for (const form of [
+        { exposureMode: 'cloudflare' as const, openPort: false },
+        { exposureMode: 'tailscale' as const, openPort: false },
+        { exposureMode: 'tailscale' as const, openPort: true },
+      ]) {
+        const yamlObject = yaml.parse(await loopbackBuilder.getDockerCompose([main], form, urn, subnet));
+        expect(yamlObject.services.service.ports, JSON.stringify(form)).toBeUndefined();
+      }
     });
 
     it('leaves the Traefik router in front of the container untouched', async () => {

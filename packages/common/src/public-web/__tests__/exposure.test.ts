@@ -95,17 +95,20 @@ describe('storedHostPortForm', () => {
 });
 
 describe('publishesHostPort', () => {
-  it('is true for a Private VPN form that asked to be exposed on the local network', () => {
-    expect(publishesHostPort({ exposureMode: 'tailscale', exposedLocal: true, openPort: false })).toBe(true);
+  // Tailscale Serve listens on the app's port, and a host publish of it answered the Hub's own computer instead.
+  it('is false for every Private VPN form, whatever openPort and exposedLocal say', () => {
+    expect(publishesHostPort({ exposureMode: 'tailscale', exposedLocal: true, openPort: false })).toBe(false);
+    expect(publishesHostPort({ exposureMode: 'tailscale', openPort: true })).toBe(false);
+    expect(publishesHostPort({ exposureMode: 'tailscale', openPort: false })).toBe(false);
+    expect(publishesHostPort({ exposureMode: 'tailscale' })).toBe(false);
   });
 
-  it('is false for a Private VPN or Public Web form with a closed port and no exposedLocal', () => {
-    expect(publishesHostPort({ exposureMode: 'tailscale', openPort: false })).toBe(false);
+  it('is false for a Public Web form with a closed port and no exposedLocal', () => {
     expect(publishesHostPort({ exposureMode: 'cloudflare', openPort: false })).toBe(false);
   });
 
   it('is true for This Machine Only and for a form with no openPort, as the queue serves it open', () => {
     expect(publishesHostPort({ exposureMode: 'local', openPort: false })).toBe(true);
-    expect(publishesHostPort({ exposureMode: 'tailscale' })).toBe(true);
+    expect(publishesHostPort({ exposureMode: 'cloudflare' })).toBe(true);
   });
 });

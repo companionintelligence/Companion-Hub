@@ -60,27 +60,32 @@ describe('resolveDirectLocalUrl', () => {
     expect(service.resolveDirectLocalUrl({ ...APP, port: null }, INFO)).toBeUndefined();
   });
 
-  describe('tailscale installs may not publish a host port', () => {
+  describe('tailscale installs publish no host port', () => {
     it('offers nothing when openPort was not requested', () => {
       const service = makeService();
 
       expect(service.resolveDirectLocalUrl({ ...APP, exposureMode: 'tailscale', exposedLocal: true }, INFO)).toBeUndefined();
     });
 
-    it('offers the LAN address once openPort is set', () => {
+    it('offers nothing when the row says openPort either', () => {
       const service = makeService();
 
-      expect(service.resolveDirectLocalUrl({ ...APP, exposureMode: 'tailscale', openPort: true }, INFO)).toBe('http://192.168.1.9:8080');
+      expect(service.resolveDirectLocalUrl({ ...APP, exposureMode: 'tailscale', openPort: true }, INFO)).toBeUndefined();
     });
   });
 
   // #2377: an app with a stored install form gets the link exactly when compose binds the host port.
   describe('apps with a stored install form', () => {
-    it('offers the LAN address for a Private VPN form exposed on the local network, whatever the row says', () => {
+    // Tailscale Serve listens on the app's port, so compose binds none for a Private VPN form.
+    it('offers nothing for a Private VPN form, with exposedLocal or an open port', () => {
       const service = makeService();
-      const config = { exposureMode: 'tailscale', exposedLocal: true, openPort: false };
 
-      expect(service.resolveDirectLocalUrl({ ...APP, exposureMode: 'tailscale', config }, INFO)).toBe('http://192.168.1.9:8080');
+      for (const config of [
+        { exposureMode: 'tailscale', exposedLocal: true, openPort: false },
+        { exposureMode: 'tailscale', openPort: true },
+      ]) {
+        expect(service.resolveDirectLocalUrl({ ...APP, exposureMode: 'tailscale', openPort: true, config }, INFO)).toBeUndefined();
+      }
     });
 
     it('offers nothing for a Private VPN form with a closed port, even where the row says exposedLocal', () => {

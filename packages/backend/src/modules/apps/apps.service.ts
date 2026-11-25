@@ -535,14 +535,14 @@ export class AppsService {
    * `app-access-points.tsx` rather than the looser test used by
    * {@link probeAppAvailability} below, because this value is offered to the user
    * as a route to click. An app with a stored install form is judged by the rule
-   * compose binds the host port by (`publishesHostPort`): a Private VPN or Public
-   * Web form with a closed port and no `exposedLocal` binds none, and a Private
-   * VPN form with `exposedLocal` binds one.
+   * compose binds the host port by (`publishesHostPort`): a Public Web form with a
+   * closed port and no `exposedLocal` binds none, and a Private VPN form never
+   * binds one, because Tailscale Serve listens on the same port.
    *
    * A record with no form falls back to the row columns, where `exposed_local` is
    * true for any exposable app installed without exposure settings, so:
    *
-   *  - **Tailscale installs** qualify only via `openPort`.
+   *  - **Tailscale installs** never qualify.
    *  - **Pre-`exposureMode` installs** with a dynamic config qualify only via
    *    `openPort` / `exposedLocal`.
    *
@@ -567,7 +567,7 @@ export class AppsService {
     if (form) {
       hasDirectLocalAccess = publishesHostPort(form);
     } else if (mode === 'tailscale') {
-      hasDirectLocalAccess = Boolean(app.openPort);
+      hasDirectLocalAccess = false;
     } else if (mode === 'cloudflare' || mode === 'local') {
       // Both bind the app port on the host, so the LAN address stays valid even
       // when the tunnel in front of it is not.

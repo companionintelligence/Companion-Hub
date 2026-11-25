@@ -64,9 +64,19 @@ export interface AppHostPortFields extends AppExposureFields {
 /**
  * True when compose binds the main service's `${APP_PORT}` on the Docker host, so the app answers on
  * the Hub's LAN address. A form with no `openPort` is served on an open one (`servedOpenPort`).
+ *
+ * Never for Private VPN, whatever `openPort` or `exposedLocal` say. Tailscale Serve listens on the
+ * same port at the node's tailnet address, and Docker's publish takes every connection the Hub's own
+ * computer makes to a local address on that port, the tailnet one included. The app's Private VPN
+ * link then reached the app's plain HTTP there and failed the TLS handshake ("wrong version number"),
+ * while every other device on the tailnet got Serve.
  */
 export function publishesHostPort(form: AppHostPortFields): boolean {
-  return servedOpenPort(form) || effectiveExposureMode(form) === 'local' || Boolean(form.exposedLocal);
+  const mode = effectiveExposureMode(form);
+  if (mode === 'tailscale') {
+    return false;
+  }
+  return servedOpenPort(form) || mode === 'local' || Boolean(form.exposedLocal);
 }
 
 /**

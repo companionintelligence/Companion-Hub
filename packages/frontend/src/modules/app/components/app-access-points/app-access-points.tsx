@@ -181,8 +181,8 @@ export function hasDirectLocalAccess(
 
   // A guest's record carries no form, and its row's `exposedLocal` is true for any exposable app installed without exposure settings.
   const mode = record.exposureMode;
-  // Tailscale-only installs may skip publishing a host port unless explicitly requested.
-  if (mode === 'tailscale') return Boolean(record.openPort);
+  // Private VPN publishes no host port: Tailscale Serve uses the same one (`publishesHostPort`).
+  if (mode === 'tailscale') return false;
   // Public-web and local installs still bind the app port on the host — localhost stays valid.
   if (mode === 'cloudflare' || mode === 'local') return true;
 

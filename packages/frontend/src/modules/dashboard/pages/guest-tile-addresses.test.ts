@@ -66,8 +66,9 @@ describe('guestTileAddresses', () => {
     expect(offered(data, 'localhost')).toEqual([]);
   });
 
-  it('offers the port of a Private VPN app that asked for one', () => {
-    expect(offered(tile({ exposureMode: 'tailscale', openPort: true, publicUrl: undefined }), '192.168.1.20')).toEqual(['http://192.168.1.20:18850']);
+  // The Hub publishes no host port for a Private VPN app, even one whose row says openPort: Tailscale Serve uses that port.
+  it('offers no LAN port for a Private VPN app, even one that asked for one', () => {
+    expect(offered(tile({ exposureMode: 'tailscale', openPort: true, publicUrl: undefined }), '192.168.1.20')).toEqual([]);
   });
 
   it('links a Private VPN app over HTTPS on the tailnet name, with the host port open or closed', () => {
