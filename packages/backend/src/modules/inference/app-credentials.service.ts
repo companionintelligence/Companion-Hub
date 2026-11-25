@@ -28,7 +28,7 @@ import {
 } from './app-model-handout';
 import { handoutRecord, readHandoutRecords, removeHandoutRecords, writeHandoutRecords, type RecordedHandout } from './app-handout-record';
 import { catalogEmbedsOn, embedderEngineId, embeddingBackendFor, pickEmbeddingModel } from './embedder-handout';
-import { installedDefaultChatModel } from './default-chat-model-handout';
+import { installedDefaultChatModel, onboardingTier } from './default-chat-model-handout';
 
 // Only Hub-managed sibling apps use the bootstrap credentials endpoints.
 // Standalone services (for example companion-memory / CI-Server) receive
@@ -328,12 +328,10 @@ export class AppCredentialsService implements OnApplicationShutdown {
 
     const preferredModelId = preferences.preferredModel;
     const recommended = this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile).filter((m) => m.backend === backendType);
-    // The setup wizard's Default among the models the engine has and the app accepts, as on the app.env
-    // path (`InferenceEnvResolver`). It is ranked by the lists the wizard shows on this Hub, read at the
-    // onboarding tier: `recommended` above is read at `profile.tier`, which for a card the container
-    // runtime cannot reach yet is another tier than the wizard's. With no model chosen it is the Default.
-    // It also leads when the chosen one is missing or the app cannot run it: it may be a model ticked
-    // under Other Models, which a search of the recommended list alone passed over to download another.
+    // The setup wizard's Default among the models the engine has and the app accepts, ranked by the
+    // wizard's own lists (`installedDefaultChatModel`). With no model chosen it is the Default. It also
+    // leads when the chosen one is missing or the app cannot run it, so a model ticked under Other Models
+    // counts: searching only `recommended` passed it over and downloaded another (#2538).
     const installedFallback = installedDefaultChatModel({
       registry: this.modelRegistry,
       profile,
@@ -684,12 +682,9 @@ export class AppCredentialsService implements OnApplicationShutdown {
   /**
    * The model this node would pull for a sibling app. Honors the user's preferred model (set during
    * AI setup) when it is an LLM that is runnable on the current hardware and meets the app's
-   * requirements. Otherwise the first candidate that meets them when this node has it: the installed
-   * model the app is handed leads `candidates`. Else a suitable model already downloading, since the
-   * wizard's ticked models download while its apps install (an Other Models pick included). Else the
-   * smallest suitable recommendation, which the setup wizard names with its size (`smallestDownload`).
-   * A Default the app cannot use sent this to the top of the list, MiniMax M2 230B on 128 GB (#2538).
-   * Pulling a model the app would refuse spends the disk for nothing.
+   * requirements. Otherwise the installed candidate the app is handed, else a suitable model already
+   * downloading (the wizard's ticked models download while its apps install), else the smallest
+   * suitable recommendation, which the setup wizard names with its size (#2538).
    */
   private resolveRecommendedLlm(
     candidates: CuratedModel[],
@@ -721,10 +716,15 @@ export class AppCredentialsService implements OnApplicationShutdown {
     const usable = candidates.filter((m) => m.modality === 'llm' && suitable(m));
     const top = usable[0];
     if (top && isInstalled(top)) return top;
-    const offList = (this.modelRegistry.getModelsForHardware(tier, profile, { includeRemoteHostBackends: true }) ?? []).filter(
-      (m) => m.backend === backendType && m.modality === 'llm' && suitable(m) && !usable.some((u) => u.id === m.id),
+    // Read at the wizard's tier, not `tier`: on a card the container runtime cannot reach yet the two
+    // differ, and the wizard names the download (and lists the Other Models ticked) from its own lists.
+    const wizardTier = onboardingTier(profile, (gpu, ram) => this.hardwareInspector.computeTier(gpu, ram));
+    const chatHere = (m: CuratedModel) => m.backend === backendType && m.modality === 'llm' && suitable(m);
+    const offList = (this.modelRegistry.getModelsForHardware(wizardTier, profile, { includeRemoteHostBackends: true }) ?? []).filter(
+      (m) => chatHere(m) && !usable.some((u) => u.id === m.id),
     );
-    return [...usable, ...offList].find((m) => this.modelPuller.isPullPending(m.id)) ?? smallestDownload(usable) ?? null;
+    const wizardRecommended = (this.modelRegistry.getRecommendedModelsForHardware(wizardTier, profile) ?? []).filter(chatHere);
+    return [...usable, ...offList].find((m) => this.modelPuller.isPullPending(m.id)) ?? smallestDownload(wizardRecommended) ?? null;
   }
 
   private resolveAvailableLlm(

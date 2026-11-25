@@ -21,10 +21,9 @@ const APP_NAME_KEY: Record<AgentFramework, string> = {
 };
 
 /**
- * Says so when the Default (the model the agents are handed) cannot run an agent picked above, or no
- * chat model is ticked, and names the model the agent gets instead (#2538). When the Hub has to download
- * one, it names the model and its size: it used to fetch the best one on the list without a word,
- * MiniMax M2 230B (52.5 GB) on a 128 GB machine. `model` is the Default that Continue saves.
+ * Says so when the Default that Continue saves (`model`) cannot run an agent picked above, or there is
+ * none, and names the model the agent gets instead: one already here, one ticked, or the one the Hub will
+ * download, with its size (#2538).
  */
 export function AgentModelFitNotice({
   model,

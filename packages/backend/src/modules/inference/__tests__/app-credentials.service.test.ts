@@ -1902,6 +1902,35 @@ describe('AppCredentialsService', () => {
         expect(modelPuller.startPull).toHaveBeenCalledWith('gemma4-12b', { bestEffort: true });
       });
 
+      // On a card the container runtime cannot reach yet the wizard lists models for a higher tier. The
+      // model it names as the download has to be the one the Hub pulls.
+      it("pulls the smallest model of the wizard's list, read at the onboarding tier", async () => {
+        prefer('gemma3-270m');
+        hardwareInspector.getProfile.mockResolvedValue({
+          ...baseProfile,
+          gpu: {
+            available: true,
+            vendor: 'nvidia',
+            model: 'RTX 3080 Mobile',
+            vramMb: 8192,
+            unifiedMemory: false,
+            driverVersion: '580',
+            runtimeAvailable: false,
+          },
+          tier: 'cpu-only',
+        });
+        hardwareInspector.computeTier.mockReturnValue('medium');
+        modelRegistry.getRecommendedModelsForHardware.mockImplementation((tier) =>
+          tier === 'medium' ? [qwen, gemma12b, gemma270m] : [qwen, gemma270m],
+        );
+        ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma3:270m'] });
+
+        const config = await service.getCredentials('openclaw');
+        await new Promise((resolve) => setImmediate(resolve));
+
+        expect(config.prePull.find((d) => d.kind === 'chat')).toMatchObject({ catalogId: 'gemma4-12b', pull: true });
+      });
+
       it('hands out a model ticked under Other Models that this node has, and pulls nothing', async () => {
         prefer('gemma3-270m');
         ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma3:270m', 'qwen3-coder:30b'] });
