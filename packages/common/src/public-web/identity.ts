@@ -65,6 +65,23 @@ export function resolveRoutingSubdomain(subdomain: string | null | undefined, ap
 export const RESERVED_APP_NAMES = ['create', 'expose'];
 
 /**
+ * Whether a label an app's hostnames start with is one the Hub's own hostname uses: `hub`, or `hub-…`.
+ *
+ * An app's public host is `<label>-<device>-<org>.<domain>` and the Hub's is `hub-<device>-<org>`, so an
+ * app named `hub` from store `x` is served at `hub-x-<device>-<org>`. The desktop app keeps any `hub` or
+ * `hub-…` host under the Hub's domains in its own window, with its IPC, because that is how it knows the
+ * Hub. Such an app would load there as if it were the Hub. No catalog app is named so.
+ */
+export function isHubHostLabel(label: string | null | undefined): boolean {
+  return typeof label === 'string' && /^hub(-|$)/i.test(label.trim());
+}
+
+/** An app name the Hub refuses: a reserved UI route, or a label the Hub's own hostname uses ({@link isHubHostLabel}). */
+export function isReservedAppName(name: string): boolean {
+  return RESERVED_APP_NAMES.includes(name) || isHubHostLabel(name);
+}
+
+/**
  * Derive a URL-safe app slug from a free-form display name. Unlike
  * {@link sanitizeAppSubdomain}, dots are treated like any other separator
  * (replaced with a hyphen) rather than truncating the name — a display name is

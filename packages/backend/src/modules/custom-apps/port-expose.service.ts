@@ -7,7 +7,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { PortalClientService } from '@/core/portal/portal-client.service';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
-import { buildOriginServerName, deriveAppSlug, PORT_EXPOSE_DEFAULT_SHORT_DESC, RESERVED_APP_NAMES, sanitizeAppSubdomain } from '@ci-hub/common/types';
+import { buildOriginServerName, deriveAppSlug, PORT_EXPOSE_DEFAULT_SHORT_DESC, isReservedAppName, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { isPortExposeApp, PORT_EXPOSE_KIND, requiresHubLogin, type AppInfo } from '@ci-hub/common/schemas';
 import path from 'node:path';
 import { AppsRepository } from '../apps/apps.repository';
@@ -54,7 +54,7 @@ export class PortExposeService {
     if (!slug) {
       throw new TranslatableError('CUSTOM_APP_NAME_NO_SLUG', undefined, HttpStatus.BAD_REQUEST);
     }
-    if (RESERVED_APP_NAMES.includes(slug)) {
+    if (isReservedAppName(slug)) {
       throw new TranslatableError('CUSTOM_APP_NAME_RESERVED', undefined, HttpStatus.BAD_REQUEST);
     }
 

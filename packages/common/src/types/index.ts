@@ -34,6 +34,8 @@ export {
   deriveAppSlug,
   extractDeviceSlug,
   resolvePublicDomainRoot,
+  isHubHostLabel,
+  isReservedAppName,
   resolveRoutingSubdomain,
   RESERVED_APP_NAMES,
   sanitizeAppSubdomain,
