@@ -941,7 +941,9 @@
       }
       installed = page.wslInstallResult?.state === 'completed';
     } catch (error) {
-      page.wslInstallError = errorText(error) || 'Try again, or open Docker Desktop instead.';
+      // The note already says it didn't finish; the installer's own lead-in would say it twice.
+      const why = (errorText(error) || '').replace(/^WSL2 Docker Engine installation failed: /, '');
+      page.wslInstallError = why || 'Try again, or open Docker Desktop instead.';
     } finally {
       page.wslInstallRunning = false;
       render();

@@ -468,15 +468,26 @@ $wslStatus = (& wsl.exe --status 2>&1 | Out-String)
 $wslInstalled = ($LASTEXITCODE -eq 0)
 # With the WSL package in but Virtual Machine Platform off, --status exits 0 and says to run
 # `wsl.exe --install --no-distribution` (that command text isn't translated): not ready either.
-$wslPresent = $wslInstalled -and ($wslStatus -notmatch 'Virtual Machine Platform|--no-distribution')
+# WSL 2 also needs Windows' hypervisor running. With virtualization off in the firmware, --status
+# says nothing at all, and only starting a distro fails (HCS_E_HYPERV_NOT_INSTALLED): seen on
+# Windows. Asked of Windows rather than taken on trust; a failed query blocks nothing.
+$hypervisor = $true
+$firmwareVirtualization = $true
+try {
+  $hypervisor = [bool](Get-CimInstance Win32_ComputerSystem).HypervisorPresent
+  # Reported only while no hypervisor runs (with one, Windows reads it as off).
+  $firmwareVirtualization = @(Get-CimInstance Win32_Processor | ForEach-Object { $_.VirtualizationFirmwareEnabled }) -contains $true
+} catch { }
+$wslPresent = $wslInstalled -and $hypervisor -and ($wslStatus -notmatch 'Virtual Machine Platform|--no-distribution')
 $ErrorActionPreference = 'Stop'
 if (-not $wslPresent) {
-  # The feature on (not just pending a restart) and WSL still unable to start: virtualization is
-  # off in the PC's firmware. Another restart wouldn't change that, so say so instead.
+  # Virtualization off in the PC's firmware, which a restart won't change: say so instead of
+  # asking for one. Either the processor reports it off, or Virtual Machine Platform is on (not
+  # just pending a restart) and WSL still can't start.
   $vmp = $null
   try { $vmp = (Get-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform).State } catch { }
-  if ($wslInstalled -and "$vmp" -eq 'Enabled') {
-    throw "Windows has Virtual Machine Platform turned on, but WSL still can't start. Virtualization looks turned off in this PC's firmware (BIOS or UEFI settings): turn it on there, then try again."
+  if ((-not $hypervisor -and -not $firmwareVirtualization) -or ($wslInstalled -and "$vmp" -eq 'Enabled')) {
+    throw "WSL can't start because virtualization is turned off in this PC's firmware (BIOS or UEFI settings). Turn on the setting called Virtualization Technology, VT-x or SVM there, restart, then try again."
   }
   & wsl.exe --install --no-distribution
   exit 100
@@ -662,10 +673,33 @@ pub(crate) fn wsl_status_says_ready(succeeded: bool, output: &str) -> bool {
         && !output.contains("--no-distribution")
 }
 
-/// True when the WSL platform is already enabled ([`wsl_status_says_ready`]). Used
-/// to decide whether the elevated phase has anything to do.
+/// Whether Windows' hypervisor is running, which WSL 2 needs: the CPU's hypervisor-present bit
+/// (CPUID leaf 1, ECX bit 31), which Windows' own `HypervisorPresent` reports. One instruction, so
+/// the startup screen's status polls can ask it. With virtualization off in the firmware,
+/// `wsl --status` said nothing was wrong and only starting a distro failed (seen on Windows), so
+/// the screen offered a Start that couldn't work and the installer skipped its firmware advice.
+/// Not x86: no such bit to ask, so nothing is blocked.
+#[cfg(target_os = "windows")]
+pub(crate) fn hypervisor_running() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // Leaf 1 exists on every x86_64 processor.
+        let leaf1 = std::arch::x86_64::__cpuid(1);
+        leaf1.ecx & (1 << 31) != 0
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        true
+    }
+}
+
+/// True when the WSL platform is already enabled and can run a distro: [`wsl_status_says_ready`]
+/// and [`hypervisor_running`]. Used to decide whether the elevated phase has anything to do.
 #[cfg(target_os = "windows")]
 pub(crate) fn wsl_platform_present() -> bool {
+    if !hypervisor_running() {
+        return false;
+    }
     let mut command = Command::new("wsl.exe");
     command.creation_flags(CREATE_NO_WINDOW);
     command.env("WSL_UTF8", "1");

@@ -498,6 +498,8 @@ $global:TestTemp = Join-Path $root 'temp'
 $global:TestSwapped = @()
 $global:TestDownloads = @()
 function wsl.exe {{ $global:LASTEXITCODE = 0 }}
+# A PC that can run WSL, whatever the one running this test can.
+function Get-CimInstance {{ [pscustomobject]@{{ HypervisorPresent = $true; VirtualizationFirmwareEnabled = $true }} }}
 function Invoke-WebRequest {{
   param([switch]$UseBasicParsing, [string]$Uri, [string]$OutFile)
   $global:TestDownloads += $Uri
@@ -1067,10 +1069,87 @@ fn the_elevated_phase_turns_on_virtual_machine_platform_or_says_why_it_cant() {
     assert!(
         script.contains("Get-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform")
     );
-    assert!(script.contains("if ($wslInstalled -and \"$vmp\" -eq 'Enabled') {"));
+    // No hypervisor is not ready either; with the processor reporting virtualization off in the
+    // firmware, or the feature on and WSL still unable to start, it's the firmware.
+    assert!(script
+        .contains("$hypervisor = [bool](Get-CimInstance Win32_ComputerSystem).HypervisorPresent"));
+    assert!(script.contains("$wslPresent = $wslInstalled -and $hypervisor -and"));
+    assert!(script.contains(
+        "if ((-not $hypervisor -and -not $firmwareVirtualization) -or ($wslInstalled -and \"$vmp\" -eq 'Enabled')) {"
+    ));
     let firmware = script
         .find("firmware (BIOS or UEFI")
         .expect("firmware message");
     let restart = script.find("exit 100").expect("restart exit");
     assert!(firmware < restart);
+}
+
+/// The elevated script's Phase 1 under Windows PowerShell, with `wsl --status` answering as WSL
+/// 3.0.5 did (exit 0, nothing wrong said) and Windows answering `HypervisorPresent` and
+/// `VirtualizationFirmwareEnabled` as given. Prints the exit code and the error file's text.
+#[cfg(target_os = "windows")]
+fn run_elevated_phase_one(
+    hypervisor: bool,
+    firmware_virtualization: bool,
+    feature: &str,
+) -> String {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("elevated.ps1"),
+        wsl2_engine_elevated_script(),
+    )
+    .expect("write the elevated script");
+    let flag = |on: bool| if on { "$true" } else { "$false" };
+    let script = format!(
+        r#"$root = '{root}'
+$global:Installed = $false
+function wsl.exe {{
+  if ($args -contains '--install') {{ $global:Installed = $true }}
+  $global:LASTEXITCODE = 0
+  'Default Distribution: Ubuntu'
+}}
+function Get-CimInstance {{
+  param([Parameter(Position = 0)][string]$ClassName)
+  if ($ClassName -eq 'Win32_ComputerSystem') {{ [pscustomobject]@{{ HypervisorPresent = {hypervisor} }} }}
+  else {{ [pscustomobject]@{{ VirtualizationFirmwareEnabled = {firmware} }} }}
+}}
+function Get-WindowsOptionalFeature {{ [pscustomobject]@{{ State = '{feature}' }} }}
+$env:ProgramW6432 = Join-Path $root 'Program Files'
+$errorFile = Join-Path $root 'error.txt'
+& (Join-Path $root 'elevated.ps1') -ErrorFile $errorFile
+"exit=$LASTEXITCODE"
+"installed=$global:Installed"
+if (Test-Path $errorFile) {{ "error=$([System.IO.File]::ReadAllText($errorFile))" }}
+"#,
+        root = escape_powershell_single_quoted(&dir.path().to_string_lossy()),
+        hypervisor = flag(hypervisor),
+        firmware = flag(firmware_virtualization),
+        feature = feature,
+    );
+    let output = run_windows_powershell(dir.path(), &script, &[]);
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn with_virtualization_off_in_the_firmware_the_installer_says_so_instead_of_asking_for_a_restart() {
+    // Seen on Windows with VT-x off: `wsl --status` fine, no hypervisor, the processor says off.
+    let stdout = run_elevated_phase_one(false, false, "Disabled");
+    assert!(stdout.contains("exit=1"), "stdout: {stdout}");
+    assert!(stdout.contains("installed=False"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("virtualization is turned off in this PC's firmware"),
+        "stdout: {stdout}"
+    );
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn with_virtualization_on_but_no_hypervisor_yet_the_installer_turns_wsl_on_and_asks_for_a_restart()
+{
+    // Virtual Machine Platform waiting on a restart: no hypervisor, firmware fine.
+    let stdout = run_elevated_phase_one(false, true, "EnablePending");
+    assert!(stdout.contains("exit=100"), "stdout: {stdout}");
+    assert!(stdout.contains("installed=True"), "stdout: {stdout}");
+    assert!(!stdout.contains("error="), "stdout: {stdout}");
 }
