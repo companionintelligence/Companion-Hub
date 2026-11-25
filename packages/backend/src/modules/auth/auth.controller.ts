@@ -2,7 +2,14 @@ import { isUtf8 } from 'node:buffer';
 import crypto from 'node:crypto';
 import net from 'node:net';
 import { APP_SESSION_COOKIE_NAME, SESSION_COOKIE_MAX_AGE, SESSION_COOKIE_NAME } from '@/common/constants';
-import { EDGE_SSO_PAGE_PATH, mintSessionToken, withSessionTokenFragment } from './session-token';
+import {
+  EDGE_SSO_PAGE_PATH,
+  mintSessionHandoffNonce,
+  mintSessionToken,
+  SESSION_HANDOFF_COOKIE_TTL_SECONDS,
+  sessionHandoffCookie,
+  withSessionTokenFragment,
+} from './session-token';
 import { buildHubPublicOrigin, resolveHubLocalDomainRoot, resolveHubPublicDomainRoot } from '@/common/helpers/hub-origin';
 import { hashEmailForLog } from '@/common/helpers/log-privacy';
 import { TranslatableError } from '@/common/error/translatable-error';
@@ -477,6 +484,25 @@ export class AuthController {
   private issueSessionToken(res: Response, sessionId: string, req: Request): string {
     this.clearSessionCookie(res, req);
     return mintSessionToken(sessionId, this.config.get('jwtSecret'));
+  }
+
+  /**
+   * `url` with `token` in its fragment, for a redirect that signs this browser in, and the hand-off
+   * cookie that lets the Hub page accept it (`sessionHandoffCookie`), set on the same response. The
+   * page adopts a fragment's token only when its hand-off value matches this browser's cookie, so a
+   * link carrying someone else's token cannot sign a visitor in to their account.
+   */
+  private handOffSessionToken(req: Request, res: Response, url: string, token: string, hubOrigin: string): string {
+    const nonce = mintSessionHandoffNonce();
+    const cookie = sessionHandoffCookie(this.cookieSecurity(req).secure);
+    res.cookie(cookie.name, nonce, {
+      httpOnly: false,
+      sameSite: 'lax',
+      path: cookie.path,
+      maxAge: SESSION_HANDOFF_COOKIE_TTL_SECONDS * 1000,
+      secure: cookie.secure,
+    });
+    return withSessionTokenFragment(url, token, hubOrigin, nonce);
   }
 
   /**
@@ -1207,7 +1233,11 @@ export class AuthController {
     // ends on can read it. A `next` on an app's host (`isSafeHandoffNext` allows this appliance's own)
     // goes through the Hub page that signs in to an app, which takes the token and mints that app's ticket.
     const landing = new URL(next, hubOrigin).origin === hubOrigin ? next : `${EDGE_SSO_PAGE_PATH}?redirect=${encodeURIComponent(next)}`;
-    return browserHandoffRedirect(req, res, withSessionTokenFragment(landing, this.issueSessionToken(res, browserSessionId, req), hubOrigin));
+    return browserHandoffRedirect(
+      req,
+      res,
+      this.handOffSessionToken(req, res, landing, this.issueSessionToken(res, browserSessionId, req), hubOrigin),
+    );
   }
 
   /** Desktop login returns through its deep link, while browser login returns to the initiating Hub origin. */
@@ -1449,7 +1479,7 @@ export class AuthController {
              * "Carry on in the browser": the same destination the app is being sent to, with this
              * browser's own token in the fragment, so no second sign-in.
              */
-            continueHref: withSessionTokenFragment(exchangePayload.redirectPath, sessionToken, hubOrigin),
+            continueHref: this.handOffSessionToken(req, res, exchangePayload.redirectPath, sessionToken, hubOrigin),
             statusHref: `/api/auth/portal/desktop-handoff-status?token=${encodeURIComponent(desktopToken)}`,
           }),
         );
@@ -1458,7 +1488,7 @@ export class AuthController {
 
       // Redirect back to the requested URL if it's same-origin; otherwise go home.
       const safeRedirect = resolveSameOriginRedirectUrl(redirectUrl, hubOrigin);
-      res.redirect(withSessionTokenFragment(safeRedirect ?? '/home', sessionToken, hubOrigin));
+      res.redirect(this.handOffSessionToken(req, res, safeRedirect ?? '/home', sessionToken, hubOrigin));
       return;
     } catch (error) {
       this.logger.error('Portal OAuth callback crashed', error);
