@@ -46,6 +46,24 @@ describe('desktop-release.yml', () => {
     expect(desktopRelease).toMatch(/tag:\s*\$\{\{\s*inputs\.tag\s*\}\}/);
   });
 
+  // The build job runs in the production Environment (the signing credentials) whatever the target.
+  it('refuses a production release off dev, and a tag that is not a release tag, before any job with secrets', () => {
+    const guard = desktopReleaseJob('check-release-inputs');
+    expect(guard).toContain('permissions: {}');
+    expect(guard).toContain('[ "$RELEASE_ENVIRONMENT" = "production" ] && [ "$RELEASE_REF" != "refs/heads/dev" ]');
+    expect(guard).toMatch(/RELEASE_TAG: \$\{\{ inputs\.tag \}\}/);
+    // Read from the environment, never interpolated into the script.
+    expect(guard.slice(guard.indexOf('run: |'))).not.toContain('${{');
+    expect(desktopReleaseJob('build-container')).toMatch(/needs:\s*check-release-inputs/);
+  });
+
+  it('runs the guard as the only job with no dependency', () => {
+    const roots = [...desktopRelease.slice(desktopRelease.indexOf('\njobs:\n')).matchAll(/\n {2}([a-z0-9-]+):\n/g)]
+      .map((match) => match[1] as string)
+      .filter((name) => !/\n {4}needs:/.test(desktopReleaseJob(name)));
+    expect(roots).toEqual(['check-release-inputs']);
+  });
+
   it('builds desktop bundles only after the container job', () => {
     // build-container includes the anonymous-pull gate, so this dependency is what stops
     // six 45-minute bundle builds from running against an unpullable image.

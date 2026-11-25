@@ -32,8 +32,34 @@ concurrency:
   group: desktop-release
   cancel-in-progress: false
 jobs:
+  # Before anything that holds a secret. The `build` job runs in the `production` Environment (the
+  # Apple and Windows signing credentials) whatever the cloud target, so a production release from
+  # any branch would sign and publish that branch's code as the Hub. A production release is cut from
+  # `dev` (CLAUDE.md, docs/CI.md); a dev release may still come from a branch, to try one out.
+  # The tag is written into shell scripts below, so it must look like a release tag.
+  check-release-inputs:
+    name: Check the release ref and tag
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Refuse a production release off dev, or a tag that is not a release tag
+        env:
+          RELEASE_REF: ${{ github.ref }}
+          RELEASE_ENVIRONMENT: ${{ inputs.environment }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          if [ "$RELEASE_ENVIRONMENT" = "production" ] && [ "$RELEASE_REF" != "refs/heads/dev" ]; then
+            echo "::error::A production desktop release runs from dev only, not $RELEASE_REF."
+            exit 1
+          fi
+          if ! printf '%s' "$RELEASE_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$'; then
+            echo "::error::The tag must look like v1.2.3 or v1.2.3-rc.1."
+            exit 1
+          fi
+
   build-container:
     name: Build Hub Container
+    needs: check-release-inputs
     uses: ./.github/workflows/build-container.yml
     with:
       environment: ${{ inputs.environment }}
