@@ -52,6 +52,34 @@ post_remove() {
     }
     # END hub tunnel folder cleanup
 
+    # BEGIN hub docker volume list (identical in every Linux uninstall script)
+    # Prints the Hub's own Docker volumes, one per line: every volume compose labelled
+    # for the Hub's compose project (ci-hub, or ci-os-hub before the rename), and the
+    # Hub stack's three volumes by their whole names, bare as the prod compose file pins
+    # them or with a Hub project's name in front (isHubStackVolume in
+    # scripts/hub-cleanup-lib.ts, which `cihub reset` uses). hub_tailscale_state can
+    # exist without a label (the desktop app creates it before compose does). A volume
+    # whose name only contains one of these, such as a database backup called
+    # ci_hub_pgdata_backup or another stack's ci-os-hub-staging_ci_hub_pgdata, is not
+    # the Hub's and stays. So do volumes labelled runtipi, the name of a separate
+    # product as well as of old appliances. Names outside Docker's charset are dropped,
+    # so no caller can read one into a command string.
+    list_hub_volumes() {
+      {
+        for hub_project in ci-os-hub ci-hub; do
+          docker volume ls --filter "label=com.docker.compose.project=$hub_project" --format '{{.Name}}' 2>/dev/null || true
+        done
+        docker volume ls --format '{{.Name}}' 2>/dev/null | while IFS= read -r hub_volume; do
+          for hub_key in ci_hub_pgdata ci_hub_app_data hub_tailscale_state; do
+            for hub_prefix in '' ci-os-hub_ ci-hub_ runtipi_ runcihub_; do
+              if [ "$hub_volume" = "$hub_prefix$hub_key" ]; then printf '%s\n' "$hub_volume"; fi
+            done
+          done
+        done
+      } | awk '/^[A-Za-z0-9][A-Za-z0-9_.-]*$/ && !seen[$0]++'
+    }
+    # END hub docker volume list
+
     cleanup_user_home() {
         local home_dir="$1"
         local xdg_data_home="${XDG_DATA_HOME:-$home_dir/.local/share}"
@@ -132,12 +160,8 @@ post_remove() {
 
         docker network rm ci_os_hub_network ci-os-hub_network >/dev/null 2>&1 || true
 
-        docker volume ls --format '{{.Name}}' 2>/dev/null | while IFS= read -r vol; do
-            case "$vol" in
-                *ci_os_hub*|*ci-os-hub*|*ci_hub_pgdata*|*ci_hub_app_data*|*hub_tailscale_state*)
-                    docker volume rm "$vol" >/dev/null 2>&1 || true
-                    ;;
-            esac
+        list_hub_volumes | while IFS= read -r vol; do
+            docker volume rm "$vol" >/dev/null 2>&1 || true
         done
 
         printf '%s\n' "$hub_images" | remove_images

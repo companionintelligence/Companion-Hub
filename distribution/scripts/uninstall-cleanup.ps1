@@ -392,11 +392,19 @@ if (Get-Command docker -ErrorAction SilentlyContinue) {
     }
 
     if ($DeleteAppData) {
+        # The Hub's own volumes: every volume compose labelled for one of $hubProjects, and the Hub
+        # stack's three volumes by their whole names, bare as the prod compose file pins them or with a
+        # Hub project's name in front (isHubStackVolume in scripts/hub-cleanup-lib.ts, which `cihub reset`
+        # uses). hub_tailscale_state can exist without a label. A volume whose name only contains one of
+        # these, such as a database backup called ci_hub_pgdata_backup, is not the Hub's and stays.
+        $hubVolumeProjects = @('ci-os-hub', 'ci-hub', 'runtipi', 'runcihub')
+        $hubStackVolumes = foreach ($key in @('ci_hub_pgdata', 'ci_hub_app_data', 'hub_tailscale_state')) {
+            $key
+            foreach ($project in $hubVolumeProjects) { "${project}_$key" }
+        }
         $volumes = @()
         try {
-            # hub_tailscale_state has no compose label, so volumes are matched by name too.
-            $volumes += docker volume ls --format '{{.Name}}' 2>$null |
-                Where-Object { $_ -match 'ci_os_hub|ci-os-hub|ci_hub_pgdata|ci_hub_app_data|hub_tailscale_state' }
+            $volumes += docker volume ls --format '{{.Name}}' 2>$null | Where-Object { $_ -cin $hubStackVolumes }
             foreach ($project in $hubProjects) {
                 $volumes += docker volume ls --filter "label=com.docker.compose.project=$project" --format '{{.Name}}' 2>$null
             }
