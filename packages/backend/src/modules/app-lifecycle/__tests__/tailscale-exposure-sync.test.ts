@@ -5,6 +5,12 @@ import { AppFilesManager } from '../../apps/app-files-manager';
 import { ExposureSyncService } from '../exposure-sync.service';
 import { TailscaleServeOwnership } from '../tailscale-serve-ownership';
 import { servePermissionCommand, TailscaleService } from '../../tailscale/tailscale.service';
+
+const hubPortProbeAddressMock = vi.fn(async (): Promise<string | null> => '172.17.0.1');
+vi.mock('@/modules/custom-apps/port-expose-reachability', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/modules/custom-apps/port-expose-reachability')>()),
+  hubPortProbeAddress: () => hubPortProbeAddressMock(),
+}));
 import {
   CORE_6_SERVE_STATUS,
   CORE_17_SERVE_STATUS_AFTER_MANUAL_REPAIR,
@@ -272,23 +278,27 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
   describe("an exposed port on a Hub that uses the host's tailscaled", () => {
     const exposedPort = (port: number): PrivateVpnApp => ({ ...privateVpnApp('public-test', port, ''), appStoreSlug: '_user' });
 
-    it('proxies to the program on the host, not to host.docker.internal, which the host cannot resolve', async () => {
+    afterEach(() => {
+      hubPortProbeAddressMock.mockResolvedValue('172.17.0.1');
+    });
+
+    it("proxies to the host's address from the Hub's container, not to host.docker.internal, which the host cannot resolve", async () => {
       const tailscaled = new FakeHostTailscaled('laptop.tailxyz.ts.net', '{}');
       const sync = buildSync(tailscaled, [exposedPort(8082)], { 'public-test': { kind: PORT_EXPOSE_KIND, port: 8082 } });
 
       await sync.syncTailscaleExposurePublic();
 
-      expect(tailscaled.writes).toEqual([['serve', '--bg', '--yes', '--https=8082', 'http://localhost:8082'], HUB_PUBLISH]);
-      expect(tailscaled.serveConfig().Web?.['laptop.tailxyz.ts.net:8082']).toEqual({ Handlers: { '/': { Proxy: 'http://localhost:8082' } } });
+      expect(tailscaled.writes).toEqual([['serve', '--bg', '--yes', '--https=8082', 'http://172.17.0.1:8082'], HUB_PUBLISH]);
+      expect(tailscaled.serveConfig().Web?.['laptop.tailxyz.ts.net:8082']).toEqual({ Handlers: { '/': { Proxy: 'http://172.17.0.1:8082' } } });
     });
 
-    it("points the program's upstream port, not the published one, at localhost", async () => {
+    it("points the program's upstream port, not the published one, at the host", async () => {
       const tailscaled = new FakeHostTailscaled('laptop.tailxyz.ts.net', '{}');
       const sync = buildSync(tailscaled, [exposedPort(8443)], { 'public-test': { kind: PORT_EXPOSE_KIND, port: 8443, upstreamPort: 3080 } });
 
       await sync.syncTailscaleExposurePublic();
 
-      expect(tailscaled.serveConfig().Web?.['laptop.tailxyz.ts.net:8443']).toEqual({ Handlers: { '/': { Proxy: 'http://localhost:3080' } } });
+      expect(tailscaled.serveConfig().Web?.['laptop.tailxyz.ts.net:8443']).toEqual({ Handlers: { '/': { Proxy: 'http://172.17.0.1:3080' } } });
     });
 
     it('repairs an entry an older Hub published for host.docker.internal', async () => {
@@ -300,8 +310,19 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
       await sync.syncTailscaleExposurePublic();
       await sync.syncTailscaleExposurePublic();
 
-      expect(tailscaled.writes).toEqual([['serve', '--bg', '--yes', '--https=8082', 'http://localhost:8082'], HUB_PUBLISH]);
-      expect(tailscaled.serveConfig().Web?.['laptop.tailxyz.ts.net:8082']).toEqual({ Handlers: { '/': { Proxy: 'http://localhost:8082' } } });
+      expect(tailscaled.writes).toEqual([['serve', '--bg', '--yes', '--https=8082', 'http://172.17.0.1:8082'], HUB_PUBLISH]);
+      expect(tailscaled.serveConfig().Web?.['laptop.tailxyz.ts.net:8082']).toEqual({ Handlers: { '/': { Proxy: 'http://172.17.0.1:8082' } } });
+    });
+
+    it("skips the port and still publishes the Hub when the host's address can't be read", async () => {
+      hubPortProbeAddressMock.mockResolvedValue(null);
+      const tailscaled = new FakeHostTailscaled('laptop.tailxyz.ts.net', '{}');
+      const sync = buildSync(tailscaled, [exposedPort(8082)], { 'public-test': { kind: PORT_EXPOSE_KIND, port: 8082 } });
+
+      await sync.syncTailscaleExposurePublic();
+
+      expect(tailscaled.writes).toEqual([HUB_PUBLISH]);
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('Skipping public-test:_user: host.docker.internal does not resolve'));
     });
   });
 

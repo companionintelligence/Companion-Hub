@@ -544,6 +544,12 @@ export class ExposureSyncService implements OnModuleDestroy {
         if (installedInfo && isPortExposeApp(installedInfo)) {
           const upstreamPort = installedInfo.upstreamPort ?? installedInfo.port ?? app.port;
           upstreamUrl = await tailscaleService.getHostPortServeUpstream(upstreamPort);
+          if (!upstreamUrl) {
+            this.logger.error(
+              `[Tailscale] Skipping ${appUrn}: host.docker.internal does not resolve in the Hub's container, so Tailscale Serve has no address for the program on this computer`,
+            );
+            continue;
+          }
         } else {
           const target = await this.dockerReadFacade.getAppNetworkTarget(appUrn);
           if (!target) {

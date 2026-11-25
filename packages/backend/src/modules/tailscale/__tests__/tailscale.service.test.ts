@@ -11,6 +11,12 @@ vi.mock('node:fs/promises', () => ({
   constants: { X_OK: 1, R_OK: 4, W_OK: 2 },
 }));
 
+const hubPortProbeAddressMock = vi.fn();
+vi.mock('@/modules/custom-apps/port-expose-reachability', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/modules/custom-apps/port-expose-reachability')>()),
+  hubPortProbeAddress: () => hubPortProbeAddressMock(),
+}));
+
 import { access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -502,14 +508,31 @@ describe('TailscaleService', () => {
       (service as any).strategyCache = { value, expires: Date.now() + 60_000 };
     };
 
-    it("names localhost when the host's tailscaled proxies, since host.docker.internal only resolves in containers", async () => {
+    it.each(['host', 'sidecar'] as const)(
+      "names the host's address from the Hub's container with the %s tailscaled, not a name only containers resolve",
+      async (strategy) => {
+        withStrategy(strategy);
+        hubPortProbeAddressMock.mockResolvedValue('172.17.0.1');
+        await expect(service.getHostPortServeUpstream(8082)).resolves.toBe('http://172.17.0.1:8082');
+      },
+    );
+
+    it("uses loopback for the host's tailscaled when the Hub itself runs on the host", async () => {
       withStrategy('host');
-      await expect(service.getHostPortServeUpstream(8082)).resolves.toBe('http://localhost:8082');
+      hubPortProbeAddressMock.mockResolvedValue('127.0.0.1');
+      await expect(service.getHostPortServeUpstream(8082)).resolves.toBe('http://127.0.0.1:8082');
     });
 
-    it('leaves the sidecar on host.docker.internal, as before', async () => {
+    it('keeps the sidecar off its own loopback when the Hub runs on the host', async () => {
       withStrategy('sidecar');
+      hubPortProbeAddressMock.mockResolvedValue('127.0.0.1');
       await expect(service.getHostPortServeUpstream(8082)).resolves.toBe('http://host.docker.internal:8082');
+    });
+
+    it("names nothing when host.docker.internal doesn't resolve in the Hub's container", async () => {
+      withStrategy('host');
+      hubPortProbeAddressMock.mockResolvedValue(null);
+      await expect(service.getHostPortServeUpstream(8082)).resolves.toBeNull();
     });
   });
 
