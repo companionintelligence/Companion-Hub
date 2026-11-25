@@ -25,7 +25,7 @@ const CONNECTED: TailscaleStatus = {
 function controllerOver(status: TailscaleStatus) {
   const service = new TailscaleService();
   vi.spyOn(service, 'getStatus').mockResolvedValue(status);
-  return { service, controller: new TailscaleController(service, {} as never, {} as never) };
+  return { service, controller: new TailscaleController(service, {} as never, {} as never, {} as never) };
 }
 
 describe('GET /tailscale/status', () => {
@@ -54,7 +54,8 @@ describe('POST /tailscale/auth/start', () => {
     // The sync after a connect is best-effort, so a module ref that resolves no lifecycle service skips it.
     const moduleRef = { get: vi.fn(() => null) };
     const logger = { warn: vi.fn(), debug: vi.fn(), error: vi.fn(), info: vi.fn() };
-    return new TailscaleController(service, moduleRef as never, logger as never);
+    // The Services service goes unused here: a connect only asks the lifecycle service to sync.
+    return new TailscaleController(service, {} as never, moduleRef as never, logger as never);
   }
 
   it('says the Hub brought the tailnet back when it was only turned off', async () => {
