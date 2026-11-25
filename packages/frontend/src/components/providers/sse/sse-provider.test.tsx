@@ -183,6 +183,29 @@ describe('SSEProvider', () => {
     });
   });
 
+  it('says an update was refused for a new version whose folders nest, and that the installed one is unchanged', () => {
+    let onEvent: ((data: unknown) => void) | undefined;
+    mockUseSSE.mockImplementation((config: { onEvent: (data: unknown) => void }) => {
+      onEvent = config.onEvent;
+    });
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter>
+          <SSEProvider>
+            <div>child</div>
+          </SSEProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    act(() => onEvent?.({ event: 'update_error', appUrn: 'comfyui:ci-marketplace', errorCode: 'nested_bind_mounts' }));
+
+    expect(mockToastError).toHaveBeenCalledExactlyOnceWith(
+      "comfyui wasn't updated: its new version keeps one of its folders inside another folder it can write to. The installed version is unchanged.",
+      { duration: 10000 },
+    );
+  });
+
   it('links app operation failures to the logs tab via "see logs"', async () => {
     let onEvent: ((data: unknown) => void) | undefined;
     mockUseSSE.mockImplementation((config: { onEvent: (data: unknown) => void }) => {

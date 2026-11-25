@@ -163,6 +163,15 @@ export function translateNestedBindMountsError(error: unknown): AppLifecycleErro
   return new AppLifecycleError(NESTED_BIND_MOUNTS_USER_MESSAGE, { code: NESTED_BIND_MOUNTS_CODE, detail: error.message });
 }
 
+/** An update refused because the version it would install nests its folders; the installed one keeps running. */
+export const NESTED_BIND_MOUNTS_UPDATE_USER_MESSAGE =
+  "The new version keeps one of its folders inside another folder it can write to, so the Hub didn't install it. The installed version is unchanged.";
+
+/** The update's own refusal of a new version with nested mounts (see `translateNestedBindMountsError`). */
+export function nestedBindMountsUpdateError(error: NestedBindMountsError): AppLifecycleError {
+  return new AppLifecycleError(NESTED_BIND_MOUNTS_UPDATE_USER_MESSAGE, { code: NESTED_BIND_MOUNTS_CODE, detail: error.message });
+}
+
 export function translateRocmKfdInstallMessage(message: string): AppLifecycleError | null {
   const normalizedMessage = message.toLowerCase();
   // Docker checks compose `devices` entries in order and fails on the first one it can't

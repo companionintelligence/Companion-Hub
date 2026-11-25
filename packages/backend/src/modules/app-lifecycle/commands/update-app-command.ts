@@ -19,6 +19,7 @@ import type { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
 import type Dockerode from 'dockerode';
 import type { OperationPhase } from '../app-operation-registry';
+import { nestedBindMountsUpdateError } from './app-lifecycle-errors';
 import { AppLifecycleCommand, type CommandExecutionContext } from './command';
 import { installedComposeImages, pullAppImagesRecorded, recordComposeUpPulls } from './pull-app-images';
 import { type AppSecurityGrants, type UpdatePhase, parseInstalledComposeJson } from '@ci-hub/common/schemas';
@@ -105,9 +106,10 @@ export class UpdateAppCommand extends AppLifecycleCommand {
     const backupManager = this.moduleRef.get(BackupManager, { strict: false });
 
     let composeToInstall: Awaited<ReturnType<MarketplaceService['getDockerComposeJson']>>;
+    let toInstall: ReturnType<typeof parseInstalledComposeJson>;
     try {
       composeToInstall = await marketplaceService.getDockerComposeJson(appUrn);
-      parseInstalledComposeJson(composeToInstall.content, securityGrantsFor(appUrn));
+      toInstall = parseInstalledComposeJson(composeToInstall.content, securityGrantsFor(appUrn));
     } catch (err) {
       logger.error(`Error parsing docker-compose.yml for app ${appUrn} from marketplace repository. Are you running the latest version of CI Hub?`);
       // Nothing has been touched: the running app is exactly as it was.
@@ -116,11 +118,12 @@ export class UpdateAppCommand extends AppLifecycleCommand {
 
     // A new version that keeps a folder inside another it can write to would be refused at its start,
     // after the installed one is down. Refused here instead, while the running app is still as it was.
-    const toInstall = parseInstalledComposeJson(composeToInstall.content, securityGrantsFor(appUrn));
     const architecture = this.moduleRef.get(ConfigurationService, { strict: false })?.get('architecture');
     const nestedRefusal = nestedManifestMountsRefusal(mergeArchitectureOverrides(toInstall.services, toInstall.overrides, architecture), appUrn);
     if (nestedRefusal) {
-      return { ...(await this.handleAppError(nestedRefusal, appUrn, 'update_error')), rolledBack: true };
+      // The folders it found are named only here: the reply carries the short message.
+      logger.error(nestedRefusal.message);
+      return { ...(await this.handleAppError(nestedBindMountsUpdateError(nestedRefusal), appUrn, 'update_error')), rolledBack: true };
     }
 
     let backupFile: string | undefined;

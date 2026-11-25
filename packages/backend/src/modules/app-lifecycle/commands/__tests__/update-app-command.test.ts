@@ -166,7 +166,13 @@ describe('UpdateAppCommand', () => {
 
       const result = await command.execute(appUrn, {});
 
-      expect(result).toMatchObject({ success: false, rolledBack: true, errorCode: 'nested_bind_mounts' });
+      expect(result).toMatchObject({
+        success: false,
+        rolledBack: true,
+        errorCode: 'nested_bind_mounts',
+        message: expect.stringContaining('The installed version is unchanged'),
+        errorDetail: expect.stringContaining('/data/linuxbrew'),
+      });
       expect(dockerService.composeApp).not.toHaveBeenCalled();
       expect(dockerService.pullImages).not.toHaveBeenCalled();
       expect((command as any).ensureAppDir).not.toHaveBeenCalled();

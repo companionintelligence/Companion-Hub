@@ -298,6 +298,11 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
           toast.success(t('APP_UPDATE_SUCCESS', { id: appName }));
           break;
         case 'update_error':
+          // The update refused a new version whose folders nest; the installed one is as it was.
+          if (errorCode === 'nested_bind_mounts') {
+            toast.error(t('APP_ERROR_NESTED_BIND_MOUNTS_UPDATE_TOAST', { id: appName }), { duration: 10000 });
+            break;
+          }
           showLogsErrorToast('APP_ERROR_APP_FAILED_TO_UPDATE_TOAST', appName);
           break;
         case 'update_cancelled':
