@@ -60,10 +60,10 @@ http:
     # First on the `-session` copy of every app route (sessionRouter in traefik-config.service.ts),
     # which takes the route's requests that carry a cookie or an Authorization header. An app with a
     # login of its own and no Hub sign-in answers those with the visitor's own files. Cloudflare caches
-    # by file extension when the app sends no Cache-Control, and it served such a file to anyone who
+    # by file extension when the app sends no Cache-Control. It served such a file to anyone who
     # asked for the same address. Only Cloudflare reads this header and it doesn't pass it on, so the
     # browser keeps the app's own Cache-Control (Private VPN and LAN answers carry it to a browser,
-    # which ignores it). Requests without either still reach the app's route unchanged, and a public
+    # which ignores it). Requests without either still reach the app's route unchanged. A public
     # site's files stay cached at the edge.
     ci-hub-session-no-edge-cache:
       headers:

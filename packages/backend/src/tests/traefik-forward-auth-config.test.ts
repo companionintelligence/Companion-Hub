@@ -140,10 +140,10 @@ describe('traefik ci-hub forward-auth middleware config', () => {
 
   /*
    * An app with a login of its own and no Hub sign-in sends a signed-in visitor their own files with no
-   * Cache-Control, and Cloudflare cached them by extension for anyone who asked. The `-session` copy
+   * Cache-Control. Cloudflare cached them by extension for anyone who asked. The `-session` copy
    * of every app route names this middleware for requests that carry a cookie or an Authorization header.
    */
-  it('backend traefik dynamic.yml tells Cloudflare not to keep an answer to a signed-in request, and nothing else', () => {
+  it('backend traefik dynamic.yml tells Cloudflare not to keep an answer to a signed-in request and nothing else', () => {
     const dynamic = YAML.parse(readFileSync(path.join(REPO_ROOT, 'packages/backend/assets/traefik/dynamic/dynamic.yml'), 'utf-8'));
     const [name, provider] = SESSION_NO_EDGE_CACHE_MIDDLEWARE.split('@');
     expect(provider).toBe('file');

@@ -518,7 +518,7 @@ describe('TraefikConfigService — routes while an app restarts', () => {
     });
 
     it("keeps the order Traefik gives the app's routers, so a path behind the sign-in still gets it", async () => {
-      // A path behind the Hub sign-in with a priority of its own, as Skyvern's API has, and a longer
+      // A path behind the Hub sign-in with a priority of its own (as Skyvern's API has) and a longer
       // rule without one. A copy that outranked either would hand its requests to the open route.
       runningContainers({
         ...publicWebLabels({ enableAuth: false }),
@@ -536,7 +536,7 @@ describe('TraefikConfigService — routes while an app restarts', () => {
       expect(copy('api')?.priority).toBe(101);
       expect(copy('files')?.priority).toBe(`${HOST_RULE} && PathPrefix(\`/files\`)`.length + 1);
       expect(copy('insecure')?.priority).toBe(HOST_RULE.length + 1);
-      // Each copy over its own route, and under every route that ranks above that one.
+      // Each copy over its own route but under every route that ranks above that one.
       expect(copy('insecure')?.priority).toBeLessThan(`${HOST_RULE} && PathPrefix(\`/files\`)`.length);
       expect(copy('files')?.priority).toBeLessThan(100);
     });
@@ -547,6 +547,70 @@ describe('TraefikConfigService — routes while an app restarts', () => {
       await service.generateTraefikConfig();
 
       expect(routers()[`wordpress-ci-marketplace-insecure${SESSION_ROUTER_SUFFIX}`]?.priority).toBe(HOST_RULE.length + 1);
+    });
+
+    it('reads a priority label under any spelling, as Traefik does', async () => {
+      runningContainers({ ...publicWebLabels({ enableAuth: false }), 'traefik.http.routers.wordpress-ci-marketplace-insecure.Priority': '500' });
+      await service.generateTraefikConfig();
+
+      expect(routers()[`wordpress-ci-marketplace-insecure${SESSION_ROUTER_SUFFIX}`]?.priority).toBe(501);
+    });
+
+    it('gives a copy to a router whose entry points label is spelled in capitals', async () => {
+      // Traefik serves it on the web entry point all the same. Without a copy it could tie with the
+      // copy of a route it outranks by one.
+      const rule = `${HOST_RULE} && PathPrefix(\`/caps\`)`;
+      runningContainers({
+        ...publicWebLabels({ enableAuth: false }),
+        'traefik.http.routers.wordpress-ci-marketplace-caps.rule': rule,
+        'traefik.http.routers.wordpress-ci-marketplace-caps.entryPoints': 'web',
+        'traefik.http.routers.wordpress-ci-marketplace-caps.service': 'wordpress-ci-marketplace',
+      });
+      await service.generateTraefikConfig();
+
+      expect(routers()[`wordpress-ci-marketplace-caps${SESSION_ROUTER_SUFFIX}`]).toMatchObject({
+        rule: `(${rule}) && (${SESSION_RULE})`,
+        entryPoints: ['web'],
+        priority: rule.length + 1,
+      });
+    });
+
+    it('ranks a copy by the length of its rule in bytes, as Traefik counts it', async () => {
+      const rule = `${HOST_RULE} && PathPrefix(\`/données/été\`)`;
+      runningContainers({ ...publicWebLabels({ enableAuth: false }), ...route('wordpress-ci-marketplace-files', rule) });
+      await service.generateTraefikConfig();
+
+      expect(routers()[`wordpress-ci-marketplace-files${SESSION_ROUTER_SUFFIX}`]?.priority).toBe(Buffer.byteLength(rule, 'utf8') + 1);
+    });
+
+    it('writes a priority label too large for an integer Traefik reads as the highest one it can', async () => {
+      // Traefik drops the whole file provider over one file it can't read, dynamic.yml with it.
+      runningContainers({
+        ...publicWebLabels({ enableAuth: false }),
+        'traefik.http.routers.wordpress-ci-marketplace-insecure.priority': '99999999999999999999',
+      });
+      await service.generateTraefikConfig();
+
+      expect(routers()[`wordpress-ci-marketplace-insecure${SESSION_ROUTER_SUFFIX}`]?.priority).toBe(Number.MAX_SAFE_INTEGER);
+      expect(written.get(`${DYNAMIC_DIR}/apps.yml`)).toContain(`priority: ${Number.MAX_SAFE_INTEGER}\n`);
+    });
+
+    it('copies the router apps.yml holds when two containers define it', async () => {
+      // A second container of the app with a router of the same name and no Hub sign-in. apps.yml holds
+      // the last container's router; a copy of the other's would skip the sign-in for any request with a cookie.
+      const sidecar = {
+        'com.docker.compose.project': 'wordpress_ci-marketplace',
+        'ci-hub.appurn': 'wordpress:ci-marketplace',
+        ...route('wordpress-ci-marketplace-insecure', HOST_RULE, { middlewares: APP_STARTING_MIDDLEWARE }),
+      };
+      runningContainers(sidecar, publicWebLabels());
+      await service.generateTraefikConfig();
+
+      const own = routers()['wordpress-ci-marketplace-insecure'];
+      const copy = routers()[`wordpress-ci-marketplace-insecure${SESSION_ROUTER_SUFFIX}`];
+
+      expect(own?.middlewares).toContain('ci-hub@file');
+      expect(copy?.middlewares).toEqual([SESSION_NO_EDGE_CACHE_MIDDLEWARE, ...(own?.middlewares ?? [])]);
     });
 
     it('gives a route behind the Hub sign-in a copy too, with the sign-in', async () => {

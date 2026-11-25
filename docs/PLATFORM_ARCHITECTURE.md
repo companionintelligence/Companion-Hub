@@ -266,8 +266,9 @@ in traefik-labels.builder.ts). The Hub writes dynamic.yml on every boot, while i
 change only with the installed compose file.
 
 Routes without the sign-in still serve apps with a login of their own, whose answers to a signed-in
-visitor are just as private. Next to every app router on the `web` entry point, and every port-expose
-route, apps.yml holds a `-session` copy (`sessionRouter` in traefik-config.service.ts). It matches the
+visitor are just as private. Next to every app router on the `web` entry point apps.yml holds a
+`-session` copy (`sessionRouter` in traefik-config.service.ts). port-expose.yml holds one next to
+every port-expose route. Each copy matches the
 same requests only when they carry a `Cookie` or `Authorization` header, ranks one above the router
 and puts `ci-hub-session-no-edge-cache` first in the same chain. That middleware sets
 `Cloudflare-CDN-Cache-Control: no-store`, which only Cloudflare reads and which it does not pass on,
