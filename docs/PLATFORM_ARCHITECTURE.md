@@ -260,7 +260,10 @@ auth (`ci-hub-forward-auth`), under both the file and the Docker provider. `ci-h
 `Cache-Control: private, no-store` on every answer that passes it (the sign-in's own redirects
 included) and removes `CDN-Cache-Control` and `Cloudflare-CDN-Cache-Control`, which Cloudflare would
 read in its place. Neither Cloudflare nor a browser keeps a copy of an answer meant for a signed-in
-visitor. Routes without the sign-in keep the app's own headers.
+visitor. Routes without the sign-in keep the app's own headers. A manifest that names
+`ci-hub@docker` on a router of its own gets `ci-hub@file` in its place (`withSignInUnderFileProvider`
+in traefik-labels.builder.ts). The Hub writes dynamic.yml on every boot, while its container's labels
+change only with the installed compose file.
 
 Every app router ends with `ci-hub-app-starting@file`, an `errors` middleware for 502 and 504.
 It leaves 503 alone: apps send that on purpose, with a body their own clients read. While an

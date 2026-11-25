@@ -115,6 +115,41 @@ export function withHubMiddlewaresFirst(
   return result;
 }
 
+/** The Hub's sign-in as the Hub container's labels define it for the Docker provider. */
+const DOCKER_FORWARD_AUTH_MIDDLEWARE = 'ci-hub@docker';
+
+/**
+ * Names the Hub's sign-in under the file provider on every HTTP router in an app container's labels.
+ *
+ * Some manifests name `ci-hub@docker` on routers of their own. The Hub container's labels define that
+ * one, and they change only when the installed compose file is rewritten: by a desktop app update or
+ * `cihub compose refresh`, never by the Hub's own image update. The Hub writes `ci-hub@file` from
+ * dynamic.yml on every boot, so it is the current sign-in on every install. The two differed once
+ * already: `ci-hub` became a chain with the cache header first (CI-Engineering#510), and a route
+ * on the old labels sent its files out without it.
+ */
+export function withSignInUnderFileProvider(labels: Record<string, string | boolean>): Record<string, string | boolean> {
+  const result = { ...labels };
+  for (const [key, value] of Object.entries(labels)) {
+    if (HTTP_ROUTER_LABEL.exec(key)?.[2]?.toLowerCase() !== 'middlewares') {
+      continue;
+    }
+    const chain = middlewareChain(value);
+    if (!chain.some((name) => name.toLowerCase() === DOCKER_FORWARD_AUTH_MIDDLEWARE)) {
+      continue;
+    }
+    const renamed: string[] = [];
+    for (const name of chain) {
+      const next = name.toLowerCase() === DOCKER_FORWARD_AUTH_MIDDLEWARE ? FORWARD_AUTH_MIDDLEWARE : name;
+      if (!renamed.some((existing) => existing.toLowerCase() === next.toLowerCase())) {
+        renamed.push(next);
+      }
+    }
+    result[key] = renamed.join(',');
+  }
+  return result;
+}
+
 /**
  * Ends every HTTP router in an app container's labels with {@link APP_STARTING_MIDDLEWARE}.
  *
