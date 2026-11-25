@@ -70,10 +70,11 @@ export type LoadOutcome =
       /** Set when only generations in progress stood in the way: the load would have been made once they end (see {@link EvictionPlan.idleWouldFree}). */
       idleWouldFree?: true;
       /**
-       * Set when the load was refused for want of memory, the model would load into the system's own
-       * RAM (unified memory, or no GPU, see {@link loadsIntoSystemRam}), and unloading every idle model
-       * would not make room either. The request that wanted it must then fail rather than reach the
-       * engine, which would load it anyway (#2539).
+       * Set when the load was refused for want of memory and the model would load into the system's own
+       * RAM (unified memory, or no GPU, see {@link loadsIntoSystemRam}). Either the engine would not make
+       * the room by unloading its own idle runners, or the Hub's own unloads did not make it: an engine
+       * refused one, or the memory had not come back. The request that wanted it must then fail rather
+       * than reach the engine, which would load it anyway (#2539).
        */
       systemMemory?: true;
     };
@@ -81,10 +82,10 @@ export type LoadOutcome =
 /**
  * Whether a model loads into the memory the operating system itself runs in: unified memory (an APU,
  * Apple Silicon) or a node with no GPU. An engine sent a model that does not fit there has nowhere to
- * put the rest. On a 122 GB Strix Halo machine the Hub refused MiniMax M2 230B with 36 GB free,
- * sent the request to Ollama anyway, and Ollama loaded 51 GB: the out-of-memory killer took Ollama,
- * the desktop session and SSH with it. A discrete card is left out: Ollama puts what the card cannot
- * hold in system RAM, which costs speed, and a request on an 8 GB card for a model the catalog
+ * put the rest. On a 122 GB Strix Halo machine the Hub refused MiniMax M2 230B with 36 GB free and
+ * sent the request to Ollama anyway. Ollama loaded 51 GB of it and the out-of-memory killer took
+ * Ollama, the desktop session and SSH with it. A discrete card is left out: Ollama puts what the card
+ * cannot hold in system RAM, which costs speed. A request on an 8 GB card for a model the catalog
  * overstates is served that way today.
  */
 export function loadsIntoSystemRam(profile: HardwareProfile): boolean {
@@ -1027,7 +1028,7 @@ export class InferenceRouterService implements OnApplicationBootstrap {
    * Null means "not a tracked model, or it does not fit and nothing can be freed"; the caller then
    * falls through to the engine as before. Never throws for a residency probe that fails. Throws a
    * 503 when the model does not fit in system memory ({@link LoadOutcome.systemMemory}): the engine
-   * would load it anyway, and falling through is how a Strix Halo machine ran out of memory (#2539).
+   * would load it anyway. Falling through is how a Strix Halo machine ran out of memory (#2539).
    *
    * `options.numCtx` is the window the request that triggered this runs at: its own `options.num_ctx`
    * on Ollama's native routes, null on `/v1`, where Ollama drops `options` and runs its default. An
@@ -1182,17 +1183,21 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     const fit = await this.memoryManager.canFitModel(profile, footprint);
     if (!fit.fits) {
       // Every refusal from here on is for want of memory.
-      const memory = loadsIntoSystemRam(profile) ? { systemMemory: true as const } : {};
+      const systemRam = loadsIntoSystemRam(profile);
+      const memory = systemRam ? { systemMemory: true as const } : {};
       const deficit = footprint - fit.availableMb;
       const plan = await this.memoryManager.planEviction(profile, deficit, { backend: backendType, backendModelId }, this.evictionOptions(scope));
       if (!plan.canFree) {
+        // Asked only where the answer matters: a discrete card never fails the request for memory.
+        const engineMakesRoom =
+          !systemRam ||
+          plan.idleWouldFree === true ||
+          (await this.engineWouldMakeRoom(profile, deficit, { backend: backendType, backendModelId }, scope));
         return {
           loaded: false,
           reason: describeRefusal(catalogId, footprint, fit.availableMb, scope, plan),
           ...(plan.idleWouldFree ? { idleWouldFree: true as const } : {}),
-          ...(plan.idleWouldFree || (await this.idleModelsWouldMakeRoom(profile, deficit, { backend: backendType, backendModelId }, scope))
-            ? {}
-            : memory),
+          ...(engineMakesRoom ? {} : memory),
         };
       }
       const evicted: EvictionCandidate[] = [];
@@ -1258,20 +1263,22 @@ export class InferenceRouterService implements OnApplicationBootstrap {
   }
 
   /**
-   * Whether unloading every idle unpinned model, an app's included, would make room for a request's
-   * load that the request itself may not make room for. The engine may still serve such a request:
-   * Ollama unloads its own idle runners to fit a model, and did so for requests the Hub refused
-   * before #2539. Only a model that fits nowhere, whatever is unloaded, must not reach it.
+   * Whether the target's own engine would make room for a request's load that the request itself may
+   * not make room for, by unloading its own idle runners, an app's included. Ollama does that to fit a
+   * model, and did so for requests the Hub refused before #2539. Only an engine that arbitrates its own
+   * memory ({@link SELF_ARBITRATING_BACKENDS}) does, and only among its own models: Ollama never
+   * unloads a Lemonade model, and Lemonade loads whatever it is sent on top of anything. A model the
+   * engine would not make room for must not reach it.
    */
-  private async idleModelsWouldMakeRoom(
+  private async engineWouldMakeRoom(
     profile: HardwareProfile,
     deficitMb: number,
     target: { backend: InferenceBackendType; backendModelId: string },
     scope: EvictionScope,
   ): Promise<boolean> {
-    if (scope === 'operator') return false;
-    const wider = await this.memoryManager.planEviction(profile, deficitMb, target, this.evictionOptions('operator'));
-    return wider.canFree || wider.idleWouldFree === true;
+    if (scope === 'operator' || !SELF_ARBITRATING_BACKENDS.has(target.backend)) return false;
+    const own = await this.memoryManager.planEviction(profile, deficitMb, target, { ...this.evictionOptions('operator'), backend: target.backend });
+    return own.canFree || own.idleWouldFree === true;
   }
 
   /**
@@ -1293,10 +1300,16 @@ export class InferenceRouterService implements OnApplicationBootstrap {
       backend.markKvCacheUnsupported?.(curated);
       return retry;
     }
-    // `systemMemory` rides along: a 16-bit retry that does not fit in system RAM must fail the request as the first load would have.
+    // The retry's flags ride along: a 16-bit load held up by busy models is waited for as the first would
+    // have been, and one that does not fit in system RAM must fail the request.
     return retry.loaded
       ? retry
-      : { loaded: false, reason: `${err.message}; at 16-bit: ${retry.reason}`, ...(retry.systemMemory ? { systemMemory: true as const } : {}) };
+      : {
+          loaded: false,
+          reason: `${err.message}; at 16-bit: ${retry.reason}`,
+          ...(retry.idleWouldFree ? { idleWouldFree: true as const } : {}),
+          ...(retry.systemMemory ? { systemMemory: true as const } : {}),
+        };
   }
 
   /**

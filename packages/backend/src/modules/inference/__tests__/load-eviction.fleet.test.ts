@@ -698,9 +698,9 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
 
   // A 122 GB Strix Halo machine, 2026-11-23 (#2539): with 36 GB free and qwen3.6:35b loaded by an app, the Hub refused
   // MiniMax M2 230B and then sent the request to Ollama anyway, which loaded 51 GB of it. On unified
-  // memory that is the machine's own RAM, and the out-of-memory killer took the desktop session.
+  // memory that is the machine's own RAM. The out-of-memory killer took the desktop session.
   describe('a request for a model that does not fit in unified memory', () => {
-    it('is refused with the reason, and the engine never loads the model (#2539)', async () => {
+    it('is refused with the reason and the engine never loads the model (#2539)', async () => {
       ollama = new FakeOllama({ 'qwen3.6:35b': 22_000, 'gabegoodhart/minimax-m2:230b': 72_243 });
       ollama.hold('qwen3.6:35b', 22_000);
       const hardware = strixHalo(60_000, [ollama]);
@@ -734,6 +734,23 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
       expect(outcome).toMatchObject({ loaded: false });
       expect(outcome).not.toHaveProperty('systemMemory');
       await expect(w.router.prepareTrackedModel('qwen3-coder:30b')).resolves.toBeNull();
+      expect(ollama.unloads).toEqual([]);
+    });
+
+    // Lemonade loads what it is sent on top of anything, and Ollama never unloads another engine's model.
+    it("is refused when only another engine's idle model would make room", async () => {
+      ollama.hold('qwen3.8:27b', 40_000);
+      const lemonade = new FakeLemonade({ 'Qwen3.6-35B-A3B-GGUF': 30_000 }, ollama);
+      const hardware = strixHalo(60_000, [ollama, lemonade]);
+      const w = world(await hardware.getProfile(), ollama, { 'qwen3-6-35b-lemonade': 30_000 }, { lemonade, hardware });
+      w.pulled('qwen3-6-35b-lemonade');
+
+      await expect(w.router.loadTrackedModel('qwen3-6-35b-lemonade', { origin: 'request', numCtx: null })).resolves.toMatchObject({
+        loaded: false,
+        systemMemory: true,
+      });
+      await expect(w.router.prepareTrackedModel('Qwen3.6-35B-A3B-GGUF')).rejects.toMatchObject({ status: 503, code: 'insufficient_memory' });
+      expect(lemonade.loads).toEqual([]);
       expect(ollama.unloads).toEqual([]);
     });
 

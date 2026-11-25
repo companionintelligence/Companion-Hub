@@ -2987,7 +2987,12 @@ export class PoolProxyService {
           const earlier = refusedLoads.get(candidate);
           // A refusal kept from before the other candidates were tried is read again when it was for busy
           // models: they may have ended since, and `awaitBusyModels` only looks again when they change.
-          let refusal = earlier?.idleWouldFree === false ? earlier : await this.arbitrateLocalLoad(candidate, path, body, model, clientClosed);
+          // So is one that would fail the request for system memory. The other candidates can take
+          // minutes to fail, and an app's idle model may have expired meanwhile and left the room.
+          let refusal =
+            earlier !== undefined && !earlier.idleWouldFree && !earlier.systemMemory
+              ? earlier
+              : await this.arbitrateLocalLoad(candidate, path, body, model, clientClosed);
           if (refusal !== null && earlier === undefined && walk.slice(index + 1).some((other) => !refusedLoads.has(other))) {
             // Another candidate can take the request, so this engine is not asked to load a model the
             // Hub could not make room for: it would load it anyway and overcommit the card, or put part
@@ -3017,7 +3022,7 @@ export class PoolProxyService {
             // A candidate passed over once already, before the others were tried, is not recorded twice.
             if (earlier === undefined) passOver(candidate, nodeLabel, null, describeLocalLoadRefusal(refusal.reason));
             this.logger.warn(
-              `[PoolProxy] the Hub refused to load "${model}" on ${candidate.backend} here (${refusal.reason}), and it would load into ` +
+              `[PoolProxy] the Hub refused to load "${model}" on ${candidate.backend} here (${refusal.reason}) and it would load into ` +
                 `system memory; ${walk.length - index - 1 > 0 ? 'trying the candidates after it' : 'failing the request rather than sending it to the engine'}`,
             );
             if (index + 1 < walk.length) continue;
@@ -3312,7 +3317,7 @@ export class PoolProxyService {
   /**
    * Answer a request the Hub refused to load its model for, where nothing else can take it and the model
    * would load into system RAM it does not fit in (`LoadOutcome.systemMemory`): a 503 with the Hub's
-   * reason, and the row settled failed with it. Sent to the engine instead, the model was loaded anyway
+   * reason. The row is settled failed with it. Sent to the engine instead, the model was loaded anyway
    * and took the machine down (#2539).
    */
   private failForSystemMemory(

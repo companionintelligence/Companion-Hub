@@ -9125,7 +9125,7 @@ describe('PoolProxyService', () => {
         });
       });
 
-      // #2539: on unified memory the engine loaded a model the Hub had refused, and the machine ran out of memory.
+      // #2539: on unified memory the engine loaded a model the Hub had refused. The machine ran out of memory.
       describe('for a model that would load into system memory it does not fit in', () => {
         beforeEach(() => {
           router.loadTrackedModel.mockResolvedValue({ loaded: false, reason: REFUSAL, systemMemory: true });
@@ -9169,9 +9169,29 @@ describe('PoolProxyService', () => {
           await chat(res);
 
           expect(urls()).toEqual([PEER_A_URL]);
-          expect(router.loadTrackedModel).toHaveBeenCalledTimes(1);
+          // Asked again before the request fails: the first answer is as old as the peer's attempt.
+          expect(router.loadTrackedModel).toHaveBeenCalledTimes(2);
           expect(res.status).toHaveBeenCalledWith(503);
           expect(routingLog.list()[0]).toMatchObject({ outcome: 'failed', attempt: 3, candidates: 2, status: 503, localLoadRefused: null });
+        });
+
+        it('serves the request locally when the room has come back by the time the peer has failed', async () => {
+          vi.mocked(global.fetch).mockImplementation(async (input) =>
+            String(input) === PEER_A_URL
+              ? new Response('engine down', { status: 503 })
+              : new Response(JSON.stringify({ done: true }), { status: 200 }),
+          );
+          router.loadTrackedModel
+            .mockResolvedValueOnce({ loaded: false, reason: REFUSAL, systemMemory: true })
+            .mockResolvedValueOnce({ loaded: true });
+          const res = createMockResponse();
+
+          await chat(res);
+
+          expect(urls()).toEqual([PEER_A_URL, LOCAL_URL]);
+          expect(router.loadTrackedModel).toHaveBeenCalledTimes(2);
+          expect(res.status).toHaveBeenCalledWith(200);
+          expect(routingLog.list()[0]).toMatchObject({ outcome: 'served', node: POOL_SERVED_LOCALLY, attempt: 3, localLoadRefused: null });
         });
       });
 
