@@ -1328,8 +1328,21 @@ describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
     expect(collectServiceSecurityViolations({ devices: ['/dev/../dev/sda:/dev/sda'] })).toHaveLength(1);
   });
 
-  // Raw disk commands past the block-device refusal, and the host's keyboards, mice and security keys.
-  it.each(['/dev/sg0', '/dev/sg', '/dev/bsg/0:0:0:0', '/dev/uinput', '/dev/input', '/dev/input/event3', '/dev/hidraw0', '/dev/HIDRAW1'])(
+  // Raw disk commands past the block-device refusal, and the host's keyboards, mice and security keys,
+  // one by one or through the USB bus itself.
+  it.each([
+    '/dev/sg0',
+    '/dev/sg',
+    '/dev/bsg/0:0:0:0',
+    '/dev/uinput',
+    '/dev/input',
+    '/dev/input/event3',
+    '/dev/hidraw0',
+    '/dev/HIDRAW1',
+    '/dev/bus/usb',
+    '/dev/bus/usb/001/004',
+    '/dev/bus',
+  ])(
     'flags %s, which reaches a disk or the person at the host',
     (device) => {
       expect(collectServiceSecurityViolations({ devices: [`${device}:${device}`] }).map((v) => v.message)).toContain(
@@ -1339,7 +1352,11 @@ describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
   );
 
   it("leaves devices that only start like those alone, and Sunshine's granted /dev/uinput", () => {
-    expect(collectServiceSecurityViolations({ devices: ['/dev/sgx_enclave:/dev/sgx_enclave', '/dev/inputs-fake:/dev/x'] })).toHaveLength(0);
+    expect(
+      collectServiceSecurityViolations({
+        devices: ['/dev/sgx_enclave:/dev/sgx_enclave', '/dev/inputs-fake:/dev/x', '/dev/ttyUSB0:/dev/ttyUSB0', '/dev/ttyACM0:/dev/ttyACM0'],
+      }),
+    ).toHaveLength(0);
     expect(collectServiceSecurityViolations({ devices: ['/dev/uinput:/dev/uinput'] }, TRUSTED_APP_SECURITY_ALLOWLIST.sunshine)).toHaveLength(0);
   });
 
