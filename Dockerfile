@@ -137,6 +137,10 @@ RUN echo "LOCAL: ${LOCAL}"
 # image. It was also written as `... | tail -100 || true`, which cannot fail, so a broken bundle
 # would have shipped. `RUN pnpm run build` above is the step that fails the image.
 
+# The Sentry CLI runs with the Sentry auth token in its environment, so it is pinned
+# to an exact release rather than whatever 2.x npm has on the day of the build.
+ARG SENTRY_CLI_VERSION=2.58.6
+
 # Inject Sentry debug IDs into the backend bundle and upload its source maps so
 # production backend stack traces are readable instead of minified/bundled.
 # Best-effort: only uploads when SENTRY_AUTH_TOKEN (BuildKit secret) plus
@@ -147,8 +151,8 @@ RUN echo "LOCAL: ${LOCAL}"
 RUN --mount=type=secret,id=sentry_auth_token \
     if [ -s /run/secrets/sentry_auth_token ] && [ -n "$SENTRY_ORG" ] && [ -n "$SENTRY_BACKEND_PROJECT" ]; then \
       export SENTRY_AUTH_TOKEN="$(cat /run/secrets/sentry_auth_token)"; \
-      npx --yes @sentry/cli@2 sourcemaps inject packages/backend/dist || echo "::warning::backend sourcemaps inject failed"; \
-      npx --yes @sentry/cli@2 sourcemaps upload \
+      npx --yes @sentry/cli@${SENTRY_CLI_VERSION} sourcemaps inject packages/backend/dist || echo "::warning::backend sourcemaps inject failed"; \
+      npx --yes @sentry/cli@${SENTRY_CLI_VERSION} sourcemaps upload \
         --org "$SENTRY_ORG" --project "$SENTRY_BACKEND_PROJECT" \
         --release "$SENTRY_RELEASE" packages/backend/dist || echo "::warning::backend sourcemap upload failed"; \
     else \
@@ -163,8 +167,8 @@ RUN --mount=type=secret,id=sentry_auth_token \
 RUN --mount=type=secret,id=sentry_auth_token \
     if [ -s /run/secrets/sentry_auth_token ] && [ -n "$SENTRY_ORG" ] && [ -n "$SENTRY_FRONTEND_PROJECT" ]; then \
       export SENTRY_AUTH_TOKEN="$(cat /run/secrets/sentry_auth_token)"; \
-      ( npx --yes @sentry/cli@2 sourcemaps inject packages/frontend/dist/client \
-        && npx --yes @sentry/cli@2 sourcemaps upload \
+      ( npx --yes @sentry/cli@${SENTRY_CLI_VERSION} sourcemaps inject packages/frontend/dist/client \
+        && npx --yes @sentry/cli@${SENTRY_CLI_VERSION} sourcemaps upload \
              --org "$SENTRY_ORG" --project "$SENTRY_FRONTEND_PROJECT" \
              --release "$VITE_SENTRY_RELEASE" packages/frontend/dist/client \
       ) || echo "::warning::frontend sourcemap upload failed (non-fatal)"; \
@@ -234,13 +238,16 @@ WORKDIR /app
 
 # Install native modules and docker-compose on the TARGET platform so the arm64
 # image slot cannot contain amd64 Node/native deps (Rosetta/QEMU footgun).
-# Everything else, express included, is compiled into main.js. This install is
-# unpinned, so a package added here runs at whatever version npm has that day
-# rather than the lockfile's. packages/backend/build.ts keeps the matching list
-# (packageExternals) and fails the build when the bundle would load anything
-# else at runtime, so a missing package shows up there, not as a crash-looping Hub.
+# Everything else, express included, is compiled into main.js. Each package is
+# pinned to the version pnpm-lock.yaml resolves, so the image runs the code the
+# lockfile was tested with, not whatever npm has that day;
+# scripts/__tests__/dockerfile-runtime-packages.test.ts fails when they drift.
+# (Their own dependencies are resolved by npm here.) packages/backend/build.ts
+# keeps the matching list (packageExternals) and fails the build when the bundle
+# would load anything else at runtime, so a missing package shows up there, not
+# as a crash-looping Hub.
 RUN --mount=type=cache,target=/root/.npm \
-    npm install --no-save --omit=dev argon2 class-transformer @nestjs/mapped-types @opentelemetry/api drizzle-orm pg ssh2 i18next-fs-backend
+    npm install --no-save --omit=dev argon2@0.45.2 class-transformer@0.5.1 @nestjs/mapped-types@12.0.1 @opentelemetry/api@1.10.0 drizzle-orm@0.45.2 pg@8.23.1 ssh2@1.17.0 i18next-fs-backend@2.6.12
 
 # docker-compose is also registered as a docker CLI plugin under /usr/local/libexec, a system
 # directory the CLI always searches (one of the four compiled into Alpine's docker-cli 27.3.1).
