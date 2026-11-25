@@ -254,7 +254,8 @@ export function summarizeInstalledApp(entry: InstalledAppEntry) {
     version: info.version,
     ...(updateAvailable ? { updateAvailable: true, latestVersion: metadata.latestDockerVersion } : {}),
     exposureMode: app.exposureMode,
-    ...(app.openPort && app.port ? { port: app.port } : {}),
+    // Private VPN publishes no host port, whatever the row's openPort says (`publishesHostPort`).
+    ...(app.openPort && app.port && app.exposureMode !== 'tailscale' ? { port: app.port } : {}),
     ...(app.localSubdomain ? { localSubdomain: app.localSubdomain } : {}),
     ...(app.publicDomain ? { publicDomain: app.publicDomain } : {}),
     ...(app.customDomain ? { customDomain: app.customDomain } : {}),

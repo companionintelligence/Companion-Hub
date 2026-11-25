@@ -119,8 +119,8 @@ and test it from another device signed in to the same tailnet.
 
 While an app is on Private VPN, CI-Hub doesn't publish its port on the host, even
 if the app had one open on **This machine only** before. Serve listens on that
-same port, and a host publish of it answers the Hub's own computer in Serve's
-place, over plain HTTP, so the link failed there with "wrong version number". The
+same port. A host publish of it would answer the Hub's own computer in Serve's
+place over plain HTTP, where the link fails with "wrong version number". The
 app's `http://<lan-address>:<app-port>` link comes back when you move it back to
 **This machine only**.
 
@@ -130,8 +130,8 @@ Hub runs. When the Hub runs in a container, that is a Docker network, and a
 1.104.7) refuses a connection that arrives there, even though every device on the
 tailnet connects. A Hub that uses the host's Tailscale also misses Serve for a
 port that a program on the host listens on too, such as one added with **Expose a
-port**: its connection to its own tailnet address lands on that plain-HTTP port,
-and the TLS handshake fails with "wrong version number" or "packet length too
+port**: its connection to its own tailnet address lands on that plain-HTTP port.
+The TLS handshake then fails with "wrong version number" or "packet length too
 long". When the Hub is refused or gets one of those
 two errors, and the tailnet has HTTPS certificates, it reads `tailscale serve status`,
 finds the entry for the app's port under the device's current name, and sends a

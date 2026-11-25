@@ -68,7 +68,7 @@ import type { ApiKeyCapability } from '@/modules/api-keys/api-key.capabilities';
 import { personMayGrantFullCapability } from '@/modules/api-keys/may-grant-full';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 import { ErrorReportingService, type AppFailurePhase } from '@/core/error-reporting/error-reporting.service';
-import { getEffectiveExposureMode, publishForcedExposure, publishesHostPort, servesForcedExposure } from '../apps/app-exposure.helpers';
+import { getEffectiveExposureMode, holdsAppPort, publishForcedExposure, servesForcedExposure } from '../apps/app-exposure.helpers';
 import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
 import { canonicalJson } from '../queue/message-signing';
 import {
@@ -2085,7 +2085,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const leavesRoute = !!existingApp && storedOnForbiddenRoute(appInfo, existingApp);
 
-    if (publishesHostPort(parsedForm) && port && !leavesRoute) {
+    if (holdsAppPort(parsedForm) && port && !leavesRoute) {
       const appsWithSamePort = conflictsOtherApp(await this.appRepository.getAppsByPort(port));
 
       if (appsWithSamePort.length > 0) {
@@ -3288,7 +3288,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       }
     }
 
-    if (publishesHostPort(parsedForm) && port && !leavesRoute) {
+    if (holdsAppPort(parsedForm) && port && !leavesRoute) {
       const appsWithSamePort = await this.appRepository.getAppsByPort(port, app.id);
 
       if (appsWithSamePort.length > 0) {

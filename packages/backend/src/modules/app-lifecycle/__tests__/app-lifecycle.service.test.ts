@@ -3406,6 +3406,20 @@ describe('AppLifecycleService', () => {
       });
     });
 
+    // No host publish, but Tailscale Serve listens on the port, so another app on it would take the Hub's own connections.
+    it('answers 409 when a Private VPN save moves to a port another app publishes', async () => {
+      appsRepository.getAppsByPort.mockResolvedValue([{ appName: 'holder' }] as any);
+
+      expect(
+        await conflictOf(service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'tailscale', openPort: false, port: 10001 } })),
+      ).toEqual({
+        message: 'APP_ERROR_PORT_ALREADY_IN_USE',
+        status: 409,
+        params: { port: '10001', id: 'holder' },
+      });
+      expect(portManager.setMainPort).not.toHaveBeenCalled();
+    });
+
     it('answers 409 for a public app whose stored form has no openPort, which is served on an open port', async () => {
       appsRepository.getAppByUrn.mockResolvedValue({
         id: 1,

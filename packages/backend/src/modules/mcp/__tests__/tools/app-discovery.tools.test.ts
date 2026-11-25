@@ -139,6 +139,13 @@ describe('AppDiscoveryTools', () => {
       expect(result.apps[0]).not.toHaveProperty('port');
     });
 
+    it('names no port for a Private VPN app, even one whose row says openPort', async () => {
+      appsService.getInstalledApps.mockResolvedValue([installedEntry({ app: { exposureMode: 'tailscale', openPort: true } })] as any);
+      const result = (await tools.listInstalledApps()) as { apps: Array<Record<string, unknown>> };
+      expect(result.apps[0]).toMatchObject({ exposureMode: 'tailscale' });
+      expect(result.apps[0]).not.toHaveProperty('port');
+    });
+
     it('returns the full stored records when asked with full: true', async () => {
       const entries = [installedEntry()];
       appsService.getInstalledApps.mockResolvedValue(entries as any);

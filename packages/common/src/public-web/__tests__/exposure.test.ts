@@ -95,7 +95,7 @@ describe('storedHostPortForm', () => {
 });
 
 describe('publishesHostPort', () => {
-  // Tailscale Serve listens on the app's port, and a host publish of it answered the Hub's own computer instead.
+  // Tailscale Serve listens on the app's port. A host publish of it would answer the Hub's own computer instead.
   it('is false for every Private VPN form, whatever openPort and exposedLocal say', () => {
     expect(publishesHostPort({ exposureMode: 'tailscale', exposedLocal: true, openPort: false })).toBe(false);
     expect(publishesHostPort({ exposureMode: 'tailscale', openPort: true })).toBe(false);

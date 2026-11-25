@@ -536,8 +536,8 @@ export class AppsService {
    * {@link probeAppAvailability} below, because this value is offered to the user
    * as a route to click. An app with a stored install form is judged by the rule
    * compose binds the host port by (`publishesHostPort`): a Public Web form with a
-   * closed port and no `exposedLocal` binds none, and a Private VPN form never
-   * binds one, because Tailscale Serve listens on the same port.
+   * closed port and no `exposedLocal` binds none. A Private VPN form never binds
+   * one, because Tailscale Serve listens on the same port.
    *
    * A record with no form falls back to the row columns, where `exposed_local` is
    * true for any exposable app installed without exposure settings, so:
