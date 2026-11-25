@@ -53,7 +53,7 @@ static LAUNCH_BINARY: OnceLock<Option<LaunchBinary>> = OnceLock::new();
 /// The last `--version` answer, for the file it came from: the Settings page asks every minute.
 static PROBED_VERSION: Mutex<Option<(FileIdentity, Option<String>)>> = Mutex::new(None);
 
-/// Records the program file this process started from. Called first thing in `main`, before an
+/// Records the program file this process started from. Called at the start of `main`, before an
 /// update can replace it; later calls are free.
 pub fn remember_launch_binary() {
     let _ = launch_binary();

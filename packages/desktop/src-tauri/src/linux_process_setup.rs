@@ -4,7 +4,7 @@
 use std::ffi::OsStr;
 
 /// GTK's accessibility bridge gives every accessibility client (a screen reader, or any tool that
-/// reads the window) its own D-Bus connection to the app, and keeps three pidfds open for each
+/// reads the window) its own D-Bus connection to the app. It keeps three pidfds open for each
 /// one after it has gone. Over a long session the app runs out of open files, and then Docker
 /// checks, dialogs and the WebView fail. With this set, clients reach the app through the
 /// accessibility bus instead and nothing is left behind.
@@ -25,12 +25,12 @@ fn should_disable_atspi_peer_to_peer(current: Option<&OsStr>) -> bool {
 }
 
 /// The most the soft limit is raised to: systemd's hard limit. Some hosts (containers, sessions
-/// not started by systemd) set the hard limit near fs.nr_open, about two billion, and every child
-/// inherits the soft limit; programs that loop over every possible descriptor crawl at that size.
+/// not started by systemd) set the hard limit near fs.nr_open, about two billion. Every child
+/// inherits the soft limit, so programs that loop over every possible descriptor crawl at that size.
 const OPEN_FILE_LIMIT_CAP: libc::rlim_t = 524_288;
 
 /// A backstop for any other leak. An app started from the desktop gets a soft limit of 1024 open
-/// files, and may raise it to the hard limit without privileges.
+/// files and may raise it to the hard limit without privileges.
 fn raise_open_file_limit() {
     let mut limit = libc::rlimit {
         rlim_cur: 0,
@@ -75,10 +75,12 @@ mod tests {
     }
 
     /// Runs the real function in a child that starts at the desktop's default of 1024, so the
-    /// test process's own limit is left alone.
+    /// test process's own limit is left alone. Where the hard limit is 1024 or less the child
+    /// starts at half of it, so there is always something to raise.
     #[test]
-    fn a_process_started_at_1024_open_files_ends_at_its_hard_limit_or_the_cap() {
-        let mut command = Command::new("sh");
+    fn a_process_started_below_its_hard_open_file_limit_ends_at_it_or_the_cap() {
+        // A full path: another test in this binary briefly sets PATH to /usr/local/bin.
+        let mut command = Command::new("/bin/sh");
         command.args(["-c", "ulimit -Sn; ulimit -Hn"]);
         // SAFETY: the closure only makes the getrlimit and setrlimit system calls, which are safe
         // between fork and exec.
@@ -89,7 +91,7 @@ mod tests {
                     rlim_max: 0,
                 };
                 libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit);
-                limit.rlim_cur = limit.rlim_max.min(1024);
+                limit.rlim_cur = (limit.rlim_max / 2).min(1024);
                 libc::setrlimit(libc::RLIMIT_NOFILE, &limit);
                 raise_open_file_limit();
                 Ok(())
@@ -99,10 +101,6 @@ mod tests {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut lines = stdout.lines();
         let (soft, hard) = (lines.next(), lines.next());
-        if hard == Some("1024") {
-            // Nothing to raise on a machine whose hard limit is the default itself.
-            return;
-        }
 
         let parse = |value: Option<&str>| value.and_then(|v| v.trim().parse::<libc::rlim_t>().ok());
         let (soft, hard) = (parse(soft), parse(hard));
