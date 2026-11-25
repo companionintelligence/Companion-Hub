@@ -41,7 +41,7 @@ const renderSection = () => {
 };
 
 /**
- * Holds back only the redirect's timer, so a test can look at the page before it leaves, and no timer
+ * Holds back only the redirect's timer, so a test can look at the page before it leaves and no timer
  * from one test fires in the next one.
  */
 const holdRedirect = () => {
@@ -215,6 +215,7 @@ describe('HubAccountSection', () => {
 
     sessionStorage.setItem('device-registered', 'true');
     sessionStorage.setItem('device-registered-at', String(Date.now()));
+    sessionStorage.setItem('ci-hub-stack-update-outcome', JSON.stringify({ kind: 'updated', version: '1.0.0', keptAt: Date.now() }));
     setTauriSessionId('hub-session');
 
     try {
@@ -230,6 +231,7 @@ describe('HubAccountSection', () => {
       expect(localStorage.getItem(TAURI_SESSION_STORAGE_KEY)).toBeNull();
       expect(sessionStorage.getItem(TAURI_SESSION_STORAGE_KEY)).toBeNull();
       expect(sessionStorage.getItem('device-registered')).toBeNull();
+      expect(sessionStorage.getItem('ci-hub-stack-update-outcome')).toBeNull();
       expect(window.location.href).toBe('http://hub.local/settings');
       // Nothing to start again while the page leaves.
       expect(screen.getByTestId('reregister-device-btn')).toBeDisabled();

@@ -4,6 +4,7 @@ import { Card, CardContent } from '@/components/ui/Card';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { forgetStoredHubSession } from '@/lib/api-fetch';
 import { clearClientHubState } from '@/lib/clear-client-hub-state';
+import { clearKeptStackUpdateOutcome } from '@/lib/desktop-stack-session';
 import { openExternal } from '@/lib/helpers/open-external';
 import { useDemoMode } from '@/lib/hooks/use-demo-mode';
 import { type HubRemovalWatchEnd, portalRemoveDeviceUrl, watchForHubRemoval } from '@/lib/hub-removal-watch';
@@ -26,12 +27,14 @@ type WatchState = 'idle' | 'watching' | Exclude<HubRemovalWatchEnd, 'removed' | 
  * The page keeps sending its session until it leaves. Dropped first, the page's next request in those
  * 1.5 s was refused and sent it to sign-in, with the toast cut short (#2555). What it doesn't need goes
  * at once, because a page closed or reloaded in those 1.5 s never runs the timer: the stored copies of
- * the session, and a registration cache that answers "paired" while the status API is down. The
- * keychain removals also need the time, since the page unloads as soon as it leaves.
+ * the session, the drift choice, a kept Hub update outcome and a registration cache that answers
+ * "paired" while the status API is down. The keychain removals also need the time, since the page
+ * unloads as soon as it leaves.
  */
 function goToPairing() {
   clearRegistrationCache();
   clearStoredDriftChoice();
+  clearKeptStackUpdateOutcome();
   forgetStoredHubSession();
   setTimeout(() => {
     clearClientHubState({ keepPortalEmail: true });
