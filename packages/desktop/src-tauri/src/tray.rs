@@ -28,10 +28,12 @@ pub(crate) fn clear_tunnel_token_result(problems: &[String]) -> String {
 }
 
 /// Tray Stop Hub: the Hub, then the apps it runs. A Hub that didn't stop keeps running, so its
-/// apps are left running too, and the error comes back for the tray to show. Before, it only
-/// reached the log and Stop Hub seemed to do nothing (Companion-Hub#2536).
+/// apps are left running too. The error then comes back for the tray to show. A failed `down`
+/// can still have taken the Hub down (it removes the networks last), so the apps go down with it.
+/// Before, the error only reached the log and Stop Hub seemed to do nothing (Companion-Hub#2536).
 pub(crate) fn stop_hub_then_apps(
     stop_hub: impl FnOnce() -> Result<String, String>,
+    hub_still_up: impl FnOnce() -> bool,
     stop_apps: impl FnOnce() -> Result<Option<String>, String>,
     log: impl Fn(&str),
 ) -> Result<(), String> {
@@ -39,7 +41,10 @@ pub(crate) fn stop_hub_then_apps(
         Ok(message) => log(&message),
         Err(error) => {
             log(&format!("Tray stop request failed: {error}"));
-            return Err(error);
+            if hub_still_up() {
+                return Err(error);
+            }
+            log("The Hub is down after the failed stop, so its apps are stopped too.");
         }
     }
     match stop_apps() {
@@ -337,6 +342,7 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                     };
                     if let Err(error) = stop_hub_then_apps(
                         || crate::hub_manager::stop_hub(&compose, &env),
+                        crate::hub_manager::hub_container_still_up,
                         || crate::hub_manager::stop_managed_app_containers(&data),
                         log,
                     ) {
@@ -805,8 +811,8 @@ mod tests {
         }
     }
 
-    /// With a Compose too old for the stack file, Stop Hub failed, then stopped every app while the
-    /// Hub kept running, and said nothing.
+    /// With a Compose too old for the stack file, Stop Hub failed and then stopped every app while
+    /// the Hub kept running. It said nothing.
     #[test]
     fn a_hub_that_did_not_stop_keeps_its_apps_and_reports_why() {
         let log = RefCell::new(Vec::new());
@@ -814,6 +820,7 @@ mod tests {
 
         let result = stop_hub_then_apps(
             || Err("Companion Hub needs Docker Compose 2.33 or newer.".to_string()),
+            || true,
             || {
                 *apps_stopped.borrow_mut() = true;
                 Ok(Some("Stopped 8 running app container(s).".to_string()))
@@ -838,6 +845,7 @@ mod tests {
 
         let result = stop_hub_then_apps(
             || Ok("Hub stopped".to_string()),
+            || panic!("a stop that works doesn't ask whether the Hub is up"),
             || Ok(Some("Stopped 8 running app container(s).".to_string())),
             |line| log.borrow_mut().push(line.to_string()),
         );
@@ -846,6 +854,32 @@ mod tests {
         assert_eq!(
             *log.borrow(),
             ["Hub stopped", "Stopped 8 running app container(s)."]
+        );
+    }
+
+    /// `down` removes the containers before the networks, so it can fail on a network an app still
+    /// holds after the Hub is gone. The apps go down with the Hub then.
+    #[test]
+    fn a_failed_stop_that_took_the_hub_down_takes_its_apps_with_it() {
+        const DOWN_FAILED: &str =
+            "docker compose down failed. network ci-hub_network has active endpoints";
+        let log = RefCell::new(Vec::new());
+
+        let result = stop_hub_then_apps(
+            || Err(DOWN_FAILED.to_string()),
+            || false,
+            || Ok(Some("Stopped 2 running app container(s).".to_string())),
+            |line| log.borrow_mut().push(line.to_string()),
+        );
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            *log.borrow(),
+            [
+                format!("Tray stop request failed: {DOWN_FAILED}").as_str(),
+                "The Hub is down after the failed stop, so its apps are stopped too.",
+                "Stopped 2 running app container(s).",
+            ]
         );
     }
 

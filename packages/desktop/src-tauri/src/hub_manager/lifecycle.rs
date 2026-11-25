@@ -866,6 +866,7 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
     let data_dir = get_hub_data_dir();
     marking_user_stopped(
         &data_dir,
+        stack_dev_mode_enabled(),
         || stop_hub_stack(compose_path, env_path, &data_dir),
         hub_container_still_up,
     )
@@ -874,14 +875,15 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
 /// Runs `stop` with the Hub marked as stopped by the user, so neither the watchdog nor the next
 /// launch starts it again while it goes down. A stop that fails with the Hub still up drops the
 /// mark again: kept, it would leave that Hub down for good if it later fell over. A failed
-/// `down` can still have taken the Hub down, and then the mark stays so the watchdog doesn't
-/// start it again. A mark from an earlier Stop Hub is never dropped here.
+/// `down` can still have taken the Hub down. Then the mark stays so the watchdog doesn't start
+/// it again. A mark from an earlier Stop Hub is never dropped here. Stack-dev mode never marks.
 pub(crate) fn marking_user_stopped(
     data_dir: &Path,
+    stack_dev: bool,
     stop: impl FnOnce() -> Result<String, String>,
     hub_still_up: impl FnOnce() -> bool,
 ) -> Result<String, String> {
-    let marks = !stack_dev_mode_enabled() && !is_user_stopped(data_dir);
+    let marks = !stack_dev && !is_user_stopped(data_dir);
     if marks {
         mark_user_stopped(data_dir);
     }
@@ -900,7 +902,7 @@ pub(crate) fn marking_user_stopped(
 }
 
 /// Whether the Hub container is running (or restarting) right now.
-fn hub_container_still_up() -> bool {
+pub(crate) fn hub_container_still_up() -> bool {
     let state = inspect_container_state_health(hub_container_name());
     state.starts_with("running:") || state.starts_with("restarting:")
 }
