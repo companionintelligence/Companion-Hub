@@ -10,7 +10,7 @@ import { CloudFallbackService, isCloudFallbackAllowed } from './cloud-fallback.s
 import { OllamaBackend } from './backends/ollama.backend';
 import { omlxAppApiKey } from './backends/omlx.backend';
 import { InferenceEndpointService } from './inference-endpoint.service';
-import type { CuratedModel, HardwareProfile, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
+import { type CuratedModel, type HardwareProfile, type HardwareTier, type InferenceBackendType, smallestDownload } from '@ci-hub/common/types';
 import { handoutIdForCatalogModel, isCatalogModelInstalled, isServedModelForCatalog, trackedPullCounts } from './model-availability.util';
 import { appBearerFor } from './engine-credential-scope';
 import { cloudProviderManagedKeys } from './cloud-provider-env';
@@ -328,25 +328,27 @@ export class AppCredentialsService implements OnApplicationShutdown {
 
     const preferredModelId = preferences.preferredModel;
     const recommended = this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile).filter((m) => m.backend === backendType);
-    // With no model chosen, the setup wizard's Default leads while the engine has it, as on the app.env
+    // The setup wizard's Default among the models the engine has and the app accepts, as on the app.env
     // path (`InferenceEnvResolver`). It is ranked by the lists the wizard shows on this Hub, read at the
     // onboarding tier: `recommended` above is read at `profile.tier`, which for a card the container
-    // runtime cannot reach yet is another tier than the wizard's.
-    const wizardDefault = preferredModelId
-      ? undefined
-      : installedDefaultChatModel({
-          registry: this.modelRegistry,
-          profile,
-          computeTier: (gpu, ram) => this.hardwareInspector.computeTier(gpu, ram),
-          backend: backendType,
-          isInstalled: (model) => this.isCuratedModelAvailable(model, endpointHealth.modelsLoaded, backendType, endpointReady),
-          accept: (model) => checkModelRequirements(model, requirements).verdict !== 'fails',
-        });
-    if (wizardDefault) {
-      this.logger.info(`[AppCredentials] ${slug}: no chat model chosen yet; handing out the setup wizard's default ${wizardDefault.backendModelId}`);
+    // runtime cannot reach yet is another tier than the wizard's. With no model chosen it is the Default.
+    // It also leads when the chosen one is missing or the app cannot run it: it may be a model ticked
+    // under Other Models, which a search of the recommended list alone passed over to download another.
+    const installedFallback = installedDefaultChatModel({
+      registry: this.modelRegistry,
+      profile,
+      computeTier: (gpu, ram) => this.hardwareInspector.computeTier(gpu, ram),
+      backend: backendType,
+      isInstalled: (model) => this.isCuratedModelAvailable(model, endpointHealth.modelsLoaded, backendType, endpointReady),
+      accept: (model) => checkModelRequirements(model, requirements).verdict !== 'fails',
+    });
+    if (installedFallback && !preferredModelId) {
+      this.logger.info(
+        `[AppCredentials] ${slug}: no chat model chosen yet; handing out the setup wizard's default ${installedFallback.backendModelId}`,
+      );
     }
-    const candidates = wizardDefault ? [wizardDefault, ...recommended.filter((m) => m.id !== wizardDefault.id)] : recommended;
-    const recommendedLlm = this.resolveRecommendedLlm(candidates, preferredModelId, profile.tier, profile, slug, requirements, (model) =>
+    const candidates = installedFallback ? [installedFallback, ...recommended.filter((m) => m.id !== installedFallback.id)] : recommended;
+    const recommendedLlm = this.resolveRecommendedLlm(candidates, preferredModelId, profile.tier, profile, slug, requirements, backendType, (model) =>
       this.isModelPulled(model.id, endpointHealth.modelsLoaded, backendType, endpointReady),
     );
     // The same engine the app.env resolver picks (`embeddingBackendFor`), so an app is never handed one
@@ -682,10 +684,12 @@ export class AppCredentialsService implements OnApplicationShutdown {
   /**
    * The model this node would pull for a sibling app. Honors the user's preferred model (set during
    * AI setup) when it is an LLM that is runnable on the current hardware and meets the app's
-   * requirements. Otherwise it falls back to the top hardware-recommended model that meets them. When
-   * that one is not on this node yet, a suitable one already downloading comes first: the wizard's
-   * other ticked models download while its apps install. A Default the app cannot use sent this to
-   * the top of the list instead (#2538). Pulling a model the app would refuse spends the disk for nothing.
+   * requirements. Otherwise the first candidate that meets them when this node has it: the installed
+   * model the app is handed leads `candidates`. Else a suitable model already downloading, since the
+   * wizard's ticked models download while its apps install (an Other Models pick included). Else the
+   * smallest suitable recommendation, which the setup wizard names with its size (`smallestDownload`).
+   * A Default the app cannot use sent this to the top of the list, MiniMax M2 230B on 128 GB (#2538).
+   * Pulling a model the app would refuse spends the disk for nothing.
    */
   private resolveRecommendedLlm(
     candidates: CuratedModel[],
@@ -694,6 +698,7 @@ export class AppCredentialsService implements OnApplicationShutdown {
     profile: HardwareProfile,
     slug: AppSlug,
     requirements: AppInferenceRequirements,
+    backendType: InferenceBackendType,
     isInstalled: (model: CuratedModel) => boolean,
   ): CuratedModel | null {
     const suitable = (model: CuratedModel) => checkModelRequirements(model, requirements).verdict !== 'fails';
@@ -715,9 +720,11 @@ export class AppCredentialsService implements OnApplicationShutdown {
     }
     const usable = candidates.filter((m) => m.modality === 'llm' && suitable(m));
     const top = usable[0];
-    if (!top) return null;
-    if (isInstalled(top)) return top;
-    return usable.find((m) => this.modelPuller.isPullPending(m.id)) ?? top;
+    if (top && isInstalled(top)) return top;
+    const offList = (this.modelRegistry.getModelsForHardware(tier, profile, { includeRemoteHostBackends: true }) ?? []).filter(
+      (m) => m.backend === backendType && m.modality === 'llm' && suitable(m) && !usable.some((u) => u.id === m.id),
+    );
+    return [...usable, ...offList].find((m) => this.modelPuller.isPullPending(m.id)) ?? smallestDownload(usable) ?? null;
   }
 
   private resolveAvailableLlm(

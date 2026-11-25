@@ -881,7 +881,7 @@ describe('AiSetupStep', () => {
       await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
 
       expect(screen.getByTestId('agent-model-unsuited-openclaw')).toHaveTextContent(
-        "OpenClaw needs a model marked Tools. The Default, Gemma 3 270M, isn't one. The Hub will give OpenClaw another model and may download one for it.",
+        "OpenClaw needs a model marked Tools. The Default, Gemma 3 270M, isn't one. The Hub will download Gemma 4 12B (8.4 GB) for OpenClaw, the smallest recommended model it can use. To choose a different one, tick a model marked Tools.",
       );
       expect(screen.queryByTestId('agent-model-unsuited-hermes')).not.toBeInTheDocument();
 
@@ -893,6 +893,48 @@ describe('AiSetupStep', () => {
       await user.click(screen.getByTestId('agent-openclaw'));
       await user.click(screen.getByTestId('agent-hermes'));
       expect(screen.queryByTestId('agent-model-unsuited')).not.toBeInTheDocument();
+    });
+
+    // With nothing installed, nothing starts ticked and the Default badge sits on MiniMax M2 230B unticked.
+    // Continue saved no Default, the page said nothing and OpenClaw's first start downloaded MiniMax.
+    it('names the model the Hub will download for an agent when no chat model is ticked', async () => {
+      api.profile = unified128Profile([]);
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      expect(screen.getByTestId('agent-model-unsuited-openclaw')).toHaveTextContent(
+        'OpenClaw needs a model marked Tools. No chat model is ticked. The Hub will download Gemma 4 12B (8.4 GB) for OpenClaw, the smallest recommended model it can use.',
+      );
+      const config = await continueWith(onComplete);
+      expect(config.preferredModelId).toBeUndefined();
+    });
+
+    it('names the model an agent will use instead of the Default, ticked or already installed', async () => {
+      const gemma270mNoTools = { ...gemma270m, metadata: { capabilities: { tools: false, vision: false } } };
+      const base = unified128Profile(['gemma3-270m']);
+      api.profile = { ...base, availableModels: [...base.availableModels, gemma270mNoTools] } as any;
+      const user = userEvent.setup();
+      renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      // Off the recommended list: the Hub used to pass it over and download another.
+      await user.click(screen.getByTestId('other-group-small'));
+      await user.click(screen.getByTestId('model-checkbox-gemma4-e4b'));
+      expect(isMarkedDefault('gemma3-270m')).toBe(true);
+      expect(screen.getByTestId('agent-model-unsuited-openclaw')).toHaveTextContent(
+        "OpenClaw needs a model marked Tools. The Default, Gemma 3 270M, isn't one. OpenClaw will use Gemma 4 E4B, which you ticked.",
+      );
+      expect(screen.queryByText(/will download/)).not.toBeInTheDocument();
+
+      api.profile = {
+        ...base,
+        availableModels: [...base.availableModels, gemma270mNoTools],
+        installedCatalogIds: ['gemma3-270m', 'qwen3-6-35b'],
+      } as any;
+      await user.click(screen.getByTestId('rescan-btn'));
+      await waitFor(() =>
+        expect(screen.getByTestId('agent-model-unsuited-openclaw')).toHaveTextContent('OpenClaw will use Qwen 3.6 35B, which is already installed.'),
+      );
     });
 
     it('says nothing when the Default can run the chosen agents', async () => {
