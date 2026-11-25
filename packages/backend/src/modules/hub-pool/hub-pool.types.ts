@@ -507,7 +507,8 @@ export interface PoolStatusLocalNode {
  * off would leave the badge, the state banner and the CLI all saying "routing normally".
  *
  * `no_peers` means nothing is paired. `peers_unreachable` means at least one pairing exists but none
- * of them is connected right now; telling that operator to pair a Hub sends them the wrong way.
+ * of them is connected right now; telling that operator to pair a Hub sends them the wrong way. A
+ * pool whose every paired peer is disabled is `partially_disabled` instead, whatever their health.
  */
 export type PoolStatusReason = 'active' | 'no_peers' | 'peers_unreachable' | 'partially_disabled' | 'disabled_by_env' | 'disabled_by_setting';
 

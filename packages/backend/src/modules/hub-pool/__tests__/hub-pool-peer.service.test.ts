@@ -2039,6 +2039,22 @@ describe('HubPoolPeerService', () => {
       expect(await service.getPoolStatus()).toMatchObject({ reason: 'no_peers', routingActive: false });
     });
 
+    it('says partially_disabled, not peers_unreachable, when the only unreachable Hub is one the operator disabled', async () => {
+      // Its row reads "Disabled", and it does not rejoin routing on its next good check.
+      repo.listAll.mockResolvedValue([mockPeer({ id: 'p1', status: 'unreachable', consecutiveFailures: 5, enabled: false })]);
+
+      expect(await service.getPoolStatus()).toMatchObject({ reason: 'partially_disabled', routingActive: false });
+    });
+
+    it('says peers_unreachable while one unreachable Hub is still enabled beside a disabled one', async () => {
+      repo.listAll.mockResolvedValue([
+        mockPeer({ id: 'p1', nodeFqdn: 'a.example-tailnet.ts.net', status: 'unreachable', enabled: false }),
+        mockPeer({ id: 'p2', nodeFqdn: 'b.example-tailnet.ts.net', status: 'unreachable' }),
+      ]);
+
+      expect(await service.getPoolStatus()).toMatchObject({ reason: 'peers_unreachable', routingActive: false });
+    });
+
     it('says active, not peers_unreachable, while any paired Hub is still connected', async () => {
       repo.listAll.mockResolvedValue([
         mockPeer({ id: 'p1', nodeFqdn: 'a.example-tailnet.ts.net', status: 'connected' }),

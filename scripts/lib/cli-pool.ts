@@ -819,7 +819,12 @@ async function runPoolEnableCommand(ctx: HubContext, parsed: ParsedPoolArgs) {
   }
 
   if (enable && status.peerCounts.connected === 0) {
-    lines.push('', 'No connected peers yet, so inference still resolves locally.', `Find candidates with: ${BASE_COMMAND} pool discover`);
+    // A pairing that exists but is down needs its reason read, not another Hub discovered.
+    if (status.peerCounts.unreachable > 0) {
+      lines.push('', 'No paired peer can be reached right now, so inference still resolves locally.', `See why with: ${BASE_COMMAND} pool status`);
+    } else {
+      lines.push('', 'No connected peers yet, so inference still resolves locally.', `Find candidates with: ${BASE_COMMAND} pool discover`);
+    }
   }
   if (!enable) {
     lines.push(

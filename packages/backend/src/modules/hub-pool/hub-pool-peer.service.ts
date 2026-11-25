@@ -529,18 +529,23 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     // Peers this node would actually send work to. Reduces to `connected` when nothing is disabled,
     // which is what keeps every default byte-identical to the previous build.
     const usable = peers.filter((p) => p.status === 'connected' && p.enabled !== false).length;
-    // A node with a direction switched off, or with every connected peer individually disabled, is
+    // Disabled outranks the socket, as `poolReach` on the Resource Monitor has it: a peer the
+    // operator switched off is not reach this Hub has lost, and its row reads "Disabled", not
+    // "Unreachable". Only these make the pool `peers_unreachable`.
+    const enabledUnreachable = peers.filter((p) => p.status === 'unreachable' && p.enabled !== false).length;
+    // A node with a direction switched off, or with every paired peer individually disabled, is
     // NOT 'active' — it half-participates, and saying "active" there is exactly the lie an operator
     // would debug for an hour. `no_peers` still means "nothing is paired", not "nothing is usable":
     // a pairing that exists but can't be reached right now is `peers_unreachable`, so the card
     // doesn't ask the operator to pair a Hub it lists as paired right below.
-    const partiallyDisabled = !directions.outbound.enabled || !directions.inbound.enabled || (connected > 0 && usable === 0);
+    const everyPairedDisabled = connected + unreachable > 0 && usable + enabledUnreachable === 0;
+    const partiallyDisabled = !directions.outbound.enabled || !directions.inbound.enabled || (connected > 0 && usable === 0) || everyPairedDisabled;
     const reason: PoolStatusReason = enabled.enabled
       ? partiallyDisabled
         ? 'partially_disabled'
         : connected > 0
           ? 'active'
-          : unreachable > 0
+          : enabledUnreachable > 0
             ? 'peers_unreachable'
             : 'no_peers'
       : enabled.disabledBy === 'env'
