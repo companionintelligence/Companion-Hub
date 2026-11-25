@@ -83,7 +83,7 @@ pub(crate) fn docker_access_from_info_output(
     stdout: &str,
     stderr: &str,
 ) -> DockerAccessCheck {
-    let stderr = without_config_file_warnings(stderr);
+    let (stderr, config_file_unreadable) = without_cli_warnings(stderr);
     let stderr = stderr.trim();
     let stdout = stdout.trim();
     let combined = if !stderr.is_empty() && !stdout.is_empty() {
@@ -94,41 +94,65 @@ pub(crate) fn docker_access_from_info_output(
         stdout.to_string()
     };
 
-    if succeeded {
-        // `docker info` can exit 0 while printing daemon-unreachable errors to
-        // stderr (e.g. when Docker Desktop is paused or still starting).  Run
-        // the same classifier used for non-zero exits so those cases are caught.
-        let check = classify_docker_access_result(&combined, exit_code);
-        if matches!(
+    // `docker info` can exit 0 while printing daemon-unreachable errors to stderr (e.g. when
+    // Docker Desktop is paused or still starting). Run the same classifier used for non-zero exits
+    // so those cases are caught.
+    let mut check = classify_docker_access_result(&combined, exit_code);
+    if succeeded
+        && !matches!(
             check.state,
             DockerAccessState::DaemonUnavailable | DockerAccessState::PermissionDenied
-        ) {
-            return check;
-        }
+        )
+    {
         return DockerAccessCheck {
             state: DockerAccessState::Available,
             detail: None,
         };
     }
 
-    classify_docker_access_result(&combined, exit_code)
+    if config_file_unreadable {
+        // Without its config file the CLI also loses the current context, so it may have asked
+        // the wrong engine. The warning itself stays out: its "permission denied" or "Access is
+        // denied" would read as Docker refusing this user.
+        let detail = check.detail.get_or_insert_with(String::new);
+        if !detail.is_empty() {
+            detail.push('\n');
+        }
+        detail.push_str(CONFIG_FILE_UNREADABLE_NOTE);
+    }
+    check
 }
 
-/// The Docker CLI prints "WARNING: Error loading config file: <why>" when it can't read its
-/// config file and then carries on. `sudo docker login` leaves `~/.docker/config.json` owned by
-/// root, so the reason is often "permission denied". That is about the file, not the daemon, so
-/// it must not read as Docker refusing this user, nor become the first line of a real error.
-fn without_config_file_warnings(stderr: &str) -> String {
-    stderr
+/// Added after the error when `docker info` warned that it couldn't load or parse its config file.
+pub(crate) const CONFIG_FILE_UNREADABLE_NOTE: &str =
+    "Docker could not read its config file, so it ran without the settings in it, such as the current context.";
+
+/// Drops the warnings the Docker CLI prints about its own files before carrying on, and says
+/// whether one of them was about the config file.
+///
+/// "WARNING: Error loading config file: <why>" comes when it can't read the config file.
+/// `sudo docker login` leaves `~/.docker/config.json` owned by root, so the reason is often
+/// "permission denied". "WARNING: Error parsing config file (<path>): <why>" comes when the file
+/// is broken. "WARNING: Plugin \"<path>\" is not valid: ...: permission denied" comes when a CLI
+/// plugin can't be run. These are about files, not the daemon, so they must not read as Docker
+/// refusing this user, nor become the first line of a real error.
+fn without_cli_warnings(stderr: &str) -> (String, bool) {
+    let mut config_file_unreadable = false;
+    let kept = stderr
         .lines()
         .filter(|line| {
-            !line
-                .trim_start()
-                .to_lowercase()
-                .starts_with("warning: error loading config file")
+            let lower = line.trim_start().to_lowercase();
+            if lower.starts_with("warning: error loading config file")
+                || lower.starts_with("warning: error parsing config file")
+            {
+                config_file_unreadable = true;
+                return false;
+            }
+            !(lower.starts_with("warning: plugin ") && lower.contains(" is not valid"))
         })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    (kept, config_file_unreadable)
 }
 
 pub(crate) fn classify_docker_access_result(

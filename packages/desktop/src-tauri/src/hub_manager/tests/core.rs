@@ -190,6 +190,53 @@ fn a_stopped_daemon_with_an_unreadable_config_file_reads_as_not_running() {
 }
 
 #[test]
+fn a_failed_check_after_an_unreadable_config_file_says_the_settings_were_skipped() {
+    // An unreadable config file also loses the current context, so the CLI may ask the wrong engine.
+    let result = docker_access_from_info_output(
+        false,
+        Some(1),
+        "",
+        "WARNING: Error loading config file: open C:\\Users\\me\\.docker\\config.json: Access is denied.\n\
+         failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running",
+    );
+
+    assert!(matches!(result.state, DockerAccessState::DaemonUnavailable));
+    let detail = result.detail.unwrap_or_default();
+    assert!(detail.ends_with(CONFIG_FILE_UNREADABLE_NOTE));
+    assert!(!detail.to_lowercase().contains("access is denied"));
+}
+
+#[test]
+fn a_broken_docker_config_file_is_not_the_first_line_of_the_error() {
+    let result = docker_access_from_info_output(
+        false,
+        Some(1),
+        "",
+        "WARNING: Error parsing config file (/home/me/.docker/config.json): invalid character 'b' looking for beginning of object key string\n\
+         Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?",
+    );
+
+    assert!(matches!(result.state, DockerAccessState::DaemonUnavailable));
+    assert_eq!(
+        result.detail.as_deref().and_then(|detail| detail.lines().next()),
+        Some("Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?")
+    );
+}
+
+#[test]
+fn a_cli_plugin_that_cannot_run_does_not_read_as_refused_access() {
+    // A plugin left owned by root, or without its execute bit, makes the CLI warn and carry on.
+    let result = docker_access_from_info_output(
+        true,
+        Some(0),
+        DOCKER_INFO_ANSWERED,
+        "WARNING: Plugin \"/home/me/.docker/cli-plugins/docker-buildx\" is not valid: failed to fetch metadata: fork/exec /home/me/.docker/cli-plugins/docker-buildx: permission denied",
+    );
+
+    assert!(matches!(result.state, DockerAccessState::Available));
+}
+
+#[test]
 fn a_daemon_refusing_access_still_reads_as_refused_when_docker_info_exits_zero() {
     let result = docker_access_from_info_output(
         true,

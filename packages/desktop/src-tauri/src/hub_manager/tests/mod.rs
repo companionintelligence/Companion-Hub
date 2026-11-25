@@ -64,9 +64,9 @@ use super::{
     paths_match_by_components, prepare_traefik_runtime_state, private_vpn_enabled_from_map,
     seeded_traefik_config_contents, should_defer_docker_bind_mount_probe,
     startup_service_definitions, truncate_command_output, tunnel_dir_for, tunnel_token_path_for,
-    tunnel_user_cleared_marker_path_for, DockerAccessState, ServiceState, MAX_COMMAND_OUTPUT_CHARS,
-    TRAEFIK_ACME_FILE, TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE,
-    TRAEFIK_TLS_DIR,
+    tunnel_user_cleared_marker_path_for, DockerAccessState, ServiceState,
+    CONFIG_FILE_UNREADABLE_NOTE, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE, TRAEFIK_CONFIG_FILE,
+    TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
 };
 #[cfg(any(test, target_os = "macos"))]
 use super::{colima_macos_binary_install_script, colima_macos_start_script};
