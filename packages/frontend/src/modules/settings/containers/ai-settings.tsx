@@ -1061,6 +1061,19 @@ export const AiSettingsContainer = () => {
             hiddenTypes={profile ? hiddenInferenceBackends(profile) : []}
           />
 
+          {/* Ollama's own setup, as onboarding shows it: with Ollama the engine, Settings had no
+              card for it, so after onboarding nothing here offered to install it or said it was
+              missing. */}
+          {selectedBackend === 'ollama' && (
+            <section className="rounded-lg border border-border bg-card p-5 shadow-sm sm:p-6 space-y-4" data-testid="ollama-backend-setup">
+              <div>
+                <h2 className="text-base font-medium">{t('ONBOARDING_OLLAMA_SECTION_TITLE')}</h2>
+                <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">{t('ONBOARDING_OLLAMA_SECTION_DESC')}</p>
+              </div>
+              <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleRecheckOllama} />
+            </section>
+          )}
+
           {selectedBackend === 'vllm' && (
             <section className="rounded-lg border border-border bg-card p-5 shadow-sm sm:p-6 space-y-4">
               <div>
