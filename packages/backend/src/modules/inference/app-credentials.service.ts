@@ -717,14 +717,17 @@ export class AppCredentialsService implements OnApplicationShutdown {
     const top = usable[0];
     if (top && isInstalled(top)) return top;
     // Read at the wizard's tier, not `tier`: on a card the container runtime cannot reach yet the two
-    // differ, and the wizard names the download (and lists the Other Models ticked) from its own lists.
+    // differ. The wizard names the download (and lists the Other Models ticked) from its own lists.
     const wizardTier = onboardingTier(profile, (gpu, ram) => this.hardwareInspector.computeTier(gpu, ram));
     const chatHere = (m: CuratedModel) => m.backend === backendType && m.modality === 'llm' && suitable(m);
-    const offList = (this.modelRegistry.getModelsForHardware(wizardTier, profile, { includeRemoteHostBackends: true }) ?? []).filter(
-      (m) => chatHere(m) && !usable.some((u) => u.id === m.id),
+    const wizardAvailable = (this.modelRegistry.getModelsForHardware(wizardTier, profile, { includeRemoteHostBackends: true }) ?? []).filter(
+      chatHere,
     );
     const wizardRecommended = (this.modelRegistry.getRecommendedModelsForHardware(wizardTier, profile) ?? []).filter(chatHere);
-    return [...usable, ...offList].find((m) => this.modelPuller.isPullPending(m.id)) ?? smallestDownload(wizardRecommended) ?? null;
+    // Of the ones downloading, the one the wizard names: its recommendations best first, then the
+    // catalog (`agentModelPlan`). `usable` last, for a model neither list holds.
+    const downloading = [...wizardRecommended, ...wizardAvailable, ...usable].find((m) => this.modelPuller.isPullPending(m.id));
+    return downloading ?? smallestDownload(wizardRecommended) ?? null;
   }
 
   private resolveAvailableLlm(

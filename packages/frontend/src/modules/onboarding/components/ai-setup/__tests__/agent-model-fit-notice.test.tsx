@@ -50,6 +50,14 @@ describe('AgentModelFitNotice', () => {
     expect(screen.queryByText(/will download/)).not.toBeInTheDocument();
   });
 
+  // With no model to name, the last sentence must not point at one ("a different one").
+  it('says the agent gets no model when no recommendation can run it', () => {
+    render(<AgentModelFitNotice model={gemma270m} frameworks={['openclaw']} backend="ollama" {...lists} recommendedModels={[]} />);
+    expect(screen.getByTestId('agent-model-unsuited-openclaw')).toHaveTextContent(
+      "OpenClaw needs a model marked Tools. The Default, Gemma 3 270M, isn't one. None of the recommended models can run OpenClaw, so it gets no model. To choose one yourself, tick a model marked Tools.",
+    );
+  });
+
   it('says nothing when the Default can run every chosen agent', () => {
     const { container } = render(<AgentModelFitNotice model={gemma12b} frameworks={['openclaw', 'hermes']} backend="ollama" {...lists} />);
     expect(container).toBeEmptyDOMElement();

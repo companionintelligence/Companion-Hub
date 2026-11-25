@@ -22,7 +22,7 @@ const APP_NAME_KEY: Record<AgentFramework, string> = {
 
 /**
  * Says so when the Default that Continue saves (`model`) cannot run an agent picked above, or there is
- * none, and names the model the agent gets instead: one already here, one ticked, or the one the Hub will
+ * none. It names the model the agent gets instead: one already here, one ticked, or the one the Hub will
  * download, with its size (#2538).
  */
 export function AgentModelFitNotice({

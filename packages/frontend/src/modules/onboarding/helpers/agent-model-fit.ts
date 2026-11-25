@@ -18,7 +18,7 @@ export function agentsUnsuitedTo(model: CuratedModel | undefined, frameworks: re
   return frameworks.filter((framework) => !agentCanRun(model, framework));
 }
 
-/** The model an agent gets when the Default cannot run it, and where that model comes from. */
+/** The model an agent gets when the Default cannot run it and where that model comes from. */
 export type AgentModelPlan = { kind: 'installed' | 'ticked' | 'download'; model: CuratedModel } | { kind: 'none' };
 
 /**

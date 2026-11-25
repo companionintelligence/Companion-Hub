@@ -52,7 +52,7 @@ describe('agentModelPlan', () => {
     });
   });
 
-  it('uses a model the engine has before one that is ticked, and a ticked one before a download', () => {
+  it('uses a model the engine has before one that is ticked and a ticked one before a download', () => {
     expect(agentModelPlan('openclaw', { ...lists, installedIds: ['gemma3-4b', 'qwen3-6-35b'], tickedIds: ['qwen3-coder-30b'] })).toEqual({
       kind: 'installed',
       model: qwen,
@@ -63,7 +63,7 @@ describe('agentModelPlan', () => {
     });
   });
 
-  it("skips a model below Hermes' 64k window, and has none when no recommendation fits", () => {
+  it("skips a model below Hermes' 64k window and has none when no recommendation fits", () => {
     expect(agentModelPlan('hermes', { ...lists, installedIds: ['qwen3-8b'], tickedIds: [] })).toEqual({ kind: 'download', model: gemma12b });
     expect(agentModelPlan('hermes', { ...lists, recommendedModels: [gemma4b], installedIds: [], tickedIds: [] })).toEqual({ kind: 'none' });
   });

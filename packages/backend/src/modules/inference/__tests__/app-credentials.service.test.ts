@@ -1877,7 +1877,7 @@ describe('AppCredentialsService', () => {
       });
 
       // The top suitable model was MiniMax M2 230B: 52.5 GB downloaded for OpenClaw with nothing on
-      // screen saying so. The setup wizard now names the smallest one with its size, and that is the one.
+      // screen saying so. The setup wizard now names the smallest one with its size. That is the one the Hub pulls.
       it('pulls the smallest suitable recommendation when no model on this node suits the app', async () => {
         prefer('gemma3-270m');
         ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma3:270m'] });
@@ -1931,7 +1931,39 @@ describe('AppCredentialsService', () => {
         expect(config.prePull.find((d) => d.kind === 'chat')).toMatchObject({ catalogId: 'gemma4-12b', pull: true });
       });
 
-      it('hands out a model ticked under Other Models that this node has, and pulls nothing', async () => {
+      // The wizard names the ticked model highest on its own list (`agentModelPlan`). On this card the
+      // Hub's own list leaves Gemma 4 12B out, and catalog order alone put Qwen3 Coder first.
+      it('waits for the downloading model the wizard ranks highest, read at the onboarding tier', async () => {
+        prefer('gemma3-270m');
+        hardwareInspector.getProfile.mockResolvedValue({
+          ...baseProfile,
+          gpu: {
+            available: true,
+            vendor: 'nvidia',
+            model: 'RTX 3080 Mobile',
+            vramMb: 8192,
+            unifiedMemory: false,
+            driverVersion: '580',
+            runtimeAvailable: false,
+          },
+          tier: 'cpu-only',
+        });
+        hardwareInspector.computeTier.mockReturnValue('medium');
+        modelRegistry.getRecommendedModelsForHardware.mockImplementation((tier) =>
+          tier === 'medium' ? [qwen, gemma12b, gemma270m] : [qwen, gemma270m],
+        );
+        modelRegistry.getModelsForHardware.mockReturnValue([gemma270m, coder, gemma12b, qwen, minimax]);
+        ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma3:270m'] });
+        modelPuller.isPullPending.mockImplementation((id) => id === 'qwen3-coder-30b' || id === 'gemma4-12b');
+        modelPuller.startPull.mockResolvedValue({ catalogId: 'gemma4-12b', status: 'in_progress' });
+
+        const config = await service.getCredentials('openclaw');
+        await new Promise((resolve) => setImmediate(resolve));
+
+        expect(config.prePull.find((d) => d.kind === 'chat')).toMatchObject({ catalogId: 'gemma4-12b', pull: true });
+      });
+
+      it('hands out a model ticked under Other Models that this node has and pulls nothing', async () => {
         prefer('gemma3-270m');
         ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma3:270m', 'qwen3-coder:30b'] });
 

@@ -57,7 +57,7 @@ export function modelDownloadMb(model: SizedRow): number {
 }
 
 /**
- * The model to download for an app that has nothing on this computer it can run, and none on its way:
+ * The model to download for an app that has nothing on this computer it can run and none on its way:
  * the smallest of `models`, the first of equals. The Hub pre-pulls it (`AppCredentialsService`) and the
  * setup wizard names it with its size, so the two must pick from the same list (#2538).
  */

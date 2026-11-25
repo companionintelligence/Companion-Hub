@@ -1009,7 +1009,9 @@ export const AiSetupStep = ({
             notice={
               <AgentModelFitNotice
                 model={profile.availableModels.find((m) => m.id === renderedConfig?.preferredModelId)}
-                frameworks={agentFrameworks}
+                // With none ticked on an engine that did not answer, Continue keeps the saved chat model,
+                // which this page cannot see, so it cannot say what the agents get.
+                frameworks={renderedConfig?.keepSavedChatModel ? [] : agentFrameworks}
                 backend={selectedBackend}
                 availableModels={profile.availableModels}
                 recommendedModels={profile.recommendedModels}
