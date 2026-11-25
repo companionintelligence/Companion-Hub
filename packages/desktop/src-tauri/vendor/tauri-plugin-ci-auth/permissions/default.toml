@@ -1,6 +1,5 @@
 # vendored-from: tauri-plugin-ci-auth@0.1.0 packages/tauri-plugin-ci-auth/permissions/default.toml
-# Copyright (c) Lifescope Inc. All rights reserved.
-# Private & Confidential — Property of Lifescope Inc. Do not distribute.
+# Copyright (c) Lifescope Inc. Licensed under the PolyForm Noncommercial License 1.0.0; see LICENSE.md.
 
 [default]
 description = "Sign-in over a loopback redirect and OS keychain storage for ci-auth."

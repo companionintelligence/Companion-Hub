@@ -400,6 +400,37 @@ describe('UpdateAppCommand', () => {
     });
   });
 
+  describe("the new version's env", () => {
+    const order = (fn: unknown, call = 0) => (fn as { mock: { invocationCallOrder: number[] } }).mock.invocationCallOrder[call] as number;
+
+    it('is generated from the new config: after its files are copied in and its app dir is prepared, before it is started', async () => {
+      await command.execute(appUrn, {});
+
+      expect(appHelpers.generateEnvFile).toHaveBeenCalledTimes(2);
+      expect(appHelpers.generateEnvFile).toHaveBeenLastCalledWith(appUrn, {}, { allowMissingRequired: true });
+      const newEnv = order(appHelpers.generateEnvFile, 1);
+      expect(newEnv).toBeGreaterThan(order(marketplaceService.copyAppFromRepoToInstalled));
+      expect(newEnv).toBeGreaterThan(order((command as any).ensureAppDir, 1));
+      const up = dockerService.composeApp.mock.calls.findIndex(([, cmd]) => cmd === 'up --detach --force-recreate --remove-orphans');
+      expect(newEnv).toBeLessThan(dockerService.composeApp.mock.invocationCallOrder[up] as number);
+    });
+
+    it('puts the previous files and app.env back, and starts the previous version, when it cannot be generated', async () => {
+      filesystem.pathExists.mockResolvedValue(true);
+      appHelpers.generateEnvFile.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('the state directory is read-only'));
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result).toMatchObject({ success: false, rolledBack: true });
+      expect(filesystem.copyDirectory).toHaveBeenCalledWith('/data/snapshots/test-app/snap-1/app-files', '/data/installed/test-app');
+      expect(appFilesManager.writeAppEnv).toHaveBeenCalledWith(appUrn, 'PREVIOUS=1\n');
+      // The new version never ran, so the only start is the previous version's, after the restore.
+      const ups = dockerService.composeApp.mock.calls.filter(([, cmd]) => String(cmd).startsWith('up'));
+      expect(ups).toHaveLength(1);
+      expect(order(appFilesManager.writeAppEnv)).toBeLessThan(dockerService.composeApp.mock.invocationCallOrder.at(-1) as number);
+    });
+  });
+
   describe('an app that was stopped', () => {
     beforeEach(() => {
       command = new UpdateAppCommand(moduleRef, docker, true, false);
