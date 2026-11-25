@@ -70,9 +70,12 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
+/** The id_token Portal's token reply carries; a test sets it to undefined for a reply without one. */
+const idTokenReply: { value: string | undefined } = { value: 'portal-id-token' };
+
 const tokenFetch = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async (input) => {
   if (String(input) === TOKEN_ENDPOINT) {
-    return jsonResponse({ access_token: 'portal-access', token_type: 'Bearer', expires_in: 3600, refresh_token: 'portal-refresh' });
+    return jsonResponse({ access_token: 'portal-access', token_type: 'Bearer', expires_in: 3600, refresh_token: 'portal-refresh', id_token: idTokenReply.value });
   }
   throw new Error(`unexpected fetch ${String(input)}`);
 });
@@ -91,6 +94,7 @@ async function s256(verifier: string): Promise<string> {
 }
 
 beforeEach(() => {
+  idTokenReply.value = 'portal-id-token';
   keychain.clear();
   authorizeUrls.length = 0;
   openAuthInSystemBrowser.mockClear();
@@ -154,13 +158,21 @@ describe('signInDesktopWithPortal', () => {
     expect(new URL(authorizeUrls[0] ?? '').searchParams.get('code_challenge')).toBe(await s256(verifier));
   });
 
-  it('sends the Portal access token to the Hub in an Authorization header, never in the URL', async () => {
+  it('sends the Portal access token and id_token to the Hub in headers, never in the URL', async () => {
     await signInDesktopWithPortal();
 
     const [path, init] = apiFetch.mock.calls.find(([called]) => called === '/api/auth/portal/desktop-session') ?? [];
     expect(path).toBe('/api/auth/portal/desktop-session');
     expect(init.method).toBe('POST');
-    expect(init.headers).toEqual({ Authorization: 'Bearer portal-access' });
+    // The id_token says the sign-in was for the Hub's own client; an access token alone does not.
+    expect(init.headers).toEqual({ Authorization: 'Bearer portal-access', 'X-Portal-Id-Token': 'portal-id-token' });
+  });
+
+  it('stops before asking the Hub when Portal returned no id_token', async () => {
+    idTokenReply.value = undefined;
+
+    await expect(signInDesktopWithPortal()).rejects.toBeInstanceOf(DesktopSignInError);
+    expect(apiFetch.mock.calls.some(([called]) => called === '/api/auth/portal/desktop-session')).toBe(false);
   });
 
   it('keeps the Portal refresh token and the Hub session id in the keychain, and no access token', async () => {
