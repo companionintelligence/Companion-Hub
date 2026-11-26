@@ -134,12 +134,25 @@ interface ExecError extends Error {
 type ExecStrategy = 'host' | 'sidecar';
 
 const DEFAULT_TAILSCALE_LOGIN_SERVER = '--login-server=https://controlplane.tailscale.com';
-const DEFAULT_TAILSCALE_EXTRA_ARGS = [
-  DEFAULT_TAILSCALE_LOGIN_SERVER,
-  '--accept-routes',
-  // Upgrades keep the legacy bridge while apps move to ci-hub_network.
-  '--advertise-routes=172.18.0.0/16,172.19.0.0/16',
-];
+const DEFAULT_TAILSCALE_EXTRA_ARGS = [DEFAULT_TAILSCALE_LOGIN_SERVER, '--accept-routes'];
+
+/**
+ * The Docker bridges older Hubs advertised by default as subnet routes.
+ *
+ * ⚠ NOT ADVERTISED ANY MORE. Once a tailnet admin approved the route, every tailnet device that
+ * accepts routes could reach whatever sits on those bridges — the Hub's own API port and Traefik —
+ * without Tailscale Serve, and a client running Docker that accepted it lost its own Docker traffic
+ * on the same range. Nothing needs it: apps live on their own 10.x networks the route never covered
+ * and are reached through their Serve URLs, the inference pool talks to peers' Tailscale addresses,
+ * and Docker hands these bridges whatever range is free, so the two fixed ranges often matched
+ * nothing of the Hub's. An operator who wants a route sets `HUB_TAILSCALE_EXTRA_ARGS`.
+ */
+const RETIRED_DEFAULT_ROUTES = new Set(['172.18.0.0/16', '172.19.0.0/16']);
+
+/** A `tailscale up` flag's name, without its value: `--advertise-routes=10.0.0.0/8` is `--advertise-routes`. */
+function upFlagName(arg: string): string {
+  return arg.split('=', 1)[0]?.toLowerCase() ?? arg;
+}
 
 function normalizeDnsName(value: string | null | undefined): string | null {
   const trimmed = value?.trim();
@@ -323,9 +336,25 @@ export class TailscaleService {
    * The host's tailscaled belongs to whoever set it up, and HUB_TAILSCALE_EXTRA_ARGS is the sidecar's
    * `TS_EXTRA_ARGS`. A bare `up` after `tailscale down` brings the network back and changes nothing; when
    * tailscaled refuses one for settings it leaves out, {@link execUp} restates them (CI-Hub#2548).
+   *
+   * One exception on the host: a client an older Hub signed in still advertises the Docker bridges as
+   * subnet routes ({@link RETIRED_DEFAULT_ROUTES}). There the routes are restated without those two,
+   * keeping the owner's own (an exit node, `0.0.0.0/0` and `::/0`, included), and {@link execUp} keeps
+   * that over the value tailscaled names when it refuses the `up`.
    */
-  private getTailscaleUpArgsFor(strategy: ExecStrategy): string[] {
-    return strategy === 'sidecar' ? this.getTailscaleUpExtraArgs() : [];
+  private async getTailscaleUpArgsFor(strategy: ExecStrategy): Promise<string[]> {
+    if (strategy === 'sidecar') {
+      return this.getTailscaleUpExtraArgs();
+    }
+    const advertised = await this.readHostAdvertisedRoutes();
+    if (!advertised?.some((route) => RETIRED_DEFAULT_ROUTES.has(route))) {
+      return [];
+    }
+    const kept = advertised.filter((route) => !RETIRED_DEFAULT_ROUTES.has(route));
+    this.logger.log(
+      `[TailscaleService] Withdrawing the Docker bridge routes an older Hub advertised from the host's Tailscale${kept.length ? `, keeping ${kept.join(', ')}` : ''}`,
+    );
+    return [`--advertise-routes=${kept.join(',')}`];
   }
 
   /**
@@ -369,12 +398,16 @@ export class TailscaleService {
       if (!restated) {
         throw error;
       }
-      this.logger.warn(`[TailscaleService] tailscaled refused tailscale up for settings it holds; running it again with them: ${restated.join(' ')}`);
-      return execFn(['up', ...keep, ...restated], timeoutMs);
+      // A setting this `up` asked to change keeps the new value: tailscaled names the one it holds now.
+      const asked = args.slice(1).filter((arg) => arg.startsWith('--') && arg !== '--reset' && !keep.includes(arg));
+      const askedNames = new Set(asked.map(upFlagName));
+      const merged = [...restated.filter((arg) => !askedNames.has(upFlagName(arg))), ...asked];
+      this.logger.warn(`[TailscaleService] tailscaled refused tailscale up for settings it holds; running it again with them: ${merged.join(' ')}`);
+      return execFn(['up', ...keep, ...merged], timeoutMs);
     }
   }
 
-  /** The sidecar's flags: env override or default Docker bridge advertisement. */
+  /** The sidecar's flags: the env override, or the control server and `--accept-routes`. */
   private getTailscaleUpExtraArgs(): string[] {
     const extra = (process.env.HUB_TAILSCALE_EXTRA_ARGS || '').trim();
     if (!extra) {
@@ -387,6 +420,18 @@ export class TailscaleService {
     }
 
     return [DEFAULT_TAILSCALE_LOGIN_SERVER, ...parsed];
+  }
+
+  /** The host daemon's `AdvertiseRoutes`, or null when its prefs cannot be read (then nothing is withdrawn). */
+  private async readHostAdvertisedRoutes(): Promise<string[] | null> {
+    try {
+      const { stdout } = await this.execHost(['debug', 'prefs'], 5000);
+      const routes = (JSON.parse(stdout) as { AdvertiseRoutes?: unknown }).AdvertiseRoutes;
+      return Array.isArray(routes) ? routes.filter((route): route is string => typeof route === 'string') : [];
+    } catch (error) {
+      this.logger.warn(`[TailscaleService] Could not read the host's Tailscale prefs: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
   }
 
   private async execTailscale(args: string[], timeoutMs = 15000): Promise<{ stdout: string; stderr: string }> {
@@ -683,7 +728,7 @@ export class TailscaleService {
     // --reset resets persisted non-default preferences to defaults before applying
     // the provided flags. Only safe for the sidecar (isolated daemon); on the host
     // it would mutate the user's existing Tailscale configuration.
-    const extraArgs = this.getTailscaleUpArgsFor(strategy);
+    const extraArgs = await this.getTailscaleUpArgsFor(strategy);
     const loginServerHost = this.getConfiguredLoginServerHost(extraArgs);
     const args = ['up', ...(strategy === 'sidecar' ? ['--reset'] : []), ...extraArgs];
 
@@ -757,7 +802,7 @@ export class TailscaleService {
     }
 
     // --reset is scoped to the sidecar only — same rationale as startAuth.
-    const upArgs = ['up', ...(strategy === 'sidecar' ? ['--reset'] : []), '--auth-key', key, ...this.getTailscaleUpArgsFor(strategy)];
+    const upArgs = ['up', ...(strategy === 'sidecar' ? ['--reset'] : []), '--auth-key', key, ...(await this.getTailscaleUpArgsFor(strategy))];
     try {
       await this.execUp(strategy, upArgs, 120_000, ['--auth-key', key]);
     } catch (error) {
