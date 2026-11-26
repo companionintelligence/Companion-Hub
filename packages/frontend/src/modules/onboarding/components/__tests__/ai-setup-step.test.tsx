@@ -1035,7 +1035,8 @@ describe('AiSetupStep', () => {
       renderStep({ embedded: true, onConfigChange });
       await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
 
-      expect(onConfigChange.mock.calls.at(-1)?.[0]).toMatchObject({ keepSavedChatModel: true });
+      // The step reports its config from an effect once the engine check has answered, which can come after it shows.
+      await waitFor(() => expect(onConfigChange.mock.calls.at(-1)?.[0]).toMatchObject({ keepSavedChatModel: true }));
       expect(screen.queryByTestId('agent-model-unsuited')).not.toBeInTheDocument();
     });
 
