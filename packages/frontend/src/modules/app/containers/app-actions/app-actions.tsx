@@ -744,9 +744,11 @@ export const AppActions = ({
       ? t('APP_ERROR_ROCM_KFD_MISSING')
       : installError?.errorCode === 'network_overlap'
         ? t('APP_ERROR_NETWORK_OVERLAP')
-        : installError?.serviceFailure
-          ? appServiceFailureText(t, installError.serviceFailure)
-          : installError?.message && describeInstallFailure(installError.message);
+        : installError?.errorCode === 'nested_bind_mounts'
+          ? t('APP_ERROR_NESTED_BIND_MOUNTS')
+          : installError?.serviceFailure
+            ? appServiceFailureText(t, installError.serviceFailure)
+            : installError?.message && describeInstallFailure(installError.message);
   const installErrorSettingsPath =
     installError?.settingsPath ?? (installError?.errorCode === 'rocm_kfd_missing' ? '/settings?tab=ai&section=rocm' : undefined);
 

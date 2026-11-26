@@ -1,4 +1,5 @@
 import { DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES } from '@/common/constants';
+import { mergeArchitectureOverrides } from '@/common/helpers/compose-helpers';
 import type { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
@@ -10,6 +11,7 @@ import { AppHelpers } from '@/modules/apps/app.helpers';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { BackupManager } from '@/modules/backups/backup.manager';
 import { removeAppDataDirWithRootFallback } from '@/modules/docker/app-data-removal';
+import { nestedManifestMountsRefusal } from '@/modules/docker/bind-mount-guard';
 import { DockerService } from '@/modules/docker/docker.service';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
@@ -17,6 +19,7 @@ import type { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
 import type Dockerode from 'dockerode';
 import type { OperationPhase } from '../app-operation-registry';
+import { nestedBindMountsUpdateError } from './app-lifecycle-errors';
 import { AppLifecycleCommand, type CommandExecutionContext } from './command';
 import { installedComposeImages, pullAppImagesRecorded, recordComposeUpPulls } from './pull-app-images';
 import { type AppSecurityGrants, type UpdatePhase, parseInstalledComposeJson } from '@ci-hub/common/schemas';
@@ -103,13 +106,26 @@ export class UpdateAppCommand extends AppLifecycleCommand {
     const backupManager = this.moduleRef.get(BackupManager, { strict: false });
 
     let composeToInstall: Awaited<ReturnType<MarketplaceService['getDockerComposeJson']>>;
+    let toInstall: ReturnType<typeof parseInstalledComposeJson>;
     try {
       composeToInstall = await marketplaceService.getDockerComposeJson(appUrn);
-      parseInstalledComposeJson(composeToInstall.content, securityGrantsFor(appUrn));
+      toInstall = parseInstalledComposeJson(composeToInstall.content, securityGrantsFor(appUrn));
     } catch (err) {
       logger.error(`Error parsing docker-compose.yml for app ${appUrn} from marketplace repository. Are you running the latest version of CI Hub?`);
       // Nothing has been touched: the running app is exactly as it was.
       return { ...(await this.handleAppError(err, appUrn, 'update_error')), rolledBack: true };
+    }
+
+    // A new version that keeps a folder inside another it can write to would be refused at its start,
+    // after the installed one is down. Refused here instead, while the running app is still as it was.
+    // This reads the listing's own paths, as the builder does. A nesting that only the user's override
+    // or an expanded `${...}` makes is still caught at the start (`DockerService.assertBindMountsSafe`).
+    const architecture = this.moduleRef.get(ConfigurationService, { strict: false })?.get('architecture');
+    const nestedRefusal = nestedManifestMountsRefusal(mergeArchitectureOverrides(toInstall.services, toInstall.overrides, architecture), appUrn);
+    if (nestedRefusal) {
+      // The reply's message is the short one. The folders it found go in its detail and in this log line.
+      logger.error(nestedRefusal.message);
+      return { ...(await this.handleAppError(nestedBindMountsUpdateError(nestedRefusal), appUrn, 'update_error')), rolledBack: true };
     }
 
     let backupFile: string | undefined;
@@ -229,7 +245,9 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       // not may be an install that failed before the copy, and a folder made here for a file a volume
       // mounts (`data/config.yml`) would stop the retry's copyDataDir. A stopped app gets them at its
       // next start (#2198).
-      await this.ensureAppDir(appUrn, form, { createVolumeDirs: this.wasRunning, applyDataMoves: false });
+      // This compose is the installed version's, written only to take it down, so mounts it nests (a
+      // listing from before the Hub refused that) don't stop the update that brings a version without them.
+      await this.ensureAppDir(appUrn, form, { createVolumeDirs: this.wasRunning, applyDataMoves: false, forTeardown: true });
       // Written once here so a write that fails (a read-only app.env) fails while the old version still runs.
       await appHelpers.generateEnvFile(appUrn, form);
       // With no app.env before the update, the one just made from the previous config is what the

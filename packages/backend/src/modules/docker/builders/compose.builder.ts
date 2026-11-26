@@ -7,8 +7,6 @@ import {
   type ServiceInput,
   serviceSchema,
   collectServiceSecurityViolations,
-  describeNestedBindMounts,
-  findNestedBindMounts,
   collectTraefikLabelIssues,
   isReservedHubLabel,
   LOOPBACK_HOST_PORT_INTERFACE,
@@ -28,6 +26,7 @@ import {
 import { publishesHostPort } from '@/modules/apps/app-exposure.helpers';
 import { requiresHubLogin } from '@/modules/apps/app-public-routing.helpers';
 import { securityGrantsFor } from '@/modules/apps/security-grants';
+import { nestedManifestMountsRefusal } from '@/modules/docker/bind-mount-guard';
 import { isHubReservedServiceName } from '@/modules/network/network-constants';
 import { z } from 'zod';
 
@@ -99,6 +98,14 @@ export interface ComposeBuilderOptions {
    * produced keeps the volume of the path it came from, so the data is still there after the move.
    */
   dataMoves?: readonly DataMove[];
+  /**
+   * Whether a bind mount inside another folder the app can write to stops the build, as it does by
+   * default. Off only where the compose is written to stop or take down the version already
+   * installed (`prepareAppComposeDir`'s `forTeardown`): nothing starts from it. Every start checks
+   * the mounts again (`DockerService.assertBindMountsSafe`). An app installed from a listing that
+   * nested its folders can then still be stopped and updated to a version that keeps them apart.
+   */
+  refuseNestedBindMounts?: boolean;
 }
 
 /**
@@ -204,6 +211,7 @@ export class DockerComposeBuilder {
   private defaultAppCpuLimit?: string;
   private knownAppIds: string[] = [];
   private hostVariables?: string[];
+  private refuseNestedBindMounts = true;
 
   /**
    * @param posixPermissionsSupported Whether the app-data filesystem can carry POSIX
@@ -291,6 +299,9 @@ export class DockerComposeBuilder {
     }
     if (options.dataMoves !== undefined) {
       this.volumePathsBeforeMoves = volumePathsBeforeMoves(options.dataMoves);
+    }
+    if (options.refuseNestedBindMounts !== undefined) {
+      this.refuseNestedBindMounts = options.refuseNestedBindMounts;
     }
     return this;
   }
@@ -703,19 +714,10 @@ export class DockerComposeBuilder {
     // One folder inside another the app can write to is a host escape (see bind-mount-nesting.ts in
     // @ci-hub/common). Refused here, with the manifest's own paths, so an install fails before it
     // starts anything; every start checks the expanded mounts again (DockerService.assertBindMountsSafe).
-    const nestedMounts = findNestedBindMounts(
-      fixedServices.flatMap((service) =>
-        (service.volumes ?? []).flatMap((volume) =>
-          volume.hostPath === undefined ? [] : [{ service: service.name, source: volume.hostPath, readOnly: volume.readOnly === true }],
-        ),
-      ),
-      { grantedHostPaths: securityGrantsFor(appUrn).hostPaths },
-    );
-    if (nestedMounts.length > 0) {
-      throw new Error(
-        `App "${extractAppUrn(appUrn).appName}" mounts a folder inside another folder it can write to: ${describeNestedBindMounts(nestedMounts)}. ` +
-          'Code in the app could replace the inner folder with a link to anywhere on this computer. Give each mount a folder of its own, side by side.',
-      );
+    // A compose written only to stop the installed version skips it (`refuseNestedBindMounts`).
+    const nestedRefusal = this.refuseNestedBindMounts ? nestedManifestMountsRefusal(fixedServices, appUrn) : null;
+    if (nestedRefusal) {
+      throw nestedRefusal;
     }
 
     const myServices = fixedServices.map((service) => this.buildService(service, form, appUrn, envFile, options));
