@@ -17,6 +17,11 @@ const schema = toJsonSchema(dynamicComposeFormSchema);
 // otherwise be left as a square. The user's own JSON in the frame keeps its emoji, ® and arrows.
 const VALIDATOR_EMOJI = /^([ \t]*(?:\|[ \t]*\^+ )?)\p{Extended_Pictographic}(?:\p{Emoji_Modifier}|\uFE0F)* ?/gmu;
 
+// The 'cli' report is coloured wherever its colour library thinks a terminal can show it (CI=true under vitest,
+// for one). The codes would sit between the carets and the emoji, and show up in the box as stray characters.
+// biome-ignore lint/suspicious/noControlCharactersInRegex: colour codes are what this removes.
+const COLOUR_CODES = /\u001b\[[0-9;]*[A-Za-z]/g;
+
 type Props = {
   onChange: (json: string, error?: string) => void;
 };
@@ -78,7 +83,7 @@ export const JsonComposeEditor = ({ onChange }: Props) => {
         currentError = undefined;
       } else {
         const formattedErrors = betterAjvErrors(schema, parsedValue, validate.errors, { format: 'cli', indent: 2 });
-        currentError = formattedErrors;
+        currentError = formattedErrors.replace(COLOUR_CODES, '');
       }
     } catch (err) {
       console.error(err);
