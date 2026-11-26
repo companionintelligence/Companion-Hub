@@ -23,7 +23,55 @@ export type PortalIdTokenClaims = {
   emailVerified?: boolean;
   /** `iss` from the verified token, else the Portal origin we checked against. */
   issuer?: string;
+  /** Every `aud` value, the client id first and any appliance (`urn:ci:device:<id>`) after it. */
+  audiences?: string[];
+  /** `ci_appliance_binding`: the version of Portal's addressing contract the token was minted under, or null. */
+  applianceBinding?: number | null;
 };
+
+/**
+ * Addressing a Portal token to ONE appliance (Portal's `applianceAudience.ts`, the shared contract).
+ *
+ * Every Hub signs people in as the same Portal client, `ci-hub`, so the client id never said which Hub a
+ * token was for. A Hub's own browser sign-in receives the person's `ci-hub` id_token at its callback,
+ * and the Hub's phone sign-in sends one to the Hub it picked: any of those Hubs could hand it to another
+ * Hub the same person belongs to, which turned it into a session there. Portal names the appliance when
+ * an app asks for it at the code exchange (`resource`), as a second `aud` value, and stamps every token
+ * with the contract version.
+ */
+export const APPLIANCE_AUDIENCE_PREFIX = 'urn:ci:device:';
+export const APPLIANCE_BINDING_CLAIM = 'ci_appliance_binding';
+/** The contract version from which a Hub requires its own audience on the routes its apps sign in through. */
+export const HUB_APPLIANCE_BINDING_VERSION = 2;
+
+/** The audience naming this Hub, as Portal writes it for `deviceId`. */
+export function applianceAudienceFor(deviceId: string): string {
+  return `${APPLIANCE_AUDIENCE_PREFIX}${deviceId}`;
+}
+
+/**
+ * Why an id_token the Hub's own app sent is not for THIS Hub, or null when it is.
+ *
+ * - `addressed-elsewhere`: it names an appliance, and not this one.
+ * - `unaddressed`: Portal stamped it with contract version 2 or later and it names no appliance: what
+ *   a Hub's own browser sign-in receives, never what a Hub app sends.
+ *
+ * A token with no stamp comes from a Portal older than addressing, which could not name an appliance,
+ * and is taken as before.
+ */
+export function applianceAudienceRefusal(claims: PortalIdTokenClaims, deviceId: string): 'addressed-elsewhere' | 'unaddressed' | null {
+  const appliances = (claims.audiences ?? []).filter((aud) => aud.startsWith(APPLIANCE_AUDIENCE_PREFIX));
+  if (deviceId && appliances.includes(applianceAudienceFor(deviceId))) {
+    return null;
+  }
+  if (appliances.length > 0) {
+    return 'addressed-elsewhere';
+  }
+  if ((claims.applianceBinding ?? 0) >= HUB_APPLIANCE_BINDING_VERSION) {
+    return 'unaddressed';
+  }
+  return null;
+}
 
 export type PortalTokenVerifyOptions = {
   /** Public Portal origin (`CI_CLOUD_URL`), e.g. https://hub.ci.computer */
@@ -121,7 +169,10 @@ export async function verifyPortalIdToken(token: string, options: PortalTokenVer
     const name = typeof payload.name === 'string' && payload.name.trim() ? payload.name.trim() : null;
     const tokenIssuer = typeof payload.iss === 'string' && payload.iss.trim() ? payload.iss.trim() : issuer;
 
-    return { sub, email, name, emailVerified: payload.email_verified === true, issuer: tokenIssuer };
+    const audiences = (Array.isArray(payload.aud) ? payload.aud : [payload.aud]).filter((aud): aud is string => typeof aud === 'string');
+    const binding = payload[APPLIANCE_BINDING_CLAIM];
+    const applianceBinding = typeof binding === 'number' && Number.isFinite(binding) ? binding : null;
+    return { sub, email, name, emailVerified: payload.email_verified === true, issuer: tokenIssuer, audiences, applianceBinding };
   } catch {
     return null;
   }

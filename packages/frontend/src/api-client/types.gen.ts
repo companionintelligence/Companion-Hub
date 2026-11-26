@@ -474,6 +474,7 @@ export type PortalDesktopExchangeDto = {
 
 export type PortalDesktopConfigDto = {
     portalUrl: string;
+    deviceId: string;
 };
 
 export type PortalDesktopHandoffStatusDto = {
