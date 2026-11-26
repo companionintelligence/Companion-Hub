@@ -148,13 +148,14 @@ describe('HubStatus when Docker refuses this user (Companion-Hub#2535)', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
       renderDockerUnavailable('not_installed', undefined, { progressHangs: true });
-      expect(await screen.findByRole('status', { name: 'Checking hub status' })).toBeInTheDocument();
+      expect(await screen.findByRole('status', { name: 'Checking hub status' }, SCREEN_TIMEOUT)).toBeInTheDocument();
 
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(11_000);
+      // The 10 s give-up starts only once the Hub reads as without Docker, which a loaded CI box can reach after
+      // any fixed jump of the clock. Under fake timers vi.waitFor moves the clock one interval per try instead.
+      await vi.waitFor(() => expect(screen.getByRole('heading', { name: 'Docker Engine Required' })).toBeInTheDocument(), {
+        timeout: 20_000,
+        interval: 500,
       });
-
-      expect(await screen.findByRole('heading', { name: 'Docker Engine Required' })).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }

@@ -16,7 +16,12 @@ import { type TestDatabase, createTestDatabase } from '../utils/create-test-data
  */
 describe('Memory connect with two Hub people', () => {
   const APP = 'ci-openclaw:ci-marketplace' as AppUrn;
-  const PROVIDER = { appUrn: 'ci-memory:ci-marketplace', internalUrl: 'http://gateway:8642', publicUrl: 'https://memory.example.org' };
+  const PROVIDER = {
+    appUrn: 'ci-memory:ci-marketplace',
+    internalUrl: 'http://gateway:8642',
+    consumerUrl: 'http://ci-memory:8642',
+    publicUrl: 'https://memory.example.org',
+  };
 
   let db: TestDatabase;
   let connections: MemoryConnectionService;

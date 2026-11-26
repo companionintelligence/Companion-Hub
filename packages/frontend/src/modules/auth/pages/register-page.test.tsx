@@ -359,14 +359,22 @@ describe('RegisterPage', () => {
       it('turns the button on when the browser comes back online', async () => {
         mockIsTauriDesktopApp.mockReturnValue(true);
         mockResolveHint.mockResolvedValue({ email: null, portalBaseUrl: null, source: null, portalReachable: false });
+        const addListener = vi.spyOn(window, 'addEventListener');
 
-        render(<RegisterPage />);
-        await waitFor(() => expect(screen.getByRole('button', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON' })).toBeDisabled());
+        try {
+          render(<RegisterPage />);
+          await waitFor(() => expect(screen.getByRole('button', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON' })).toBeDisabled());
+          // The page listens for `online` from an effect that runs after the button turns off. An event
+          // sent before it is attached is heard by nobody.
+          await waitFor(() => expect(addListener).toHaveBeenCalledWith('online', expect.any(Function)));
 
-        mockResolveHint.mockResolvedValue({ email: null, portalBaseUrl: null, source: null, portalReachable: true });
-        fireEvent(window, new Event('online'));
+          mockResolveHint.mockResolvedValue({ email: null, portalBaseUrl: null, source: null, portalReachable: true });
+          fireEvent(window, new Event('online'));
 
-        await waitFor(() => expect(screen.getByRole('button', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON' })).toBeEnabled());
+          await waitFor(() => expect(screen.getByRole('button', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON' })).toBeEnabled());
+        } finally {
+          addListener.mockRestore();
+        }
       });
 
       it('never starts asking when Portal answers on load', async () => {
