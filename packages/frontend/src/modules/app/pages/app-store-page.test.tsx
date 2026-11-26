@@ -119,8 +119,9 @@ vi.mock('@/modules/app/components/featured-store-view/featured-store-view', () =
   FeaturedStoreView: () => <div data-testid="featured-store-view" />,
 }));
 
+const registration = vi.hoisted(() => ({ data: { registered: true } as { phase?: string; registered: boolean; degradedReasons?: string[] } }));
 vi.mock('@/lib/hooks/use-registration-status', () => ({
-  useRegistrationStatus: () => ({ data: { registered: true }, isLoading: false }),
+  useRegistrationStatus: () => ({ data: registration.data, isLoading: false }),
 }));
 
 vi.mock('@/components/empty-page/empty-page', () => ({
@@ -183,6 +184,7 @@ describe('AppStorePage — multi-store UX', () => {
     mockSetSearchParams.mockReset();
     customAppActions = OWNER_ACTIONS;
     manageHub = true;
+    registration.data = { registered: true };
     mockUseParams.mockReturnValue({});
     capturedSearchParams = new URLSearchParams();
     capturedPathname = '/store';
@@ -195,6 +197,77 @@ describe('AppStorePage — multi-store UX', () => {
       isError: false,
       refetchAlternatives: vi.fn(),
     });
+  });
+
+  // #2590: a Hub that has just started says `starting` until it has read its registration back. One such
+  // answer sent an open App Store page to pairing.
+  it.each([
+    ['stays on the store while the Hub is still starting', 'starting', false],
+    ['still goes to pairing once the Hub says it is unregistered', 'unregistered', true],
+  ])('%s', (_label, phase, leaves) => {
+    registration.data = { phase, registered: false, degradedReasons: [] };
+    setupQueries();
+    const original = window.location;
+    const assigned = vi.fn();
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: {
+        ...original,
+        get href() {
+          return original.href;
+        },
+        set href(next: string) {
+          assigned(next);
+        },
+      },
+    });
+    try {
+      render(
+        <MemoryRouter>
+          <AppStorePage />
+        </MemoryRouter>,
+      );
+
+      if (leaves) {
+        expect(assigned).toHaveBeenCalledWith('/device-registration');
+      } else {
+        expect(assigned).not.toHaveBeenCalled();
+        expect(screen.getByRole('button', { name: 'APP_STORE_CREATE_CUSTOM_APP' })).toBeInTheDocument();
+      }
+    } finally {
+      Object.defineProperty(window, 'location', { configurable: true, value: original });
+    }
+  });
+
+  // The catalog routes refuse a Hub that is still starting, and a refused query isn't retried.
+  it('holds the catalog and store queries until the Hub has finished starting', () => {
+    registration.data = { phase: 'starting', registered: false, degradedReasons: [] };
+    setupQueries();
+
+    const { rerender } = render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    const enabledStoresQuery = () =>
+      mockUseQuery.mock.calls
+        .map(([opts]) => opts as { queryKey: unknown[]; enabled?: boolean })
+        .filter((opts) => opts.queryKey[0] === 'enabledStores')
+        .at(-1);
+    const catalogQuery = () => mockUseInfiniteQuery.mock.calls.map(([opts]) => opts as { enabled?: boolean }).at(-1);
+    expect(enabledStoresQuery()).toMatchObject({ enabled: false });
+    expect(catalogQuery()).toMatchObject({ enabled: false });
+
+    registration.data = { phase: 'publicly_ready', registered: true, degradedReasons: [] };
+    rerender(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(enabledStoresQuery()).toMatchObject({ enabled: true });
+    expect(catalogQuery()).toMatchObject({ enabled: true });
   });
 
   it('offers expose and custom app from the store header', () => {

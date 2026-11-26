@@ -100,6 +100,8 @@ export type PortalStanding = 'ok' | 'rejected' | 'unregistered' | 'pending' | 'n
 /** One word for the column, from the phase and the last check-in together. */
 export function portalStanding(axis: PortalAxis | undefined): PortalStanding {
   if (!axis) return 'none';
+  // A Hub that has just started hasn't read its registration back yet, so it can't say.
+  if (axis.phase === 'starting') return 'pending';
   if (!axis.registered || axis.phase === 'unregistered') return 'unregistered';
   if (axis.checkIn === null) return 'pending';
   return axis.checkIn >= 200 && axis.checkIn < 300 ? 'ok' : 'rejected';

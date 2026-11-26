@@ -459,6 +459,13 @@ describe('doctorHub registration check', () => {
     expect(stripAnsi(result.lines.join('\n'))).toContain('accepted (HTTP 200)  15m ago');
   });
 
+  it('says a Hub that has just started is still reading its registration, without counting it as a problem', () => {
+    const result = describeRegistrationPhase({ phase: 'starting', registered: false, degradedReasons: [], lastCheckIn: null }, now);
+
+    expect(result).toMatchObject({ failureCount: 0, issueCount: 0 });
+    expect(stripAnsi(result.lines.join('\n'))).toContain('starting  the Hub is reading its registration');
+  });
+
   it('does not fail an unregistered Hub, which is the state before setup', async () => {
     mocks.fetchRegistrationPhase.mockResolvedValue({ phase: 'unregistered', registered: false, degradedReasons: [], lastCheckIn: null });
 

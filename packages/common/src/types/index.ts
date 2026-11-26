@@ -7,6 +7,7 @@ import {
   type RegistrationCheckIn,
   type RegistrationPhaseReport,
   type RegistrationStatus,
+  type RegistrationStatusPhase,
 } from './registration-status.js';
 
 export { type AppUrn, zodAppUrn };
@@ -18,6 +19,7 @@ export {
   type RegistrationCheckIn,
   type RegistrationPhaseReport,
   type RegistrationStatus,
+  type RegistrationStatusPhase,
 };
 export type { AvailableDomain, AvailableDomainsResponse } from './domains.js';
 // biome-ignore lint/performance/noBarrelFile: install and port-expose pickers filter through @ci-hub/common/types
@@ -62,7 +64,7 @@ export { buildTailscaleNodeFqdn, buildTailscalePortHost, buildTailscalePortUrl, 
 export type { DesktopReleaseManifest } from './desktop-release.js';
 export { desktopInstallerUrl, desktopReleaseCdn, isTrustedDownloadUrlForHost, platformManifestKey } from './desktop-release.js';
 export { INFERENCE_BACKEND_TYPES } from './inference.js';
-export { defaultChatModelId } from '../inference/default-chat-model.js';
+export { defaultChatModelId, modelDownloadMb, smallestDownload } from '../inference/default-chat-model.js';
 export { gpuRuntimeReady } from '../inference/gpu-runtime.js';
 export { OPERATOR_MINTABLE_SCOPES } from './api-key-scopes.js';
 export type { OperatorMintableScope } from './api-key-scopes.js';

@@ -108,10 +108,16 @@ const ORPHANED_VOLUME = '512303c264585eba54d38783f0eaa650700800989d35a81e13dc688
  */
 const INJECTED_NETWORK = 'x;docker volume rm myproject_pgdata';
 /**
- * The local volume driver refuses a name like this, but a volume plugin decides for itself. It matches the Hub's
- * volume name pattern, so the cleanup removes it, and read into a command string it would also remove the user's.
+ * The local volume driver refuses a name like this, but a volume plugin decides for itself. It carries the Hub's
+ * compose project label, so the cleanup removes it, and read into a command string it would also remove the user's.
  */
 const ODD_VOLUME = 'hub_tailscale_state;docker volume rm myproject_pgdata';
+/**
+ * Volumes whose names only contain a Hub volume's: a copy of the Hub database, the database of a CI-OS test deploy
+ * (compose project `ci-os-hub-staging`) and an old VPN state. The cleanup matched by substring and removed them all.
+ * Also a volume of Runtipi, a separate product whose compose project is called runtipi, as an old appliance's was.
+ */
+const LOOKALIKE_VOLUMES = ['ci_hub_pgdata_backup', 'ci-os-hub-staging_ci_hub_pgdata', 'hub_tailscale_state_old', 'runtipi_db_data'];
 
 /** A Windows Hub with WordPress installed, as the manual test left it, plus a compose project of the user's own. */
 const FIXTURE: FakeEngine = {
@@ -200,12 +206,18 @@ const FIXTURE: FakeEngine = {
     { name: RABBITMQ_VOLUME, labels: anonymous },
     { name: WORDPRESS_ANONYMOUS_VOLUME, labels: anonymous },
     { name: ORPHANED_VOLUME, labels: anonymous },
-    { name: ODD_VOLUME, labels: {} },
+    { name: ODD_VOLUME, labels: hubProject },
+    // An appliance from before the rename to ci-hub, with its database by its whole name and no label.
+    { name: 'ci-os-hub_ci_hub_pgdata', labels: {} },
+    { name: 'ci_hub_pgdata_backup', labels: {} },
+    { name: 'ci-os-hub-staging_ci_hub_pgdata', labels: { 'com.docker.compose.project': 'ci-os-hub-staging' } },
+    { name: 'hub_tailscale_state_old', labels: {} },
+    { name: 'runtipi_db_data', labels: { 'com.docker.compose.project': 'runtipi' } },
   ],
 };
 
 /** Names and IDs of everything the cleanup must leave alone. */
-const NOT_THE_HUBS = ['b55000000001', 'devdb', 'sha256:devpostgres', 'myproject_default', 'myproject_pgdata', ORPHANED_VOLUME];
+const NOT_THE_HUBS = ['b55000000001', 'devdb', 'sha256:devpostgres', 'myproject_default', 'myproject_pgdata', ORPHANED_VOLUME, ...LOOKALIKE_VOLUMES];
 
 /**
  * The fake docker. It handles the queries the cleanup scripts make, renders the Go templates they use, and fails on
@@ -482,8 +494,14 @@ describeEachShell('uninstall-cleanup.ps1 Docker cleanup with -DeleteAppData unde
         'network rm ci-os-hub_network',
         'volume rm ci_hub_pgdata',
         'volume rm hub_tailscale_state',
+        'volume rm ci-os-hub_ci_hub_pgdata',
       ]),
     );
+  });
+
+  it("keeps a volume whose name only contains a Hub volume's, such as a database backup", () => {
+    expect(removed.filter((call) => LOOKALIKE_VOLUMES.some((name) => call === `volume rm ${name}`))).toEqual([]);
+    expect(names(left.volumes)).toEqual(expect.arrayContaining(LOOKALIKE_VOLUMES));
   });
 
   it('leaves a compose project the Hub did not create, and unlabelled anonymous volumes, alone', () => {
@@ -507,7 +525,7 @@ describeEachShell('uninstall-cleanup.ps1 Docker cleanup with -DeleteAppData unde
   it('leaves nothing of the Hub or WordPress in the engine, and everything else as it was', () => {
     expect(names(left.containers)).toEqual(['devdb']);
     expect(names(left.networks)).toEqual(['bridge', 'host', 'myproject_default', 'none', INJECTED_NETWORK].sort());
-    expect(names(left.volumes)).toEqual([ORPHANED_VOLUME, 'myproject_pgdata'].sort());
+    expect(names(left.volumes)).toEqual([ORPHANED_VOLUME, 'myproject_pgdata', ...LOOKALIKE_VOLUMES].sort());
   });
 
   it('skips a labelled network whose name is not a plain Docker name', () => {

@@ -136,6 +136,13 @@ export function describeRegistrationPhase(
     return { lines, failureCount, issueCount };
   }
 
+  if (report.phase === 'starting') {
+    lines.push(
+      `Registration         ${colorize(`${STEP_ICONS.pending} starting`, 'dim')}  ${dim('the Hub is reading its registration; run doctor again in a few seconds')}`,
+    );
+    return { lines, failureCount, issueCount };
+  }
+
   if (report.phase === 'degraded') {
     const label = `degraded (${reasons.join(', ') || 'no reason recorded'})`;
     if (reasons.some((reason) => RE_PAIRING_REASONS.has(reason))) {
@@ -421,7 +428,11 @@ function doctorTunnelTokenStatus(ctx: HubContext): string {
 function printUninstallPlan(plan: AppTeardownPlan) {
   const notes: string[] = [];
   if (plan.projects.length > 0) notes.push(dim("The apps' images are removed too."));
-  notes.push(dim('Then the Hub\'s own containers, volumes, and networks, and every container whose name contains "e2e-".'));
+  notes.push(
+    dim(
+      'Then the Hub\'s own containers and networks, its volumes (every one compose labelled for a Hub project, hub-compose.yml ones included) and every container whose name contains "e2e-".',
+    ),
+  );
   if (!plan.listed) notes.push('Docker did not list its containers, so this list may be incomplete.');
   printAppTeardownPlan('Apps and containers this uninstall removes', plan, notes);
 }

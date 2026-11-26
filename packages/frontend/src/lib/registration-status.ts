@@ -1,8 +1,16 @@
-import type { ProvisioningPhase, DegradedReason, RegistrationStatus } from '@ci-hub/common/types';
+import type { ProvisioningPhase, DegradedReason, RegistrationStatus, RegistrationStatusPhase } from '@ci-hub/common/types';
 
-export type { ProvisioningPhase, DegradedReason, RegistrationStatus };
+export type { ProvisioningPhase, DegradedReason, RegistrationStatus, RegistrationStatusPhase };
 
 export const REGISTRATION_PROGRESS_PHASES = ['paired', 'provisioning'] as const;
+
+/**
+ * The Hub has just started and hasn't read its registration back yet. It says nothing about pairing:
+ * wait for the next answer instead of acting on it (#2590).
+ */
+export function isHubStarting(status: RegistrationStatus): boolean {
+  return status.phase === 'starting';
+}
 
 export function isRegistrationOperational(status: RegistrationStatus): boolean {
   return status.registered;
