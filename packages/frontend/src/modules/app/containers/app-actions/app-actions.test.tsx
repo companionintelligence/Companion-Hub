@@ -822,6 +822,24 @@ describe('AppActions', () => {
     expect(screen.getByRole('link', { name: 'APP_ERROR_OPEN_AI_SETTINGS' })).toHaveAttribute('href', '/settings?tab=ai&section=rocm');
   });
 
+  it('says why the Hub refused an app whose folders nest, instead of its compose file message', () => {
+    hoisted.queryClient.getQueryData.mockReturnValue({
+      message: "The app keeps one of its folders inside another folder it can write to, so the Hub won't start it.",
+      errorCode: 'nested_bind_mounts',
+      errorDetail: 'App "ci-openclaw" mounts a folder inside another folder it can write to: ...',
+    });
+
+    render(
+      <MemoryRouter>
+        <AppActions app={makeApp({ status: 'install_failed' })} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />
+      </MemoryRouter>,
+    );
+
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent('APP_ERROR_NESTED_BIND_MOUNTS');
+    expect(alert).toHaveAttribute('title', 'App "ci-openclaw" mounts a folder inside another folder it can write to: ...');
+  });
+
   it('shows the Cancel button only while installing (not for other transient states)', () => {
     hoisted.queryClient.getQueryData.mockReturnValue(null);
 

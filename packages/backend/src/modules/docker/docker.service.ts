@@ -5,7 +5,7 @@ import { abortError, isAbortError, throwIfAborted } from '@/common/abort';
 import { getAppDataHostPath, resolveAppDataHostRoot } from '@/common/helpers/app-data-path.helper';
 import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
 import { securityGrantsFor } from '@/modules/apps/security-grants';
-import { firstLinkOnTheWay, parseComposeConfigBindMounts, segmentsInside } from './bind-mount-guard';
+import { firstLinkOnTheWay, NestedBindMountsError, parseComposeConfigBindMounts, segmentsInside } from './bind-mount-guard';
 import {
   DEFAULT_APP_COMPOSE_INACTIVITY_TIMEOUT_MS,
   DEFAULT_APP_COMPOSE_TIMEOUT_MINUTES,
@@ -1170,7 +1170,7 @@ export class DockerService {
 
     const nested = findNestedBindMounts(mounts, { grantedHostPaths });
     if (nested.length > 0) {
-      throw new Error(
+      throw new NestedBindMountsError(
         `App "${appName}" mounts a folder inside another folder it can write to: ${describeNestedBindMounts(nested)}. ` +
           'Code in the app could replace the inner folder with a link to anywhere on this computer, and Docker would mount that instead. ' +
           'Give each mount a folder of its own, side by side.',

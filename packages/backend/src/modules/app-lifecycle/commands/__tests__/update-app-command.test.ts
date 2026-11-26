@@ -133,6 +133,51 @@ describe('UpdateAppCommand', () => {
       }
     });
 
+    it("writes the installed version's compose only to take it down and the new version's as any start does", async () => {
+      // A version installed before the Hub refused mounts nested inside a folder the app can write to:
+      // its compose has to be written for the `down`, or the update that brings the new layout can't run.
+      const order: string[] = [];
+      (command as any).ensureAppDir.mockImplementation(async (_urn: string, _form: unknown, options: { forTeardown?: boolean }) => {
+        order.push(options?.forTeardown ? 'prepare-teardown' : 'prepare');
+      });
+      marketplaceService.copyAppFromRepoToInstalled.mockImplementation(async () => {
+        order.push('new-files');
+      });
+
+      await command.execute(appUrn, {});
+
+      expect(order).toEqual(['prepare-teardown', 'new-files', 'prepare']);
+    });
+
+    it('refuses a new version that nests its folders before it touches the running app', async () => {
+      vi.mocked(parseComposeJson).mockReturnValue({
+        services: [
+          {
+            name: 'app',
+            image: 'image',
+            volumes: [
+              { hostPath: '${APP_DATA_DIR}/data', containerPath: '/data' },
+              { hostPath: '${APP_DATA_DIR}/data/linuxbrew', containerPath: '/home/linuxbrew' },
+            ],
+          },
+        ],
+        overrides: [],
+      } as any);
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result).toMatchObject({
+        success: false,
+        rolledBack: true,
+        errorCode: 'nested_bind_mounts_update',
+        message: expect.stringContaining('The installed version is unchanged'),
+        errorDetail: expect.stringContaining('/data/linuxbrew'),
+      });
+      expect(dockerService.composeApp).not.toHaveBeenCalled();
+      expect(dockerService.pullImages).not.toHaveBeenCalled();
+      expect((command as any).ensureAppDir).not.toHaveBeenCalled();
+    });
+
     it('rolls the data back from the backup when a move fails, as it does for a new version that fails', async () => {
       appFilesManager.applyDataMoves.mockRejectedValue(new Error('both places hold files'));
 
