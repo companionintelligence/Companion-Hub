@@ -7,12 +7,19 @@ import { createAppUrn, ipOnAppNetwork } from '@/common/helpers/app-helpers';
 import type { AppUrn } from '@ci-hub/common/types';
 import { writeHealableTextFile } from '@/common/helpers/bind-mount-helpers';
 import { storedExposureForm } from '@ci-hub/common/types';
+import { HUB_FORWARD_AUTH_MIDDLEWARES, publicPathSchema } from '@ci-hub/common/schemas';
 import { Injectable, Inject } from '@nestjs/common';
 import Dockerode from 'dockerode';
 import * as yaml from 'yaml';
 import { ADDRESS_KEPT_STATUSES } from '../apps/app-starting-page';
 import { AppsRepository } from '../apps/apps.repository';
-import { APP_STARTING_MIDDLEWARE, FORWARD_AUTH_MIDDLEWARE } from './builders/traefik-labels.builder';
+import {
+  APP_STARTING_MIDDLEWARE,
+  FORWARD_AUTH_MIDDLEWARE,
+  PUBLIC_PATHS_LABEL,
+  PUBLIC_PATHS_ROUTER_SUFFIX,
+  SW_RESET_MIDDLEWARE,
+} from './builders/traefik-labels.builder';
 import { DOCKERODE } from './constants';
 
 export interface PortExposeRoute {
@@ -213,6 +220,47 @@ function sessionRouter(router: TraefikRouter, priority: number): TraefikRouter {
   };
 }
 
+/** Traefik's matcher for the operator's login-free paths: each one with what is under it (`/hook/...`, not `/hookx`). */
+function publicPathsRule(paths: readonly string[]): string {
+  return paths.map((path) => `Path(\`${path}\`) || PathPrefix(\`${path}/\`)`).join(' || ');
+}
+
+/** The paths in a container's {@link PUBLIC_PATHS_LABEL} that `publicPathSchema` takes, without a trailing `/`. */
+function publicPathsOf(value: string | undefined): string[] {
+  return (value ?? '')
+    .split(',')
+    .map((path) => path.trim())
+    .filter((path) => publicPathSchema.safeParse(path).success)
+    .map((path) => path.replace(/\/+$/, ''));
+}
+
+/** Whether a router's chain holds the Hub login, under either provider's name for it. */
+function hasHubLogin(router: TraefikRouter): boolean {
+  return (router.middlewares ?? []).some((name) => HUB_FORWARD_AUTH_MIDDLEWARES.has(name.trim().toLowerCase()));
+}
+
+/**
+ * The twin of an app router with the Hub login for the paths the operator exempted from it
+ * (`publicPaths`): the same service, entry points and chain without the login, with the rule narrowed
+ * to those paths.
+ *
+ * `priority` is one above the higher of the router's two ranks, as for its `-session` copy
+ * ({@link sessionRouter}). Every router of the app with the login gets a twin ranked that way, a
+ * listing's routes on its other services included, so the twins keep the routers' order: an exempt
+ * path goes to the service its router sends it to, only without the login. Its own `-session` copy
+ * ranks one above it, under the twins and copies of every router that outranks its router.
+ */
+function publicPathsRouter(router: TraefikRouter, pathRule: string, priority: number): TraefikRouter {
+  return {
+    rule: `(${router.rule}) && (${pathRule})`,
+    service: router.service,
+    entryPoints: [...router.entryPoints],
+    middlewares: (router.middlewares ?? []).filter((name) => !HUB_FORWARD_AUTH_MIDDLEWARES.has(name.trim().toLowerCase())),
+    ...(router.tls !== undefined && { tls: router.tls }),
+    priority: Math.min(priority, MAX_COPY_RANK - 1) + 1,
+  };
+}
+
 /** The app's compose project, the name DockerReadFacade.getComposeProjectName gives it. */
 function composeProjectOf(app: { appName: string; appStoreSlug: string }): string {
   return createAppUrn(app.appName, app.appStoreSlug).replace(':', '_');
@@ -293,7 +341,8 @@ export class TraefikConfigService {
    * The Hub's Tailscale node serves every Service to Traefik's `web` entry point, so the hostname
    * picks the app here, and the login answers first, as on every other route of the app. The
    * operator's login-free paths get a twin router without the login, as the app's own routers do
-   * (`TraefikLabelsBuilder.addPublicPathRouters`). A file, not container labels: the hostname is
+   * ({@link publicPathsRouter}). The hostname is the app's alone, so the twin needs no priority: no
+   * other route meets it there. A file, not container labels: the hostname is
    * known only once the tailnet is and labels would mean recreating the app to learn it. No
    * `-session` copies here ({@link sessionRouter}): a Service answers over the tailnet only and
    * nothing on the way keeps a copy of its answers the way Cloudflare does.
@@ -323,9 +372,8 @@ export class TraefikConfigService {
       };
       const paths = route.publicPaths.map((path) => path.replace(/\/+$/, '')).filter(Boolean);
       if (route.requireLogin && paths.length > 0) {
-        const pathRule = paths.map((path) => `Path(\`${path}\`) || PathPrefix(\`${path}/\`)`).join(' || ');
-        config.http.routers[`${id}-public-paths`] = {
-          rule: `(${hostRule}) && (${pathRule})`,
+        config.http.routers[`${id}${PUBLIC_PATHS_ROUTER_SUFFIX}`] = {
+          rule: `(${hostRule}) && (${publicPathsRule(paths)})`,
           service: id,
           entryPoints: ['web'],
           middlewares: open,
@@ -394,7 +442,10 @@ export class TraefikConfigService {
        * By compose project, every app with a container below: its routers on the web entry point, each
        * with the priority Traefik gives it, and the middlewares any of its containers define.
        */
-      const apps = new Map<string, { routers: Array<{ name: string; router: TraefikRouter; priority: number }>; middlewares: Set<string> }>();
+      const apps = new Map<
+        string,
+        { routers: Array<{ name: string; router: TraefikRouter; priority: number }>; middlewares: Set<string>; publicPaths?: string[] }
+      >();
       /**
        * By name, every app router on the web entry point with the highest priority Traefik gives it
        * under that name. See {@link sessionRouter}.
@@ -426,6 +477,13 @@ export class TraefikConfigService {
         if (project && !app) {
           app = { routers: [], middlewares: new Set() };
           apps.set(project, app);
+        }
+        // The operator's login-free paths, on each of the app's containers. While they disagree (one
+        // recreated before another), only the paths all of them name, in whatever order Docker lists
+        // them. A container without the label names none: the operator may have just removed them all.
+        if (app) {
+          const publicPaths = publicPathsOf(labels[PUBLIC_PATHS_LABEL]);
+          app.publicPaths = app.publicPaths ? app.publicPaths.filter((path) => publicPaths.includes(path)) : publicPaths;
         }
 
         // Extract Traefik routing information from labels
@@ -579,6 +637,35 @@ export class TraefikConfigService {
             config.http.middlewares = {};
           }
           Object.assign(config.http.middlewares, middlewares);
+        }
+      }
+
+      // The twins for the operator's login-free paths, after every container's routers: a listing's
+      // routes on the app's other services get one too. A router of that name an app defines keeps it.
+      // Before the copies below, which each twin gets like any app router. A router that answers a
+      // browser's fetch of `/sw.js` with the worker reset gets none: the login decides that fetch.
+      for (const app of apps.values()) {
+        if (!app.publicPaths?.length) {
+          continue;
+        }
+        const pathRule = publicPathsRule(app.publicPaths);
+        for (const name of new Set(app.routers.map((entry) => entry.name))) {
+          const router = config.http.routers[name];
+          const twinName = `${name}${PUBLIC_PATHS_ROUTER_SUFFIX}`;
+          if (
+            !router ||
+            twinName in config.http.routers ||
+            !hasHubLogin(router) ||
+            router.middlewares?.some((middleware) => middleware.trim().toLowerCase() === SW_RESET_MIDDLEWARE)
+          ) {
+            continue;
+          }
+          const twin = publicPathsRouter(router, pathRule, sessionRanks.get(name) ?? ruleRank(router.rule));
+          const priority = twin.priority ?? 0;
+          config.http.routers[twinName] = twin;
+          app.routers.push({ name: twinName, router: twin, priority });
+          // Both of the twin's ranks: it is in this file only, at its priority.
+          sessionRanks.set(twinName, priority);
         }
       }
 

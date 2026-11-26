@@ -9,11 +9,6 @@ interface TraefikLabelsArgs {
   exposureMode: ExposureMode;
   storeId: string;
   enableAuth?: boolean;
-  /**
-   * Paths, and what is under them, served without the Hub login (`publicPaths`, the operator's choice,
-   * each one already checked against `publicPathSchema`). Only read while the login is on.
-   */
-  publicPaths?: string[];
   cloudflareOriginHostname?: string;
   cloudflarePublicHostname?: string;
   localDomain?: string;
@@ -48,9 +43,14 @@ export const EDGE_HEADERS_MIDDLEWARE = 'ci-hub-edge-headers@file';
 /** The Hub's sign-in (cache header, then forward auth) under the file provider. Its `@docker` twin vanishes when the Hub's labels flap. */
 export const FORWARD_AUTH_MIDDLEWARE = 'ci-hub@file';
 /** See `ci-hub-sw-reset` in assets/traefik/dynamic/dynamic.yml. */
-/** The router a Hub router gets for the operator's paths without the login (`addPublicPathRouters`). */
-export const PUBLIC_PATHS_ROUTER_SUFFIX = '-public-paths';
 export const SW_RESET_MIDDLEWARE = 'ci-hub-sw-reset@file';
+/**
+ * The label on an app's containers with the paths the operator exempted from the Hub login, joined by
+ * commas ({@link publicPathsLabels}). Under the Hub's reserved `ci-hub.` prefix, so no app sets it.
+ */
+export const PUBLIC_PATHS_LABEL = 'ci-hub.public-paths';
+/** The router apps.yml holds next to an app router for the operator's paths, without the login. */
+export const PUBLIC_PATHS_ROUTER_SUFFIX = '-public-paths';
 /** What a browser sends when it fetches a service worker script. Nothing else sends this header. */
 const SW_RESET_RULE_SUFFIX = ' && Path(`/sw.js`) && Header(`Service-Worker`, `script`)';
 
@@ -319,6 +319,21 @@ export function labelsOfRoutersLosingTheirChain(leftOut: Iterable<string>, label
   return result;
 }
 
+/**
+ * The operator's `publicPaths` (each one already checked against `publicPathSchema`) as a label for
+ * every container of an app with the Hub login. TraefikConfigService gives every router of the app
+ * with the login a twin for those paths in apps.yml: the same chain without the login, ranked one
+ * above its router, a listing's routes on its other services included. On every container, so those
+ * keep the paths while the main one restarts.
+ *
+ * Not twins in the labels: Traefik ranks a router without a priority by the length of its rule, which
+ * a listing's rule has only once compose fills in `${APP_LOCAL_DOMAIN}` and the like.
+ */
+export function publicPathsLabels({ enableAuth, publicPaths }: { enableAuth: boolean; publicPaths?: readonly string[] }): Record<string, string> {
+  const paths = (publicPaths ?? []).map((path) => path.replace(/\/+$/, '')).filter(Boolean);
+  return enableAuth && paths.length > 0 ? { [PUBLIC_PATHS_LABEL]: paths.join(',') } : {};
+}
+
 export class TraefikLabelsBuilder {
   private labels: Record<string, string | boolean> = {};
   private effectiveMode: ExposureMode;
@@ -420,56 +435,6 @@ export class TraefikLabelsBuilder {
       });
     }
 
-    return this;
-  }
-
-  /**
-   * Gives each router this builder made with the Hub login a twin for the operator's `publicPaths`:
-   * the same host, entry point, service and certificate, the same chain without the login, and a rule
-   * narrowed to those paths. Traefik ranks a router by the length of its rule, so the twin answers
-   * those paths and the router with the login everything else. Each path matches itself and what is
-   * under it (`/hook` and `/hook/...`, not `/hookx`). The service-worker reset routers get none: they
-   * answer one fetch of `/sw.js`, which the login decides.
-   *
-   * Call it after the routers are added. Routers a manifest declares get no twin: their paths are the
-   * manifest's own, and the login stays in front of them (`withHubLoginOnEveryRouter`).
-   */
-  addPublicPathRouters() {
-    const paths = this.params.publicPaths ?? [];
-    if (!this.params.enableAuth || paths.length === 0) {
-      return this;
-    }
-
-    const pathRule = paths
-      .map((path) => path.replace(/\/+$/, ''))
-      .map((path) => `Path(\`${path}\`) || PathPrefix(\`${path}/\`)`)
-      .join(' || ');
-
-    const routers = new Map<string, Record<string, string | boolean>>();
-    for (const [key, value] of Object.entries(this.labels)) {
-      const [, router, option] = HTTP_ROUTER_LABEL.exec(key) ?? [];
-      if (!router || !option) continue;
-      const options = routers.get(router) ?? {};
-      options[option] = value;
-      routers.set(router, options);
-    }
-
-    for (const [router, options] of routers) {
-      const chain = middlewareChain(options.middlewares);
-      if (router.includes(SW_RESET_ROUTER_SUFFIX) || !chain.includes(FORWARD_AUTH_MIDDLEWARE) || typeof options.rule !== 'string') {
-        continue;
-      }
-      const twin = `traefik.http.routers.${router}${PUBLIC_PATHS_ROUTER_SUFFIX}`;
-      for (const [option, value] of Object.entries(options)) {
-        if (option === 'rule' || option === 'middlewares') continue;
-        this.labels[`${twin}.${option}`] = value;
-      }
-      this.labels[`${twin}.rule`] = `(${options.rule}) && (${pathRule})`;
-      const open = chain.filter((name) => name !== FORWARD_AUTH_MIDDLEWARE);
-      if (open.length > 0) {
-        this.labels[`${twin}.middlewares`] = open.join(',');
-      }
-    }
     return this;
   }
 

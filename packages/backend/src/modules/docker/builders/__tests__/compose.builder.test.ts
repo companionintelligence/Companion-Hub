@@ -1257,15 +1257,38 @@ describe('DockerComposeBuilder — the app-starting page on every app router', (
     expect(services.nginx?.labels['traefik.http.routers.nginx-store-id-tailscale.middlewares']).toBe('ci-hub@file,ci-hub-app-starting@file');
   });
 
-  it("gives the operator's paths a router of their own without the login, and keeps it on the rest", async () => {
-    const services = await labelsFor({ exposureMode: 'cloudflare', publicPaths: ['/webhook'] });
+  it("names the operator's paths on the app's containers for apps.yml's twins and keeps the login on every router", async () => {
+    const services = await labelsFor({ exposureMode: 'cloudflare', publicPaths: ['/webhook'] }, [
+      mainService,
+      {
+        name: 'api',
+        image: 'api:latest',
+        internalPort: 8080,
+        extraLabels: {
+          'traefik.enable': true,
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-api.rule': 'Host(`${APP_LOCAL_DOMAIN}`) && PathPrefix(`/webhook`)',
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-api.entrypoints': 'web',
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-api.priority': '100',
+        },
+      },
+    ]);
     const labels = services.nginx?.labels ?? {};
 
-    expect(labels['traefik.http.routers.nginx-store-id-insecure-public-paths.rule']).toBe(
-      '(Host(`nginx-hub1-acme.ci.lan`)) && (Path(`/webhook`) || PathPrefix(`/webhook/`))',
-    );
-    expect(String(labels['traefik.http.routers.nginx-store-id-insecure-public-paths.middlewares']).split(',')).not.toContain('ci-hub@file');
+    // On both, so the listing's route keeps them while the main container restarts.
+    expect(labels['ci-hub.public-paths']).toBe('/webhook');
+    expect(services.api?.labels['ci-hub.public-paths']).toBe('/webhook');
+    // No twin here: one ranked by its own rule outranked the listing's route for `/webhook`.
+    expect(Object.keys({ ...labels, ...services.api?.labels }).filter((key) => key.includes('-public-paths'))).toEqual([]);
     expect(String(labels['traefik.http.routers.nginx-store-id-insecure.middlewares']).split(',')).toContain('ci-hub@file');
+    expect(String(services.api?.labels['traefik.http.routers.nginx-store-id-api.middlewares']).split(',')).toContain('ci-hub@file');
+  });
+
+  it('names no paths when the operator switched the Hub login off: there is no login to skip', async () => {
+    const services = await labelsFor({ exposureMode: 'cloudflare', enableAuth: false, publicPaths: ['/webhook'] });
+
+    expect(services.nginx?.labels).not.toHaveProperty(['ci-hub.public-paths']);
+    // Nor for an app opened on its own port only: Traefik has no route of it.
+    expect((await labelsFor({ exposureMode: 'local', publicPaths: ['/webhook'] })).nginx?.labels).not.toHaveProperty(['ci-hub.public-paths']);
   });
 
   it('leaves the Private VPN router without the login only when the operator switched it off', async () => {
