@@ -158,6 +158,60 @@ it uses port 443, which the Hub keeps for its dashboard, or the port of a runnin
 app with **Tailscale** exposure. If `TAILSCALE_SERVE_USER_DISABLED=true` is set,
 CI-Hub neither publishes nor removes any Serve entry.
 
+### Give each app its own address (Tailscale Services)
+
+On the per-port addresses above, every app shares the Hub's hostname. A browser
+sends every cookie set for a hostname to every port on it, so each app receives
+the others' cookies. Tailscale Serve also hands each port straight to the app's
+container, so the Hub login is not in front of it.
+
+With **Tailscale Services** set up, each Private VPN app gets its own address
+instead, `https://<app>.<tailnet>.ts.net/`. The Hub's own Tailscale device serves
+it to Traefik, where the app's route carries the Hub login like every other
+route, including the operator's login-free paths (`publicPaths`). Until it is set
+up, apps keep their per-port addresses.
+
+Tailscale only lets a **tagged** device host a Service, and tagging a device
+removes its link to the user account it signed in with. So the Services always
+live on the Hub's own `hub-tailscale` container, which signs in as a separate
+tagged device. A host Tailscale client, such as the one on the owner's own
+computer, is left as it is; the Hub starts the container if it is not running.
+
+Setup, in **Settings → Network → Separate addresses for VPN apps**:
+
+1. In the tailnet policy file, add an owner for the tag (default `tag:ci-hub`):
+   ```json
+   "tagOwners": { "tag:ci-hub": ["autogroup:admin"] }
+   ```
+2. Under **Settings → Trust credentials** in the Tailscale admin console, create
+   an OAuth client with write access to **Services**, **Devices (Core)** and
+   **Auth Keys**, and the tag.
+3. Paste its ID and secret into the Hub.
+
+The Hub then signs its device in with the tag (the OAuth secret works as an auth
+key: `?ephemeral=false&preauthorized=true`), and on each sync, for each Private
+VPN app: defines `svc:<app>` through the API (`tcp:443`, the tag, and a comment
+naming this install), serves it from its device to Traefik, approves its own
+device as the host, and writes the app's route to
+`state/traefik/dynamic/tailscale-services.yml`. If another device or Hub already
+owns `svc:<app>`, the Hub uses `svc:<app>-<device>`. When an app stops, or
+Services are turned off, the Hub removes what it served and deletes only the
+Services whose comment names this install.
+
+Who may open a Service is up to the tailnet's policy file. The OAuth client is
+stored in `state/tailscale-oauth.json` (mode 0600). `TAILSCALE_OAUTH_CLIENT_ID` /
+`TAILSCALE_OAUTH_CLIENT_SECRET` (and `TAILSCALE_SERVICES_TAG`) in the env work
+too, but the Hub settings can only remove a client they saved.
+
+Caveats:
+
+- With the default sidecar deployment, that container is also the Hub's main
+  Tailscale device, so the setup turns that device from user-owned into tagged.
+- A `TAILSCALE_AUTHKEY` in the env starts the container through `containerboot`,
+  which signs in with that key. Whether that replaces the tagged login on a later
+  start has not been tested; leave it out on a Hub that uses Services.
+- Hosting a Service needs Tailscale 1.86 or later on the Hub's device.
+
 ## Turn Private VPN off
 
 Two switches in the hub `.env` turn off different parts of Private VPN. Set either

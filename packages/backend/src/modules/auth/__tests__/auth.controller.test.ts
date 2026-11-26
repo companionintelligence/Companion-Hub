@@ -32,6 +32,7 @@ import {
 import { verifyPortalIdToken } from '../portal-token';
 import { SessionManager } from '../session.manager';
 import { signForwardAuthAssertion, signForwardAuthUser, signForwardAuthUserId } from '../utils/forward-auth-signing';
+import { tailscaleServicesStore } from '@/modules/tailscale/tailscale-services.store';
 
 vi.mock('../portal-sso', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../portal-sso')>();
@@ -1264,6 +1265,31 @@ describe('AuthController', () => {
         'Unauthenticated Traefik forward auth request',
         expect.objectContaining({ host: 'jellyfin-myorg.companionintelligence.com' }),
       );
+    });
+
+    // `<label>.<tailnet>.ts.net`'s parent is the tailnet's suffix, not the Hub: the derived origin
+    // above would send the visitor to `https://tail123.ts.net`, which is nothing.
+    it("routes a visitor of a Tailscale Service to the Hub's tailnet dashboard, over HTTPS", async () => {
+      forwardAuthSecrets.resolveAppUrnForHost.mockResolvedValue('memory:official' as never);
+      const appFor = vi.spyOn(tailscaleServicesStore, 'appForServiceHost').mockReturnValue('memory:official' as never);
+      const origin = vi.spyOn(tailscaleServicesStore, 'hubOrigin').mockReturnValue('https://desk.tail123.ts.net');
+      try {
+        const req = {
+          user: undefined,
+          headers: { 'x-forwarded-uri': '/chat?id=4', 'x-forwarded-proto': 'http', 'x-forwarded-host': 'memory.tail123.ts.net' },
+        } as unknown as Request;
+        const res = { status: vi.fn().mockReturnThis(), redirect: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
+
+        await authController.traefik(req, res);
+
+        const location = new URL((res.redirect as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]);
+        expect(location.origin).toBe('https://desk.tail123.ts.net');
+        expect(location.pathname).toBe('/api/auth/edge-sso');
+        expect(location.searchParams.get('redirect')).toBe('https://memory.tail123.ts.net/chat?id=4');
+      } finally {
+        appFor.mockRestore();
+        origin.mockRestore();
+      }
     });
 
     it('routes a tunnel visitor to the PUBLIC hub origin with the app PUBLIC hostname as return address', async () => {

@@ -46,6 +46,11 @@ const createPortExposeAppSchema = z.object({
     .regex(/^[a-zA-Z0-9-]{1,63}$/)
     .optional(),
   publicDomain: z.string().trim().min(1).optional(),
+  /**
+   * The Hub login in front of the port's routes. On unless sent as `false` (`requiresHubLogin`), which
+   * a webhook or an API that others call without signing in needs. Left out of an update: unchanged.
+   */
+  enableAuth: z.boolean().optional(),
 });
 
 export class CreateCustomAppDto extends createZodDto(createCustomAppSchema) {}

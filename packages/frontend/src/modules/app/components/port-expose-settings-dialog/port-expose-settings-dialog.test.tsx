@@ -147,7 +147,7 @@ describe('PortExposeSettingsDialog', () => {
 
   it('saves no domain when the list cannot be loaded, so Companion Portal places the app', async () => {
     DOMAIN_LIST.state = 'failed';
-    renderDialog({ exposureMode: 'local' });
+    renderDialog({ exposureMode: 'local', enableAuth: false });
 
     moveToWeb();
     await save();
@@ -158,9 +158,21 @@ describe('PortExposeSettingsDialog', () => {
     expect(vi.mocked(useDnsAvailability).mock.calls.every(([params]) => params.enabled === false)).toBe(true);
   });
 
-  describe('moving a port onto Public web, which has no Hub sign-in in front', () => {
+  // The sign-in is on by default now: moving such a port onto Public web asks nothing.
+  it('moves a port behind the Hub sign-in onto Public web without asking, and keeps the sign-in', async () => {
+    renderDialog({ exposureMode: 'local', enableAuth: true });
+
+    moveToWeb();
+    await save();
+
+    await waitFor(() => expect(saved).toHaveBeenCalledOnce());
+    expect(screen.queryByTestId('public-port-confirm')).not.toBeInTheDocument();
+    expect(saved.mock.calls[0]?.[0]).toMatchObject({ exposureMode: 'cloudflare', enableAuth: true });
+  });
+
+  describe('moving a port with the Hub sign-in switched off onto Public web', () => {
     it('asks first and saves nothing until the question is answered', async () => {
-      renderDialog({ exposureMode: 'local' });
+      renderDialog({ exposureMode: 'local', enableAuth: false });
 
       moveToWeb();
       await save();
@@ -171,7 +183,7 @@ describe('PortExposeSettingsDialog', () => {
 
     it('saves nothing on Cancel and keeps the settings dialog open on Public web', async () => {
       const onClose = vi.fn();
-      renderDialog({ exposureMode: 'tailscale' }, onClose);
+      renderDialog({ exposureMode: 'tailscale', enableAuth: false }, onClose);
 
       moveToWeb();
       await save();
@@ -185,7 +197,7 @@ describe('PortExposeSettingsDialog', () => {
 
     it('closes only the question on Escape', async () => {
       const onClose = vi.fn();
-      renderDialog({ exposureMode: 'local' }, onClose);
+      renderDialog({ exposureMode: 'local', enableAuth: false }, onClose);
 
       moveToWeb();
       await save();
@@ -198,7 +210,7 @@ describe('PortExposeSettingsDialog', () => {
     });
 
     it('saves the move once the person agrees', async () => {
-      renderDialog({ exposureMode: 'local' });
+      renderDialog({ exposureMode: 'local', enableAuth: false });
 
       moveToWeb();
       await save();

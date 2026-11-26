@@ -138,6 +138,7 @@ import {
 import { extractBearerToken, portalClaimsIdentity, verifyPortalIdToken } from './portal-token';
 import { loadSessionUser, refuseRevokedSessionUser, sessionIdsFromRequest } from './auth.middleware';
 import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate';
+import { tailscaleServicesStore } from '../tailscale/tailscale-services.store';
 
 /** A browser-handoff ticket only has to survive the app handing one URL to the system browser. */
 const BROWSER_HANDOFF_TTL_SECONDS = 60;
@@ -2403,6 +2404,12 @@ export class AuthController {
       // Log at debug because this unauthenticated path could amplify warning floods.
       this.logger.debug(`[edge-sso] no public hostname for forwarded host ${forwardedHost}; sending the visitor to the Hub login`);
       return res.status(302).redirect(new URL('/login', publicHub.origin).toString());
+    } else if (tailscaleServicesStore.appForServiceHost(forwardedHost) && tailscaleServicesStore.hubOrigin()) {
+      // A Private VPN app on its Tailscale Service (`<label>.<tailnet>.ts.net`). Its parent is the
+      // tailnet's own suffix, not the Hub, so the Hub is wherever the sync last found its dashboard
+      // on the tailnet. Serve answers only HTTPS there.
+      hubOrigin = tailscaleServicesStore.hubOrigin() as string;
+      target = `https://${rawHost}${cleanUri}`;
     } else {
       // Preserve the raw host so LAN and tailnet callers keep nonstandard ports.
       // IP literals have no parent domain, so reject them before malformed derivation can return the wrong host or throw.

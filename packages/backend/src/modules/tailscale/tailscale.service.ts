@@ -27,6 +27,10 @@ export interface TailscaleStatus {
   backendState: string | null;
   authUrl: string | null;
   peers?: TailscalePeerDevice[];
+  /** This node's ACL tags (`Self.Tags`); empty for a node signed in with a user account. */
+  tags?: string[];
+  /** This node's stable ID (`Self.ID`), which the Tailscale API takes as a device ID. */
+  stableNodeId?: string | null;
 }
 
 export interface TailscaleServeEntry {
@@ -539,6 +543,8 @@ export class TailscaleService {
         backendState: (status.BackendState as string) || null,
         authUrl: (status.AuthURL as string) || null,
         peers,
+        tags: Array.isArray(self.Tags) ? (self.Tags as unknown[]).filter((tag): tag is string => typeof tag === 'string') : [],
+        stableNodeId: typeof self.ID === 'string' && self.ID ? self.ID : null,
       };
     } catch (error) {
       this.logger.warn(`Failed to parse tailscale status JSON: ${error}`);
@@ -983,6 +989,83 @@ export class TailscaleService {
       return { entries };
     } catch {
       return { entries: [] };
+    }
+  }
+
+  // --- The Hub's own node, which hosts Tailscale Services -------------------------------------
+  //
+  // ⚠ ALWAYS THE SIDECAR, WHATEVER `resolveStrategy` PICKS. A Service host must be a tagged device,
+  // and tagging a device takes it away from the user account it signed in with. On a host-Tailscale
+  // install that device is the owner's own computer, so Services live on the Hub's `hub-tailscale`
+  // container instead, joined as a tagged node of its own, beside the host's client.
+
+  /** `tailscale status` of the Hub's own node; `installed: false` when the container does not answer. */
+  async getServicesNodeStatus(): Promise<TailscaleStatus> {
+    try {
+      const { stdout } = await this.execDocker(['status', '--json'], 10_000);
+      return this.parseStatusJson(stdout, true);
+    } catch (error) {
+      // `tailscale status` exits 1 while signed out but still prints the JSON.
+      const stdout = (error as ExecError)?.stdout?.toString() ?? '';
+      if (stdout.trim().startsWith('{')) return this.parseStatusJson(stdout, true);
+      return this.parseStatusJson('', false);
+    }
+  }
+
+  /** Waits for the container's tailscaled to answer, as `tailscale up` needs. */
+  async waitForServicesNode(): Promise<void> {
+    await this.waitForSidecarDaemon();
+  }
+
+  /**
+   * Signs the Hub's node in as a tagged device with the OAuth client's secret, which `tailscale up`
+   * takes as an auth key (`?ephemeral=false&preauthorized=true`: a node that outlives a restart and
+   * needs no device approval). `--reset` drops the node's earlier settings, and `--force-reauth`
+   * replaces a user login the node may hold.
+   */
+  async joinServicesNodeTagged(clientSecret: string, tag: string): Promise<void> {
+    const authKey = `${clientSecret}?ephemeral=false&preauthorized=true`;
+    const args = ['up', '--reset', '--force-reauth', `--auth-key=${authKey}`, `--advertise-tags=${tag}`, ...this.getTailscaleUpExtraArgs()];
+    try {
+      await this.execDocker(args, 120_000);
+    } catch (error) {
+      // The output can echo the command line, and with it the secret.
+      const output = this.getExecErrorOutput(error).split(clientSecret).join('<secret>');
+      throw new Error(`Signing the Hub's Tailscale node in as ${tag} failed: ${output.slice(0, 500)}`);
+    } finally {
+      this.invalidateStrategyCache();
+      this.invalidateStatusCache();
+    }
+  }
+
+  /** Where the Hub's node sends Service traffic: Traefik's edge address, which routes by Service hostname. */
+  getServicesUpstream(): string {
+    const target = this.serveUpstreamSidecar;
+    return target.includes('://') ? target : `http://${target}`;
+  }
+
+  /** The Services the Hub's node serves, with each one's config as `tailscale serve status --json` prints it. */
+  async getServicesNodeServeConfig(): Promise<Map<string, unknown>> {
+    const { stdout } = await this.execDocker(['serve', 'status', '--json'], 10_000);
+    const data = (stdout.trim() ? JSON.parse(stdout) : {}) as { Services?: Record<string, unknown> };
+    return new Map(Object.entries(data.Services ?? {}));
+  }
+
+  /** Serves `svc:<name>` on 443 from the Hub's node, proxied to `upstream`. */
+  async serveService(name: string, upstream: string): Promise<void> {
+    await this.execDocker(['serve', `--service=${name}`, '--https=443', '--yes', upstream], 30_000);
+    this.logger.log(`Tailscale Service ${name} → ${upstream}`);
+  }
+
+  /** Removes everything the Hub's node serves for `svc:<name>`. A Service it does not serve counts as removed. */
+  async clearServiceOnServicesNode(name: string): Promise<void> {
+    try {
+      await this.execDocker(['serve', 'clear', name], 30_000);
+      this.logger.log(`Tailscale Service ${name} removed from this Hub's node`);
+    } catch (error) {
+      const output = this.getExecErrorOutput(error);
+      if (/not found|no such|does not exist|not serving/i.test(output)) return;
+      throw error;
     }
   }
 }

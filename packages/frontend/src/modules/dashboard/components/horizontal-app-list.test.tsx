@@ -111,7 +111,7 @@ describe('HorizontalAppList', () => {
     const portExpose = (urn: string, name: string, id: number, exposureMode: string): Entry =>
       ({
         info: { urn, name, kind: 'port-expose' },
-        app: { id, status: 'running', exposureMode, config: { kind: 'port-expose', exposureMode } },
+        app: { id, status: 'running', exposureMode, enableAuth: false, config: { kind: 'port-expose', exposureMode } },
       }) as unknown as Entry;
 
     it('says so on the tile of a port on Public web or the Private VPN, and on no other', () => {
