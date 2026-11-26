@@ -269,7 +269,7 @@ function awaitOidcCallback(expectedState: string, signal?: AbortSignal, timeoutM
 /** Authorization codes are single-use. Safari + resume both try the same code. */
 const exchangeByCode = new Map<string, Promise<OidcTokens>>();
 
-async function exchangeCodeOnce(portal: string, code: string, codeVerifier: string): Promise<OidcTokens> {
+async function exchangeCodeOnce(portal: string, code: string, codeVerifier: string, resource?: string): Promise<OidcTokens> {
   const doFetch = await nativeFetch();
   const body = new URLSearchParams({
     grant_type: 'authorization_code',
@@ -277,6 +277,8 @@ async function exchangeCodeOnce(portal: string, code: string, codeVerifier: stri
     redirect_uri: OIDC_REDIRECT_URI,
     code,
     code_verifier: codeVerifier,
+    // The Hub this sign-in is for: Portal addresses the id_token to it (`urn:ci:device:<id>`).
+    ...(resource ? { resource } : {}),
   });
   const res = await doFetch(`${portal}/api/auth/oauth2/token`, {
     method: 'POST',
@@ -309,10 +311,10 @@ async function exchangeCodeOnce(portal: string, code: string, codeVerifier: stri
   };
 }
 
-async function exchangeCode(portal: string, code: string, codeVerifier: string): Promise<OidcTokens> {
+async function exchangeCode(portal: string, code: string, codeVerifier: string, resource?: string): Promise<OidcTokens> {
   const existing = exchangeByCode.get(code);
   if (existing) return existing;
-  const pending = exchangeCodeOnce(portal, code, codeVerifier).catch((err) => {
+  const pending = exchangeCodeOnce(portal, code, codeVerifier, resource).catch((err) => {
     exchangeByCode.delete(code);
     throw err;
   });
@@ -320,14 +322,25 @@ async function exchangeCode(portal: string, code: string, codeVerifier: string):
   return pending;
 }
 
+/** A finished Portal sign-in whose code is not spent yet, and the PKCE verifier that spends it. */
+export interface PortalSignInCode {
+  portal: string;
+  code: string;
+  verifier: string;
+}
+
 /**
- * Run the full OIDC PKCE login against the Portal. On iOS the Portal page is an
- * in-app authentication sheet (iOS Safari session, Android Auth Tab); desktop
- * uses the system browser. Resolves once
- * the user finishes and the `cihub://auth/callback` deep link is captured and
- * exchanged for tokens.
+ * Run the OIDC PKCE sign-in against the Portal, up to the code. On iOS the Portal page is an in-app
+ * authentication sheet (iOS Safari session, Android Auth Tab); desktop uses the system browser.
+ * Resolves once the person finishes and the `cihub://auth/callback` deep link is captured.
+ *
+ * ⚠ THE CODE IS NOT SPENT HERE. The phone signs in before it knows which Hub it is for, and an id_token
+ * Portal addressed to no Hub is one every Hub refuses (a Hub's own web sign-in receives such tokens, so
+ * any Hub could otherwise sign the same person in on another). The Hubs are listed with the code
+ * (`POST /api/users/me/apps/by-code`), and {@link exchangePortalSignIn} spends it once, with the
+ * `resource` of the Hub the person picks.
  */
-export async function loginWithPortalOidc(portalUrl = DEFAULT_PORTAL_URL, options: { signal?: AbortSignal } = {}): Promise<OidcTokens> {
+export async function signInToPortal(portalUrl = DEFAULT_PORTAL_URL, options: { signal?: AbortSignal } = {}): Promise<PortalSignInCode> {
   const portal = normalizePortalUrl(portalUrl);
   const codeVerifier = randomString();
   const codeChallenge = await sha256Challenge(codeVerifier);
@@ -379,9 +392,8 @@ export async function loginWithPortalOidc(portalUrl = DEFAULT_PORTAL_URL, option
 
   try {
     const { code } = await callback;
-    const tokens = await exchangeCode(portal, code, codeVerifier);
     await clearPendingOidc();
-    return tokens;
+    return { portal, code, verifier: codeVerifier };
   } catch (err) {
     if (err instanceof OidcCancelledError) await clearPendingOidc();
     throw err;
@@ -391,11 +403,11 @@ export async function loginWithPortalOidc(portalUrl = DEFAULT_PORTAL_URL, option
 }
 
 /**
- * Finish an OIDC login after iOS relaunched the app from
- * `cihub://auth/callback` (Safari → "Open with Companion Hub").
- * Returns `null` when there is nothing to resume.
+ * Pick up a sign-in after iOS relaunched the app from `cihub://auth/callback` (Safari → "Open with
+ * Companion Hub"), up to the code, as {@link signInToPortal} does. Returns `null` when there is nothing
+ * to resume.
  */
-export async function resumePendingOidcLogin(): Promise<OidcTokens | null> {
+export async function resumePendingPortalSignIn(): Promise<PortalSignInCode | null> {
   const pending = readPendingOidc();
   if (!pending) return null;
   const url = await takePendingOidcCallbackUrl();
@@ -406,7 +418,14 @@ export async function resumePendingOidcLogin(): Promise<OidcTokens | null> {
     await clearPendingOidc();
     throw parsed.error;
   }
-  const tokens = await exchangeCode(pending.portal, parsed.code, pending.verifier);
   await clearPendingOidc();
-  return tokens;
+  return { portal: pending.portal, code: parsed.code, verifier: pending.verifier };
+}
+
+/**
+ * Spend a sign-in's code for the Hub the person picked, naming it as `resource` so Portal addresses the
+ * id_token to that Hub. Once only: Safari and a resume may both try the same code.
+ */
+export async function exchangePortalSignIn(signIn: PortalSignInCode, resource: string): Promise<OidcTokens> {
+  return exchangeCode(normalizePortalUrl(signIn.portal), signIn.code, signIn.verifier, resource);
 }
