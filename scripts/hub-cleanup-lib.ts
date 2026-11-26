@@ -79,7 +79,7 @@ export function isWithinPath(targetPath: string, basePath: string, platform: Nod
 }
 
 /** The volumes the Hub stack declares. The prod compose file pins each to this name. */
-const HUB_STACK_VOLUME_KEYS = ['ci_hub_pgdata', 'ci_hub_app_data', 'hub_tailscale_state'] as const;
+export const HUB_STACK_VOLUME_KEYS = ['ci_hub_pgdata', 'ci_hub_app_data', 'hub_tailscale_state'] as const;
 
 /**
  * True for one of the Hub stack's own volumes, by its whole name: as the prod compose file pins it
@@ -91,21 +91,20 @@ export function isHubStackVolume(volumeName: string): boolean {
   return HUB_STACK_VOLUME_KEYS.some((key) => volumeName === key || HUB_STACK_PROJECT_NAMES.some((project) => volumeName === `${project}_${key}`));
 }
 
+/**
+ * The volumes `cihub uninstall` removes by name: the Hub stack's own by their whole names, and the e2e test
+ * stacks' by their prefixes. The rest of the Hub's volumes go by their compose project label, as in
+ * `cihub reset`, so their names don't matter. A name that only contains a Hub name is someone else's: it
+ * matched by substring and deleted CI-OS's own deploys (`ci-os-hub-staging_ci_hub_pgdata`) and a database
+ * backup kept as `ci_hub_pgdata_backup`.
+ */
 export function isRelatedVolume(volumeName: string): boolean {
   return (
-    volumeName.includes('ci_os_hub') ||
-    volumeName.includes('ci-os-hub') ||
-    // Both legacy prefixes: appliances created `runtipi_*` volumes, and #1143
-    // (c88a83580) renamed the string to `runcihub_` by substring. Docker volume
-    // names are fixed at create time, so only `runtipi_` is actually out there.
-    volumeName.startsWith('runtipi_') ||
-    volumeName.startsWith('runcihub_') ||
     isHubStackVolume(volumeName) ||
     volumeName.startsWith('e2e-') ||
     volumeName.startsWith('test-e2e-') ||
     // The cross-domain e2e stack runs docker-compose.local.yml as project `ci-hub-e2e` (e2e/pre-test-cleanup.sh).
-    volumeName.startsWith('ci-hub-e2e_') ||
-    /^(ci_os_hub|ci-os-hub|ci_hub|ci-hub)[-_].*_data$/.test(volumeName)
+    volumeName.startsWith('ci-hub-e2e_')
   );
 }
 
@@ -616,8 +615,16 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
     docker('rm', '-f', name);
   }
 
-  const volumeOutput = docker('volume', 'ls', '--format', '{{.Name}}');
-  for (const volumeName of parseNames(volumeOutput).filter(isRelatedVolume)) {
+  // Every volume compose made for one of the Hub's own projects, whatever its name (appliances installed as
+  // `runtipi` included, as `cihub reset` takes them), and the ones isRelatedVolume names. A volume plugin can
+  // name a volume outside Docker's charset; like planAppTeardown, leave such a name out of the argv.
+  const hubVolumes = new Set(
+    [
+      ...HUB_STACK_PROJECT_NAMES.flatMap((project) => parseNames(docker('volume', 'ls', ...byComposeProject(project), '--format', '{{.Name}}'))),
+      ...parseNames(docker('volume', 'ls', '--format', '{{.Name}}')).filter(isRelatedVolume),
+    ].filter((name) => DOCKER_OBJECT_NAME.test(name)),
+  );
+  for (const volumeName of hubVolumes) {
     docker('volume', 'rm', volumeName);
   }
 

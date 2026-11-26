@@ -421,7 +421,11 @@ function doctorTunnelTokenStatus(ctx: HubContext): string {
 function printUninstallPlan(plan: AppTeardownPlan) {
   const notes: string[] = [];
   if (plan.projects.length > 0) notes.push(dim("The apps' images are removed too."));
-  notes.push(dim('Then the Hub\'s own containers, volumes, and networks, and every container whose name contains "e2e-".'));
+  notes.push(
+    dim(
+      'Then the Hub\'s own containers and networks, its volumes (every one compose labelled for a Hub project, hub-compose.yml ones included) and every container whose name contains "e2e-".',
+    ),
+  );
   if (!plan.listed) notes.push('Docker did not list its containers, so this list may be incomplete.');
   printAppTeardownPlan('Apps and containers this uninstall removes', plan, notes);
 }
