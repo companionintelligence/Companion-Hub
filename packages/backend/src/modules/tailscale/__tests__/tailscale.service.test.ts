@@ -556,18 +556,22 @@ describe('TailscaleService', () => {
       ].join('\n');
       const fallback = execFileMock.getMockImplementation();
       let refused = false;
-      execFileMock.mockImplementation((cmd: string, args: string[], opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => {
-        if (cmd === '/usr/bin/tailscale' && args[0] === 'up' && !refused) {
-          refused = true;
-          process.nextTick(() => cb(Object.assign(new Error('exit status 1'), { stderr: refusal }), '', refusal));
-          return;
-        }
-        return fallback?.(cmd, args, opts, cb);
-      });
+      execFileMock.mockImplementation(
+        (cmd: string, args: string[], opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => {
+          if (cmd === '/usr/bin/tailscale' && args[0] === 'up' && !refused) {
+            refused = true;
+            process.nextTick(() => cb(Object.assign(new Error('exit status 1'), { stderr: refusal }), '', refusal));
+            return;
+          }
+          return fallback?.(cmd, args, opts, cb);
+        },
+      );
 
       await service.connectWithAuthKey('tskey-auth-testkey');
 
-      const ups = execFileMock.mock.calls.filter(([cmd, args]: [string, string[]]) => cmd === '/usr/bin/tailscale' && args[0] === 'up').map(([, args]) => args);
+      const ups = execFileMock.mock.calls
+        .filter(([cmd, args]: [string, string[]]) => cmd === '/usr/bin/tailscale' && args[0] === 'up')
+        .map(([, args]) => args);
       expect(ups).toHaveLength(2);
       expect(ups[1]).toEqual(['up', '--auth-key', 'tskey-auth-testkey', '--operator=hub', '--ssh', '--advertise-routes=10.5.0.0/24']);
     });
