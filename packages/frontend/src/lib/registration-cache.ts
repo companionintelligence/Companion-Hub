@@ -1,12 +1,20 @@
 import type { RegistrationStatus } from './registration-status';
-import { isRegistrationOperational, requiresDeviceRegistration } from './registration-status';
+import { isHubStarting, isRegistrationOperational, requiresDeviceRegistration } from './registration-status';
 import { fetchRegistrationStatus } from './registration-api';
 
+/**
+ * A Hub that is still starting says nothing about its pairing, so `starting` is passed on as it is and
+ * the cache keeps what it had for the next real answer. The cache can't stand in for it: it keeps only
+ * "registered", not a re-pair that a reload of the pairing page has to come back to.
+ */
 export async function resolveRegistrationStatus(): Promise<RegistrationStatus | null> {
   try {
     const status = await fetchRegistrationStatus();
     if (!status) {
       return getCachedRegistrationStatus();
+    }
+    if (isHubStarting(status)) {
+      return status;
     }
 
     cacheRegistrationStatus(status);

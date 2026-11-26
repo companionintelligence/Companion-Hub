@@ -22,7 +22,7 @@ const { UNPAIRED_CONFIRM_MS, holdLeaveWhenHubUnpaired, useLeaveWhenHubUnpaired }
 const status = (phase: RegistrationStatus['phase']): RegistrationStatus => ({
   phase,
   degradedReasons: [],
-  registered: phase !== 'unregistered' && phase !== 'paired' && phase !== 'provisioning',
+  registered: phase !== 'unregistered' && phase !== 'paired' && phase !== 'provisioning' && phase !== 'starting',
 });
 
 /** Runs the confirmation delay and lets the refetch it starts settle. */
@@ -114,7 +114,7 @@ describe('useLeaveWhenHubUnpaired', () => {
     }
   });
 
-  // A Hub that just started answers `unregistered` once before it reads its registration back.
+  // One answer proves nothing: the next may say the Hub is paired after all.
   it('stays when the next answer says the Hub is paired after all', async () => {
     registration.data = status('unregistered');
     registration.refetch.mockResolvedValue({ data: status('locally_ready') });
@@ -124,6 +124,45 @@ describe('useLeaveWhenHubUnpaired', () => {
 
     expect(registration.refetch).toHaveBeenCalledTimes(1);
     expect(handleSessionExpired).not.toHaveBeenCalled();
+  });
+
+  // A Hub reads its registration back after it starts answering. Without its tunnel token file that
+  // took as long as restarting the tunnel twice. The Hub said `unregistered` the whole time (#2590).
+  it('waits for a Hub that is still starting, however long it takes', async () => {
+    registration.data = status('starting');
+    renderHook(() => useLeaveWhenHubUnpaired());
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10 * UNPAIRED_CONFIRM_MS);
+    });
+
+    expect(registration.refetch).not.toHaveBeenCalled();
+    expect(handleSessionExpired).not.toHaveBeenCalled();
+  });
+
+  it('stays when the next answer says the Hub is starting', async () => {
+    registration.data = status('unregistered');
+    registration.refetch.mockResolvedValue({ data: status('starting') });
+    renderHook(() => useLeaveWhenHubUnpaired());
+
+    await passConfirmDelay();
+
+    expect(registration.refetch).toHaveBeenCalledTimes(1);
+    expect(handleSessionExpired).not.toHaveBeenCalled();
+  });
+
+  it('still leaves once a Hub that was starting turns out to be unpaired', async () => {
+    registration.data = status('starting');
+    registration.refetch.mockResolvedValue({ data: status('unregistered') });
+    const { rerender } = renderHook(() => useLeaveWhenHubUnpaired());
+    await passConfirmDelay();
+    expect(handleSessionExpired).not.toHaveBeenCalled();
+
+    registration.data = status('unregistered');
+    rerender();
+    await passConfirmDelay();
+
+    expect(handleSessionExpired).toHaveBeenCalledTimes(1);
   });
 
   it('leaves a paired Hub alone, whatever its phase', async () => {

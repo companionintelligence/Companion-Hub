@@ -136,6 +136,13 @@ export function describeRegistrationPhase(
     return { lines, failureCount, issueCount };
   }
 
+  if (report.phase === 'starting') {
+    lines.push(
+      `Registration         ${colorize(`${STEP_ICONS.pending} starting`, 'dim')}  ${dim('the Hub is reading its registration; run doctor again in a few seconds')}`,
+    );
+    return { lines, failureCount, issueCount };
+  }
+
   if (report.phase === 'degraded') {
     const label = `degraded (${reasons.join(', ') || 'no reason recorded'})`;
     if (reasons.some((reason) => RE_PAIRING_REASONS.has(reason))) {

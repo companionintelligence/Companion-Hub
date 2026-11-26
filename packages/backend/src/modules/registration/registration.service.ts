@@ -315,6 +315,14 @@ function portalRefusalCode(data: unknown): { code?: string; organizationName?: s
 export class RegistrationService implements OnApplicationBootstrap, OnApplicationShutdown {
   private _currentPhase: ProvisioningPhase = 'unregistered';
   private _degradedReasons: DegradedReason[] = [];
+  /**
+   * Whether this process has read its registration back: `syncPhaseFromDb` read it, a read found no
+   * registration at all, or the phase has moved since. A read that fails doesn't count. Until then `_currentPhase` holds only its
+   * starting value, so the status says `starting` instead of `unregistered`. A paired Hub without its
+   * tunnel token file used to read `unregistered` until boot had written the token back and restarted
+   * `cloudflared` twice, long enough for an open page to sign out and go to pairing (#2590).
+   */
+  private registrationReadBack = false;
   private checkInterval: NodeJS.Timeout | null = null;
   private periodicValidationInterval: NodeJS.Timeout | null = null;
   private consecutiveValidationFailures = 0;
@@ -475,7 +483,9 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     // hostname reach Companion Hub.
     await this.ensureHubRouteFromRegistration();
 
-    // Restore the in-memory phase from durable registration state.
+    // Restore the in-memory phase from durable registration state. A database that can't be read
+    // leaves the Hub `starting` until a later read gets through: saying `unregistered` then would
+    // send a paired Hub's open pages to pairing.
     await this.syncPhaseFromDb();
 
     if (isOperational(this._currentPhase)) {
@@ -540,6 +550,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       if (!org) {
         this._currentPhase = 'unregistered';
         this._degradedReasons = [];
+        this.registrationReadBack = true;
         return;
       }
 
@@ -558,12 +569,14 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         this.logger.warn('Tunnel token missing — transitioning to degraded');
         this._currentPhase = persisted;
         this._degradedReasons = parseDegradedReasons(org.degradedReasons);
+        this.registrationReadBack = true;
         await this.setPhase('degraded', ['tunnel_token_missing'], org.id);
         return;
       }
 
       this._currentPhase = persisted;
       this._degradedReasons = parseDegradedReasons(org.degradedReasons);
+      this.registrationReadBack = true;
     } catch (e) {
       this.logger.debug('Could not sync phase from DB:', e);
     }
@@ -590,6 +603,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
     this._currentPhase = to;
     this._degradedReasons = to === 'degraded' ? reasons : [];
+    this.registrationReadBack = true;
     this.syncSetupCode();
 
     this.logger.info(`Provisioning phase: ${from} → ${to}${reasons.length ? ` (${reasons.join(', ')})` : ''}`);
@@ -609,9 +623,13 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     this.phaseReadCachedAt = Date.now();
   }
 
-  /** Returns the current in-memory registration status snapshot. */
+  /**
+   * Returns the current in-memory registration status snapshot: `starting` while this process has not
+   * read its registration back yet (see `registrationReadBack`).
+   */
   public getRegistrationStatus(): RegistrationStatus {
-    return buildRegistrationStatus(this._currentPhase, this._degradedReasons);
+    const phase = this._currentPhase === 'unregistered' && !this.registrationReadBack ? 'starting' : this._currentPhase;
+    return buildRegistrationStatus(phase, this._degradedReasons);
   }
 
   /**
@@ -800,6 +818,9 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
           return;
         }
         await this.syncPhaseFromDb();
+      } else {
+        // Nothing to restore, so `unregistered` is the answer.
+        this.registrationReadBack = true;
       }
     } catch (error) {
       this.logger.debug('Could not check organization in database:', error);
@@ -827,6 +848,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
 
     if (!registration) {
+      this.registrationReadBack = true;
       await this.stopUnregisteredTunnel();
       return;
     }
@@ -1461,6 +1483,9 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   private async clearLocalRegistration(): Promise<void> {
     // Use `setPhase` for consistent logging. Reset to `unregistered` is always legal.
     await this.setPhase('unregistered');
+    // A reset decides the phase, even in a process that hasn't read its registration back yet, where
+    // `setPhase` above changed nothing.
+    this.registrationReadBack = true;
     this.portalRejectedSince = null;
 
     // Stop validation before removing its registration state.
@@ -1830,6 +1855,15 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         clearedAppEnvFiles: 0,
       };
     }
+    // A paired Hub that hasn't read its registration back yet holds `unregistered` in memory, so the
+    // check above lets it through. Wiping it then would undo a pairing that boot is about to restore.
+    if (!this.registrationReadBack) {
+      return {
+        success: false,
+        message: 'The Hub is still starting and has not read its registration back yet. Try again in a few seconds.',
+        clearedAppEnvFiles: 0,
+      };
+    }
 
     await this.resetRegistration();
     // A fresh setup pairs as a new device, so the ID the Hub registered under goes with it, and the
@@ -2091,6 +2125,21 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
       try {
         await this.retryPendingTunnelCheck();
+
+        // Boot couldn't read the phase back. A status read can't either while the token file is
+        // missing, so without this a paired Hub stays `starting` and Start fresh stays refused. Read the
+        // stored phase before the check below takes the row for a new pairing and resets it to `locally_ready`.
+        if (!this.registrationReadBack) {
+          await this.syncPhaseFromDb();
+          if (isOperational(this._currentPhase)) {
+            if (this.checkInterval) {
+              clearInterval(this.checkInterval);
+              this.checkInterval = null;
+            }
+            this.startPeriodicValidation();
+            return;
+          }
+        }
 
         const registered = await this.checkRegistrationWithCloud();
         if (registered) {
