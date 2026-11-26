@@ -56,7 +56,8 @@ HUB_INFERENCE_URL=http://ci-hub:3000/api/inference/v1
   "dynamic_config": true,
   "created_at": 1769810550000,
   "updated_at": 1769810550000,
-  "force_pull": false
+  "force_pull": false,
+  "data_moves": []
 }",
   "/data/apps/test/test2/data": null,
   "/data/apps/test/test2/docker-compose.json": "{
@@ -83,14 +84,10 @@ HUB_INFERENCE_URL=http://ci-hub:3000/api/inference/v1
     networks:
       test2_test_network:
         gw_priority: 0
-      ci-hub_network:
-        gw_priority: 1
-      ci-os-hub_network:
-        gw_priority: 0
     environment:
       TEST: test
     ports:
-      - \${APP_PORT}:80
+      - 127.0.0.1:\${APP_PORT}:80
     labels:
       ci-hub.managed: true
       ci-hub.appurn: test2:test
@@ -99,12 +96,6 @@ HUB_INFERENCE_URL=http://ci-hub:3000/api/inference/v1
     env_file:
       - /app-data/test/test2/app.env
 networks:
-  ci-hub_network:
-    name: ci-hub_network
-    external: true
-  ci-os-hub_network:
-    name: ci-os-hub_network
-    external: true
   test2_test_network:
     name: test2_test_network
     external: false
@@ -148,7 +139,8 @@ networks:
   "dynamic_config": true,
   "created_at": 1769810550000,
   "updated_at": 1769810550000,
-  "force_pull": false
+  "force_pull": false,
+  "data_moves": []
 }",
   "/data/repos/test/apps/test2/data": null,
   "/data/repos/test/apps/test2/docker-compose.json": "{
@@ -229,7 +221,8 @@ HUB_INFERENCE_URL=http://ci-hub:3000/api/inference/v1
   "dynamic_config": true,
   "created_at": 1769810550000,
   "updated_at": 1769810550000,
-  "force_pull": false
+  "force_pull": false,
+  "data_moves": []
 }",
   "/data/apps/test/test/data": null,
   "/data/apps/test/test/docker-compose.json": "{
@@ -256,14 +249,10 @@ HUB_INFERENCE_URL=http://ci-hub:3000/api/inference/v1
     networks:
       test_test_network:
         gw_priority: 0
-      ci-hub_network:
-        gw_priority: 1
-      ci-os-hub_network:
-        gw_priority: 0
     environment:
       TEST: test
     ports:
-      - \${APP_PORT}:80
+      - 127.0.0.1:\${APP_PORT}:80
     labels:
       ci-hub.managed: true
       ci-hub.appurn: test:test
@@ -272,12 +261,6 @@ HUB_INFERENCE_URL=http://ci-hub:3000/api/inference/v1
     env_file:
       - /app-data/test/test/app.env
 networks:
-  ci-hub_network:
-    name: ci-hub_network
-    external: true
-  ci-os-hub_network:
-    name: ci-os-hub_network
-    external: true
   test_test_network:
     name: test_test_network
     external: false
@@ -321,7 +304,8 @@ networks:
   "dynamic_config": true,
   "created_at": 1769810550000,
   "updated_at": 1769810550000,
-  "force_pull": false
+  "force_pull": false,
+  "data_moves": []
 }",
   "/data/repos/test/apps/test/data": null,
   "/data/repos/test/apps/test/docker-compose.json": "{
@@ -452,7 +436,8 @@ HUB_INFERENCE_URL=http://ci-hub:3000/api/inference/v1
   "dynamic_config": true,
   "created_at": 1769810550000,
   "updated_at": 1769810550000,
-  "force_pull": false
+  "force_pull": false,
+  "data_moves": []
 }",
   "/data/apps/test/app1/data": null,
   "/data/apps/test/app1/docker-compose.json": "{
@@ -479,14 +464,10 @@ HUB_INFERENCE_URL=http://ci-hub:3000/api/inference/v1
     networks:
       app1_test_network:
         gw_priority: 0
-      ci-hub_network:
-        gw_priority: 1
-      ci-os-hub_network:
-        gw_priority: 0
     environment:
       TEST: test
     ports:
-      - \${APP_PORT}:80
+      - 127.0.0.1:\${APP_PORT}:80
     labels:
       ci-hub.managed: true
       ci-hub.appurn: app1:test
@@ -495,12 +476,6 @@ HUB_INFERENCE_URL=http://ci-hub:3000/api/inference/v1
     env_file:
       - /app-data/test/app1/app.env
 networks:
-  ci-hub_network:
-    name: ci-hub_network
-    external: true
-  ci-os-hub_network:
-    name: ci-os-hub_network
-    external: true
   app1_test_network:
     name: app1_test_network
     external: false
@@ -543,7 +518,8 @@ networks:
   "dynamic_config": true,
   "created_at": 1769810550000,
   "updated_at": 1769810550000,
-  "force_pull": false
+  "force_pull": false,
+  "data_moves": []
 }",
   "/data/apps/test/app2/data": null,
   "/data/apps/test/app2/docker-compose.json": "{
@@ -570,14 +546,10 @@ networks:
     networks:
       app2_test_network:
         gw_priority: 0
-      ci-hub_network:
-        gw_priority: 1
-      ci-os-hub_network:
-        gw_priority: 0
     environment:
       TEST: test
     ports:
-      - \${APP_PORT}:80
+      - 127.0.0.1:\${APP_PORT}:80
     labels:
       ci-hub.managed: true
       ci-hub.appurn: app2:test
@@ -586,12 +558,6 @@ networks:
     env_file:
       - /app-data/test/app2/app.env
 networks:
-  ci-hub_network:
-    name: ci-hub_network
-    external: true
-  ci-os-hub_network:
-    name: ci-os-hub_network
-    external: true
   app2_test_network:
     name: app2_test_network
     external: false
@@ -634,7 +600,8 @@ networks:
   "dynamic_config": true,
   "created_at": 1769810550000,
   "updated_at": 1769810550000,
-  "force_pull": false
+  "force_pull": false,
+  "data_moves": []
 }",
   "/data/apps/test/app3/data": null,
   "/data/apps/test/app3/docker-compose.json": "{
@@ -661,14 +628,10 @@ networks:
     networks:
       app3_test_network:
         gw_priority: 0
-      ci-hub_network:
-        gw_priority: 1
-      ci-os-hub_network:
-        gw_priority: 0
     environment:
       TEST: test
     ports:
-      - \${APP_PORT}:80
+      - 127.0.0.1:\${APP_PORT}:80
     labels:
       ci-hub.managed: true
       ci-hub.appurn: app3:test
@@ -677,12 +640,6 @@ networks:
     env_file:
       - /app-data/test/app3/app.env
 networks:
-  ci-hub_network:
-    name: ci-hub_network
-    external: true
-  ci-os-hub_network:
-    name: ci-os-hub_network
-    external: true
   app3_test_network:
     name: app3_test_network
     external: false
@@ -726,7 +683,8 @@ networks:
   "dynamic_config": true,
   "created_at": 1769810550000,
   "updated_at": 1769810550000,
-  "force_pull": false
+  "force_pull": false,
+  "data_moves": []
 }",
   "/data/repos/test/apps/app1/data": null,
   "/data/repos/test/apps/app1/docker-compose.json": "{
@@ -775,7 +733,8 @@ networks:
   "dynamic_config": true,
   "created_at": 1769810550000,
   "updated_at": 1769810550000,
-  "force_pull": false
+  "force_pull": false,
+  "data_moves": []
 }",
   "/data/repos/test/apps/app2/data": null,
   "/data/repos/test/apps/app2/docker-compose.json": "{
@@ -824,7 +783,8 @@ networks:
   "dynamic_config": true,
   "created_at": 1769810550000,
   "updated_at": 1769810550000,
-  "force_pull": false
+  "force_pull": false,
+  "data_moves": []
 }",
   "/data/repos/test/apps/app3/data": null,
   "/data/repos/test/apps/app3/docker-compose.json": "{
