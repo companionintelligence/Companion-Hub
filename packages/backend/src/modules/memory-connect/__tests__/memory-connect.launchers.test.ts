@@ -502,6 +502,16 @@ describe("launcher selection — ci-memory's port on 127.0.0.1 only", () => {
     }
   });
 
+  // Browsers resolve every `.localhost` name to loopback, so that browser is on the Hub's computer too.
+  it('keeps Connect for a browser on a .localhost name', async () => {
+    const { service } = makeService({ ...hubComputerOnly, internalIp: '0.0.0.0' });
+
+    const status = await service.getStatus(APP, { host: 'hub.localhost' });
+
+    expect(status.connectable).toBe(true);
+    expect(status.reason).toBeNull();
+  });
+
   it('still says provider_local_only to a confirmed remote caller', async () => {
     const { service } = makeService(hubComputerOnly);
 

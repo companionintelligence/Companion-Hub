@@ -196,6 +196,15 @@ function isLoopbackHostname(hostname: string | null | undefined): boolean {
 }
 
 /**
+ * Whether a browser that opened the Hub on this name is on the Hub's own computer: a loopback name, or a
+ * name under `.localhost`, which browsers resolve to loopback too (RFC 6761). Such a browser opens a port
+ * published on 127.0.0.1.
+ */
+function namesOwnComputer(hostname: string | null | undefined): boolean {
+  return isLoopbackHostname(hostname) || Boolean(hostname?.toLowerCase().endsWith('.localhost'));
+}
+
+/**
  * `start` refused because ci-memory's consent page has no address this browser can open. The controller
  * lands the browser on the Hub with its own marker rather than the generic "not ready yet" one.
  */
@@ -1051,7 +1060,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     // ci-memory's port answers on 127.0.0.1 unless the operator opened it on the network, so its consent page
     // opens in a browser on the Hub's own computer and nowhere else. Sent anywhere else, the browser ends on
     // a dead address: its own machine, or the Hub's LAN or tailnet name on a port nothing listens on.
-    if (input.providerOnHostPort && input.providerPortOnLoopback && !isLoopbackHostname(this.hostnameOf(input.origin?.host))) {
+    if (input.providerOnHostPort && input.providerPortOnLoopback && !namesOwnComputer(this.hostnameOf(input.origin?.host))) {
       this.logger.warn(
         `[MemoryConnect] ${input.appUrn}: CI Memory's port is open on this machine only; a caller on ${this.hostnameOf(input.origin?.host) ?? 'an unknown host'} cannot open its consent page`,
       );
@@ -1217,7 +1226,8 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
 
     const callerHostname = this.hostnameOf(callerHost);
 
-    if (isLoopbackHostname(callerHostname)) {
+    // A `.localhost` name is the browser's own computer too, so it opens 127.0.0.1 as written.
+    if (namesOwnComputer(callerHostname)) {
       return consent.origin;
     }
 

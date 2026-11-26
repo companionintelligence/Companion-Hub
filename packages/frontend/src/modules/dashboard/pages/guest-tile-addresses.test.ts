@@ -115,6 +115,14 @@ describe('guestTileAddresses', () => {
     );
   });
 
+  // The Service answers on 443 of its own name, so it needs no port of the app's.
+  it('links a Private VPN app on its own Tailscale Service when the app has no port', () => {
+    const data = tile({ exposureMode: 'tailscale', port: 0, publicUrl: undefined, tailscaleServiceLabel: 'kuma' }, { port: undefined });
+
+    expect(offered(data, 'hub.tailnet-abc.ts.net')).toEqual(['https://kuma.tailnet-abc.ts.net/']);
+    expect(offered(tile({ ...data.app, tailscaleServiceLabel: undefined }, { port: undefined }), 'hub.tailnet-abc.ts.net')).toEqual([]);
+  });
+
   it('keeps the per-port address for a Private VPN app with no Service, and offers no Service off the tailnet', () => {
     const service = tile({ exposureMode: 'tailscale', openPort: true, publicUrl: undefined, tailscaleServiceLabel: 'kuma' });
 

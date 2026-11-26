@@ -257,6 +257,8 @@ describe('MemoryConnectService.startConnect with a loopback ci-memory address', 
       await expect(service.startConnect('ci-openclaw:local', undefined, 'user-1', { host })).rejects.toMatchObject({ hubComputerOnly: true });
     }
     expect(await consentOrigin(service, '127.0.0.1:5002')).toBe('http://127.0.0.1:8642');
+    // A `.localhost` name resolves to loopback in the browser, so it is the Hub's own computer as well.
+    expect(await consentOrigin(service, 'hub.localhost')).toBe('http://127.0.0.1:8642');
   });
 
   it('leaves a routable ci-memory address alone for every caller', async () => {
