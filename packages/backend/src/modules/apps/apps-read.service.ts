@@ -10,12 +10,13 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable, Optional } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { type AppServiceFailure, CURRENT_SCHEMA_VERSION, parseInstalledComposeJson } from '@ci-hub/common/schemas';
-import type { AppUrn } from '@ci-hub/common/types';
+import { type AppUrn, portAnswersNetwork } from '@ci-hub/common/types';
 import { hasUpdateAvailable } from '@ci-hub/common/validation';
 import { MarketplaceService } from '../marketplace/marketplace.service';
 import { PortAllocationRepository } from '../network/port-allocation.repository';
 import { LifecycleJobService } from '../app-lifecycle/lifecycle-job.service';
 import { RegistrationService } from '../registration/registration.service';
+import { tailscaleServicesStore } from '../tailscale/tailscale-services.store';
 import { guestPublicUrl } from './app-public-routing.helpers';
 import { AppFilesManager } from './app-files-manager';
 import { AppsRepository } from './apps.repository';
@@ -259,11 +260,19 @@ export class AppsReadService {
     // setting is asked here too: while the dashboard is off, no visitor is handed one.
     const hub = this.configurationService.getConfig().userSettings.guestDashboard ? await this.guestRoutingNames() : null;
     const refused = await this.publicAddressRefusals();
+    const services = tailscaleServicesStore.publishedServices();
 
-    return populated.map((entry) => ({
-      ...entry,
-      publicUrl: hub ? guestPublicUrl(entry.app, entry.info, hub, refused(createAppUrn(entry.app.appName, entry.app.appStoreSlug))) : null,
-    }));
+    return populated.map((entry) => {
+      const appUrn = createAppUrn(entry.app.appName, entry.app.appStoreSlug);
+      return {
+        ...entry,
+        publicUrl: hub ? guestPublicUrl(entry.app, entry.info, hub, refused(appUrn)) : null,
+        // The guest's record carries no form, so the tile can't tell this from the row: a port on 127.0.0.1 answers no other computer.
+        hostPortOnNetwork: portAnswersNetwork(entry.app, entry.info),
+        // Only the first label of `<label>.<tailnet>.ts.net`: this route takes no sign-in and the tailnet's name is not the guest's to read.
+        tailscaleServiceLabel: services.get(appUrn)?.fqdn.split('.')[0] || null,
+      };
+    });
   }
 
   /** Whether the last answered sync refused an app its platform hostname: that name has no DNS record, so a guest must not be sent there. */

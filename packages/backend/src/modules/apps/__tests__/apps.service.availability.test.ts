@@ -138,6 +138,8 @@ describe('AppsService.checkAppAvailability', () => {
     ctx.mockApp.exposureMode = 'local';
     ctx.mockApp.openPort = true;
     ctx.mockApp.port = 3000;
+    // Its port opened on the network ("Open this app's port on your network"), so the LAN address answers.
+    ctx.mockApp.config = { exposureMode: 'local', openPort: true, portOnNetwork: true };
 
     const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
 
@@ -164,6 +166,7 @@ describe('AppsService.checkAppAvailability', () => {
     ctx.mockApp.exposureMode = 'local';
     ctx.mockApp.openPort = false;
     ctx.mockApp.port = 3000;
+    ctx.mockApp.config = { exposureMode: 'local', openPort: false, portOnNetwork: true };
 
     const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
 
@@ -176,12 +179,55 @@ describe('AppsService.checkAppAvailability', () => {
     ctx.mockApp.exposureMode = 'local';
     ctx.mockApp.openPort = true;
     ctx.mockApp.port = 3000;
+    ctx.mockApp.config = { exposureMode: 'local', openPort: true, portOnNetwork: true };
     ctx.mockConfig.userSettings.internalIp = '::1';
 
     const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
 
     expect(result.appUrl).toBe('http://[::1]:3000');
     expect(mockedAxiosGet).not.toHaveBeenCalled();
+  });
+
+  // Compose publishes the port on 127.0.0.1 unless the operator opened it on the network. The LAN address
+  // then refuses the connection, from the Hub's own computer too, so Open goes to loopback.
+  describe('an app whose port the operator did not open on the network', () => {
+    it('opens on loopback in local mode and offers no LAN address', async () => {
+      ctx.mockApp.exposureMode = 'local';
+      ctx.mockApp.openPort = true;
+      ctx.mockApp.port = 3000;
+      ctx.mockApp.config = { exposureMode: 'local', openPort: true };
+
+      const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+      expect(result.available).toBe(true);
+      expect(result.appUrl).toBe('http://127.0.0.1:3000');
+      expect(result.localUrl).toBeUndefined();
+      expect(mockedAxiosGet).not.toHaveBeenCalled();
+    });
+
+    it('opens on loopback with the switch turned off again', async () => {
+      ctx.mockApp.exposureMode = 'local';
+      ctx.mockApp.port = 3000;
+      ctx.mockApp.config = { exposureMode: 'local', openPort: true, portOnNetwork: false };
+
+      const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+      expect(result.appUrl).toBe('http://127.0.0.1:3000');
+      expect(result.localUrl).toBeUndefined();
+    });
+
+    it('falls back to loopback, not the LAN address, on Public web with no tunnel token', async () => {
+      ctx.mockApp.exposureMode = 'cloudflare';
+      ctx.mockApp.localSubdomain = 'myapp';
+      ctx.mockApp.exposedLocal = true;
+      ctx.mockApp.config = { exposureMode: 'cloudflare', exposedLocal: true };
+      ctx.moduleRefMock.get.mockReturnValue({ getTunnelToken: () => null });
+
+      const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+      expect(result.appUrl).toBe('http://127.0.0.1:8080');
+      expect(result.localUrl).toBeUndefined();
+    });
   });
 
   describe('an app whose host port stays on loopback', () => {
@@ -244,6 +290,7 @@ describe('AppsService.checkAppAvailability', () => {
     ctx.mockApp.exposureMode = 'cloudflare';
     ctx.mockApp.localSubdomain = 'myapp';
     ctx.mockApp.exposedLocal = true;
+    ctx.mockApp.config = { exposureMode: 'cloudflare', exposedLocal: true, portOnNetwork: true };
     ctx.moduleRefMock.get.mockReturnValue({ getTunnelToken: () => null });
 
     const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);

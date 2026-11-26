@@ -849,6 +849,8 @@ export type GuestAppsDto = {
             pendingRestart: boolean;
             ignoredVersion: number;
             publicUrl?: string;
+            hostPortOnNetwork?: boolean;
+            tailscaleServiceLabel?: string;
         };
         info: {
             id: string;

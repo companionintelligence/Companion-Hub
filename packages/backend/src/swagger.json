@@ -11131,6 +11131,13 @@
                     "publicUrl": {
                       "nullable": true,
                       "type": "string"
+                    },
+                    "hostPortOnNetwork": {
+                      "type": "boolean"
+                    },
+                    "tailscaleServiceLabel": {
+                      "nullable": true,
+                      "type": "string"
                     }
                   },
                   "required": [

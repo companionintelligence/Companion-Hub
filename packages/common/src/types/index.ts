@@ -61,6 +61,8 @@ export {
   servedExposureMode,
   storedExposureForm,
   storedHostPortForm,
+  storedMainPortOnNetwork,
+  portAnswersNetwork,
 } from '../public-web/exposure.js';
 export { buildTailscaleNodeFqdn, buildTailscalePortHost, buildTailscalePortUrl, buildTailscaleWebIdentity } from '../tailscale/identity.js';
 export type { DesktopReleaseManifest } from './desktop-release.js';

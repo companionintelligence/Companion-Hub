@@ -1,6 +1,5 @@
 import type { GuestAppsDto } from '@/api-client';
 import { hasDirectLocalAccess, isLoopbackHost, resolveReachableHubHost } from '@/modules/app/components/app-access-points/app-access-points';
-import { hostPortStaysOnLoopback } from '@ci-hub/common/schemas';
 
 const LOOPBACK_HOST = '127.0.0.1';
 const TAILNET_HOST_SUFFIX = '.ts.net';
@@ -15,7 +14,9 @@ export interface GuestTileAddress {
  * The host a guest can reach an app's port on, or `null` when there is none.
  *
  * `127.0.0.1` is the guest's own computer, so it is right only for a browser on the Hub. From a LAN
- * or tailnet address, the name the browser used to reach this page is one it can reach. From the
+ * or tailnet address, the name the browser used to reach this page is one it can reach, but only for
+ * a port the operator opened on the network: any other is published on 127.0.0.1 and a Private VPN
+ * app's always is (`portAnswersNetwork`, which the Hub answers as `hostPortOnNetwork`). From the
  * public hostname nothing is: the tunnel carries 443 only.
  */
 function guestPortHost(data: GuestAppsDto['installed'][number], viewerHostname: string, publicDomain: string): string | null {
@@ -23,8 +24,7 @@ function guestPortHost(data: GuestAppsDto['installed'][number], viewerHostname: 
     return LOOPBACK_HOST;
   }
 
-  // A Private VPN app's port is on loopback at most: Tailscale Serve holds it at the tailnet address (`publishesMainPortOnNetwork`).
-  if (hostPortStaysOnLoopback(data.info) || data.app.exposureMode === 'tailscale') {
+  if (data.app.hostPortOnNetwork !== true) {
     return null;
   }
 
@@ -55,14 +55,23 @@ export function guestTileAddresses(input: {
   }
 
   const directPort = app.port ?? info.port ?? null;
-  if (!directPort) {
+
+  // On the node's own name Tailscale Serve holds a Private VPN app's port, over HTTPS and whether or not the host port is open.
+  // An app on its own Tailscale Service answers on 443 of `<label>.<tailnet>.ts.net` instead. Nothing listens on that port.
+  const viewer = input.viewerHostname.toLowerCase().replace(/\.+$/, '');
+  if (app.exposureMode === 'tailscale' && viewer.endsWith(TAILNET_HOST_SUFFIX)) {
+    // `<node>.<tailnet>.ts.net`: the Service is on the same tailnet as the name this page was opened on.
+    const tailnet = viewer.split('.').length >= 4 ? viewer.slice(viewer.indexOf('.') + 1) : null;
+    const service = app.tailscaleServiceLabel && tailnet ? `${app.tailscaleServiceLabel.toLowerCase()}.${tailnet}` : null;
+    if (service) {
+      addresses.push({ key: 'vpn', url: `https://${service}${urlSuffix || '/'}`, label: service });
+    } else if (directPort) {
+      addresses.push({ key: 'vpn', url: `https://${viewer}:${directPort}${urlSuffix}`, label: `${viewer}:${directPort}` });
+    }
     return addresses;
   }
 
-  // On the node's own name Tailscale Serve holds a Private VPN app's port, over HTTPS and whether or not the host port is open.
-  const viewer = input.viewerHostname.toLowerCase().replace(/\.+$/, '');
-  if (app.exposureMode === 'tailscale' && viewer.endsWith(TAILNET_HOST_SUFFIX)) {
-    addresses.push({ key: 'vpn', url: `https://${viewer}:${directPort}${urlSuffix}`, label: `${viewer}:${directPort}` });
+  if (!directPort) {
     return addresses;
   }
 

@@ -77,6 +77,26 @@ describe('GuestDashboard', () => {
     expect(within(link).getByTestId('app-logo-monogram')).toHaveTextContent('F');
   });
 
+  // A tile with no address this browser can open has no menu, so it must not look like a button either (#2614).
+  it('draws a tile with nothing to open without the pointer and hover of one that opens a menu', async () => {
+    const plain = guestApp(2, 'Backup Agent', 'backup-agent:ci-marketplace', 'Runs in the background');
+    answers.apps = () =>
+      Promise.resolve({
+        installed: [guestApp(1, 'Immich', 'immich:ci-marketplace', 'Photos'), { ...plain, info: { ...plain.info, no_gui: true } }],
+      });
+    answers.links = () => Promise.resolve({ links: [] });
+
+    renderDashboard();
+
+    const opens = (await screen.findByText('Immich')).closest('[role="button"]');
+    expect(opens).not.toBeNull();
+    expect(opens?.firstElementChild).toHaveClass('cursor-pointer');
+
+    const name = screen.getByText('Backup Agent');
+    expect(name.closest('[role="button"]')).toBeNull();
+    expect(name.closest('.cursor-pointer')).toBeNull();
+  });
+
   it('shows no tile until both lists have arrived', async () => {
     let releaseApps: (value: unknown) => void = () => {};
     answers.apps = () => new Promise((resolve) => (releaseApps = resolve));

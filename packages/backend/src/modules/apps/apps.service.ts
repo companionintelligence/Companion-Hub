@@ -7,10 +7,10 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Inject, Injectable, forwardRef } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
-import { type AppInfo, hostPortStaysOnLoopback, LOOPBACK_HOST_PORT_INTERFACE } from '@ci-hub/common/schemas';
+import { type AppInfo, LOOPBACK_HOST_PORT_INTERFACE } from '@ci-hub/common/schemas';
 import type { App } from '@/core/database/drizzle/types';
 import type { AppUrn } from '@ci-hub/common/types';
-import { buildPublicWebIdentity, normalizeStoredHostname, publishesHostPort, servedExposureMode, storedHostPortForm } from '@ci-hub/common/types';
+import { buildPublicWebIdentity, normalizeStoredHostname, portAnswersNetwork } from '@ci-hub/common/types';
 import axios from 'axios';
 import { httpsGetExcerpt, resolveAtZoneNameservers, type ZoneAnswer } from '../registration/public-reachability';
 import { MarketplaceService } from '../marketplace/marketplace.service';
@@ -32,9 +32,10 @@ import { createAppUrn } from '@/common/helpers/app-helpers';
 /**
  * Verdict of an app-availability probe.
  *
- * `appUrl` is the app's PRIMARY route — the public tunnel address for an exposed
- * app, the LAN address for a locally-exposed one — and is what `available`
- * describes. `localUrl` is the app's direct LAN address when it has one, and is
+ * `appUrl` is the app's PRIMARY route and is what `available` describes: the public
+ * tunnel address for an exposed app, its host-port address for a locally-exposed one
+ * (127.0.0.1 unless the port is open on the network). `localUrl` is the app's
+ * direct LAN address when another computer can reach it there. It is
  * deliberately independent of the verdict: it is present on failures too, because
  * a broken tunnel says nothing about whether the app answers on the local network.
  * Consumers use it as the fallback route when the primary one is unreachable.
@@ -400,11 +401,13 @@ function buildTailscalePortUrl(nodeFqdn?: string | null, port?: number | null, s
 }
 
 /**
- * Host for an app's direct `host:port` address. An app whose host port stays on loopback answers
- * only there (see `hostPortStaysOnLoopback`), so its LAN address would refuse the connection.
+ * Host for an app's direct `host:port` address. Compose publishes the port on 127.0.0.1 unless the
+ * operator opened it on the network. It always does for an app whose host port stays on loopback
+ * (`portAnswersNetwork`). Its LAN address then refuses the connection, from the
+ * Hub's own computer too.
  */
-function directAccessHost(info: AppInfo, internalIp?: string | null): string {
-  return hostPortStaysOnLoopback(info) ? LOOPBACK_HOST_PORT_INTERFACE : resolveBrowserHost(internalIp);
+function directAccessHost(app: Parameters<typeof portAnswersNetwork>[0], info: AppInfo, internalIp?: string | null): string {
+  return portAnswersNetwork(app, info) ? resolveBrowserHost(internalIp) : LOOPBACK_HOST_PORT_INTERFACE;
 }
 
 @Injectable()
@@ -531,21 +534,14 @@ export class AppsService {
 
   /**
    * The app's direct LAN address (`http(s)://<internalIp>:<port><url_suffix>`), or
-   * undefined when it has no directly reachable port.
+   * undefined when another computer can't reach the app on its port.
    *
-   * Deliberately mirrors `hasDirectLocalAccess` in the frontend's
-   * `app-access-points.tsx` rather than the looser test used by
-   * {@link probeAppAvailability} below, because this value is offered to the user
-   * as a route to click. An app with a stored install form is judged by the rule
-   * compose binds the host port by (`publishesHostPort`): a Public Web form with a
-   * closed port and no `exposedLocal` binds none. A Private VPN app never has one on
-   * the LAN: Tailscale Serve holds its port at the tailnet address, so compose
-   * binds it on 127.0.0.1 at most (`publishesMainPortOnNetwork`).
-   *
-   * A record with no form falls back to the row columns, where `exposed_local` is
-   * true for any exposable app installed without exposure settings, so
-   * **pre-`exposureMode` installs** with a dynamic config qualify only via
-   * `openPort` / `exposedLocal`.
+   * Offered to the user as a route to click, so it follows where compose publishes the
+   * host port (`portAnswersNetwork`): on every interface only when the operator
+   * opened it on the network ("Open this app's port on your network"), on 127.0.0.1
+   * otherwise. A Private VPN app's port is on 127.0.0.1 at most, because Tailscale Serve
+   * holds it at the tailnet address. So is the port of an app that must stay on
+   * loopback. A record with no stored form is published on 127.0.0.1 at most too.
    *
    * Offering an address that isn't served would reproduce the exact bug this
    * whole change set exists to remove, so this errs toward returning nothing.
@@ -555,28 +551,9 @@ export class AppsService {
       return undefined;
     }
 
-    // Its host port is bound to loopback, so the LAN address refuses the connection and the
-    // loopback one is rejected below for pointing a remote browser at its own machine. A Private
-    // VPN app's is too, at most.
-    if (hostPortStaysOnLoopback(info) || servedExposureMode(app) === 'tailscale') {
-      return undefined;
-    }
-
-    const form = storedHostPortForm(app);
-    const mode = app.exposureMode;
-    let hasDirectLocalAccess: boolean;
-
-    if (form) {
-      hasDirectLocalAccess = publishesHostPort(form);
-    } else if (mode === 'cloudflare' || mode === 'local') {
-      // Both bind the app port on the host, so the LAN address stays valid even
-      // when the tunnel in front of it is not.
-      hasDirectLocalAccess = true;
-    } else {
-      hasDirectLocalAccess = Boolean(app.openPort) || Boolean(app.exposedLocal) || !info.dynamic_config;
-    }
-
-    if (!hasDirectLocalAccess) {
+    // On 127.0.0.1 the LAN address refuses the connection. The loopback one is rejected below for
+    // pointing a remote browser at its own machine.
+    if (!portAnswersNetwork(app, info)) {
       return undefined;
     }
 
@@ -622,7 +599,7 @@ export class AppsService {
         return { available: false, appUrl: undefined, stage: 'error' };
       }
 
-      const host = directAccessHost(info, userSettings.internalIp);
+      const host = directAccessHost(app, info, userSettings.internalIp);
       const scheme = info.https ? 'https' : 'http';
       appUrl = `${scheme}://${host}:${app.port}${urlSuffix}`;
       return { available: true, appUrl, stage: 'ready' };
@@ -673,7 +650,7 @@ export class AppsService {
         cloudflareClient && typeof cloudflareClient.getTunnelToken === 'function' ? cloudflareClient.getTunnelToken() : null,
       );
       if (!hasTunnelToken && app.port && hasDirectLocalAccess) {
-        const host = directAccessHost(info, userSettings.internalIp);
+        const host = directAccessHost(app, info, userSettings.internalIp);
         const scheme = info.https ? 'https' : 'http';
         appUrl = `${scheme}://${host}:${app.port}${urlSuffix}`;
         return { available: true, appUrl, stage: 'ready' };

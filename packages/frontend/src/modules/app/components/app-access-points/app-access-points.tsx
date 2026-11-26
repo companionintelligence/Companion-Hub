@@ -9,11 +9,11 @@ import { openExternal } from '@/lib/helpers/open-external';
 import { cn } from '@/lib/utils';
 import { PORT_EXPOSE_OPEN_TO_COPY, type PortExposeOpenTo } from '@/modules/app/helpers/port-expose-open-to';
 import type { AppDetails, AppInfo } from '@/types/app.types';
-import { hostPortStaysOnLoopback, LOOPBACK_HOST_PORT_INTERFACE } from '@ci-hub/common/schemas';
+import { LOOPBACK_HOST_PORT_INTERFACE } from '@ci-hub/common/schemas';
 import { buildPublicWebIdentity, normalizeStoredHostname, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import {
+  portAnswersNetwork,
   publishesHostPort,
-  publishesMainPortOnNetwork,
   publishesPublicWebRoute,
   resolveRoutingSubdomain,
   storedExposureForm,
@@ -266,12 +266,10 @@ export function buildAppAccessPoints(input: {
     : record.localSubdomain || urnAppName;
   const cleanSubdomain = baseSubdomain ? sanitizeAppSubdomain(baseSubdomain) : '';
   // The host port answers on the LAN address only when the operator opened it on the network, and
-  // never a Private VPN app's (`publishesMainPortOnNetwork`); otherwise on loopback, whose URL also
-  // keeps the card from offering a QR code another device could never open.
-  const onNetwork = publishesMainPortOnNetwork(
-    { ...storedExposureForm(record), portOnNetwork: (record.config as { portOnNetwork?: boolean } | undefined)?.portOnNetwork },
-    hostPortStaysOnLoopback(info),
-  );
+  // never a Private VPN app's; otherwise on loopback, whose URL also keeps the card from offering a QR
+  // code another device could never open. A port-expose app's program on the host listens on every
+  // interface. The same rule as the backend's links and the guest tile (`portAnswersNetwork`).
+  const onNetwork = portAnswersNetwork(record, info);
   const browserHost = onNetwork ? resolveBrowserHost(internalIp) : LOOPBACK_HOST_PORT_INTERFACE;
   const directPort = app.port ?? info.port ?? null;
   const localEnabled = hasDirectLocalAccess(record, { hasHostPort: directPort != null, dynamicConfig: info.dynamic_config });

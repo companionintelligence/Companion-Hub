@@ -310,8 +310,8 @@ describe('AppsService', () => {
       expect(result.available).toBe(false);
     });
 
-    it('MUST construct local URL (http://internalIp:port) when exposureMode is local', async () => {
-      setupApp({ exposureMode: 'local', openPort: true, port: 8080 });
+    it('MUST construct local URL (http://internalIp:port) when exposureMode is local and the port is open on the network', async () => {
+      setupApp({ exposureMode: 'local', openPort: true, port: 8080, config: { exposureMode: 'local', openPort: true, portOnNetwork: true } });
       mockAxiosGet.mockResolvedValue({ status: 200, data: 'OK' });
       const result = await service.checkAppAvailability(appUrn);
       expect(result.available).toBe(true);
@@ -319,7 +319,7 @@ describe('AppsService', () => {
     });
 
     it('MUST construct HTTPS local URLs for apps that declare HTTPS access', async () => {
-      setupApp({ exposureMode: 'local', openPort: true, port: 6901 });
+      setupApp({ exposureMode: 'local', openPort: true, port: 6901, config: { exposureMode: 'local', openPort: true, portOnNetwork: true } });
       appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: appUrn, url_suffix: '', https: true } as any);
       const result = await service.checkAppAvailability(appUrn);
       expect(result.available).toBe(true);
@@ -327,7 +327,13 @@ describe('AppsService', () => {
     });
 
     it('MUST fall back to the local URL when exposureMode is cloudflare but no tunnel token exists and a host port is published', async () => {
-      setupApp({ exposureMode: 'cloudflare', exposedLocal: true, openPort: false, port: 8080 });
+      setupApp({
+        exposureMode: 'cloudflare',
+        exposedLocal: true,
+        openPort: false,
+        port: 8080,
+        config: { exposureMode: 'cloudflare', exposedLocal: true, openPort: false, portOnNetwork: true },
+      });
       moduleRef.get.mockReturnValue({ getTunnelToken: () => null } as any);
       const result = await service.checkAppAvailability(appUrn);
       expect(result.available).toBe(true);
@@ -336,7 +342,13 @@ describe('AppsService', () => {
     });
 
     it('MUST fall back to an HTTPS local URL for cloudflare apps that declare HTTPS access', async () => {
-      setupApp({ exposureMode: 'cloudflare', exposedLocal: true, openPort: false, port: 6901 });
+      setupApp({
+        exposureMode: 'cloudflare',
+        exposedLocal: true,
+        openPort: false,
+        port: 6901,
+        config: { exposureMode: 'cloudflare', exposedLocal: true, openPort: false, portOnNetwork: true },
+      });
       appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: appUrn, url_suffix: '', https: true } as any);
       moduleRef.get.mockReturnValue({ getTunnelToken: () => null } as any);
       const result = await service.checkAppAvailability(appUrn);
@@ -356,13 +368,21 @@ describe('AppsService', () => {
     });
 
     it('MUST bracket IPv6 internal IPs for local URLs', async () => {
-      setupApp({ exposureMode: 'local', openPort: true, port: 8080 });
+      setupApp({ exposureMode: 'local', openPort: true, port: 8080, config: { exposureMode: 'local', openPort: true, portOnNetwork: true } });
       configService.getConfig.mockReturnValue({
         localDomain: 'ci.lan',
         userSettings: { internalIp: '::1', sslPort: 443, domain: 'example.com', localDomain: 'ci.lan' },
       } as any);
       const result = await service.checkAppAvailability(appUrn);
       expect(result.appUrl).toBe('http://[::1]:8080');
+    });
+
+    // The port is on 127.0.0.1 unless the operator opened it on the network, so the LAN address refuses the connection.
+    it('MUST use 127.0.0.1, not the LAN address, for a port the operator did not open on the network', async () => {
+      setupApp({ exposureMode: 'local', openPort: true, port: 8080, config: { exposureMode: 'local', openPort: true } });
+      const result = await service.checkAppAvailability(appUrn);
+      expect(result.appUrl).toBe('http://127.0.0.1:8080');
+      expect(result.localUrl).toBeUndefined();
     });
 
     it('MUST construct public URL with deviceSlug when exposureMode is cloudflare', async () => {

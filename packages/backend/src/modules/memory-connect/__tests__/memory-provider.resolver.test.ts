@@ -10,9 +10,12 @@ function info(partial: Partial<AppInfo> & { id: string; urn: string }): AppInfo 
   return partial as AppInfo;
 }
 
-function makeResolver(installed: Array<{ info: AppInfo }>) {
+/** ci-memory on This machine only with its port opened on the network, unless a test says otherwise. */
+const ON_NETWORK_APP = { config: { exposureMode: 'local', openPort: true, portOnNetwork: true } };
+
+function makeResolver(installed: Array<{ info: AppInfo; app?: Record<string, unknown> }>) {
   const appsReadService = {
-    getInstalledApps: vi.fn().mockResolvedValue(installed),
+    getInstalledApps: vi.fn().mockResolvedValue(installed.map((entry) => ({ app: ON_NETWORK_APP, ...entry }))),
     getInstalledAppsLite: vi.fn().mockResolvedValue([]),
     getApp: vi.fn(),
   };
@@ -109,15 +112,32 @@ describe('MemoryProviderResolver.getProviderRuntimeStatus', () => {
 describe('MemoryProviderResolver.getProviderRuntimeInfo — localOnly', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  const readyMemory = (exposureMode?: string, customDomain: string | null = null) => [
-    { appName: 'ci-memory', appStoreSlug: 'ci-marketplace', status: 'running', exposureMode, customDomain },
+  const readyMemory = (exposureMode?: string, customDomain: string | null = null, config?: Record<string, unknown>) => [
+    { appName: 'ci-memory', appStoreSlug: 'ci-marketplace', status: 'running', exposureMode, customDomain, config },
   ];
 
   it('is local-only for a LAN-exposed provider', async () => {
     const { resolver, appsReadService } = makeResolver([]);
-    appsReadService.getInstalledAppsLite.mockResolvedValue(readyMemory('local'));
+    appsReadService.getInstalledAppsLite.mockResolvedValue(readyMemory('local', null, { exposureMode: 'local', portOnNetwork: true }));
 
     expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: true, onHostPort: true });
+  });
+
+  // Its port is published on 127.0.0.1 unless the operator opened it on the network, so only a browser on the
+  // Hub's own computer opens its consent page.
+  it("says when a This machine only provider's port answers on 127.0.0.1 only", async () => {
+    const { resolver, appsReadService } = makeResolver([]);
+
+    for (const config of [{ exposureMode: 'local' }, { exposureMode: 'local', portOnNetwork: false }]) {
+      appsReadService.getInstalledAppsLite.mockResolvedValue(readyMemory('local', null, config));
+
+      expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: true, onHostPort: true, hostPortOnLoopback: true });
+    }
+
+    appsReadService.getInstalledAppsLite.mockResolvedValue([
+      { appName: 'ci-memory', appStoreSlug: 'ci-marketplace', status: 'stopped', exposureMode: 'local', config: { exposureMode: 'local' } },
+    ]);
+    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'offline', localOnly: true, onHostPort: true, hostPortOnLoopback: true });
   });
 
   it('is local-only for a Tailscale-exposed provider — its MagicDNS consent page is not publicly reachable', async () => {
@@ -166,7 +186,7 @@ describe('MemoryProviderResolver.getProviderRuntimeInfo — localOnly', () => {
     appsReadService.getInstalledAppsLite.mockResolvedValue(readyMemory('local'));
     appsService.publicAddressRefusalFor.mockResolvedValue('subdomain_quota_exceeded');
 
-    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: true, onHostPort: true });
+    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: true, onHostPort: true, hostPortOnLoopback: true });
     expect(appsService.publicAddressRefusalFor).not.toHaveBeenCalled();
   });
 
@@ -174,7 +194,7 @@ describe('MemoryProviderResolver.getProviderRuntimeInfo — localOnly', () => {
     const { resolver, appsReadService } = makeResolver([]);
     appsReadService.getInstalledAppsLite.mockResolvedValue(readyMemory(undefined));
 
-    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: true, onHostPort: true });
+    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: true, onHostPort: true, hostPortOnLoopback: true });
   });
 });
 
@@ -242,6 +262,21 @@ describe('MemoryProviderResolver.findProvider', () => {
       publicUrl: 'https://ci-memory.example.com',
       hostPortOnLoopback: false,
     });
+  });
+
+  // Its port is published on 127.0.0.1 unless the operator opened it on the network, so `start` must not stand a
+  // LAN or tailnet host in for its loopback address.
+  it("says when ci-memory's port answers on 127.0.0.1 only", async () => {
+    const memory = info({ id: 'ci-memory', urn: 'ci-memory:ci-marketplace', port: 8642 } as never);
+
+    for (const config of [{ exposureMode: 'local', openPort: true }, { exposureMode: 'local', openPort: true, portOnNetwork: false }, null]) {
+      const { resolver } = makeResolver([{ info: memory, app: { config } }]);
+
+      expect((await resolver.findProvider())?.hostPortOnLoopback).toBe(true);
+    }
+
+    const { resolver } = makeResolver([{ info: memory }]);
+    expect((await resolver.findProvider())?.hostPortOnLoopback).toBe(false);
   });
 
   it('skips the (heavy) public-URL availability probe by default', async () => {

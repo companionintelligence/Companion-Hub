@@ -1,4 +1,5 @@
-import { publishesHostPortsOnNetwork, servedOpenPort } from '../schemas/app-info.js';
+import { type AppInfo, hostPortStaysOnLoopback, publishesHostPortsOnNetwork, servedOpenPort } from '../schemas/app-info.js';
+import { isPortExposeApp } from '../schemas/port-expose.js';
 
 export type AppExposureMode = 'local' | 'cloudflare' | 'tailscale';
 
@@ -103,4 +104,43 @@ export function storedHostPortForm(app: Parameters<typeof storedExposureForm>[0]
 
   const { openPort } = config as Record<string, unknown>;
   return { ...storedExposureForm(app), openPort: typeof openPort === 'boolean' ? openPort : undefined };
+}
+
+/**
+ * Whether another computer reaches an installed app on its own port at the Hub's LAN or tailnet
+ * address: compose publishes that port ({@link publishesHostPort}) on every interface
+ * ({@link publishesMainPortOnNetwork}). Otherwise the port answers on 127.0.0.1 at most, so only a
+ * browser on the Hub's own computer opens `<host>:<port>`. Read from the stored install form, as
+ * compose is. A record with none is published on 127.0.0.1 at most.
+ */
+export function storedMainPortOnNetwork(app: Parameters<typeof storedHostPortForm>[0], loopbackOnly: boolean): boolean {
+  const form = storedHostPortForm(app);
+  if (!form) {
+    return false;
+  }
+
+  const { portOnNetwork } = app.config as Record<string, unknown>;
+  return publishesHostPort(form) && publishesMainPortOnNetwork({ ...form, portOnNetwork: portOnNetwork === true }, loopbackOnly);
+}
+
+/**
+ * Whether another computer reaches an installed app on its own port at the Hub's LAN or tailnet address,
+ * the one rule the app page, the guest dashboard and the backend's links follow.
+ *
+ * An app compose runs is published as {@link storedMainPortOnNetwork} says. A port-expose app's port is a
+ * program on the host, which compose doesn't publish, so the switch says nothing about it. The Hub takes
+ * such a port only where its container opens it at the host's Docker bridge address and tells the operator
+ * a program bound to 127.0.0.1 only is not reachable and to listen on every interface. It answers the
+ * network then, except on Private VPN, where it gets no LAN link.
+ */
+export function portAnswersNetwork(
+  app: Parameters<typeof storedMainPortOnNetwork>[0],
+  info: Pick<AppInfo, 'kind' | 'exposable' | 'hub_integration'>,
+): boolean {
+  // Both: a save through the generic config route rewrites the stored form without `kind`.
+  if (isPortExposeApp(info) || isPortExposeApp(app.config as Pick<AppInfo, 'kind'> | null | undefined)) {
+    return servedExposureMode(app) !== 'tailscale';
+  }
+
+  return storedMainPortOnNetwork(app, hostPortStaysOnLoopback(info));
 }

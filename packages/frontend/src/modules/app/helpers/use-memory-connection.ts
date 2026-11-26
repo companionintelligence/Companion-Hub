@@ -23,6 +23,7 @@ export type ConnectBlockedReason =
   | 'hub_unreachable'
   | 'provider_local_only'
   | 'memory_loopback_only'
+  | 'memory_hub_computer_only'
   | 'memory_address_refused';
 
 /**
@@ -38,6 +39,7 @@ const BLOCKED_REASON_KEYS: Record<ConnectBlockedReason, string> = {
   hub_unreachable: 'MEMORY_CONNECT_BLOCKED_HUB_UNREACHABLE',
   provider_local_only: 'MEMORY_CONNECT_BLOCKED_PROVIDER_LOCAL_ONLY',
   memory_loopback_only: 'MEMORY_CONNECT_BLOCKED_LOOPBACK_ONLY',
+  memory_hub_computer_only: 'MEMORY_CONNECT_BLOCKED_HUB_COMPUTER_ONLY',
   memory_address_refused: 'MEMORY_CONNECT_BLOCKED_ADDRESS_REFUSED',
 };
 

@@ -23,6 +23,7 @@ function makeService(
     tunnelHealth?: string;
     providerLocalOnly?: boolean;
     providerOnHostPort?: boolean;
+    providerPortOnLoopback?: boolean;
     providerAddressRefusal?: PublicDnsFailureReason;
     providerStatus?: string;
     internalIp?: string;
@@ -37,6 +38,7 @@ function makeService(
       status: options.providerStatus ?? 'ready',
       localOnly: options.providerLocalOnly ?? false,
       onHostPort: options.providerOnHostPort ?? false,
+      hostPortOnLoopback: options.providerPortOnLoopback,
       publicAddressRefusal: options.providerAddressRefusal,
     }),
     getProviderRuntimeStatus: vi.fn().mockResolvedValue(options.providerStatus ?? 'ready'),
@@ -459,6 +461,71 @@ describe('launcher selection — ci-memory addressed as loopback (listen-all Hub
     const { service } = makeService({ ...listenAll, providerOnHostPort: false });
 
     const status = await service.getStatus(APP);
+
+    expect(status.connectable).toBe(true);
+  });
+});
+
+/**
+ * ci-memory's port is published on 127.0.0.1 unless the operator opened it on the network. Its consent page then
+ * opens in a browser on the Hub's own computer and nowhere else: a LAN or tailnet host stood in for its address
+ * names a port nothing listens on.
+ */
+describe("launcher selection: ci-memory's port on 127.0.0.1 only", () => {
+  const hubComputerOnly = { providerLocalOnly: true, providerOnHostPort: true, providerPortOnLoopback: true };
+
+  it.each([
+    ['a LAN address', `${LAN_HOST}:5002`],
+    ['a tailnet name', 'hub.tailnet-abc.ts.net'],
+    ['a local-domain name', 'hub.ci.lan'],
+  ])('blocks a caller on %s, on a listen-all Hub or one with a LAN address', async (_label, host) => {
+    for (const internalIp of ['0.0.0.0', LAN_HOST]) {
+      const { service } = makeService({ ...hubComputerOnly, internalIp });
+
+      const status = await service.getStatus(APP, { host });
+
+      expect(status.connectable).toBe(false);
+      expect(status.reason).toBe('memory_hub_computer_only');
+      expect(status.connectUrl).toBeNull();
+      expect(status.connectUrlLocal).toBeNull();
+    }
+  });
+
+  it('keeps Connect for a browser on the Hub itself', async () => {
+    const { service } = makeService({ ...hubComputerOnly, internalIp: '0.0.0.0' });
+
+    for (const host of ['127.0.0.1:5002', 'localhost:5002']) {
+      const status = await service.getStatus(APP, { host });
+
+      expect(status.connectable).toBe(true);
+      expect(status.reason).toBeNull();
+    }
+  });
+
+  // Browsers resolve every `.localhost` name to loopback, so that browser is on the Hub's computer too.
+  it('keeps Connect for a browser on a .localhost name', async () => {
+    const { service } = makeService({ ...hubComputerOnly, internalIp: '0.0.0.0' });
+
+    const status = await service.getStatus(APP, { host: 'hub.localhost' });
+
+    expect(status.connectable).toBe(true);
+    expect(status.reason).toBeNull();
+    // The Hub's loopback origin opens there as well, as it does for 127.0.0.1.
+    expect(status.connectUrlLocal).toBe('http://127.0.0.1/api/memory-connect/start?app=ci-openclaw%3Aci-marketplace');
+  });
+
+  it('still says provider_local_only to a confirmed remote caller', async () => {
+    const { service } = makeService(hubComputerOnly);
+
+    const status = await service.getStatus(APP, { host: PUBLIC_HOST });
+
+    expect(status.reason).toBe('provider_local_only');
+  });
+
+  it('does not apply once the operator opened the port on the network', async () => {
+    const { service } = makeService({ ...hubComputerOnly, providerPortOnLoopback: false, internalIp: '0.0.0.0' });
+
+    const status = await service.getStatus(APP, { host: `${LAN_HOST}:5002` });
 
     expect(status.connectable).toBe(true);
   });

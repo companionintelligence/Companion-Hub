@@ -116,8 +116,20 @@ export function pickGuestAppFields<T extends object>(app: T): Pick<T, Extract<ke
 const guestAppsSchema = z.object({
   installed: z.array(
     z.object({
-      // The address of an app on Public web. It is public already, and a guest has nothing else to build it from.
-      app: guestAppSchema.extend({ publicUrl: z.string().nullable().optional() }),
+      app: guestAppSchema.extend({
+        // The address of an app on Public web. It is public already and a guest has nothing else to build it from.
+        publicUrl: z.string().nullable().optional(),
+        /**
+         * Whether another computer reaches the app on its own port at the Hub's address (`portAnswersNetwork`).
+         * The port is on 127.0.0.1 unless the operator opened it on the network. A guest's record carries no form.
+         */
+        hostPortOnNetwork: z.boolean().optional(),
+        /**
+         * A Private VPN app on its own Tailscale Service answers at `https://<label>.<tailnet>.ts.net/` and no longer on the
+         * Hub's per-port address. Only the label: a guest on the tailnet reads the rest from the address they came in on.
+         */
+        tailscaleServiceLabel: z.string().nullable().optional(),
+      }),
       info: appInfoSchemaRef,
       metadata: metadataSchema,
     }),

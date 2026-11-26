@@ -126,7 +126,7 @@ export class MemoryConnectController {
       if (err instanceof MemoryConsentUnreachableException) {
         this.logger.warn(`[MemoryConnect] connect could not start for ${app}: ${err.message}`);
 
-        return { url: '/?memoryConnect=local_only' };
+        return { url: err.hubComputerOnly ? '/?memoryConnect=hub_computer_only' : '/?memoryConnect=local_only' };
       }
 
       if (err instanceof BadRequestException) {

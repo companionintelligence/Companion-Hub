@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { type AppInfo, hostPortStaysOnLoopback } from '@ci-hub/common/schemas';
-import { type AppUrn, normalizeStoredHostname } from '@ci-hub/common/types';
+import { type AppUrn, normalizeStoredHostname, storedMainPortOnNetwork } from '@ci-hub/common/types';
 import { createAppUrn } from '@/common/helpers/app-helpers';
 import type { AppStatus } from '@/core/database/drizzle/types';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -45,8 +45,9 @@ export interface ResolvedMemoryProvider {
   /** Browser-reachable public URL (base of the consent flow), unless the probe saw that route answer without ci-memory. */
   publicUrl?: string;
   /**
-   * Whether ci-memory's host port is published on loopback only. When it is not, the port answers on
-   * every interface, so a browser that reached the Hub machine directly reaches ci-memory on that host.
+   * Whether ci-memory's host port is published on loopback only: unless the operator opened it on the
+   * network (`storedMainPortOnNetwork`). When it is not, the port answers on every interface, so a browser
+   * that reached the Hub machine directly reaches ci-memory on that host.
    */
   hostPortOnLoopback?: boolean;
 }
@@ -80,6 +81,12 @@ export interface MemoryProviderRuntimeInfo {
    * Hub that address is 127.0.0.1, which only a browser on the Hub machine can open as written.
    */
   onHostPort?: boolean;
+  /**
+   * Set when ci-memory's consent page is its host-port address and that port answers on 127.0.0.1 only,
+   * because the operator didn't open it on the network (`storedMainPortOnNetwork`). Only a browser on the
+   * Hub's own computer opens it then, whatever address the Hub has.
+   */
+  hostPortOnLoopback?: boolean;
   publicAddressRefusal?: PublicDnsFailureReason;
 }
 
@@ -248,16 +255,21 @@ export class MemoryProviderResolver {
     const exposureMode = row.exposureMode || 'local';
     const localOnly = exposureMode !== 'cloudflare';
     const onHostPort = exposureMode === 'local';
+    // DB-only, so without the manifest: ci-memory's listing doesn't keep its port on loopback and `start`
+    // asks again with the manifest (`findProvider`).
+    const loopback = onHostPort && !storedMainPortOnNetwork(row, false) ? { hostPortOnLoopback: true } : {};
 
     if (row.status === 'running') {
       const publicAddressRefusal =
         !localOnly && !normalizeStoredHostname(row.customDomain)
           ? await this.appsService.publicAddressRefusalFor(createAppUrn(row.appName, row.appStoreSlug))
           : null;
-      return publicAddressRefusal ? { status: 'ready', localOnly, onHostPort, publicAddressRefusal } : { status: 'ready', localOnly, onHostPort };
+      return publicAddressRefusal
+        ? { status: 'ready', localOnly, onHostPort, ...loopback, publicAddressRefusal }
+        : { status: 'ready', localOnly, onHostPort, ...loopback };
     }
 
-    return { status: PROVIDER_STARTING_STATUSES.has(row.status) ? 'starting' : 'offline', localOnly, onHostPort };
+    return { status: PROVIDER_STARTING_STATUSES.has(row.status) ? 'starting' : 'offline', localOnly, onHostPort, ...loopback };
   }
 
   /**
@@ -322,7 +334,7 @@ export class MemoryProviderResolver {
       internalUrl: address ? `http://${address}:${port}` : null,
       consumerUrl: memoryConsumerUrl(port),
       publicUrl,
-      hostPortOnLoopback: hostPortStaysOnLoopback(provider.info),
+      hostPortOnLoopback: !storedMainPortOnNetwork(provider.app, hostPortStaysOnLoopback(provider.info)),
     };
   }
 }

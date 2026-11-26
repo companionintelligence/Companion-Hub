@@ -137,6 +137,11 @@ export type ConnectBlockedReason =
    * this browser can open.
    */
   | 'memory_loopback_only'
+  /**
+   * ci-memory's consent page is its host-port address. That port answers on 127.0.0.1 only because the
+   * operator didn't open it on the network, so only a browser on the Hub's own computer can open it.
+   */
+  | 'memory_hub_computer_only'
   /** The Portal refused ci-memory a public address, so its consent page has no address to reach. */
   | 'memory_address_refused';
 
@@ -191,12 +196,29 @@ function isLoopbackHostname(hostname: string | null | undefined): boolean {
 }
 
 /**
+ * Whether a browser that opened the Hub on this name is on the Hub's own computer: a loopback name, or a
+ * name under `.localhost`, which browsers resolve to loopback too (RFC 6761). Such a browser opens a port
+ * published on 127.0.0.1.
+ */
+function namesOwnComputer(hostname: string | null | undefined): boolean {
+  return isLoopbackHostname(hostname) || Boolean(hostname?.toLowerCase().endsWith('.localhost'));
+}
+
+/**
  * `start` refused because ci-memory's consent page has no address this browser can open. The controller
  * lands the browser on the Hub with its own marker rather than the generic "not ready yet" one.
  */
 export class MemoryConsentUnreachableException extends BadRequestException {
-  constructor() {
-    super('CI Memory is only reachable on this Hub machine and its local network, and this browser reached the Hub another way');
+  /** ci-memory's port answers on the Hub's own computer only, so no other computer can open its consent page. */
+  readonly hubComputerOnly: boolean;
+
+  constructor(hubComputerOnly = false) {
+    super(
+      hubComputerOnly
+        ? "CI Memory's port is open on this Hub machine only and this browser is on another computer"
+        : 'CI Memory is only reachable on this Hub machine and its local network. This browser reached the Hub another way',
+    );
+    this.hubComputerOnly = hubComputerOnly;
   }
 }
 
@@ -390,7 +412,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
         `[MemoryConnect] ${appUrn}: CI Memory answers only on this machine's loopback, which a browser on ${this.hostnameOf(origin?.host) ?? 'an unknown host'} cannot open`,
       );
 
-      throw new MemoryConsentUnreachableException();
+      throw new MemoryConsentUnreachableException(provider.hostPortOnLoopback === true);
     }
 
     // Keep the callback, interstitial, and session cookie on one origin to avoid a second login.
@@ -697,6 +719,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       providerStatus: providerInfo.status,
       providerLocalOnly: providerInfo.localOnly,
       providerOnHostPort: providerInfo.onHostPort,
+      providerPortOnLoopback: providerInfo.hostPortOnLoopback,
       providerAddressRefusal: providerInfo.publicAddressRefusal,
       origin,
     });
@@ -776,6 +799,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       providerStatus,
       providerLocalOnly: providerInfo.localOnly,
       providerOnHostPort: providerInfo.onHostPort,
+      providerPortOnLoopback: providerInfo.hostPortOnLoopback,
       providerAddressRefusal: providerInfo.publicAddressRefusal,
       origin,
     });
@@ -998,6 +1022,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     origin?: RequestOriginContext;
     providerLocalOnly?: boolean;
     providerOnHostPort?: boolean;
+    providerPortOnLoopback?: boolean;
     providerAddressRefusal?: PublicDnsFailureReason;
   }): Promise<ConnectLaunchers> {
     const blocked = (reason: ConnectBlockedReason): ConnectLaunchers => ({
@@ -1032,10 +1057,21 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       return blocked('provider_local_only');
     }
 
+    // ci-memory's port answers on 127.0.0.1 unless the operator opened it on the network, so its consent page
+    // opens in a browser on the Hub's own computer and nowhere else. Sent anywhere else, the browser ends on
+    // a dead address: its own machine, or the Hub's LAN or tailnet name on a port nothing listens on.
+    if (input.providerOnHostPort && input.providerPortOnLoopback && !namesOwnComputer(this.hostnameOf(input.origin?.host))) {
+      this.logger.warn(
+        `[MemoryConnect] ${input.appUrn}: CI Memory's port is open on this machine only; a caller on ${this.hostnameOf(input.origin?.host) ?? 'an unknown host'} cannot open its consent page`,
+      );
+
+      return blocked('memory_hub_computer_only');
+    }
+
     // On a listen-all Hub a local-only ci-memory is addressed as 127.0.0.1. `start` can stand the caller's
-    // own host in for it when that host names the Hub machine (see consentOriginFor). A remote caller was
-    // refused above; one with no usable host (the wrappers' state poll) would be sent to its own machine.
-    // ci-memory's port is never loopback-bound, so this DB-only check leaves that case to `start`.
+    // own host in for it when that host names the Hub machine (see consentOriginFor), now that the port is
+    // open on the network. A remote caller was refused above; one with no usable host (the wrappers' state
+    // poll) would be sent to its own machine.
     if (input.providerOnHostPort && this.hubAddressIsLoopback() && !this.callerReachesHubMachine(input.origin?.host)) {
       this.logger.warn(
         `[MemoryConnect] ${input.appUrn}: CI Memory answers only on this machine's loopback; a caller on ${this.hostnameOf(input.origin?.host) ?? 'an unknown host'} cannot open its consent page`,
@@ -1135,7 +1171,8 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
 
   /**
    * A wildcard bind resolves to loopback, which points non-loopback visitors at their own machine.
-   * Therefore, loopback origins are offered only to loopback callers.
+   * Therefore, loopback origins are offered only to callers on the Hub's own computer, a `.localhost`
+   * name included, as in `consentOriginFor`.
    */
   private localOriginReachableBy(localOrigin: string, callerHost: string | undefined): boolean {
     const localHostname = this.hostnameOf(localOrigin);
@@ -1144,7 +1181,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       return true;
     }
 
-    return isLoopbackHostname(this.hostnameOf(callerHost));
+    return namesOwnComputer(this.hostnameOf(callerHost));
   }
 
   /** Whether the Hub writes its own address as loopback: INTERNAL_IP unset, listen-all, or loopback itself. */
@@ -1172,7 +1209,8 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * The origin to send this browser to for ci-memory's consent page, or null when it has none the browser
    * can open. Only a loopback provider address is ever changed. A browser on the Hub machine keeps it. A
    * browser that reached the Hub machine directly gets the same host it used for the Hub, on ci-memory's
-   * port, because that port is published on every interface unless the manifest keeps it on loopback.
+   * port, when the operator opened that port on the network: otherwise it is published on 127.0.0.1 only
+   * (`hostPortOnLoopback`).
    */
   private consentOriginFor(providerUrl: string, hostPortOnLoopback: boolean, callerHost: string | undefined): string | null {
     let consent: URL;
@@ -1189,7 +1227,8 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
 
     const callerHostname = this.hostnameOf(callerHost);
 
-    if (isLoopbackHostname(callerHostname)) {
+    // A `.localhost` name is the browser's own computer too, so it opens 127.0.0.1 as written.
+    if (namesOwnComputer(callerHostname)) {
       return consent.origin;
     }
 
