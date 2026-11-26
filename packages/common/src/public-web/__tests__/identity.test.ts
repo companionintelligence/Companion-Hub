@@ -4,6 +4,7 @@ import {
   buildOriginServerName,
   buildPublicWebIdentity,
   deriveAppSlug,
+  isHubReservedSubdomain,
   resolvePublicDomainRoot,
   resolveRoutingSubdomain,
   sanitizeAppSubdomain,
@@ -41,6 +42,16 @@ describe('sanitizeAppSubdomain', () => {
   it('strips dots and sanitizes invalid characters', () => {
     expect(sanitizeAppSubdomain('DocMostp.red')).toBe('docmostp');
     expect(sanitizeAppSubdomain('My_App!')).toBe('my-app');
+  });
+});
+
+describe('isHubReservedSubdomain', () => {
+  it('reads the name the way Companion Portal does', () => {
+    expect(['hub', 'Hub', ' HUB', 'hub.example.com'].map(isHubReservedSubdomain)).toEqual([true, true, true, true]);
+  });
+
+  it('leaves names that only contain it alone', () => {
+    expect(['my-hub', 'hubble', 'hub-1', 'ci-hub'].map(isHubReservedSubdomain)).toEqual([false, false, false, false]);
   });
 });
 

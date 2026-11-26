@@ -316,6 +316,8 @@
   "CUSTOM_APP_NAME_MAX_LENGTH": "App name must be 50 characters or less",
   "CUSTOM_APP_NAME_NO_HYPHEN_EDGES": "App name cannot start or end with a hyphen",
   "CUSTOM_APP_NAME_RESERVED": "This app name is reserved",
+  "APP_SUBDOMAIN_RESERVED_FOR_HUB": "“{{subdomain}}” is the Hub's own address. Choose another name or subdomain.",
+  "PORT_EXPOSE_NAME_RESERVED_FOR_HUB": "This port is named “{{subdomain}}”, which is the Hub's own address. Remove it and expose it again under another name.",
   "CUSTOM_APP_INVALID_CONFIG": "Invalid configuration. Please check your services.",
   "CUSTOM_APP_CREATE_ERROR": "Failed to create custom app",
   "CUSTOM_APP_EDIT_TITLE": "Edit {{name}}",

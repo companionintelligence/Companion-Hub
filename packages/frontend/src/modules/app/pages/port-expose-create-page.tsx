@@ -25,7 +25,14 @@ import { useDnsAvailability } from '@/modules/app/components/install-form/use-dn
 import { PublicPortConfirmDialog } from '@/modules/app/components/dialogs/public-port-confirm-dialog/public-port-confirm-dialog';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { fetchDnsAvailability } from '@/lib/cloudflare-api';
-import { buildPublicWebIdentity, deriveAppSlug, RESERVED_APP_NAMES, sanitizeAppSubdomain, selectOfferedDomains } from '@ci-hub/common/types';
+import {
+  buildPublicWebIdentity,
+  deriveAppSlug,
+  isHubReservedSubdomain,
+  RESERVED_APP_NAMES,
+  sanitizeAppSubdomain,
+  selectOfferedDomains,
+} from '@ci-hub/common/types';
 import type { AvailableDomain } from '@ci-hub/common/types';
 import type { TranslatableError } from '@/types/error.types';
 
@@ -137,9 +144,17 @@ export default function PortExposeCreatePage() {
     [],
   );
 
+  const hubNameOnPublicWeb = watchExposureMode === 'cloudflare' && isHubReservedSubdomain(watchLocalSubdomain || defaultAppSubdomain);
+
   const { isCheckingDns, dnsAvailabilityError, domainAvailabilityError } = useDnsAvailability<FormValues>({
-    // Only once there is a domain to ask about: none while Companion Portal's list is on its way.
-    enabled: watchExposureMode === 'cloudflare' && Boolean(publicDomain) && Boolean((watchLocalSubdomain || defaultAppSubdomain).trim()),
+    // Only once there is a domain to ask about: none while Companion Portal's list is on its way. Not
+    // for the Hub's own name either: its answer landed on the field after submit and replaced the
+    // reason given there (CI-Portal#1091).
+    enabled:
+      watchExposureMode === 'cloudflare' &&
+      Boolean(publicDomain) &&
+      Boolean((watchLocalSubdomain || defaultAppSubdomain).trim()) &&
+      !hubNameOnPublicWeb,
     subdomain: watchLocalSubdomain || defaultAppSubdomain,
     selectedDomain: publicDomain,
     checkDnsAvailability,
@@ -147,6 +162,14 @@ export default function PortExposeCreatePage() {
     clearErrors,
     t: asLegacyTranslate(t),
   });
+
+  // The check stops for the Hub's name but leaves the answer it gave the name before ("hubs" taken)
+  // under the field. Cleared when the name turns into the Hub's; submit then gives the reason.
+  useEffect(() => {
+    if (hubNameOnPublicWeb) {
+      clearErrors('localSubdomain');
+    }
+  }, [clearErrors, hubNameOnPublicWeb]);
 
   // A Public web port waiting on the person to agree that anyone with the address can open it.
   const [publicPortBody, setPublicPortBody] = useState<CreatePortExposeAppDto | null>(null);
@@ -210,6 +233,15 @@ export default function PortExposeCreatePage() {
     }
 
     const exposureMode = resolveExposureMode(values.exposureMode, { cloudflareAvailable, tailscaleAvailable });
+
+    // Companion Portal files every mode under this name. `hub` is the Hub's own (CI-Portal#1091).
+    const routingSubdomain = exposureMode === 'cloudflare' ? values.localSubdomain || slug : slug;
+    if (isHubReservedSubdomain(routingSubdomain)) {
+      setError(exposureMode === 'cloudflare' ? 'localSubdomain' : 'name', {
+        message: t('APP_SUBDOMAIN_RESERVED_FOR_HUB', { subdomain: sanitizeAppSubdomain(routingSubdomain) }),
+      });
+      return;
+    }
 
     if (exposureMode === 'cloudflare') {
       const subdomain = (values.localSubdomain || slug).trim();

@@ -7,7 +7,14 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { PortalClientService } from '@/core/portal/portal-client.service';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
-import { buildOriginServerName, deriveAppSlug, PORT_EXPOSE_DEFAULT_SHORT_DESC, RESERVED_APP_NAMES, sanitizeAppSubdomain } from '@ci-hub/common/types';
+import {
+  buildOriginServerName,
+  deriveAppSlug,
+  isHubReservedSubdomain,
+  PORT_EXPOSE_DEFAULT_SHORT_DESC,
+  RESERVED_APP_NAMES,
+  sanitizeAppSubdomain,
+} from '@ci-hub/common/types';
 import { isPortExposeApp, PORT_EXPOSE_KIND, requiresHubLogin, type AppInfo } from '@ci-hub/common/schemas';
 import path from 'node:path';
 import { AppsRepository } from '../apps/apps.repository';
@@ -61,6 +68,10 @@ export class PortExposeService {
     if (exposureMode === 'cloudflare' && !localSubdomain?.trim()) {
       throw new TranslatableError('PORT_EXPOSE_SUBDOMAIN_REQUIRED', undefined, HttpStatus.BAD_REQUEST);
     }
+
+    // Every mode: This Machine Only and Private VPN reach Companion Portal through the registry under this name too.
+    // Checked as stored: a subdomain that sanitizes to nothing ("-") leaves the row on the name.
+    assertNotHubSubdomain(sanitizeAppSubdomain(localSubdomain?.trim() || slug) || slug);
 
     await assertHubCanReachPort(port);
 
@@ -163,6 +174,11 @@ export class PortExposeService {
     if (exposureMode === 'cloudflare' && !localSubdomain?.trim()) {
       throw new TranslatableError('PORT_EXPOSE_SUBDOMAIN_REQUIRED', undefined, HttpStatus.BAD_REQUEST);
     }
+
+    // Outside Public Web the settings dialog has no subdomain field, so the name decides. A name can't be changed.
+    // A subdomain that sanitizes to nothing ("-") leaves the row on the name as well.
+    const requestedSubdomain = sanitizeAppSubdomain(localSubdomain?.trim() ?? '');
+    assertNotHubSubdomain(requestedSubdomain || extractAppUrn(appUrn).appName, requestedSubdomain ? 'subdomain' : 'existing-name');
 
     const appsWithSamePort = await this.appsRepository.getAppsByPort(port, app.id);
     if (appsWithSamePort.length > 0) {
@@ -334,6 +350,18 @@ export class PortExposeService {
 
   /** Posts one registry entry for `appUrn`. A failure is logged: the registry never holds up the change that wrote it. */
   private async postPortalRegistry(appUrn: AppUrn, entry: RegistryEntry): Promise<void> {
+    /*
+     * Never under the Hub's own slug (CI-Portal#1091). A port named Hub before the refusal still holds
+     * it. On a Portal row whose Hub kind that port already cleared, a `remove` released the Hub's DNS
+     * record with the row. Removing the port is what PORT_EXPOSE_NAME_RESERVED_FOR_HUB asks for.
+     */
+    if (entry.slug && isHubReservedSubdomain(entry.slug)) {
+      this.logger.warn(
+        `[Portal] Not sending the workload registry ${entry.remove ? 'removal' : 'entry'} for ${appUrn}: "${entry.slug}" is the Hub's own entry in Companion Portal`,
+      );
+      return;
+    }
+
     const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
     if (!org?.id) {
       this.logger.debug('[Portal] Skipping workload registry sync: device not registered');
@@ -370,6 +398,10 @@ export class PortExposeService {
     const apps: AppFromDb[] = [];
     for (const app of await this.appsRepository.getApps()) {
       if (app.status === 'uninstalling' || !portExposeNeedsPortalRegistry(app.exposureMode) || !isRegistryPort(app.port)) {
+        continue;
+      }
+      // A port named Hub before the refusal: its entry would land on the Hub's own row (CI-Portal#1091).
+      if (app.appName && isHubReservedSubdomain(registryEntryFor(app).slug)) {
         continue;
       }
       // A save through the generic config route rewrites the stored form without `kind`, so config.json is asked too.
@@ -438,9 +470,14 @@ export class PortExposeService {
       }
     }
 
+    // Never the Hub's own row, which a port named Hub could leave pinned (CI-Portal#1091).
     const leftovers = portalApps.filter(
       (entry) =>
-        entry.pinned === true && isRegistryPort(entry.port) && !heldNames.has(entry.name.toLowerCase()) && !heldNames.has(entry.slug.toLowerCase()),
+        entry.pinned === true &&
+        isRegistryPort(entry.port) &&
+        !isHubReservedSubdomain(entry.slug) &&
+        !heldNames.has(entry.name.toLowerCase()) &&
+        !heldNames.has(entry.slug.toLowerCase()),
     );
     if (leftovers.length === 0) {
       return [];
@@ -561,6 +598,21 @@ export class PortExposeService {
     const appPath = path.join(dataDir, 'apps', appStoreId, appName);
     const dataPath = path.join(appDataDir, appStoreId, appName);
     await Promise.all([this.filesystem.removeDirectory(appPath), this.filesystem.removeDirectory(dataPath)]);
+  }
+}
+
+/**
+ * Refuses the subdomain Companion Portal gives the Hub itself (CI-Portal#1091). The registry and the
+ * tunnel sync both key the Portal's entry by this name, so a port called "Hub" landed on the Hub's
+ * own entry and took its public address down.
+ */
+function assertNotHubSubdomain(subdomain: string, from: 'subdomain' | 'existing-name' = 'subdomain'): void {
+  if (isHubReservedSubdomain(subdomain)) {
+    throw new TranslatableError(
+      from === 'existing-name' ? 'PORT_EXPOSE_NAME_RESERVED_FOR_HUB' : 'APP_SUBDOMAIN_RESERVED_FOR_HUB',
+      { subdomain: sanitizeAppSubdomain(subdomain) },
+      HttpStatus.BAD_REQUEST,
+    );
   }
 }
 

@@ -3,6 +3,8 @@ import { MemoryRouter } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useAppContext } from '@/context/app-context';
 import { useDnsAvailability } from '@/modules/app/components/install-form/use-dns-availability';
+import { fetchDnsAvailability } from '@/lib/cloudflare-api';
+import { CloudflareSubdomainField } from '@/modules/app/components/install-form/cloudflare-subdomain-field';
 import PortExposeCreatePage from './port-expose-create-page';
 import { TranslatableError } from '@/types/error.types';
 
@@ -54,7 +56,7 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
  * is read instead.
  */
 vi.mock('@/modules/app/components/install-form/cloudflare-subdomain-field', () => ({
-  CloudflareSubdomainField: () => null,
+  CloudflareSubdomainField: vi.fn(() => null),
 }));
 
 // The check the form makes on submit finds every name free, so the tests reach what follows it.
@@ -228,6 +230,72 @@ describe('PortExposeCreatePage', () => {
 
       expect(createMutation.mutate).toHaveBeenCalledWith(expect.objectContaining({ exposureMode }));
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+  });
+
+  // Companion Portal files the port under `hub`, the Hub's own entry there (CI-Portal#1091).
+  describe("refuses the name Hub, which is the Hub's own address", () => {
+    const submitAs = async (name: string) => {
+      fireEvent.change(screen.getByPlaceholderText('CUSTOM_APP_NAME_PLACEHOLDER'), { target: { value: name } });
+      fireEvent.change(screen.getByPlaceholderText('PORT_EXPOSE_PORT_PLACEHOLDER'), { target: { value: '3000' } });
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'PORT_EXPOSE_SUBMIT' }));
+      });
+    };
+
+    it.each([
+      ['This machine only', 'APP_INSTALL_FORM_EXPOSURE_LOCAL'],
+      ['Private VPN', 'COMMON_PRIVATE_VPN'],
+    ])('under the name on %s', async (_label, button) => {
+      renderPage({ tailscaleAvailable: true });
+
+      fireEvent.click(screen.getByRole('button', { name: button }));
+      await submitAs('Hub');
+
+      expect(await screen.findByText('APP_SUBDOMAIN_RESERVED_FOR_HUB')).toBeInTheDocument();
+      expect(createMutation.mutate).not.toHaveBeenCalled();
+    });
+
+    it('on Public web before asking anything', async () => {
+      // A domain to ask about, so the check on submit would reach Companion Portal if nothing stopped it first.
+      DOMAINS.domains = [{ id: '2', domain: 'ci1.pw', isDefault: true, offered: true }];
+      renderPage();
+      await waitFor(() => expect(checkedDomain()).toBe('ci1.pw'));
+
+      await submitAs('hub');
+
+      expect(fetchDnsAvailability).not.toHaveBeenCalled();
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(createMutation.mutate).not.toHaveBeenCalled();
+    });
+
+    // The Portal calls its own name taken. That answer replaced the reason given under the field.
+    it('on Public web without asking the Portal about the name', async () => {
+      DOMAINS.domains = [{ id: '2', domain: 'ci1.pw', isDefault: true, offered: true }];
+      renderPage();
+      await waitFor(() => expect(checkEnabled()).toBe(true));
+
+      fireEvent.change(screen.getByPlaceholderText('CUSTOM_APP_NAME_PLACEHOLDER'), { target: { value: 'Hub' } });
+
+      await waitFor(() => expect(checkEnabled()).toBe(false));
+    });
+
+    // The check stops for the Hub's name, so the answer it gave the name before would stay under the field.
+    it("clears an earlier answer under Subdomain once the name becomes the Hub's", async () => {
+      DOMAINS.domains = [{ id: '2', domain: 'ci1.pw', isDefault: true, offered: true }];
+      renderPage();
+      const subdomainError = () => vi.mocked(CloudflareSubdomainField).mock.lastCall?.[0].localSubdomainError;
+
+      fireEvent.change(screen.getByPlaceholderText('CUSTOM_APP_NAME_PLACEHOLDER'), { target: { value: 'Hubs' } });
+      await waitFor(() => expect(checkEnabled()).toBe(true));
+      act(() => {
+        vi.mocked(useDnsAvailability).mock.lastCall?.[0].setError('localSubdomain', { message: 'hubs is taken' });
+      });
+      await waitFor(() => expect(subdomainError()).toBe('hubs is taken'));
+
+      fireEvent.change(screen.getByPlaceholderText('CUSTOM_APP_NAME_PLACEHOLDER'), { target: { value: 'Hub' } });
+
+      await waitFor(() => expect(subdomainError()).toBeUndefined());
     });
   });
 
