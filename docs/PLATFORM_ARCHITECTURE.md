@@ -266,7 +266,7 @@ in traefik-labels.builder.ts). The Hub writes dynamic.yml on every boot, while i
 change only with the installed compose file.
 
 Routes without the sign-in still serve apps with a login of their own, whose answers to a signed-in
-visitor are just as private: apps whose operator switched the Hub login off, and the twins of the
+visitor are just as private: apps whose operator switched the Hub login off and the twins of the
 paths the operator exempted from it (`-public-paths`). Next to every app router on the `web` entry
 point apps.yml holds a `-session` copy (`sessionRouter` in traefik-config.service.ts), twins and
 routers with the login included. port-expose.yml holds one next to every port-expose route. Each copy

@@ -96,6 +96,9 @@ const APP_DOWN_SERVICE_URL = 'http://127.0.0.1:9';
 
 const COMPOSE_PROJECT_LABEL = 'com.docker.compose.project';
 
+/** `traefik.http.routers.<router>.<option>`, matched without regard to case as Traefik reads it. */
+const ROUTER_LABEL_PREFIX = 'traefik.http.routers.';
+
 /**
  * While its containers are gone, an app keeps its down routers in these states: running, coming
  * back by itself (the page says starting) or stopped (the page says so and points at Start). Uninstall
@@ -291,8 +294,8 @@ export class TraefikConfigService {
    * picks the app here, and the login answers first, as on every other route of the app. The
    * operator's login-free paths get a twin router without the login, as the app's own routers do
    * (`TraefikLabelsBuilder.addPublicPathRouters`). A file, not container labels: the hostname is
-   * known only once the tailnet is, and labels would mean recreating the app to learn it. No
-   * `-session` copies here ({@link sessionRouter}): a Service answers over the tailnet only, and
+   * known only once the tailnet is and labels would mean recreating the app to learn it. No
+   * `-session` copies here ({@link sessionRouter}): a Service answers over the tailnet only and
    * nothing on the way keeps a copy of its answers the way Cloudflare does.
    */
   public async syncTailscaleServiceRoutes(routes: TailscaleServiceRoute[]): Promise<void> {
@@ -433,16 +436,22 @@ export class TraefikConfigService {
         // Only to rank the down routers and the session copies: the copies of the app's own routers keep
         // Traefik's default, as they always have.
         const routerPriorities: Record<string, number> = {};
+        // Each router under the first spelling of its name seen, by that name in lower case.
+        const routerSpellings = new Map<string, string>();
 
         // Find all router labels
         for (const [key, value] of Object.entries(labels)) {
-          if (key.startsWith('traefik.http.routers.')) {
-            const routerName = key.replace('traefik.http.routers.', '').split('.')[0];
-            // Traefik reads option names without regard to case. A `Priority` read only by Traefik
-            // would rank the Docker router over its session copy.
+          if (key.toLowerCase().startsWith(ROUTER_LABEL_PREFIX)) {
+            const spelled = key.slice(ROUTER_LABEL_PREFIX.length).split('.')[0];
+            // Traefik reads router and option names without regard to case. A `Priority` read only by
+            // Traefik would rank the Docker router over its session copy. A router spelled two ways is
+            // one router there: read as two, the half with the rule could lose the other half's sign-in
+            // and its session copy would outrank the Docker router that has it.
             const property = key.split('.').pop()?.toLowerCase();
 
-            if (!routerName) continue;
+            if (!spelled) continue;
+            const routerName = routerSpellings.get(spelled.toLowerCase()) ?? spelled;
+            routerSpellings.set(spelled.toLowerCase(), routerName);
 
             if (!routers[routerName]) {
               routers[routerName] = {

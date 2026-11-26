@@ -95,7 +95,7 @@ function ruleMatches(rule: string, request: RouteRequest): boolean {
 /**
  * The routers a container's labels give the Docker provider that rank otherwise than their copy in
  * apps.yml, under `<name>@docker`: those with a priority. Without one a Docker router ranks by the
- * length of its rule like its copy, and the two are the same route.
+ * length of its rule like its copy and the two are the same route.
  */
 function dockerRoutersWithPriority(
   labels: Record<string, string>,
@@ -689,6 +689,29 @@ describe('TraefikConfigService — routes while an app restarts', () => {
         entryPoints: ['web'],
         priority: rule.length + 1,
       });
+    });
+
+    it('reads a router spelled two ways as the one router Traefik makes of it', async () => {
+      // Traefik merges the two spellings, sign-in included. Read as two routers, the copy of the half
+      // with the rule had no sign-in and outranked the Docker router for every request with a cookie.
+      const rule = `${HOST_RULE} && PathPrefix(\`/admin\`)`;
+      runningContainers({
+        ...publicWebLabels({ enableAuth: false }),
+        'traefik.http.routers.wordpress-ci-marketplace-admin.middlewares': 'ci-hub@file,ci-hub-app-starting@file',
+        ...route('wordpress-ci-marketplace-ADMIN', rule),
+      });
+      await service.generateTraefikConfig();
+
+      const names = Object.keys(routers()).filter((name) => name.toLowerCase().startsWith('wordpress-ci-marketplace-admin'));
+      expect(names).toEqual([
+        'wordpress-ci-marketplace-admin',
+        `wordpress-ci-marketplace-admin${SESSION_ROUTER_SUFFIX}`,
+        `wordpress-ci-marketplace-admin${APP_DOWN_ROUTER_SUFFIX}`,
+      ]);
+      const copy = routers()[`wordpress-ci-marketplace-admin${SESSION_ROUTER_SUFFIX}`];
+      expect(copy?.rule).toBe(`(${rule}) && (${SESSION_RULE})`);
+      // Then the middlewares the container defines, which every router of it gets.
+      expect(copy?.middlewares?.slice(0, 3)).toEqual([SESSION_NO_EDGE_CACHE_MIDDLEWARE, 'ci-hub@file', 'ci-hub-app-starting@file']);
     });
 
     it('ranks a copy by the length of its rule in bytes, as Traefik counts it', async () => {
