@@ -246,10 +246,9 @@ export function summarizeInstalledApp(entry: InstalledAppEntry) {
       latestVersion: metadata.latestDockerVersion,
     });
   // Compose binds the host port by the stored form (`publishesHostPort`): a Public Web form with
-  // `exposedLocal` publishes it with `openPort` off, and Private VPN never does. A record with no
-  // form falls back to its row.
+  // `exposedLocal` publishes it with `openPort` off. A record with no form falls back to its row.
   const hostPortForm = storedHostPortForm(app);
-  const publishesPort = hostPortForm ? publishesHostPort(hostPortForm) : Boolean(app.openPort) && app.exposureMode !== 'tailscale';
+  const publishesPort = hostPortForm ? publishesHostPort(hostPortForm) : Boolean(app.openPort);
 
   return {
     appUrn: createAppUrn(app.appName, app.appStoreSlug),

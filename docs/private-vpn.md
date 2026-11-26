@@ -130,12 +130,15 @@ For example, an app assigned port `8138` is available at
 `https://hub-demo.example.ts.net:8138/`. Open the generated URL shown by CI-Hub
 and test it from another device signed in to the same tailnet.
 
-While an app is on Private VPN, CI-Hub doesn't publish its port on the host, even
-if the app had one open on **This machine only** before. Serve listens on that
-same port. A host publish of it would answer the Hub's own computer in Serve's
-place over plain HTTP, where the link fails with "wrong version number". The
-app's `http://<lan-address>:<app-port>` link comes back when you move it back to
-**This machine only**.
+While an app is on Private VPN, its own port is never opened on your network,
+even with **Open this app's port on your network** switched on. It answers on the
+Hub's computer at `http://127.0.0.1:<app-port>` at most. Serve needs that port at
+the tailnet address, which a publish on every interface would take too. If Docker
+gets there first, the Hub's own computer reaches the app's plain HTTP and the link
+fails with "wrong version number". If Serve does, Docker refuses the publish and
+the Hub moves the app to another port. The switch still opens the other ports an
+app's listing publishes. Move the app back to **This machine only** to open its
+own port on the network again.
 
 The Hub checks whether an app is up by connecting to its address from where the
 Hub runs. When the Hub runs in a container, that is a Docker network, and a

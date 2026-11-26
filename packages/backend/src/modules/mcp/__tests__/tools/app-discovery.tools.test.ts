@@ -139,20 +139,13 @@ describe('AppDiscoveryTools', () => {
       expect(result.apps[0]).not.toHaveProperty('port');
     });
 
-    it('names no port for a Private VPN app, even one whose row says openPort', async () => {
-      appsService.getInstalledApps.mockResolvedValue([installedEntry({ app: { exposureMode: 'tailscale', openPort: true } })] as any);
-      const result = (await tools.listInstalledApps()) as { apps: Array<Record<string, unknown>> };
-      expect(result.apps[0]).toMatchObject({ exposureMode: 'tailscale' });
-      expect(result.apps[0]).not.toHaveProperty('port');
-    });
-
     // Compose publishes the host port of a Public Web form with `exposedLocal`, whatever its openPort says.
-    it('names the port of a Public Web app whose stored form publishes it, and none for a stored Private VPN form', async () => {
+    it('names the port of an app whose stored form publishes it, and none where the stored form closes it', async () => {
       appsService.getInstalledApps.mockResolvedValue([
         installedEntry({
           app: { exposureMode: 'cloudflare', openPort: false, config: { exposureMode: 'cloudflare', exposedLocal: true, openPort: false } },
         }),
-        installedEntry({ app: { exposureMode: 'tailscale', openPort: true, config: { exposureMode: 'tailscale', openPort: true } } }),
+        installedEntry({ app: { exposureMode: 'tailscale', openPort: true, config: { exposureMode: 'tailscale', openPort: false } } }),
       ] as any);
       const result = (await tools.listInstalledApps()) as { apps: Array<Record<string, unknown>> };
       expect(result.apps[0]).toMatchObject({ exposureMode: 'cloudflare', port: 18803 });

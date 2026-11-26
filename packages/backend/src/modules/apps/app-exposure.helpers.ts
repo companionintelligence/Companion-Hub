@@ -21,8 +21,9 @@ export function publishesHostPort(form: AppFormHostPortFields): boolean {
 
 /**
  * True when the app's port is taken on this computer: compose publishes it on the host, or Tailscale
- * Serve listens on it at the tailnet address. Another app published on the same port would answer the
- * Hub's own computer in Serve's place. Two Private VPN apps can't both have Serve on one port either.
+ * Serve listens on it at the tailnet address (Private VPN, with or without a host port). Another app
+ * opened on the network on the same port would take the tailnet address from Serve, and two Private
+ * VPN apps can't both have Serve on one port.
  */
 export function holdsAppPort(form: AppFormHostPortFields): boolean {
   return publishesHostPort(form) || getEffectiveExposureMode(form) === 'tailscale';

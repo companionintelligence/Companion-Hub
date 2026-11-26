@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { publishesHostPort, publishesPublicWebRoute, servedExposureMode, storedExposureForm, storedHostPortForm } from '../exposure.js';
+import {
+  publishesHostPort,
+  publishesMainPortOnNetwork,
+  publishesPublicWebRoute,
+  servedExposureMode,
+  storedExposureForm,
+  storedHostPortForm,
+} from '../exposure.js';
 
 describe('publishesPublicWebRoute', () => {
   it('is true for the cloudflare mode and for the legacy exposedLocal flag without a mode', () => {
@@ -95,20 +102,37 @@ describe('storedHostPortForm', () => {
 });
 
 describe('publishesHostPort', () => {
-  // Tailscale Serve listens on the app's port. A host publish of it would answer the Hub's own computer instead.
-  it('is false for every Private VPN form, whatever openPort and exposedLocal say', () => {
-    expect(publishesHostPort({ exposureMode: 'tailscale', exposedLocal: true, openPort: false })).toBe(false);
-    expect(publishesHostPort({ exposureMode: 'tailscale', openPort: true })).toBe(false);
-    expect(publishesHostPort({ exposureMode: 'tailscale', openPort: false })).toBe(false);
-    expect(publishesHostPort({ exposureMode: 'tailscale' })).toBe(false);
+  it('is true for a Private VPN form that asked to be exposed on the local network', () => {
+    expect(publishesHostPort({ exposureMode: 'tailscale', exposedLocal: true, openPort: false })).toBe(true);
   });
 
-  it('is false for a Public Web form with a closed port and no exposedLocal', () => {
+  it('is false for a Private VPN or Public Web form with a closed port and no exposedLocal', () => {
+    expect(publishesHostPort({ exposureMode: 'tailscale', openPort: false })).toBe(false);
     expect(publishesHostPort({ exposureMode: 'cloudflare', openPort: false })).toBe(false);
   });
 
   it('is true for This Machine Only and for a form with no openPort, as the queue serves it open', () => {
     expect(publishesHostPort({ exposureMode: 'local', openPort: false })).toBe(true);
-    expect(publishesHostPort({ exposureMode: 'cloudflare' })).toBe(true);
+    expect(publishesHostPort({ exposureMode: 'tailscale' })).toBe(true);
+  });
+});
+
+describe('publishesMainPortOnNetwork', () => {
+  it('is true where the operator opened the ports on the network, outside Private VPN', () => {
+    expect(publishesMainPortOnNetwork({ exposureMode: 'local', portOnNetwork: true }, false)).toBe(true);
+    expect(publishesMainPortOnNetwork({ exposureMode: 'cloudflare', portOnNetwork: true }, false)).toBe(true);
+    expect(publishesMainPortOnNetwork({ portOnNetwork: true }, false)).toBe(true);
+  });
+
+  it('is false where the operator did not, or the app must stay on loopback', () => {
+    expect(publishesMainPortOnNetwork({ exposureMode: 'local' }, false)).toBe(false);
+    expect(publishesMainPortOnNetwork({ exposureMode: 'local', portOnNetwork: false }, false)).toBe(false);
+    expect(publishesMainPortOnNetwork({ exposureMode: 'local', portOnNetwork: true }, true)).toBe(false);
+  });
+
+  // Tailscale Serve listens on a Private VPN app's port at the tailnet address, which a publish on every interface takes.
+  it('is false for Private VPN even where the operator opened the ports on the network', () => {
+    expect(publishesMainPortOnNetwork({ exposureMode: 'tailscale', portOnNetwork: true }, false)).toBe(false);
+    expect(publishesMainPortOnNetwork({ exposureMode: 'tailscale', exposedLocal: true, portOnNetwork: true }, false)).toBe(false);
   });
 });

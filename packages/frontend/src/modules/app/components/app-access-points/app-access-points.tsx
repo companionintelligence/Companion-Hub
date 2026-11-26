@@ -9,9 +9,16 @@ import { openExternal } from '@/lib/helpers/open-external';
 import { cn } from '@/lib/utils';
 import { PORT_EXPOSE_OPEN_TO_COPY, type PortExposeOpenTo } from '@/modules/app/helpers/port-expose-open-to';
 import type { AppDetails, AppInfo } from '@/types/app.types';
-import { hostPortStaysOnLoopback, LOOPBACK_HOST_PORT_INTERFACE, publishesHostPortsOnNetwork } from '@ci-hub/common/schemas';
+import { hostPortStaysOnLoopback, LOOPBACK_HOST_PORT_INTERFACE } from '@ci-hub/common/schemas';
 import { buildPublicWebIdentity, normalizeStoredHostname, sanitizeAppSubdomain } from '@ci-hub/common/types';
-import { publishesHostPort, publishesPublicWebRoute, resolveRoutingSubdomain, storedExposureForm, storedHostPortForm } from '@ci-hub/common/types';
+import {
+  publishesHostPort,
+  publishesMainPortOnNetwork,
+  publishesPublicWebRoute,
+  resolveRoutingSubdomain,
+  storedExposureForm,
+  storedHostPortForm,
+} from '@ci-hub/common/types';
 import { useQuery } from '@tanstack/react-query';
 import { CheckCircle2, Copy, ExternalLink, Globe, Lock, LockOpen, MonitorSmartphone, QrCode as QrCodeIcon } from 'lucide-react';
 import { useId, useMemo, useState } from 'react';
@@ -181,8 +188,8 @@ export function hasDirectLocalAccess(
 
   // A guest's record carries no form, and its row's `exposedLocal` is true for any exposable app installed without exposure settings.
   const mode = record.exposureMode;
-  // Private VPN publishes no host port: Tailscale Serve uses the same one (`publishesHostPort`).
-  if (mode === 'tailscale') return false;
+  // Tailscale-only installs may skip publishing a host port unless explicitly requested.
+  if (mode === 'tailscale') return Boolean(record.openPort);
   // Public-web and local installs still bind the app port on the host — localhost stays valid.
   if (mode === 'cloudflare' || mode === 'local') return true;
 
@@ -258,10 +265,13 @@ export function buildAppAccessPoints(input: {
     ? resolveRoutingSubdomain(record.localSubdomain, urnAppName, urnAppStoreSlug)
     : record.localSubdomain || urnAppName;
   const cleanSubdomain = baseSubdomain ? sanitizeAppSubdomain(baseSubdomain) : '';
-  // The host port answers on the LAN address only when the operator opened it on the network
-  // (`publishesHostPortsOnNetwork`); otherwise on loopback, whose URL also keeps the card from
-  // offering a QR code another device could never open.
-  const onNetwork = publishesHostPortsOnNetwork(record.config as { portOnNetwork?: boolean } | undefined, hostPortStaysOnLoopback(info));
+  // The host port answers on the LAN address only when the operator opened it on the network, and
+  // never a Private VPN app's (`publishesMainPortOnNetwork`); otherwise on loopback, whose URL also
+  // keeps the card from offering a QR code another device could never open.
+  const onNetwork = publishesMainPortOnNetwork(
+    { ...storedExposureForm(record), portOnNetwork: (record.config as { portOnNetwork?: boolean } | undefined)?.portOnNetwork },
+    hostPortStaysOnLoopback(info),
+  );
   const browserHost = onNetwork ? resolveBrowserHost(internalIp) : LOOPBACK_HOST_PORT_INTERFACE;
   const directPort = app.port ?? info.port ?? null;
   const localEnabled = hasDirectLocalAccess(record, { hasHostPort: directPort != null, dynamicConfig: info.dynamic_config });

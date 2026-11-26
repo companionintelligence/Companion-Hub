@@ -60,7 +60,8 @@ describe('resolveDirectLocalUrl', () => {
     expect(service.resolveDirectLocalUrl({ ...APP, port: null }, INFO)).toBeUndefined();
   });
 
-  describe('tailscale installs publish no host port', () => {
+  // A Private VPN app's port is on 127.0.0.1 at most: Tailscale Serve holds it at the tailnet address.
+  describe('tailscale installs offer no LAN address', () => {
     it('offers nothing when openPort was not requested', () => {
       const service = makeService();
 
@@ -76,13 +77,14 @@ describe('resolveDirectLocalUrl', () => {
 
   // #2377: an app with a stored install form gets the link exactly when compose binds the host port.
   describe('apps with a stored install form', () => {
-    // Tailscale Serve listens on the app's port, so compose binds none for a Private VPN form.
-    it('offers nothing for a Private VPN form, with exposedLocal or an open port', () => {
+    // Compose binds a Private VPN form's port on 127.0.0.1 only, even opened on the network: Tailscale Serve holds it.
+    it('offers nothing for a Private VPN form, with exposedLocal, an open port or the port opened on the network', () => {
       const service = makeService();
 
       for (const config of [
         { exposureMode: 'tailscale', exposedLocal: true, openPort: false },
         { exposureMode: 'tailscale', openPort: true },
+        { exposureMode: 'tailscale', openPort: true, portOnNetwork: true },
       ]) {
         expect(service.resolveDirectLocalUrl({ ...APP, exposureMode: 'tailscale', openPort: true, config }, INFO)).toBeUndefined();
       }
