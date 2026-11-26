@@ -444,7 +444,7 @@ export class TraefikConfigService {
        */
       const apps = new Map<
         string,
-        { routers: Array<{ name: string; router: TraefikRouter; priority: number }>; middlewares: Set<string>; publicPaths: string[] }
+        { routers: Array<{ name: string; router: TraefikRouter; priority: number }>; middlewares: Set<string>; publicPaths?: string[] }
       >();
       /**
        * By name, every app router on the web entry point with the highest priority Traefik gives it
@@ -475,13 +475,15 @@ export class TraefikConfigService {
         const project = labels[COMPOSE_PROJECT_LABEL];
         let app = project ? apps.get(project) : undefined;
         if (project && !app) {
-          app = { routers: [], middlewares: new Set(), publicPaths: [] };
+          app = { routers: [], middlewares: new Set() };
           apps.set(project, app);
         }
-        // The operator's login-free paths, on each of the app's containers.
-        const publicPaths = publicPathsOf(labels[PUBLIC_PATHS_LABEL]);
-        if (app && publicPaths.length > 0) {
-          app.publicPaths = publicPaths;
+        // The operator's login-free paths, on each of the app's containers. While they disagree (one
+        // recreated before another), only the paths all of them name, in whatever order Docker lists
+        // them. A container without the label names none: the operator may have just removed them all.
+        if (app) {
+          const publicPaths = publicPathsOf(labels[PUBLIC_PATHS_LABEL]);
+          app.publicPaths = app.publicPaths ? app.publicPaths.filter((path) => publicPaths.includes(path)) : publicPaths;
         }
 
         // Extract Traefik routing information from labels
@@ -643,7 +645,7 @@ export class TraefikConfigService {
       // Before the copies below, which each twin gets like any app router. A router that answers a
       // browser's fetch of `/sw.js` with the worker reset gets none: the login decides that fetch.
       for (const app of apps.values()) {
-        if (app.publicPaths.length === 0) {
+        if (!app.publicPaths?.length) {
           continue;
         }
         const pathRule = publicPathsRule(app.publicPaths);

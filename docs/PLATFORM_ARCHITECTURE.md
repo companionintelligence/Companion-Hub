@@ -275,9 +275,13 @@ and an exempt path reaches the service it would reach anyway. The twins live in 
 listing's rule has the length Traefik ranks it by only once compose fills in `${APP_LOCAL_DOMAIN}`.
 A twin in the labels, ranked by its own rule, outranked the listing's routes and sent their paths to
 the app's main service. The service-worker reset routers get none: the sign-in decides that fetch.
-Routers on `websecure`, which apps.yml doesn't copy, get none either, so an exempt path keeps the
-sign-in there. Port-expose routes have no exempt paths. Tailscale Service hostnames get their twins
-in tailscale-services.yml.
+apps.yml doesn't copy routers on `websecure` alone or routers without a `service` or `entrypoints`
+label, so they get no twin and an exempt path keeps the sign-in there. Nothing the Hub sets up sends
+an app's requests to `websecure`: the tunnel (custom domains included) and Tailscale Services connect
+to `web`. A listing's router on both entry points is copied with both, as is its twin. Each app's
+paths are the ones all its running containers name, so while they disagree (one recreated before
+another) a path one of them dropped keeps the sign-in. Port-expose routes have no exempt paths.
+Tailscale Service hostnames get their twins in tailscale-services.yml.
 
 Routes without the sign-in still serve apps with a login of their own, whose answers to a signed-in
 visitor are just as private: apps whose operator switched the Hub login off and the twins of the

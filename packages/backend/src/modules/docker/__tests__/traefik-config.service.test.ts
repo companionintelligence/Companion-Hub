@@ -988,6 +988,38 @@ describe('TraefikConfigService — routes while an app restarts', () => {
         expect(routerFor(routers(), { host: ORIGIN_HOST, path: '/' })).toBe(`${SERVICE}-insecure`);
       });
 
+      it('keeps only the paths every labelled container names, whichever Docker lists first', async () => {
+        const [main, listing] = appContainers();
+        const containers = [
+          { ...main, [PUBLIC_PATHS_LABEL]: '/hook,/api' },
+          { ...listing, [PUBLIC_PATHS_LABEL]: '/hook' },
+        ];
+        for (const listed of [containers, [...containers].reverse()]) {
+          runningContainers(...listed);
+          await service.generateTraefikConfig();
+
+          expect(routers()[`${SERVICE}-insecure${PUBLIC_PATHS_ROUTER_SUFFIX}`]?.rule).toBe(
+            `(${HOST_RULE}) && (Path(\`/hook\`) || PathPrefix(\`/hook/\`))`,
+          );
+          expect(routerFor(allRouters(listed), { host: ORIGIN_HOST, path: '/api/v1/runs' })).toBe(`${SERVICE}-api@docker`);
+        }
+      });
+
+      it('gives no twin while a container of the app has no paths: the operator may have just removed them all', async () => {
+        const [main, listing] = appContainers();
+        const { [PUBLIC_PATHS_LABEL]: _removed, ...recreated } = listing ?? {};
+        for (const listed of [
+          [main ?? {}, recreated],
+          [recreated, main ?? {}],
+        ]) {
+          runningContainers(...listed);
+          await service.generateTraefikConfig();
+
+          expect(Object.keys(routers()).filter((name) => name.includes(PUBLIC_PATHS_ROUTER_SUFFIX))).toEqual([]);
+          expect(routerFor(allRouters(listed), { host: ORIGIN_HOST, path: '/hook/42' })).toBe(`${SERVICE}-insecure`);
+        }
+      });
+
       it('never replaces an app router whose name is taken by a twin', async () => {
         const [main, listing] = appContainers();
         runningContainers(main ?? {}, {
