@@ -26,7 +26,11 @@ const Tile = ({ data, sslPort, publicDomain }: { data: GuestAppsDto['installed']
   const description = info.short_desc && !isLocalAppDefaultShortDesc(info.short_desc) ? info.short_desc : undefined;
   // A guest can't retry a failed install, so the tile doesn't offer it.
   const status = app.status === 'install_failed' ? undefined : app.status;
-  const tile = <SimpleAppTile key={info.urn} name={info.name} urn={info.urn} status={status} description={description} />;
+  // With no address this browser can open (no interface, a Private VPN app seen from the LAN, a port on the Hub's
+  // computer only) the tile has no menu. It doesn't look as if it opened one either.
+  const tile = (
+    <SimpleAppTile key={info.urn} name={info.name} urn={info.urn} status={status} description={description} interactive={addresses.length > 0} />
+  );
 
   if (addresses.length === 0) {
     return tile;

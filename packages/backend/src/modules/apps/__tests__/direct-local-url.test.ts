@@ -170,3 +170,28 @@ describe('apps whose host port stays on loopback', () => {
     expect(service.resolveDirectLocalUrl({ ...APP, exposureMode: 'cloudflare', exposedLocal: true, config: publicWeb }, info)).toBeUndefined();
   });
 });
+
+// A port-expose app's port is a program on the host. Compose publishes nothing for it, and the Hub tells it to listen on
+// every interface, so the switch says nothing about it. On Private VPN it gets no LAN link, as before the switch came in.
+describe('a port-expose app', () => {
+  const exposed = (exposureMode: string) => ({
+    port: 8090,
+    exposureMode,
+    exposedLocal: exposureMode === 'cloudflare',
+    openPort: exposureMode !== 'tailscale',
+    config: { kind: 'port-expose', port: 8090, exposureMode, exposedLocal: exposureMode === 'cloudflare', openPort: exposureMode !== 'tailscale' },
+  });
+
+  it('keeps its LAN address on This machine only and Public web', () => {
+    const service = makeService();
+
+    expect(service.resolveDirectLocalUrl(exposed('local'), { ...INFO, kind: 'port-expose' })).toBe('http://192.168.1.9:8090');
+    expect(service.resolveDirectLocalUrl(exposed('cloudflare'), { ...INFO, kind: 'port-expose' })).toBe('http://192.168.1.9:8090');
+  });
+
+  it('offers none on Private VPN', () => {
+    const service = makeService();
+
+    expect(service.resolveDirectLocalUrl(exposed('tailscale'), { ...INFO, kind: 'port-expose' })).toBeUndefined();
+  });
+});

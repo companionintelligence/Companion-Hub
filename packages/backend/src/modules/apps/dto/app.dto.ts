@@ -120,7 +120,7 @@ const guestAppsSchema = z.object({
         // The address of an app on Public web. It is public already, and a guest has nothing else to build it from.
         publicUrl: z.string().nullable().optional(),
         /**
-         * Whether another computer reaches the app on its own port at the Hub's address (`storedMainPortOnNetwork`).
+         * Whether another computer reaches the app on its own port at the Hub's address (`portAnswersNetwork`).
          * The port is on 127.0.0.1 unless the operator opened it on the network, and a guest's record carries no form.
          */
         hostPortOnNetwork: z.boolean().optional(),

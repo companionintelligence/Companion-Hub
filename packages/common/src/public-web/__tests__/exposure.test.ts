@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  portAnswersNetwork,
   publishesHostPort,
   publishesMainPortOnNetwork,
   publishesPublicWebRoute,
@@ -160,5 +161,25 @@ describe('storedMainPortOnNetwork', () => {
   it('is false for a record with no stored form', () => {
     expect(storedMainPortOnNetwork({ config: null, exposureMode: 'local', openPort: true }, false)).toBe(false);
     expect(storedMainPortOnNetwork({ exposureMode: 'cloudflare', exposedLocal: true }, false)).toBe(false);
+  });
+});
+
+describe('portAnswersNetwork', () => {
+  it('follows the switch for an app whose port compose publishes', () => {
+    expect(portAnswersNetwork({ config: { exposureMode: 'local', portOnNetwork: true } }, {})).toBe(true);
+    expect(portAnswersNetwork({ config: { exposureMode: 'local' } }, {})).toBe(false);
+    expect(portAnswersNetwork({ config: { exposureMode: 'local', portOnNetwork: true } }, { hub_integration: { mcp_client: true } })).toBe(false);
+  });
+
+  // Its port is a program on the host that compose doesn't publish, and the Hub tells it to listen on every interface.
+  it('offers a port-expose app on the network, whatever the switch says', () => {
+    expect(portAnswersNetwork({ config: { kind: 'port-expose', exposureMode: 'local', openPort: true } }, {})).toBe(true);
+    expect(portAnswersNetwork({ config: { kind: 'port-expose', exposureMode: 'cloudflare', exposedLocal: true, openPort: true } }, {})).toBe(true);
+    expect(portAnswersNetwork({ config: { exposureMode: 'local' } }, { kind: 'port-expose' })).toBe(true);
+  });
+
+  it('gives a port-expose app on Private VPN no LAN link', () => {
+    expect(portAnswersNetwork({ config: { kind: 'port-expose', exposureMode: 'tailscale', openPort: false } }, {})).toBe(false);
+    expect(portAnswersNetwork({ config: { exposureMode: 'tailscale' } }, { kind: 'port-expose' })).toBe(false);
   });
 });

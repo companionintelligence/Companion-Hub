@@ -598,6 +598,32 @@ describe('buildAppAccessPoints', () => {
 
       expect(accessPoints[2]).toMatchObject({ key: 'local', url: 'http://127.0.0.1:18789/login' });
     });
+
+    // Its port is a program on the host, which the Hub tells to listen on every interface. Compose publishes
+    // nothing for it, so the switch says nothing about it. The backend's links and the guest tile agree (#2614).
+    it('offers a port-expose app at the Hub address, whatever the switch says', () => {
+      const exposed = (exposureMode: string, viewerHostname?: string) =>
+        buildAppAccessPoints({
+          app: {
+            status: 'running',
+            port: 8090,
+            exposureMode,
+            openPort: true,
+            config: { kind: 'port-expose', port: 8090, exposureMode, openPort: true },
+          },
+          info: { ...info, urn: 'my-service:_user', kind: 'port-expose' },
+          sslPort: 443,
+          internalIp: viewerHostname ? '0.0.0.0' : '192.168.1.9',
+          viewerHostname,
+          cloudflareAvailable: true,
+          tailscaleAvailable: false,
+        } as never).find((entry) => entry.key === 'local');
+
+      expect(exposed('local')).toMatchObject({ url: 'http://192.168.1.9:8090/login', state: 'active' });
+      expect(exposed('cloudflare')).toMatchObject({ url: 'http://192.168.1.9:8090/login', state: 'active' });
+      // A listen-all Hub, seen from another computer on the LAN.
+      expect(exposed('local', 'hub.lan')).toMatchObject({ url: 'http://hub.lan:8090/login' });
+    });
   });
 });
 

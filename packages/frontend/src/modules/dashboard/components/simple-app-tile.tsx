@@ -28,6 +28,8 @@ interface SimpleAppTileProps {
   trailing?: React.ReactNode;
   /** An exposed port that has no Hub sign-in in front of it, and who can open it (`portExposeOpenTo`). */
   openWithoutSignIn?: PortExposeOpenTo | null;
+  /** False for a tile that opens nothing, such as a guest's tile with no address: no pointer or hover then. */
+  interactive?: boolean;
 }
 
 export const SimpleAppTile = ({
@@ -42,6 +44,7 @@ export const SimpleAppTile = ({
   logoUrl,
   trailing,
   openWithoutSignIn,
+  interactive = true,
 }: SimpleAppTileProps) => {
   const { t } = useTranslation();
   const isInstallFailed = status === INSTALL_FAILED_STATUS;
@@ -68,7 +71,9 @@ export const SimpleAppTile = ({
     : '';
 
   return (
-    <div className="flex items-center gap-3 p-2 cursor-pointer hover:opacity-80 transition-opacity w-full rounded-md hover:bg-muted/40">
+    <div
+      className={`flex items-center gap-3 p-2 w-full rounded-md${interactive ? ' cursor-pointer hover:opacity-80 transition-opacity hover:bg-muted/40' : ''}`}
+    >
       <div className="relative flex-shrink-0">
         <AppLogo urn={urn || undefined} url={logoUrl} alt={name} size={44} className={`rounded-md shadow-sm${hasOverlay ? ' opacity-40' : ''}`} />
         {isInstalling && (

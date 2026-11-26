@@ -1,10 +1,4 @@
-import { type AppInfo, hostPortStaysOnLoopback, isPortExposeApp } from '@ci-hub/common/schemas';
-import {
-  effectiveExposureMode,
-  publishesHostPort as publishesSharedHostPort,
-  publishesPublicWebRoute,
-  storedMainPortOnNetwork,
-} from '@ci-hub/common/types';
+import { effectiveExposureMode, publishesHostPort as publishesSharedHostPort, publishesPublicWebRoute } from '@ci-hub/common/types';
 
 export type AppFormHostPortFields = {
   openPort?: boolean;
@@ -23,24 +17,6 @@ export function getEffectiveExposureMode(form: AppFormHostPortFields): 'local' |
  */
 export function publishesHostPort(form: AppFormHostPortFields): boolean {
   return publishesSharedHostPort(form);
-}
-
-/**
- * Whether another computer reaches an installed app on its own port at the Hub's LAN or tailnet address.
- * Compose publishes the port on every interface only when the operator opened it on the network
- * (`storedMainPortOnNetwork`), and on 127.0.0.1 otherwise. A port-expose app's port belongs to a service
- * on the host, which the Hub doesn't publish: where it listens is that service's choice, so its address
- * stays offered as before.
- */
-export function portAnswersNetwork(
-  app: Parameters<typeof storedMainPortOnNetwork>[0],
-  info: Pick<AppInfo, 'kind' | 'exposable' | 'hub_integration'>,
-): boolean {
-  if (isPortExposeApp(info) || isPortExposeApp(app.config as Pick<AppInfo, 'kind'> | null | undefined)) {
-    return true;
-  }
-
-  return storedMainPortOnNetwork(app, hostPortStaysOnLoopback(info));
 }
 
 /**

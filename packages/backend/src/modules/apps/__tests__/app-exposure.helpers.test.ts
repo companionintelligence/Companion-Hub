@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getEffectiveExposureMode, portAnswersNetwork, publishesHostPort } from '../app-exposure.helpers';
+import { getEffectiveExposureMode, publishesHostPort } from '../app-exposure.helpers';
 
 describe('app-exposure.helpers', () => {
   describe('getEffectiveExposureMode', () => {
@@ -9,20 +9,6 @@ describe('app-exposure.helpers', () => {
 
     it('defaults to cloudflare when exposedLocal is true and exposureMode is omitted', () => {
       expect(getEffectiveExposureMode({ exposedLocal: true })).toBe('cloudflare');
-    });
-  });
-
-  describe('portAnswersNetwork', () => {
-    it('follows the switch for an app whose port compose publishes', () => {
-      expect(portAnswersNetwork({ config: { exposureMode: 'local', portOnNetwork: true } }, {})).toBe(true);
-      expect(portAnswersNetwork({ config: { exposureMode: 'local' } }, {})).toBe(false);
-      expect(portAnswersNetwork({ config: { exposureMode: 'local', portOnNetwork: true } }, { hub_integration: { mcp_client: true } })).toBe(false);
-    });
-
-    // Its port is a service on the host that compose doesn't publish, so the switch says nothing about it.
-    it('keeps offering a port-expose app, whose port the Hub does not publish', () => {
-      expect(portAnswersNetwork({ config: { kind: 'port-expose', exposureMode: 'local' } }, {})).toBe(true);
-      expect(portAnswersNetwork({ config: { exposureMode: 'local' } }, { kind: 'port-expose' })).toBe(true);
     });
   });
 

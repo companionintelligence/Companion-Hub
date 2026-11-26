@@ -16,7 +16,7 @@ export interface GuestTileAddress {
  * `127.0.0.1` is the guest's own computer, so it is right only for a browser on the Hub. From a LAN
  * or tailnet address, the name the browser used to reach this page is one it can reach, but only for
  * a port the operator opened on the network: any other is published on 127.0.0.1, and a Private VPN
- * app's always is (`storedMainPortOnNetwork`, which the Hub answers as `hostPortOnNetwork`). From the
+ * app's always is (`portAnswersNetwork`, which the Hub answers as `hostPortOnNetwork`). From the
  * public hostname nothing is: the tunnel carries 443 only.
  */
 function guestPortHost(data: GuestAppsDto['installed'][number], viewerHostname: string, publicDomain: string): string | null {
