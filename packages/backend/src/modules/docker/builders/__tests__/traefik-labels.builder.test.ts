@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   APP_STARTING_MIDDLEWARE,
+  PUBLIC_PATHS_LABEL,
+  publicPathsLabels,
   TraefikLabelsBuilder,
   withAppStartingPage,
   withHubLoginOnEveryRouter,
@@ -310,45 +312,16 @@ describe('withHubLoginOnEveryRouter', () => {
   });
 });
 
-describe('addPublicPathRouters', () => {
-  const R = 'traefik.http.routers.ci-planning-ci-marketplace';
-  const withPaths = (overrides: Partial<ConstructorParameters<typeof TraefikLabelsBuilder>[0]> = {}) =>
-    new TraefikLabelsBuilder({ ...base, enableAuth: true, publicPaths: ['/hook', '/api/v1/events/'], ...overrides })
-      .addCloudflareLabels()
-      .addTailscaleLabels()
-      .addPublicPathRouters()
-      .build();
-
-  it('gives each Public web router a twin for the paths, with the same chain but no login', () => {
-    const labels = withPaths();
-    const rule = 'Path(`/hook`) || PathPrefix(`/hook/`) || Path(`/api/v1/events`) || PathPrefix(`/api/v1/events/`)';
-
-    for (const router of ['', '-insecure']) {
-      expect(labels[`${R}${router}-public-paths.rule`]).toBe(`(Host(\`ci-planning-core-2.ci.lan\`)) && (${rule})`);
-      expect(labels[`${R}${router}-public-paths.service`]).toBe('ci-planning-ci-marketplace');
-      expect(labels[`${R}${router}-public-paths.middlewares`]).toBe('ci-hub-edge-headers@file');
-      // The router with the login is untouched.
-      expect(labels[`${R}${router}.middlewares`]).toBe('ci-hub-edge-headers@file,ci-hub@file');
-    }
-    expect(labels[`${R}-insecure-public-paths.entrypoints`]).toBe('web');
-    expect(labels[`${R}-public-paths.entrypoints`]).toBe('websecure');
-    expect(labels[`${R}-public-paths.tls.certresolver`]).toBe('myresolver');
+describe('publicPathsLabels', () => {
+  it('names the paths without a trailing slash and leaves the twins to apps.yml', () => {
+    expect(publicPathsLabels({ enableAuth: true, publicPaths: ['/hook', '/api/v1/events/'] })).toEqual({
+      [PUBLIC_PATHS_LABEL]: '/hook,/api/v1/events',
+    });
   });
 
-  it('gives the service-worker reset routers no twin: the login decides that fetch', () => {
-    expect(Object.keys(withPaths()).filter((key) => key.includes('sw-reset') && key.includes('public-paths'))).toEqual([]);
-  });
-
-  it('gives the Private VPN router one too', () => {
-    const labels = withPaths({ exposureMode: 'tailscale' });
-
-    expect(labels[`${R}-tailscale-public-paths.rule`]).toContain('PathPrefix(`/hook/`)');
-    expect(labels[`${R}-tailscale-public-paths.middlewares`]).toBeUndefined();
-  });
-
-  it('adds nothing with the login off (everything is open) or with no paths', () => {
-    for (const labels of [withPaths({ enableAuth: false }), withPaths({ publicPaths: [] }), withPaths({ publicPaths: undefined })]) {
-      expect(Object.keys(labels).filter((key) => key.includes('public-paths'))).toEqual([]);
-    }
+  it('names none with the login off (everything is open) or with no paths', () => {
+    expect(publicPathsLabels({ enableAuth: false, publicPaths: ['/hook'] })).toEqual({});
+    expect(publicPathsLabels({ enableAuth: true, publicPaths: [] })).toEqual({});
+    expect(publicPathsLabels({ enableAuth: true })).toEqual({});
   });
 });

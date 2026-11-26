@@ -9,7 +9,15 @@ import type { FilesystemService } from '@/core/filesystem/filesystem.service';
 import type { AppStatus } from '@/core/database/drizzle/types';
 import type { LoggerService } from '@/core/logger/logger.service';
 import type { AppsRepository } from '@/modules/apps/apps.repository';
-import { APP_STARTING_MIDDLEWARE, TraefikLabelsBuilder, withAppStartingPage, withHubLoginOnEveryRouter } from '../builders/traefik-labels.builder';
+import {
+  APP_STARTING_MIDDLEWARE,
+  PUBLIC_PATHS_LABEL,
+  PUBLIC_PATHS_ROUTER_SUFFIX,
+  publicPathsLabels,
+  TraefikLabelsBuilder,
+  withAppStartingPage,
+  withHubLoginOnEveryRouter,
+} from '../builders/traefik-labels.builder';
 import { APP_DOWN_ROUTER_SUFFIX, SESSION_NO_EDGE_CACHE_MIDDLEWARE, SESSION_ROUTER_SUFFIX, TraefikConfigService } from '../traefik-config.service';
 
 const written = new Map<string, string>();
@@ -99,7 +107,7 @@ function ruleMatches(rule: string, request: RouteRequest): boolean {
  */
 function dockerRoutersWithPriority(
   labels: Record<string, string>,
-): Record<string, { rule: string; entryPoints: string[]; priority: number; middlewares: string[] }> {
+): Record<string, { rule: string; service: string; entryPoints: string[]; priority: number; middlewares: string[] }> {
   const options = new Map<string, Record<string, string>>();
   for (const [key, value] of Object.entries(labels)) {
     const [, router, option] = /^traefik\.http\.routers\.([^.]+)\.([^.]+)$/.exec(key) ?? [];
@@ -112,6 +120,7 @@ function dockerRoutersWithPriority(
         `${name}@docker`,
         {
           rule: router.rule ?? '',
+          service: router.service ?? '',
           entryPoints: (router.entrypoints ?? '').split(','),
           priority: Number(router.priority),
           middlewares: (router.middlewares ?? '').split(',').filter(Boolean),
@@ -821,77 +830,96 @@ describe('TraefikConfigService — routes while an app restarts', () => {
 
     /*
      * Every route shape the Hub writes for one app, with the Hub login on: its own routers, the twins
-     * of the paths the operator exempted from the login and routes the listing declares. A copy that
-     * outranked the wrong router would let a request with any cookie skip the login, or put the login
-     * on an exempt path for a signed-in visitor only.
+     * of the paths the operator exempted from the login and routes the listing declares on its other
+     * services. A copy or twin that outranked the wrong router would let a request with any cookie skip
+     * the login, keep the login on an exempt path or send a path to a service the listing doesn't.
      */
     describe('on every route of an app with the Hub login', () => {
+      const SERVICE = 'wordpress-ci-marketplace';
       const API_RULE = `${HOST_RULE} && PathPrefix(\`/api\`)`;
       const ADMIN_RULE = `${HOST_RULE} && PathPrefix(\`/api/admin\`)`;
       const FILES_RULE = `${HOST_RULE} && PathPrefix(\`/files\`)`;
-      const appLabels = ({ requireLogin = true }: { requireLogin?: boolean } = {}) => {
+      const MEDIA_RULE = `${HOST_RULE} && PathPrefix(\`/media\`)`;
+      const PATHS_RULE = ['/hook', '/api', '/media'].map((path) => `Path(\`${path}\`) || PathPrefix(\`${path}/\`)`).join(' || ');
+      const project = { 'com.docker.compose.project': 'wordpress_ci-marketplace', 'ci-hub.appurn': 'wordpress:ci-marketplace' };
+      const strings = (labels: Record<string, string | boolean>) =>
+        Object.fromEntries(Object.entries(labels).map(([key, value]) => [key, String(value)]));
+      /** The app's main container and the container of the listing's other services, labelled the way the compose builder labels them. */
+      const appContainers = ({ requireLogin = true }: { requireLogin?: boolean } = {}) => {
         const hub = new TraefikLabelsBuilder({
           internalPort: 80,
           appId: 'wordpress',
           storeId: 'ci-marketplace',
           exposureMode: 'cloudflare',
           enableAuth: requireLogin,
-          // `/api` is also a route of the listing's, under the twin's rank. `/api/admin` is one over it.
-          publicPaths: ['/hook', '/api'],
           cloudflareOriginHostname: ORIGIN_HOST,
           cloudflarePublicHostname: ORIGIN_HOST.replace('.localhost', '.ci0.pw'),
         })
           .addCloudflareLabels()
-          .addPublicPathRouters()
           .build();
-        // Labelled the way the compose builder labels the listing's routes.
-        const labels = withAppStartingPage(
+        const paths = publicPathsLabels({ enableAuth: requireLogin, publicPaths: ['/hook', '/api', '/media'] });
+        const main = withAppStartingPage(withHubLoginOnEveryRouter(hub, hub, { requireLogin, publicWeb: true }));
+        // Routes of the listing's to services of its own. A twin of the main router ranked by its rule
+        // (164 bytes) outranked `/api` at 100 and `/media` without a priority. `/api/admin` at 500
+        // outranked that twin.
+        const listing = withAppStartingPage(
           withHubLoginOnEveryRouter(
             {
-              ...hub,
-              ...route('wordpress-ci-marketplace-api', API_RULE, { priority: '100' }),
-              ...route('wordpress-ci-marketplace-admin', ADMIN_RULE, { priority: '500' }),
-              ...route('wordpress-ci-marketplace-files', FILES_RULE),
+              ...route('wordpress-ci-marketplace-api', API_RULE, { priority: '100', service: `${SERVICE}-api` }),
+              ...route('wordpress-ci-marketplace-admin', ADMIN_RULE, { priority: '500', service: `${SERVICE}-admin` }),
+              ...route('wordpress-ci-marketplace-files', FILES_RULE, { service: `${SERVICE}-files` }),
+              ...route('wordpress-ci-marketplace-media', MEDIA_RULE, { service: `${SERVICE}-media` }),
             },
-            hub,
+            {},
             { requireLogin, publicWeb: true },
           ),
         );
-        return {
-          ...Object.fromEntries(Object.entries(labels).map(([key, value]) => [key, String(value)])),
-          'com.docker.compose.project': 'wordpress_ci-marketplace',
-          'ci-hub.appurn': 'wordpress:ci-marketplace',
-        };
+        return [
+          { ...strings(main), ...paths, ...project },
+          { ...strings(listing), ...paths, ...project },
+        ];
       };
       const COOKIE = { Cookie: 'token=app-session' };
+      const allRouters = (containers: Array<Record<string, string>>) => ({
+        ...routers(),
+        ...Object.assign({}, ...containers.map(dockerRoutersWithPriority)),
+      });
 
       it.each([
-        ['/', COOKIE, 'insecure-session', true],
-        ['/', {}, 'insecure', true],
-        ['/notes/hook', COOKIE, 'insecure-session', true],
-        ['/hookx', COOKIE, 'insecure-session', true],
-        ['/hook', COOKIE, 'insecure-public-paths-session', false],
-        ['/hook/42', { Authorization: 'Bearer app-token' }, 'insecure-public-paths-session', false],
-        ['/hook/42', {}, 'insecure-public-paths', false],
-        // The twin outranks the listing's `/api` route and `/api/admin` outranks the twin, with a
-        // cookie and without alike.
-        ['/api/v1/runs', COOKIE, 'insecure-public-paths-session', false],
-        ['/api/v1/runs', {}, 'insecure-public-paths', false],
-        ['/api/admin/users', COOKIE, 'admin-session', true],
-        ['/api/admin/users', {}, 'admin@docker', true],
-        ['/files/a.pdf', COOKIE, 'files-session', true],
-        ['/files/a.pdf', {}, 'files', true],
-        ['/sw.js', { ...COOKIE, 'Service-Worker': 'script' }, 'sw-reset-insecure-session', true],
-      ] as const)('sends %s with %j to its %s router, the Hub login %s', async (path, headers, router, login) => {
-        const labels = appLabels();
-        runningContainers(labels);
+        ['/', COOKIE, 'insecure-session', true, SERVICE],
+        ['/', {}, 'insecure', true, SERVICE],
+        ['/notes/hook', COOKIE, 'insecure-session', true, SERVICE],
+        ['/hookx', COOKIE, 'insecure-session', true, SERVICE],
+        ['/hook', COOKIE, 'insecure-public-paths-session', false, SERVICE],
+        ['/hook/42', { Authorization: 'Bearer app-token' }, 'insecure-public-paths-session', false, SERVICE],
+        ['/hook/42', {}, 'insecure-public-paths', false, SERVICE],
+        // The listing's `/api` route sends its exempt paths to its own service, with a cookie and without.
+        ['/api', {}, 'api-public-paths', false, `${SERVICE}-api`],
+        ['/api/v1/runs', COOKIE, 'api-public-paths-session', false, `${SERVICE}-api`],
+        ['/api/v1/runs', {}, 'api-public-paths', false, `${SERVICE}-api`],
+        // Its route, not exempt: `/api` is, `/apix` is not.
+        ['/apix', COOKIE, 'api-session', true, `${SERVICE}-api`],
+        ['/apix', {}, 'api@docker', true, `${SERVICE}-api`],
+        // A route under an exempt path that outranks the twin of the main router.
+        ['/api/admin/users', COOKIE, 'admin-public-paths-session', false, `${SERVICE}-admin`],
+        ['/api/admin/users', {}, 'admin-public-paths', false, `${SERVICE}-admin`],
+        // Routes without a priority: one behind the login, one exempt.
+        ['/files/a.pdf', COOKIE, 'files-session', true, `${SERVICE}-files`],
+        ['/files/a.pdf', {}, 'files', true, `${SERVICE}-files`],
+        ['/media/a.mp4', COOKIE, 'media-public-paths-session', false, `${SERVICE}-media`],
+        ['/media/a.mp4', {}, 'media-public-paths', false, `${SERVICE}-media`],
+        ['/sw.js', { ...COOKIE, 'Service-Worker': 'script' }, 'sw-reset-insecure-session', true, SERVICE],
+      ] as const)('sends %s with %j to its %s router, the Hub login %s, served by %s', async (path, headers, router, login, target) => {
+        const containers = appContainers();
+        runningContainers(...containers);
         await service.generateTraefikConfig();
 
-        const all = { ...routers(), ...dockerRoutersWithPriority(labels) };
+        const all = allRouters(containers);
         const name = routerFor(all, { host: ORIGIN_HOST, path, headers });
         const chain = all[name ?? '']?.middlewares ?? [];
 
         expect(name).toBe(`wordpress-ci-marketplace-${router}`);
+        expect(all[name ?? '']?.service).toBe(target);
         expect(chain.includes('ci-hub@file')).toBe(login);
         // The copy sends the chain of the router it copies, after the header for Cloudflare.
         if (name?.endsWith(SESSION_ROUTER_SUFFIX)) {
@@ -901,46 +929,141 @@ describe('TraefikConfigService — routes while an app restarts', () => {
         }
       });
 
-      it('puts no Hub login on any copy of an app whose operator switched it off', async () => {
-        runningContainers(appLabels({ requireLogin: false }));
+      it('ranks each twin one above both ranks of its router and its copy one above the twin', async () => {
+        const containers = appContainers();
+        runningContainers(...containers);
+        await service.generateTraefikConfig();
+
+        const docker = Object.assign({}, ...containers.map(dockerRoutersWithPriority));
+        const twins = Object.keys(routers()).filter((name) => name.endsWith(PUBLIC_PATHS_ROUTER_SUFFIX));
+
+        // Every router with the login but the service-worker reset, which the login decides.
+        expect(twins.sort()).toEqual(['admin', 'api', 'files', 'insecure', 'media'].map((name) => `${SERVICE}-${name}${PUBLIC_PATHS_ROUTER_SUFFIX}`));
+        for (const twin of twins) {
+          const name = twin.slice(0, -PUBLIC_PATHS_ROUTER_SUFFIX.length);
+          const router = routers()[name];
+          const rank = Math.max(Buffer.byteLength(router?.rule ?? '', 'utf8'), docker[`${name}@docker`]?.priority ?? 0);
+
+          expect(routers()[twin]).toEqual({
+            rule: `(${router?.rule}) && (${PATHS_RULE})`,
+            service: router?.service,
+            entryPoints: ['web'],
+            middlewares: router?.middlewares?.filter((middleware) => middleware !== 'ci-hub@file'),
+            priority: rank + 1,
+          });
+          expect(routers()[`${twin}${SESSION_ROUTER_SUFFIX}`]?.priority).toBe(rank + 2);
+        }
+      });
+
+      it('keeps the order of the twins while the app is down', async () => {
+        const containers = appContainers();
+        runningContainers(...containers);
+        await service.generateTraefikConfig();
+
+        const down = Object.fromEntries(Object.entries(routers()).filter(([name]) => name.endsWith(APP_DOWN_ROUTER_SUFFIX)));
+        const request = (path: string) => routerFor(down, { host: ORIGIN_HOST, path });
+
+        expect(request('/api/v1/runs')).toBe(`${SERVICE}-api${PUBLIC_PATHS_ROUTER_SUFFIX}${APP_DOWN_ROUTER_SUFFIX}`);
+        expect(down[request('/api/v1/runs') ?? '']?.middlewares).not.toContain('ci-hub@file');
+        expect(request('/apix')).toBe(`${SERVICE}-api${APP_DOWN_ROUTER_SUFFIX}`);
+        expect(request('/hook')).toBe(`${SERVICE}-insecure${PUBLIC_PATHS_ROUTER_SUFFIX}${APP_DOWN_ROUTER_SUFFIX}`);
+      });
+
+      it('keeps the exempt paths of the listing routes while the main container is down', async () => {
+        const [, listing] = appContainers();
+        runningContainers(listing ?? {});
+        await service.generateTraefikConfig();
+
+        expect(routerFor(routers(), { host: ORIGIN_HOST, path: '/api/v1/runs' })).toBe(`${SERVICE}-api${PUBLIC_PATHS_ROUTER_SUFFIX}`);
+      });
+
+      it('reads only the paths the form takes from the label: `/` alone would open the whole app', async () => {
+        const [main, listing] = appContainers();
+        runningContainers({ ...main, [PUBLIC_PATHS_LABEL]: '/,/hook,/a b' }, { ...listing, [PUBLIC_PATHS_LABEL]: '/,/hook,/a b' });
+        await service.generateTraefikConfig();
+
+        expect(routers()[`${SERVICE}-insecure${PUBLIC_PATHS_ROUTER_SUFFIX}`]?.rule).toBe(
+          `(${HOST_RULE}) && (Path(\`/hook\`) || PathPrefix(\`/hook/\`))`,
+        );
+        expect(routerFor(routers(), { host: ORIGIN_HOST, path: '/' })).toBe(`${SERVICE}-insecure`);
+      });
+
+      it('never replaces an app router whose name is taken by a twin', async () => {
+        const [main, listing] = appContainers();
+        runningContainers(main ?? {}, {
+          ...listing,
+          ...route(`${SERVICE}-api${PUBLIC_PATHS_ROUTER_SUFFIX}`, `${HOST_RULE} && PathPrefix(\`/own\`)`, { middlewares: 'ci-hub@file' }),
+        });
+        await service.generateTraefikConfig();
+
+        expect(routers()[`${SERVICE}-api${PUBLIC_PATHS_ROUTER_SUFFIX}`]?.rule).toBe(`${HOST_RULE} && PathPrefix(\`/own\`)`);
+      });
+
+      it('puts no Hub login on any copy of an app whose operator switched it off and gives it no twin', async () => {
+        const [main, listing] = appContainers({ requireLogin: false });
+        // Even with the paths on the containers: no router has a login to skip.
+        runningContainers({ ...main, [PUBLIC_PATHS_LABEL]: '/hook' }, { ...listing, [PUBLIC_PATHS_LABEL]: '/hook' });
         await service.generateTraefikConfig();
 
         const copies = Object.entries(routers()).filter(([name]) => name.endsWith(SESSION_ROUTER_SUFFIX));
 
         expect(copies.map(([name]) => name).sort()).toEqual(
-          ['admin', 'api', 'files', 'insecure'].map((name) => `wordpress-ci-marketplace-${name}${SESSION_ROUTER_SUFFIX}`),
+          ['admin', 'api', 'files', 'insecure', 'media'].map((name) => `${SERVICE}-${name}${SESSION_ROUTER_SUFFIX}`),
         );
         expect(copies.flatMap(([, copy]) => copy.middlewares ?? [])).not.toContain('ci-hub@file');
-        expect(routerFor(routers(), { host: ORIGIN_HOST, path: '/hook', headers: COOKIE })).toBe(
-          `wordpress-ci-marketplace-insecure${SESSION_ROUTER_SUFFIX}`,
-        );
+        expect(Object.keys(routers()).filter((name) => name.includes(PUBLIC_PATHS_ROUTER_SUFFIX))).toEqual([]);
+        expect(routerFor(routers(), { host: ORIGIN_HOST, path: '/hook', headers: COOKIE })).toBe(`${SERVICE}-insecure${SESSION_ROUTER_SUFFIX}`);
       });
 
-      it('keeps the Hub login on the copy of the Private VPN router', async () => {
-        const labels = new TraefikLabelsBuilder({
+      it('keeps the Hub login on the copy of the Private VPN router and gives its exempt paths to the listing route', async () => {
+        const host = 'wordpress.ci-marketplace';
+        const hub = new TraefikLabelsBuilder({
           internalPort: 80,
           appId: 'wordpress',
           storeId: 'ci-marketplace',
           exposureMode: 'tailscale',
           enableAuth: true,
-          publicPaths: ['/hook'],
         })
           .addTailscaleLabels()
-          .addPublicPathRouters()
           .build();
-        runningContainers({
-          ...Object.fromEntries(Object.entries(withAppStartingPage(labels)).map(([key, value]) => [key, String(value)])),
-          'com.docker.compose.project': 'wordpress_ci-marketplace',
-          'ci-hub.appurn': 'wordpress:ci-marketplace',
-        });
+        const paths = publicPathsLabels({ enableAuth: true, publicPaths: ['/hook', '/api'] });
+        const listing = withAppStartingPage(
+          withHubLoginOnEveryRouter(
+            route(`${SERVICE}-api`, `Host(\`${host}\`) && PathPrefix(\`/api\`)`, { priority: '100', service: `${SERVICE}-api` }),
+            {},
+            { requireLogin: true, publicWeb: false },
+          ),
+        );
+        const containers = [
+          { ...strings(withAppStartingPage(hub)), ...paths, ...project },
+          { ...strings(listing), ...paths, ...project },
+        ];
+        runningContainers(...containers);
         await service.generateTraefikConfig();
 
-        const request = { host: 'wordpress.ci-marketplace', path: '/', headers: COOKIE };
-        const copy = routerFor(routers(), request);
+        const all = allRouters(containers);
+        const request = { host, path: '/', headers: COOKIE };
+        const copy = routerFor(all, request);
 
-        expect(copy).toBe(`wordpress-ci-marketplace-tailscale${SESSION_ROUTER_SUFFIX}`);
+        expect(copy).toBe(`${SERVICE}-tailscale${SESSION_ROUTER_SUFFIX}`);
         expect(routers()[copy ?? '']?.middlewares).toEqual([SESSION_NO_EDGE_CACHE_MIDDLEWARE, 'ci-hub@file', APP_STARTING_MIDDLEWARE]);
-        expect(routerFor(routers(), { ...request, path: '/hook' })).toBe(`wordpress-ci-marketplace-tailscale-public-paths${SESSION_ROUTER_SUFFIX}`);
+        expect(routerFor(all, { ...request, path: '/hook' })).toBe(`${SERVICE}-tailscale${PUBLIC_PATHS_ROUTER_SUFFIX}${SESSION_ROUTER_SUFFIX}`);
+        expect(routerFor(all, { host, path: '/api/v1/runs' })).toBe(`${SERVICE}-api${PUBLIC_PATHS_ROUTER_SUFFIX}`);
+        expect(all[`${SERVICE}-api${PUBLIC_PATHS_ROUTER_SUFFIX}`]?.middlewares).toEqual([APP_STARTING_MIDDLEWARE]);
+        expect(routerFor(all, { host, path: '/apix' })).toBe(`${SERVICE}-api@docker`);
+      });
+
+      it("gives a port-expose route no twin: an app's exempt paths stay on that app's hosts", async () => {
+        runningContainers(...appContainers());
+        await service.generateTraefikConfig();
+        await service.syncPortExposeRoutes([
+          { appUrn: 'my-service:_user' as AppUrn, traefikHost: 'my-service-hub1-acme.ci.lan', upstreamPort: 8123, requireLogin: true },
+        ]);
+
+        const all = { ...routers(), ...parsed('port-expose.yml').http.routers };
+
+        expect(Object.keys(parsed('port-expose.yml').http.routers)).toEqual(['my-service-_user', `my-service-_user${SESSION_ROUTER_SUFFIX}`]);
+        expect(routerFor(all, { host: 'my-service-hub1-acme.ci.lan', path: '/hook' })).toBe('my-service-_user');
       });
     });
   });

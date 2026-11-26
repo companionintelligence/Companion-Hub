@@ -265,6 +265,20 @@ visitor. Routes without the sign-in keep the app's own headers. A manifest that 
 in traefik-labels.builder.ts). The Hub writes dynamic.yml on every boot, while its container's labels
 change only with the installed compose file.
 
+The paths the operator exempts from the sign-in ("Exempt these paths from Hub login:", `publicPaths`)
+reach Traefik as the `ci-hub.public-paths` label on each of the app's containers. apps.yml then holds a
+`-public-paths` twin next to every app router on the `web` entry point whose chain has the sign-in, a
+listing's routes on its other services included: the rule narrowed to those paths, the same service
+and the chain without the sign-in (`publicPathsRouter` in traefik-config.service.ts). Each twin ranks
+one above both ranks of its router, as the `-session` copies do, so the twins keep the routers' order
+and an exempt path reaches the service it would reach anyway. The twins live in apps.yml because a
+listing's rule has the length Traefik ranks it by only once compose fills in `${APP_LOCAL_DOMAIN}`.
+A twin in the labels, ranked by its own rule, outranked the listing's routes and sent their paths to
+the app's main service. The service-worker reset routers get none: the sign-in decides that fetch.
+Routers on `websecure`, which apps.yml doesn't copy, get none either, so an exempt path keeps the
+sign-in there. Port-expose routes have no exempt paths. Tailscale Service hostnames get their twins
+in tailscale-services.yml.
+
 Routes without the sign-in still serve apps with a login of their own, whose answers to a signed-in
 visitor are just as private: apps whose operator switched the Hub login off and the twins of the
 paths the operator exempted from it (`-public-paths`). Next to every app router on the `web` entry

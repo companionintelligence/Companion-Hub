@@ -19,6 +19,7 @@ import {
   labelsOfRoutersLosingTheirChain,
   TraefikLabelsBuilder,
   withAppStartingPage,
+  publicPathsLabels,
   withHubLoginOnEveryRouter,
   withHubMiddlewaresFirst,
   withSignInUnderFileProvider,
@@ -599,7 +600,6 @@ export class DockerComposeBuilder {
         storeId: appStoreId,
         exposureMode: effectiveExposureMode as 'local' | 'cloudflare' | 'tailscale',
         enableAuth: requiresHubLogin(form),
-        publicPaths: form.publicPaths,
         cloudflareOriginHostname: this.cloudflareOriginHostname,
         cloudflarePublicHostname: this.cloudflarePublicHostname,
         localDomain: this.localDomain,
@@ -608,8 +608,6 @@ export class DockerComposeBuilder {
 
       traefikBuilder.addCloudflareLabels();
       traefikBuilder.addTailscaleLabels();
-      // Last, so it sees every router the two above made.
-      traefikBuilder.addPublicPathRouters();
       traefikLabels = traefikBuilder.build();
     }
 
@@ -641,8 +639,11 @@ export class DockerComposeBuilder {
       console.warn(`! App "${appName}" service "${params.name}": label ${label} was left out [${rule}]`);
     }
     const extraLabels = Object.fromEntries(Object.entries(params.extraLabels ?? {}).filter(([key]) => !leftOutLabels.has(key)));
+    // The operator's login-free paths, for the twins apps.yml gives the app's routers (`publicPathsLabels`).
+    const pathLabels =
+      effectiveExposureMode === 'local' ? {} : publicPathsLabels({ enableAuth: requiresHubLogin(form), publicPaths: form.publicPaths });
     service
-      .setLabels({ ...traefikLabels, ...extraLabels, ...defaultLabels })
+      .setLabels({ ...traefikLabels, ...extraLabels, ...pathLabels, ...defaultLabels })
       .interpolateVariables(appId, localDomain)
       // After interpolation, so a manifest's `{{CI_HUB_APP_ID}}` router is the same router as ours.
       .transformLabels((labels) => withHubMiddlewaresFirst(labels, traefikLabels))
