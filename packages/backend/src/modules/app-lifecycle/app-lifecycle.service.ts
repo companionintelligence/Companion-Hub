@@ -2157,7 +2157,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           config: toStoredConfig(parsedForm),
           // Port semantics:
           // - Local exposure always publishes the host port (normalized to openPort=true when needed).
-          // - Cloudflare/Tailscale with exposedLocal also publish the host port for LAN access during DNS propagation.
+          // - Cloudflare/Tailscale with exposedLocal also publish it, on 127.0.0.1 unless the operator opened it
+          //   on the network. A Private VPN app's never is: Tailscale Serve holds it there (`publishesMainPortOnNetwork`).
           // - Traefik routing uses params.internalPort from the service definition, not this database field.
           port: parsedForm.port ?? appInfo.port,
           version: appInfo.cihub_app_version,

@@ -66,8 +66,12 @@ describe('guestTileAddresses', () => {
     expect(offered(data, 'localhost')).toEqual([]);
   });
 
-  it('offers the port of a Private VPN app that asked for one', () => {
-    expect(offered(tile({ exposureMode: 'tailscale', openPort: true, publicUrl: undefined }), '192.168.1.20')).toEqual(['http://192.168.1.20:18850']);
+  // A Private VPN app's port is published on 127.0.0.1 at most: Tailscale Serve holds it at the tailnet address.
+  it('offers the port of a Private VPN app that asked for one on the Hub only, never on the LAN', () => {
+    const data = tile({ exposureMode: 'tailscale', openPort: true, publicUrl: undefined });
+
+    expect(offered(data, '192.168.1.20')).toEqual([]);
+    expect(offered(data, 'localhost')).toEqual(['http://127.0.0.1:18850']);
   });
 
   it('links a Private VPN app over HTTPS on the tailnet name, with the host port open or closed', () => {

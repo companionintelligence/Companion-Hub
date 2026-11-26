@@ -130,14 +130,25 @@ For example, an app assigned port `8138` is available at
 `https://hub-demo.example.ts.net:8138/`. Open the generated URL shown by CI-Hub
 and test it from another device signed in to the same tailnet.
 
+While an app is on Private VPN, its own port is never opened on your network,
+even with **Open this app's port on your network** switched on. It answers on the
+Hub's computer at `http://127.0.0.1:<app-port>` at most. Serve needs that port at
+the tailnet address, which a publish on every interface would take too. If Docker
+gets there first, the Hub's own computer reaches the app's plain HTTP and the link
+fails with "wrong version number". If Serve does, Docker refuses the publish and
+the Hub moves the app to another port. The switch still opens the other ports an
+app's listing publishes. Move the app back to **This machine only** to open its
+own port on the network again.
+
 The Hub checks whether an app is up by connecting to its address from where the
 Hub runs. When the Hub runs in a container, that is a Docker network, and a
 `tailscaled` that binds its Serve listeners to the Tailscale device (seen with
 1.104.7) refuses a connection that arrives there, even though every device on the
-tailnet connects. A Hub that uses the host's Tailscale also misses Serve for an
-app whose port the host publishes too: its connection to its own tailnet address
-lands on that plain-HTTP port, and the TLS handshake fails with "wrong version
-number" or "packet length too long". When the Hub is refused or gets one of those
+tailnet connects. A Hub that uses the host's Tailscale also misses Serve for a
+port that a program on the host listens on too, such as one added with **Expose a
+port**: its connection to its own tailnet address lands on that plain-HTTP port.
+The TLS handshake then fails with "wrong version number" or "packet length too
+long". When the Hub is refused or gets one of those
 two errors, and the tailnet has HTTPS certificates, it reads `tailscale serve status`,
 finds the entry for the app's port under the device's current name, and sends a
 request to the target that entry forwards to. If the target is an IP address on a

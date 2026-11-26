@@ -256,8 +256,9 @@ describe('buildAppAccessPoints', () => {
     });
   });
 
-  // #2377: compose binds the host port for a Private VPN form with `exposedLocal`, so the LAN link works.
-  it('marks local access active for a Private VPN app exposed on the local network', () => {
+  // #2377: compose binds the host port for a Private VPN form with `exposedLocal`. Only on 127.0.0.1, even with the
+  // port opened on the network: Tailscale Serve listens on it at the tailnet address.
+  it('offers the local link of a Private VPN app on 127.0.0.1, even with its port opened on the network', () => {
     const accessPoints = buildAppAccessPoints({
       app: {
         status: 'running',
@@ -279,7 +280,7 @@ describe('buildAppAccessPoints', () => {
       tailscaleServedPorts: new Set([8080]),
     });
 
-    expect(accessPoints[2]).toMatchObject({ key: 'local', url: 'http://192.168.1.9:8080', state: 'active' });
+    expect(accessPoints[2]).toMatchObject({ key: 'local', url: 'http://127.0.0.1:8080', state: 'active' });
   });
 
   // #2377: a Public Web form with a closed port and no `exposedLocal` binds no host port, whatever the row says.

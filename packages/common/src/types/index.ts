@@ -55,6 +55,7 @@ export {
 export {
   effectiveExposureMode,
   publishesHostPort,
+  publishesMainPortOnNetwork,
   publishesPublicWebRoute,
   servedExposureMode,
   storedExposureForm,

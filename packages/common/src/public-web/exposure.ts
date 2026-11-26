@@ -1,4 +1,4 @@
-import { servedOpenPort } from '../schemas/app-info.js';
+import { publishesHostPortsOnNetwork, servedOpenPort } from '../schemas/app-info.js';
 
 export type AppExposureMode = 'local' | 'cloudflare' | 'tailscale';
 
@@ -62,11 +62,29 @@ export interface AppHostPortFields extends AppExposureFields {
 }
 
 /**
- * True when compose binds the main service's `${APP_PORT}` on the Docker host, so the app answers on
- * the Hub's LAN address. A form with no `openPort` is served on an open one (`servedOpenPort`).
+ * True when compose binds the main service's `${APP_PORT}` on the Docker host. A form with no
+ * `openPort` is served on an open one (`servedOpenPort`). Where it binds is
+ * {@link publishesMainPortOnNetwork}'s answer: every interface, or 127.0.0.1 only.
  */
 export function publishesHostPort(form: AppHostPortFields): boolean {
   return servedOpenPort(form) || effectiveExposureMode(form) === 'local' || Boolean(form.exposedLocal);
+}
+
+/**
+ * Whether compose binds the main service's `${APP_PORT}` on every interface, the LAN and the tailnet
+ * included, rather than on 127.0.0.1 only: when the operator opened the app's ports on the network
+ * (`publishesHostPortsOnNetwork`), except on Private VPN.
+ *
+ * Tailscale Serve listens on a Private VPN app's port at the node's tailnet address. A publish on
+ * every interface wants that address too. Whichever starts first wins: with Docker first, tailscaled
+ * can't open its listener, so the Hub's own computer reaches the app's plain HTTP there and the
+ * Private VPN link fails the TLS handshake ("wrong version number"); with tailscaled first, Docker
+ * refuses the publish and the Hub moves the app to another port. 127.0.0.1 is another address, so
+ * the app keeps that one beside Serve. A listing's extra ports (`addPorts`) are not Serve's and still
+ * follow the operator's choice.
+ */
+export function publishesMainPortOnNetwork(form: AppExposureFields & { portOnNetwork?: boolean | null }, loopbackOnly: boolean): boolean {
+  return effectiveExposureMode(form) !== 'tailscale' && publishesHostPortsOnNetwork(form, loopbackOnly);
 }
 
 /**

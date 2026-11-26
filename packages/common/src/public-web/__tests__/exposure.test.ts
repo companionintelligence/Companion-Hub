@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { publishesHostPort, publishesPublicWebRoute, servedExposureMode, storedExposureForm, storedHostPortForm } from '../exposure.js';
+import {
+  publishesHostPort,
+  publishesMainPortOnNetwork,
+  publishesPublicWebRoute,
+  servedExposureMode,
+  storedExposureForm,
+  storedHostPortForm,
+} from '../exposure.js';
 
 describe('publishesPublicWebRoute', () => {
   it('is true for the cloudflare mode and for the legacy exposedLocal flag without a mode', () => {
@@ -107,5 +114,25 @@ describe('publishesHostPort', () => {
   it('is true for This Machine Only and for a form with no openPort, as the queue serves it open', () => {
     expect(publishesHostPort({ exposureMode: 'local', openPort: false })).toBe(true);
     expect(publishesHostPort({ exposureMode: 'tailscale' })).toBe(true);
+  });
+});
+
+describe('publishesMainPortOnNetwork', () => {
+  it('is true where the operator opened the ports on the network, outside Private VPN', () => {
+    expect(publishesMainPortOnNetwork({ exposureMode: 'local', portOnNetwork: true }, false)).toBe(true);
+    expect(publishesMainPortOnNetwork({ exposureMode: 'cloudflare', portOnNetwork: true }, false)).toBe(true);
+    expect(publishesMainPortOnNetwork({ portOnNetwork: true }, false)).toBe(true);
+  });
+
+  it('is false where the operator did not, or the app must stay on loopback', () => {
+    expect(publishesMainPortOnNetwork({ exposureMode: 'local' }, false)).toBe(false);
+    expect(publishesMainPortOnNetwork({ exposureMode: 'local', portOnNetwork: false }, false)).toBe(false);
+    expect(publishesMainPortOnNetwork({ exposureMode: 'local', portOnNetwork: true }, true)).toBe(false);
+  });
+
+  // Tailscale Serve listens on a Private VPN app's port at the tailnet address, which a publish on every interface takes.
+  it('is false for Private VPN even where the operator opened the ports on the network', () => {
+    expect(publishesMainPortOnNetwork({ exposureMode: 'tailscale', portOnNetwork: true }, false)).toBe(false);
+    expect(publishesMainPortOnNetwork({ exposureMode: 'tailscale', exposedLocal: true, portOnNetwork: true }, false)).toBe(false);
   });
 });

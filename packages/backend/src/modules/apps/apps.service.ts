@@ -10,7 +10,7 @@ import { ModuleRef } from '@nestjs/core';
 import { type AppInfo, hostPortStaysOnLoopback, LOOPBACK_HOST_PORT_INTERFACE } from '@ci-hub/common/schemas';
 import type { App } from '@/core/database/drizzle/types';
 import type { AppUrn } from '@ci-hub/common/types';
-import { buildPublicWebIdentity, normalizeStoredHostname, publishesHostPort, storedHostPortForm } from '@ci-hub/common/types';
+import { buildPublicWebIdentity, normalizeStoredHostname, publishesHostPort, servedExposureMode, storedHostPortForm } from '@ci-hub/common/types';
 import axios from 'axios';
 import { httpsGetExcerpt, resolveAtZoneNameservers, type ZoneAnswer } from '../registration/public-reachability';
 import { MarketplaceService } from '../marketplace/marketplace.service';
@@ -537,16 +537,15 @@ export class AppsService {
    * `app-access-points.tsx` rather than the looser test used by
    * {@link probeAppAvailability} below, because this value is offered to the user
    * as a route to click. An app with a stored install form is judged by the rule
-   * compose binds the host port by (`publishesHostPort`): a Private VPN or Public
-   * Web form with a closed port and no `exposedLocal` binds none, and a Private
-   * VPN form with `exposedLocal` binds one.
+   * compose binds the host port by (`publishesHostPort`): a Public Web form with a
+   * closed port and no `exposedLocal` binds none. A Private VPN app never has one on
+   * the LAN: Tailscale Serve holds its port at the tailnet address, so compose
+   * binds it on 127.0.0.1 at most (`publishesMainPortOnNetwork`).
    *
    * A record with no form falls back to the row columns, where `exposed_local` is
-   * true for any exposable app installed without exposure settings, so:
-   *
-   *  - **Tailscale installs** qualify only via `openPort`.
-   *  - **Pre-`exposureMode` installs** with a dynamic config qualify only via
-   *    `openPort` / `exposedLocal`.
+   * true for any exposable app installed without exposure settings, so
+   * **pre-`exposureMode` installs** with a dynamic config qualify only via
+   * `openPort` / `exposedLocal`.
    *
    * Offering an address that isn't served would reproduce the exact bug this
    * whole change set exists to remove, so this errs toward returning nothing.
@@ -557,8 +556,9 @@ export class AppsService {
     }
 
     // Its host port is bound to loopback, so the LAN address refuses the connection and the
-    // loopback one is rejected below for pointing a remote browser at its own machine.
-    if (hostPortStaysOnLoopback(info)) {
+    // loopback one is rejected below for pointing a remote browser at its own machine. A Private
+    // VPN app's is too, at most.
+    if (hostPortStaysOnLoopback(info) || servedExposureMode(app) === 'tailscale') {
       return undefined;
     }
 
@@ -568,8 +568,6 @@ export class AppsService {
 
     if (form) {
       hasDirectLocalAccess = publishesHostPort(form);
-    } else if (mode === 'tailscale') {
-      hasDirectLocalAccess = Boolean(app.openPort);
     } else if (mode === 'cloudflare' || mode === 'local') {
       // Both bind the app port on the host, so the LAN address stays valid even
       // when the tunnel in front of it is not.

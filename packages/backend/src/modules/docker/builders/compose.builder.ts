@@ -12,7 +12,7 @@ import {
   LOOPBACK_HOST_PORT_INTERFACE,
   publishesHostPortsOnNetwork,
 } from '@ci-hub/common/schemas';
-import type { AppUrn } from '@ci-hub/common/types';
+import { type AppUrn, publishesMainPortOnNetwork } from '@ci-hub/common/types';
 import * as yaml from 'yaml';
 import { type BuiltService, ServiceBuilder } from './service.builder';
 import {
@@ -581,8 +581,9 @@ export class DockerComposeBuilder {
           // biome-ignore lint/suspicious/noTemplateCurlyInString: intended
           hostPort: '${APP_PORT}',
           // Without an interface Docker binds 0.0.0.0 and [::], reachable from the LAN and the
-          // tailnet with no Hub login in front of it: only when the operator asked for that.
-          interface: publishesHostPortsOnNetwork(form, this.loopbackHostPort) ? undefined : LOOPBACK_HOST_PORT_INTERFACE,
+          // tailnet with no Hub login in front of it: only when the operator asked for that, and
+          // never on Private VPN, where Tailscale Serve holds this port at the tailnet address.
+          interface: publishesMainPortOnNetwork(form, this.loopbackHostPort) ? undefined : LOOPBACK_HOST_PORT_INTERFACE,
         });
       }
     }

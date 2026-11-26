@@ -18,12 +18,13 @@ export interface GuestTileAddress {
  * or tailnet address, the name the browser used to reach this page is one it can reach. From the
  * public hostname nothing is: the tunnel carries 443 only.
  */
-function guestPortHost(info: GuestAppsDto['installed'][number]['info'], viewerHostname: string, publicDomain: string): string | null {
+function guestPortHost(data: GuestAppsDto['installed'][number], viewerHostname: string, publicDomain: string): string | null {
   if (isLoopbackHost(viewerHostname)) {
     return LOOPBACK_HOST;
   }
 
-  if (hostPortStaysOnLoopback(info)) {
+  // A Private VPN app's port is on loopback at most: Tailscale Serve holds it at the tailnet address (`publishesMainPortOnNetwork`).
+  if (hostPortStaysOnLoopback(data.info) || data.app.exposureMode === 'tailscale') {
     return null;
   }
 
@@ -66,7 +67,7 @@ export function guestTileAddresses(input: {
   }
 
   const publishesPort = hasDirectLocalAccess(app, { hasHostPort: true, dynamicConfig: info.dynamic_config });
-  const host = publishesPort ? guestPortHost(info, input.viewerHostname, input.publicDomain) : null;
+  const host = publishesPort ? guestPortHost(input.data, input.viewerHostname, input.publicDomain) : null;
 
   if (host) {
     addresses.push({ key: 'local', url: `${info.https ? 'https' : 'http'}://${host}:${directPort}${urlSuffix}`, label: `${host}:${directPort}` });

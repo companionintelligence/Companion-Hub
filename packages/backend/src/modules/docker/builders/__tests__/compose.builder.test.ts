@@ -833,6 +833,37 @@ describe('DockerComposeBuilder', () => {
     expect(yamlObject.services.service.labels['traefik.enable']).toBeUndefined();
   });
 
+  // Tailscale Serve listens on a Private VPN app's port at the tailnet address, which a publish on every interface
+  // takes too. Docker first: the Hub's own computer reached the app's plain HTTP there. Serve first: Docker refused
+  // the publish and the Hub moved the app to another port.
+  it("publishes a Private VPN app's port on loopback only, even where the operator opened it on the network", async () => {
+    const main: ServiceInput = { name: 'service', image: 'image', internalPort: 3001, isMain: true };
+    for (const form of [
+      { exposureMode: 'tailscale', openPort: true, portOnNetwork: true },
+      { exposureMode: 'tailscale', exposedLocal: true, openPort: false, portOnNetwork: true },
+      { exposureMode: 'tailscale', openPort: true },
+    ]) {
+      const yamlObject = yaml.parse(await composeBuilder.getDockerCompose([main], form as never, urn, subnet, 'example.com', 'ci.lan'));
+      expect(yamlObject.services.service.ports, JSON.stringify(form)).toEqual(['127.0.0.1:${APP_PORT}:3001']);
+    }
+  });
+
+  it("opens a Private VPN app's other listing ports on the network where the operator asked", async () => {
+    const withExtra = {
+      name: 'service',
+      image: 'image',
+      internalPort: 3001,
+      isMain: true,
+      addPorts: [{ containerPort: 53, hostPort: 53, udp: true }],
+    } as never;
+    const yamlObject = yaml.parse(
+      await composeBuilder.getDockerCompose([withExtra], { exposureMode: 'tailscale', openPort: true, portOnNetwork: true } as never, urn, subnet),
+    );
+
+    expect(yamlObject.services.service.ports).toContain('127.0.0.1:${APP_PORT}:3001');
+    expect(yamlObject.services.service.ports.filter((port: string) => port.includes('53:53'))).toEqual([expect.not.stringContaining('127.0.0.1')]);
+  });
+
   describe('loopbackHostPort', () => {
     const main: ServiceInput = { name: 'service', image: 'image', internalPort: 18789, isMain: true };
 
