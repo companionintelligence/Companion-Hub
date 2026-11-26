@@ -2367,6 +2367,20 @@ describe('InstallForm', () => {
       await waitFor(() => expect(portSwitch()).toBeChecked());
     });
 
+    // On Private VPN the app's own port stays on 127.0.0.1 (`publishesMainPortOnNetwork`): Tailscale Serve answers on it.
+    it("says on Private VPN that only the listing's other ports open", async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext());
+      const first = renderWith(exposableInfo(), vi.fn(), { exposureMode: 'tailscale', portOnNetwork: true });
+      await waitFor(() => expect(portSwitch()).toBeChecked());
+      expect(screen.getByRole('img', { name: 'APP_INSTALL_FORM_PORT_ON_NETWORK_HINT_PRIVATE_VPN' })).toBeInTheDocument();
+      expect(screen.queryByRole('img', { name: 'APP_INSTALL_FORM_PORT_ON_NETWORK_HINT' })).not.toBeInTheDocument();
+      first.unmount();
+
+      renderWith(exposableInfo(), vi.fn(), { exposureMode: 'local', portOnNetwork: true });
+      await waitFor(() => expect(portSwitch()).toBeChecked());
+      expect(screen.getByRole('img', { name: 'APP_INSTALL_FORM_PORT_ON_NETWORK_HINT' })).toBeInTheDocument();
+    });
+
     it('is never offered for an app whose port must stay on this machine', async () => {
       vi.mocked(useAppContext).mockReturnValue(exposableContext());
       renderWith({ ...(exposableInfo() as object), hub_integration: { mcp_client: true } } as unknown as AppInfo);

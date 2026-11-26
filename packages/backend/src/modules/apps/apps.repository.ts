@@ -343,16 +343,10 @@ export class AppsRepository {
   }
 
   /**
-   * Apps that hold this port: they bind it on the host (openPort, local exposure, or exposedLocal LAN
-   * publishing), or Tailscale Serve listens on it for them (Private VPN, `holdsAppPort`).
+   * Apps that bind this host port (openPort, local exposure, or exposedLocal LAN publishing).
    */
   public async getAppsByPort(port: number, id?: number) {
-    const publishesHostPortCondition = or(
-      eq(app.openPort, true),
-      eq(app.exposedLocal, true),
-      eq(app.exposureMode, 'local'),
-      eq(app.exposureMode, 'tailscale'),
-    );
+    const publishesHostPortCondition = or(eq(app.openPort, true), eq(app.exposedLocal, true), eq(app.exposureMode, 'local'));
     const where = id ? and(eq(app.port, port), publishesHostPortCondition, ne(app.id, id)) : and(eq(app.port, port), publishesHostPortCondition);
 
     return this.db.query.app.findMany({ where });

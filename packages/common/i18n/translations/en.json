@@ -467,6 +467,7 @@
   "APP_INSTALL_FORM_PORT_ON_NETWORK": "Open this app's port on your network",
   "APP_INSTALL_FORM_PORT_ON_NETWORK_WITH_PORT": "Open this app's port ({{port}}) on your network",
   "APP_INSTALL_FORM_PORT_ON_NETWORK_HINT": "Lets any device on your network or tailnet reach this app on its own port, with no Hub login in front of it. Leave it off unless the app needs that, like a DNS or game server. Off, the port answers on this machine only.",
+  "APP_INSTALL_FORM_PORT_ON_NETWORK_HINT_PRIVATE_VPN": "On Private VPN this opens only the other ports the app's listing publishes, with no Hub login in front of them. The app's own port stays on this machine, because Tailscale Serve answers on it for the tailnet. Switch the app to This machine only to open its own port on your network.",
   "APP_INSTALL_FORM_ENABLE_AUTH_RECOMMENDED": "This app recommends keeping authentication enabled.",
   "APP_INSTALL_FORM_IMPORT_CONFIG_AUTH_OFF": "Config imported. This app will have the Hub login off.",
   "APP_INSTALL_FORM_RECENTLY_USED_APPLIED_AUTH_OFF": "Applied recently used config. This app will have the Hub login off.",

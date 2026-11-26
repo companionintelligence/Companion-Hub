@@ -1169,7 +1169,13 @@ export const InstallForm: React.FC<IProps> = ({
             label={
               <>
                 {watchPort ? t('APP_INSTALL_FORM_PORT_ON_NETWORK_WITH_PORT', { port: watchPort }) : t('APP_INSTALL_FORM_PORT_ON_NETWORK')}
-                <HintMarker anchorClass="port-on-network-hint" hint={t('APP_INSTALL_FORM_PORT_ON_NETWORK_HINT')} />
+                {/* On Private VPN the app's own port stays on 127.0.0.1 (`publishesMainPortOnNetwork`). */}
+                <HintMarker
+                  anchorClass="port-on-network-hint"
+                  hint={t(
+                    watchExposureMode === 'tailscale' ? 'APP_INSTALL_FORM_PORT_ON_NETWORK_HINT_PRIVATE_VPN' : 'APP_INSTALL_FORM_PORT_ON_NETWORK_HINT',
+                  )}
+                />
               </>
             }
           />

@@ -140,7 +140,7 @@ describe('AppDiscoveryTools', () => {
     });
 
     // Compose publishes the host port of a Public Web form with `exposedLocal`, whatever its openPort says.
-    it('names the port of an app whose stored form publishes it, and none where the stored form closes it', async () => {
+    it('names the port of an app whose stored form publishes it and none where the stored form closes it', async () => {
       appsService.getInstalledApps.mockResolvedValue([
         installedEntry({
           app: { exposureMode: 'cloudflare', openPort: false, config: { exposureMode: 'cloudflare', exposedLocal: true, openPort: false } },

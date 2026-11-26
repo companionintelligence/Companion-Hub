@@ -4,7 +4,7 @@ import { Injectable } from '@nestjs/common';
 import type { appFormSchema } from './dto/app-lifecycle.dto';
 import type { z } from 'zod';
 import validator from 'validator';
-import { holdsAppPort } from '../apps/app-exposure.helpers';
+import { publishesHostPort } from '../apps/app-exposure.helpers';
 import { AppsRepository } from '../apps/apps.repository';
 
 type ParsedInstallForm = z.infer<typeof appFormSchema>;
@@ -65,7 +65,7 @@ export class AppInstallValidator {
       }
     }
 
-    if (holdsAppPort(parsedForm) && port) {
+    if (publishesHostPort(parsedForm) && port) {
       const appsWithSamePort = conflictsOtherApp(await this.appRepository.getAppsByPort(port));
       if (appsWithSamePort.length > 0) {
         throw new TranslatableError('APP_ERROR_PORT_ALREADY_IN_USE', { port: port.toString(), id: appsWithSamePort[0]?.appName });

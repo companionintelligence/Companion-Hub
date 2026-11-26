@@ -20,16 +20,6 @@ export function publishesHostPort(form: AppFormHostPortFields): boolean {
 }
 
 /**
- * True when the app's port is taken on this computer: compose publishes it on the host, or Tailscale
- * Serve listens on it at the tailnet address (Private VPN, with or without a host port). Another app
- * opened on the network on the same port would take the tailnet address from Serve, and two Private
- * VPN apps can't both have Serve on one port.
- */
-export function holdsAppPort(form: AppFormHostPortFields): boolean {
-  return publishesHostPort(form) || getEffectiveExposureMode(form) === 'tailscale';
-}
-
-/**
  * True when a form gives an app with `force_expose` the public address it needs: Public Web, or a
  * named domain on a Hub that still allows one. Read it after the production guard clears `exposed`.
  */
