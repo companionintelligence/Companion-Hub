@@ -164,6 +164,16 @@ describe('lanIsOutside', () => {
     expect(refusal('192.168.86.40', undefined, false)).toBeNull();
   });
 
+  it("refuses the Docker gateway only when asked for, and nothing else on the Hub's networks", () => {
+    const gatewayRefusal = (ip: string, gatewayIsOutside: boolean) =>
+      internalOriginRefusal({ ip, headers: {} }, { lanIsOutside: true, gatewayIsOutside, ownSubnets });
+    expect(gatewayRefusal('172.18.0.1', true)).toBe('gateway-address');
+    expect(gatewayRefusal('10.128.0.1', true)).toBe('gateway-address');
+    expect(gatewayRefusal('172.18.0.1', false)).toBeNull();
+    expect(gatewayRefusal('172.18.0.5', true)).toBeNull();
+    expect(gatewayRefusal('127.0.0.1', true)).toBeNull();
+  });
+
   it('keeps every reason that came before it', () => {
     expect(refusal('203.0.113.9')).toBe('public-address');
     expect(refusal('172.18.0.9', '203.0.113.9, 192.168.86.40')).toBe('forwarded-hop');

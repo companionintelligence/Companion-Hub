@@ -293,6 +293,23 @@ describe('InferenceAccessGuard', () => {
       expect(repo.findByHash).not.toHaveBeenCalled();
     });
 
+    // Tailscale's firewall rules masquerade a tailnet device's connection to the published API port, so it
+    // arrives as the Docker gateway, as a program on the Hub's own machine does: neither can be placed.
+    it('asks the Docker gateway for a key, naming who it may be', async () => {
+      const { error, res } = await refusalOf(request('172.18.0.1'));
+
+      expect(error).toBeInstanceOf(UnauthorizedException);
+      expect((res.body as { error: { message: string } }).error.message).toContain("Docker's gateway");
+      expect(JSON.stringify(logger.warn.mock.calls)).toContain('origin=gateway-address');
+    });
+
+    it('lets the Docker gateway in by origin only when neither the LAN nor the tailnet needs a key', async () => {
+      vi.stubEnv('HUB_INFERENCE_LAN_AUTH', 'trust');
+      expect((await refusalOf(request('172.18.0.1'))).error).toBeInstanceOf(UnauthorizedException);
+      vi.stubEnv('HUB_INFERENCE_TAILNET_AUTH', 'trust');
+      await expect(guard.canActivate(contextFor(request('172.18.0.1'), fakeResponse()))).resolves.toBe(true);
+    });
+
     it('trust lets the LAN in by origin again', async () => {
       vi.stubEnv('HUB_INFERENCE_LAN_AUTH', 'trust');
       for (const req of [request('192.168.86.40'), request('172.18.0.9', { 'x-forwarded-for': '192.168.86.40' })]) {

@@ -133,6 +133,29 @@ export function ownInterfaceSubnets(interfaces: NodeJS.Dict<os.NetworkInterfaceI
 }
 
 /**
+ * Whether `ip` is the gateway of one of `subnets` (by default this process's own): the first address of
+ * the subnet, which Docker gives each network's gateway unless a network names one (none of the Hub's
+ * do). Traffic from the gateway is the Docker host: a program on the Hub's machine reaching a published
+ * port, or a tailnet device's connection that Tailscale's own firewall rules forwarded and masqueraded
+ * on the way in, so it arrives without the device's address. Nothing tells the two apart.
+ */
+export function isOwnNetworkGateway(ip: string | undefined | null, subnets: InterfaceSubnet[] = ownInterfaceSubnets()): boolean {
+  const normalized = normalizeIpLiteral(ip);
+  if (!normalized || isIP(normalized) !== 4) return false;
+  const value = ipv4ToNumber(normalized);
+  return subnets.some((subnet) => {
+    if (subnet.family !== 'ipv4' || subnet.prefix >= 31) return false;
+    const mask = subnet.prefix === 0 ? 0 : (0xffffffff << (32 - subnet.prefix)) >>> 0;
+    const network = (ipv4ToNumber(subnet.address) & mask) >>> 0;
+    return value === network + 1;
+  });
+}
+
+function ipv4ToNumber(ip: string): number {
+  return ip.split('.').reduce((acc, part) => ((acc << 8) | Number(part)) >>> 0, 0);
+}
+
+/**
  * Whether `ip` is loopback, or on one of `subnets` (by default this process's own,
  * {@link ownInterfaceSubnets}): a caller on the same Docker network as the Hub, or on the Hub's own
  * machine through the Docker gateway. A LAN device reaching a published port keeps its own address,

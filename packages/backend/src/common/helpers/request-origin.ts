@@ -1,5 +1,13 @@
 import { TUNNEL_MARKER_HEADERS } from './hub-pool';
-import { type InterfaceSubnet, isOnOwnNetwork, isPrivateOrLocalIp, isTailnetIp, normalizeIpLiteral, ownInterfaceSubnets } from './ip-address';
+import {
+  type InterfaceSubnet,
+  isOnOwnNetwork,
+  isOwnNetworkGateway,
+  isPrivateOrLocalIp,
+  isTailnetIp,
+  normalizeIpLiteral,
+  ownInterfaceSubnets,
+} from './ip-address';
 
 /**
  * The slice of an Express request the origin check reads. Structural, so a test can pass a plain
@@ -22,8 +30,10 @@ export interface OriginCheckedRequest {
  *   hop, is a tailnet address.
  * - `lan-address`: only when asked for (`lanIsOutside`): the resolved address, or a forwarded hop, is
  *   private but on none of the Hub's own networks: a device on the LAN.
+ * - `gateway-address`: only when asked for (`gatewayIsOutside`): the resolved address is the gateway of
+ *   one of the Hub's own networks, so the caller cannot be placed (see `isOwnNetworkGateway`).
  */
-export type InternalOriginRefusal = 'public-address' | 'tunnel-marker' | 'forwarded-hop' | 'tailnet-address' | 'lan-address';
+export type InternalOriginRefusal = 'public-address' | 'tunnel-marker' | 'forwarded-hop' | 'tailnet-address' | 'lan-address' | 'gateway-address';
 
 export interface InternalOriginOptions {
   /**
@@ -43,6 +53,14 @@ export interface InternalOriginOptions {
    * Default `false`. Only `InferenceAccessGuard` sets it (`HUB_INFERENCE_LAN_AUTH`).
    */
   lanIsOutside?: boolean;
+  /**
+   * Count a caller whose resolved address is the gateway of one of the Hub's own networks as OUTSIDE.
+   * That is the Docker host: a program on the Hub's machine through a published port, or a tailnet
+   * device Tailscale's firewall rules masqueraded on the way to the published port, which therefore
+   * arrives with no tailnet address for `tailnetIsOutside` to see. Default `false`. Only
+   * `InferenceAccessGuard` sets it, whenever the LAN or the tailnet needs a key.
+   */
+  gatewayIsOutside?: boolean;
   /** The Hub's own subnets, for a test; this process's interfaces otherwise. */
   ownSubnets?: InterfaceSubnet[];
 }
@@ -101,6 +119,10 @@ export function internalOriginRefusal(request: OriginCheckedRequest, options: In
   // client is the tailnet hop in the forwarded chain; a client on the port directly is the address.
   if (options.tailnetIsOutside && (isTailnetIp(ip) || hops.some((hopIp) => isTailnetIp(hopIp)))) {
     return 'tailnet-address';
+  }
+
+  if (options.gatewayIsOutside && isOwnNetworkGateway(ip, options.ownSubnets ?? ownInterfaceSubnets())) {
+    return 'gateway-address';
   }
 
   if (options.lanIsOutside) {

@@ -33,6 +33,8 @@ const TAILNET_KEY_MESSAGE =
   'This Hub requires an API key from callers on the tailnet. Mint one on the Hub with `cihub api-key create --scope inference` and send it as `Authorization: Bearer <key>`, or set HUB_INFERENCE_TAILNET_AUTH=trust on the Hub to let the tailnet in without one.';
 const LAN_KEY_MESSAGE =
   'This Hub requires an API key from devices on your network. Mint one on the Hub with `cihub api-key create --scope inference` and send it as `Authorization: Bearer <key>`, or set HUB_INFERENCE_LAN_AUTH=trust on the Hub to let the network in without one.';
+const GATEWAY_KEY_MESSAGE =
+  "This Hub requires an API key from callers it reaches through Docker's gateway: a program on the Hub's own machine using the published API port, or a tailnet device whose connection Tailscale forwarded there. Mint one on the Hub with `cihub api-key create --scope inference` and send it as `Authorization: Bearer <key>`. Apps on the Hub need none.";
 const INVALID_KEY_MESSAGE = "Invalid API key: it is not in this Hub's key store, has expired, or does not carry the inference scope.";
 const STORE_UNAVAILABLE_MESSAGE = 'Authentication temporarily unavailable — API key store unreachable';
 
@@ -129,9 +131,14 @@ export class InferenceAccessGuard implements CanActivate {
     const http = context.switchToHttp();
     const request = http.getRequest<InferenceAuthenticatedRequest>();
 
+    const tailnetIsOutside = inferenceTailnetAuth() === 'require-key';
+    const lanIsOutside = inferenceLanAuth() === 'require-key';
     const origin = internalOriginRefusal(request, {
-      tailnetIsOutside: inferenceTailnetAuth() === 'require-key',
-      lanIsOutside: inferenceLanAuth() === 'require-key',
+      tailnetIsOutside,
+      lanIsOutside,
+      // The Docker gateway may be a tailnet device Tailscale masqueraded, or this machine: inside only
+      // when neither needs a key.
+      gatewayIsOutside: tailnetIsOutside || lanIsOutside,
     });
     if (origin === null) {
       return true;
@@ -191,7 +198,14 @@ export class InferenceAccessGuard implements CanActivate {
     code: InferenceAuthErrorCode,
     reason: string,
   ): never {
-    const missingKeyMessage = origin === 'tailnet-address' ? TAILNET_KEY_MESSAGE : origin === 'lan-address' ? LAN_KEY_MESSAGE : MISSING_KEY_MESSAGE;
+    const missingKeyMessage =
+      origin === 'tailnet-address'
+        ? TAILNET_KEY_MESSAGE
+        : origin === 'lan-address'
+          ? LAN_KEY_MESSAGE
+          : origin === 'gateway-address'
+            ? GATEWAY_KEY_MESSAGE
+            : MISSING_KEY_MESSAGE;
     const message = code === 'missing_api_key' ? missingKeyMessage : INVALID_KEY_MESSAGE;
     this.logger.warn(`Inference auth failure: ${reason}`, pathOf(request), `origin=${origin}`);
     response.setHeader('WWW-Authenticate', 'Bearer realm="ci-hub-inference"');
