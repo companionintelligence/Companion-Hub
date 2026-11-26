@@ -368,6 +368,11 @@ is set, so the source-address check alone passed public tunnel traffic with no c
   spent this Hub's GPU, and its peers', with no key. `HUB_INFERENCE_LAN_AUTH=trust` lets the LAN in by
   origin again. Run natively (not in its container) the Hub's interfaces include the host's LAN, so
   there the LAN stays inside.
+  The gateway of each of those networks (its first address) is outside too while either setting asks for
+  a key (`gateway-address`): it is the Docker host, which is both a program on the Hub's machine using the
+  published API port and a tailnet device's connection to that port, which Tailscale's firewall rules
+  masquerade on the way in, so it arrives with no tailnet address. Neither can be told apart, so both need
+  a key; apps on the Hub come from their own networks and need none.
 - **Leg 2, key.** Otherwise the request needs `Authorization: Bearer <key>` where the token is
   64 lowercase hex (`HUB_API_KEY_SHAPE` in `api-key.service.ts` — the one definition `AuthMiddleware`
   screens `qa:read` tokens with too) and resolves with the `inference` scope. The guard sets

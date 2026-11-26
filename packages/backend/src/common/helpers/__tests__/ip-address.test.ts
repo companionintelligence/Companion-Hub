@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isOnOwnNetwork, isPoolProbeTarget, isPrivateOrLocalIp, isTailnetIp, ownInterfaceSubnets } from '../ip-address';
+import { isOnOwnNetwork, isOwnNetworkGateway, isPoolProbeTarget, isPrivateOrLocalIp, isTailnetIp, ownInterfaceSubnets } from '../ip-address';
 
 describe('isTailnetIp', () => {
   it('knows the whole 100.64.0.0/10 range and nothing past its edges', () => {
@@ -145,6 +145,15 @@ describe("the Hub's own networks", () => {
       { address: '172.18.0.3', prefix: 16, family: 'ipv4' },
       { address: '10.128.12.254', prefix: 24, family: 'ipv4' },
     ]);
+  });
+
+  // Docker gives each network's gateway the subnet's first address: the Docker host, which is also what a
+  // tailnet connection Tailscale masqueraded on its way to a published port arrives as.
+  it("names each network's gateway, and nothing else, as the gateway", () => {
+    const subnets = ownInterfaceSubnets(interfaces);
+    for (const ip of ['172.18.0.1', '10.128.12.1']) expect(isOwnNetworkGateway(ip, subnets), ip).toBe(true);
+    for (const ip of ['172.18.0.3', '172.18.0.2', '10.128.12.254', '10.128.13.1', '127.0.0.1', '192.168.86.1', 'x'])
+      expect(isOwnNetworkGateway(ip, subnets), ip).toBe(false);
   });
 
   it('places loopback, the bridge and the app network on them, and the LAN on none', () => {
