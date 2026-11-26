@@ -118,6 +118,8 @@ export class UpdateAppCommand extends AppLifecycleCommand {
 
     // A new version that keeps a folder inside another it can write to would be refused at its start,
     // after the installed one is down. Refused here instead, while the running app is still as it was.
+    // This reads the listing's own paths, as the builder does. A nesting that only the user's override
+    // or an expanded `${...}` makes is still caught at the start (`DockerService.assertBindMountsSafe`).
     const architecture = this.moduleRef.get(ConfigurationService, { strict: false })?.get('architecture');
     const nestedRefusal = nestedManifestMountsRefusal(mergeArchitectureOverrides(toInstall.services, toInstall.overrides, architecture), appUrn);
     if (nestedRefusal) {
