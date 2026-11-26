@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  dockerEnvForHost,
+  WSL_ENGINE_TLS_HOST,
   clearProcessDockerEnginePin,
   dockerEngineStatePath,
   loadPersistedDockerEngine,
@@ -131,5 +133,28 @@ describe('securityOptionsSayRootless', () => {
     expect(securityOptionsSayRootless('')).toBe(false);
     expect(securityOptionsSayRootless('null')).toBe(false);
     expect(securityOptionsSayRootless('name=rootless')).toBe(false);
+  });
+});
+
+describe('dockerEnvForHost', () => {
+  // The WSL engine answers only TLS clients with the user's certificate (wsl_engine_tls.rs).
+  it('hands the WSL engine the client certificate, and drops a sticky context', () => {
+    const env = dockerEnvForHost({ DOCKER_CONTEXT: 'desktop-linux', PATH: '/bin' }, WSL_ENGINE_TLS_HOST, '/home/u');
+    expect(env).toMatchObject({
+      DOCKER_HOST: WSL_ENGINE_TLS_HOST,
+      DOCKER_TLS_VERIFY: '1',
+      DOCKER_CERT_PATH: path.join('/home/u', '.docker', 'companionhub-wsl'),
+      PATH: '/bin',
+    });
+    expect(env.DOCKER_CONTEXT).toBeUndefined();
+  });
+
+  it('clears inherited TLS settings for every other engine, the old plain-TCP port included', () => {
+    for (const host of ['tcp://127.0.0.1:2375', 'npipe:////./pipe/docker_engine', 'unix:///var/run/docker.sock']) {
+      const env = dockerEnvForHost({ DOCKER_TLS_VERIFY: '1', DOCKER_CERT_PATH: '/elsewhere' }, host, '/home/u');
+      expect(env.DOCKER_HOST).toBe(host);
+      expect(env.DOCKER_TLS_VERIFY).toBeUndefined();
+      expect(env.DOCKER_CERT_PATH).toBeUndefined();
+    }
   });
 });

@@ -9,9 +9,9 @@ use crate::docker_engine::{DockerEngineKind, PinnedDockerEngine};
 use crate::hub_manager::{
     default_gateway_from_route_table, docker_answers_for_launch, engine_distro_from_listing,
     is_own_address, restore_wsl_engine_logon_script, wait_for_wsl_engine,
-    write_update_listener_host, wsl2_engine_user_script, wsl_engine_logon_script,
-    wsl_engine_should_revive, wsl_keepalive_args, EngineWait, KeepaliveProcess, KeepaliveStart,
-    KeepaliveState, WslKeepalive,
+    write_update_listener_host, wsl2_engine_user_script, wsl_cannot_start_reason,
+    wsl_engine_backend_from, wsl_engine_logon_script, wsl_engine_should_revive, wsl_keepalive_args,
+    wsl_script_failure, EngineWait, KeepaliveProcess, KeepaliveStart, KeepaliveState, WslKeepalive,
 };
 
 fn engine(kind: DockerEngineKind) -> PinnedDockerEngine {
@@ -459,4 +459,126 @@ fn the_wsl_bind_script_guards_only_our_own_bind() {
         status.success(),
         "the distro script is not valid POSIX shell"
     );
+}
+
+#[test]
+fn a_failed_wsl_script_reports_its_exit_code_and_the_end_of_stderr() {
+    assert_eq!(
+        wsl_script_failure(Some(1), "", "mkdir: cannot create directory '': No such file or directory\n"),
+        "It exited with code 1. stderr: mkdir: cannot create directory '': No such file or directory"
+    );
+    assert_eq!(
+        wsl_script_failure(None, "", "  \n"),
+        "It ended without an exit code. It printed nothing on stderr."
+    );
+    let long = format!("{}the end", "apt noise ".repeat(200));
+    let message = wsl_script_failure(Some(100), "", &long);
+    assert!(message.ends_with("the end"));
+    assert!(message.len() < 700);
+    // Ollama's install.sh says why on stdout; its stderr ends at the step before.
+    assert_eq!(
+        wsl_script_failure(
+            Some(1),
+            ">>> x\nERROR: This version requires zstd\n",
+            ">>> Installing ollama to /usr/local\n"
+        ),
+        "It exited with code 1. stderr: >>> Installing ollama to /usr/local \
+         stdout ends: >>> x\nERROR: This version requires zstd"
+    );
+}
+
+fn no_daemon_answer() -> Option<(String, String)> {
+    None
+}
+
+#[test]
+fn a_hub_on_the_wsl_engine_is_on_it_whatever_the_docker_context_says() {
+    use DockerEngineKind::{Desktop, WslEngine};
+    // Seen on Windows: Hub moved to the WSL engine, Docker Desktop's context still selected. The
+    // daemon isn't asked: the Hub's engine settles it.
+    let asked = Cell::new(false);
+    assert!(wsl_engine_backend_from(
+        Some(WslEngine),
+        Some("desktop-linux"),
+        || {
+            asked.set(true);
+            None
+        }
+    ));
+    assert!(
+        !asked.get(),
+        "the Hub's engine decided, so the daemon wasn't asked"
+    );
+    assert!(wsl_engine_backend_from(
+        Some(WslEngine),
+        None,
+        no_daemon_answer
+    ));
+
+    // Saved on Docker Desktop: the context still decides. Start Docker in WSL and the TLS move
+    // switch the context first and need this to say yes.
+    assert!(wsl_engine_backend_from(
+        Some(Desktop),
+        Some("wsl-engine"),
+        no_daemon_answer
+    ));
+    assert!(!wsl_engine_backend_from(
+        Some(Desktop),
+        Some("desktop-linux"),
+        no_daemon_answer
+    ));
+    assert!(!wsl_engine_backend_from(
+        None,
+        Some("desktop-windows"),
+        no_daemon_answer
+    ));
+}
+
+#[test]
+fn without_a_hub_engine_or_known_context_the_daemon_says_which_engine_it_is() {
+    let daemon = |os: &str, kernel: &str| {
+        let answer = (os.to_string(), kernel.to_string());
+        move || Some(answer)
+    };
+    let wsl_kernel = "6.6.114.1-microsoft-standard-WSL2";
+    assert!(wsl_engine_backend_from(
+        None,
+        None,
+        daemon("Ubuntu 26.04 LTS", wsl_kernel)
+    ));
+    assert!(wsl_engine_backend_from(
+        None,
+        Some("default"),
+        daemon("Ubuntu 26.04 LTS", wsl_kernel)
+    ));
+    // Docker Desktop also runs on a WSL kernel, so its name wins.
+    assert!(!wsl_engine_backend_from(
+        None,
+        None,
+        daemon("Docker Desktop", wsl_kernel)
+    ));
+    assert!(!wsl_engine_backend_from(
+        None,
+        None,
+        daemon("Ubuntu 24.04", "6.8.0-generic")
+    ));
+    assert!(!wsl_engine_backend_from(None, None, no_daemon_answer));
+}
+
+#[test]
+fn without_a_hypervisor_the_wsl_engine_says_which_setting_to_change() {
+    // Virtualization off in the BIOS: the processor says so (seen on Windows with VT-x off).
+    let firmware = wsl_cannot_start_reason(Some(false));
+    assert!(firmware
+        .starts_with("WSL can't start because virtualization is turned off in this PC's firmware"));
+    assert!(firmware.contains("VT-x or SVM"));
+    assert!(!firmware.contains("Virtual Machine Platform"));
+    // Firmware fine, so it's the Windows feature.
+    let feature = wsl_cannot_start_reason(Some(true));
+    assert!(feature
+        .contains("Turn on Virtual Machine Platform: run wsl.exe --install --no-distribution"));
+    assert!(!feature.contains("BIOS"));
+    // Windows couldn't say: both, so neither is ruled out.
+    let unknown = wsl_cannot_start_reason(None);
+    assert!(unknown.contains("BIOS or UEFI") && unknown.contains("Virtual Machine Platform"));
 }

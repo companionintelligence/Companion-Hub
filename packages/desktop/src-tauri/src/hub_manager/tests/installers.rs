@@ -155,10 +155,64 @@ fn wsl2_engine_elevated_script_installs_the_pinned_docker_cli() {
 
 #[test]
 fn pinned_docker_cli_sha256_is_a_full_hex_digest() {
-    assert_eq!(WINDOWS_STATIC_DOCKER_CLI_SHA256.len(), 64);
-    assert!(WINDOWS_STATIC_DOCKER_CLI_SHA256
-        .chars()
-        .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)));
+    for pinned in [
+        WINDOWS_STATIC_DOCKER_CLI_SHA256,
+        WINDOWS_DOCKER_COMPOSE_SHA256,
+    ] {
+        assert_eq!(pinned.len(), 64, "{pinned}");
+        assert!(
+            pinned
+                .chars()
+                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+            "{pinned}"
+        );
+    }
+}
+
+#[test]
+fn wsl2_engine_elevated_script_installs_the_pinned_compose_plugin_after_the_cli() {
+    // The static CLI is docker.exe alone, and the Hub runs `docker compose` for every start: a PC
+    // that never had Docker Desktop had an engine and no way to start the Hub on it.
+    let script = wsl2_engine_elevated_script();
+    assert!(script.contains(&format!(
+        "$composeVersion = '{WINDOWS_DOCKER_COMPOSE_VERSION}'"
+    )));
+    assert!(script.contains(&format!("'x86_64' = '{WINDOWS_DOCKER_COMPOSE_SHA256}'")));
+    assert!(script.contains(
+        "https://github.com/docker/compose/releases/download/v$composeVersion/$composeName"
+    ));
+    // The system plugin folder the docker CLI searches, where Docker Desktop keeps its own.
+    assert!(script.contains("$pluginDir = Join-Path $programFiles 'Docker\\cli-plugins'"));
+    assert!(script.contains("if (-not (Test-Path (Join-Path $pluginDir 'docker-compose.exe'))) {"));
+    assert!(script.contains(
+        "Install-CompanionHubComposePlugin -Exe $composeExe -Name $composeName -ExpectedSha256 $composeSha256[$arch]"
+    ));
+    let cli = script
+        .find("Install-CompanionHubDockerCli -Zip")
+        .expect("CLI step");
+    let compose = script
+        .find("Install-CompanionHubComposePlugin -Exe")
+        .expect("compose step");
+    let done = script.rfind("exit 0").expect("exit 0");
+    assert!(cli < compose && compose < done);
+}
+
+#[test]
+fn the_admin_step_is_skipped_only_with_both_the_cli_and_compose_in_program_files() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let file = |parts: &[&str]| {
+        let path = parts
+            .iter()
+            .fold(root.path().to_path_buf(), |path, part| path.join(part));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"MZ").unwrap();
+    };
+    assert!(!program_files_docker_tools_present_in(root.path()));
+    // Docker Desktop's CLI without its plugins: still needs the admin step for Compose.
+    file(&["Docker", "Docker", "resources", "bin", "docker.exe"]);
+    assert!(!program_files_docker_tools_present_in(root.path()));
+    file(&["Docker", "cli-plugins", "docker-compose.exe"]);
+    assert!(program_files_docker_tools_present_in(root.path()));
 }
 
 #[test]
@@ -429,6 +483,8 @@ $root = '{root}'
 $genuine = Join-Path $root 'src\docker\docker.exe'
 New-Item -ItemType Directory -Path (Join-Path $root 'src\docker'), (Join-Path $root 'temp'), (Join-Path $root 'Program Files') | Out-Null
 Add-Type -TypeDefinition 'public static class P {{ public static void Main() {{ }} }}' -OutputAssembly $genuine -OutputType ConsoleApplication
+$global:TestCompose = Join-Path $root 'src\docker-compose.exe'
+Add-Type -TypeDefinition 'public static class Q {{ public static void Main() {{ }} }}' -OutputAssembly $global:TestCompose -OutputType ConsoleApplication
 $global:TestZip = Join-Path $root 'docker.zip'
 Compress-Archive -Path (Join-Path $root 'src\docker') -DestinationPath $global:TestZip
 function Get-TestSha256([string]$Path) {{
@@ -436,16 +492,19 @@ function Get-TestSha256([string]$Path) {{
   try {{ ([System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash($stream)) -replace '-', '').ToLowerInvariant() }} finally {{ $stream.Dispose() }}
 }}
 $elevated = Join-Path $root 'elevated.ps1'
-[System.IO.File]::WriteAllText($elevated, [System.IO.File]::ReadAllText((Join-Path $root 'template.ps1')).Replace('{pinned}', (Get-TestSha256 $global:TestZip)))
+[System.IO.File]::WriteAllText($elevated, [System.IO.File]::ReadAllText((Join-Path $root 'template.ps1')).Replace('{pinned}', (Get-TestSha256 $global:TestZip)).Replace('{compose_pinned}', (Get-TestSha256 $global:TestCompose)))
 
 $global:TestTemp = Join-Path $root 'temp'
 $global:TestSwapped = @()
 $global:TestDownloads = @()
 function wsl.exe {{ $global:LASTEXITCODE = 0 }}
+# A PC that can run WSL, whatever the one running this test can.
+function Get-CimInstance {{ [pscustomobject]@{{ HypervisorPresent = $true; VirtualizationFirmwareEnabled = $true }} }}
 function Invoke-WebRequest {{
   param([switch]$UseBasicParsing, [string]$Uri, [string]$OutFile)
   $global:TestDownloads += $Uri
-  $bytes = [System.IO.File]::ReadAllBytes($global:TestZip)
+  $served = if ($Uri -like '*/docker/compose/*') {{ $global:TestCompose }} else {{ $global:TestZip }}
+  $bytes = [System.IO.File]::ReadAllBytes($served)
   if ($OutFile) {{ [System.IO.File]::WriteAllBytes($OutFile, $bytes); return }}
   [pscustomobject]@{{ Content = $bytes; RawContentStream = (New-Object System.IO.MemoryStream -ArgumentList @(,$bytes)) }}
 }}
@@ -471,11 +530,14 @@ $errorFile = Join-Path $root 'error.txt'
 "swapped=$($global:TestSwapped -join ',')"
 $installed = Join-Path $env:ProgramW6432 'Docker\Docker\resources\bin\docker.exe'
 "genuine=$((Test-Path $installed) -and (Get-TestSha256 $installed) -eq (Get-TestSha256 $genuine))"
+$installedCompose = Join-Path $env:ProgramW6432 'Docker\cli-plugins\docker-compose.exe'
+"compose=$((Test-Path $installedCompose) -and (Get-TestSha256 $installedCompose) -eq (Get-TestSha256 $global:TestCompose))"
 "temp=$(@(Get-ChildItem -LiteralPath $global:TestTemp -Recurse -Force).Count)"
 if (Test-Path $errorFile) {{ "error=$([System.IO.File]::ReadAllText($errorFile))" }}
 "#,
         root = escape_powershell_single_quoted(&dir.path().to_string_lossy()),
         pinned = WINDOWS_STATIC_DOCKER_CLI_SHA256,
+        compose_pinned = WINDOWS_DOCKER_COMPOSE_SHA256,
     );
     let output = run_windows_powershell(dir.path(), &script, &[]);
     assert!(
@@ -495,10 +557,13 @@ fn elevated_script_installs_the_checked_docker_exe_even_if_temp_files_change() {
     assert!(lines.contains(&"exit=0"), "stdout: {stdout}");
     assert!(
         lines.contains(&format!(
-            "downloads=https://download.docker.com/win/static/stable/x86_64/docker-{WINDOWS_STATIC_DOCKER_CLI_VERSION}.zip"
+            "downloads=https://download.docker.com/win/static/stable/x86_64/docker-{WINDOWS_STATIC_DOCKER_CLI_VERSION}.zip,\
+             https://github.com/docker/compose/releases/download/v{WINDOWS_DOCKER_COMPOSE_VERSION}/docker-compose-windows-x86_64.exe"
         ).as_str()),
         "stdout: {stdout}"
     );
+    // The Compose plugin the Hub needs for every start, the one the hash check passed.
+    assert!(lines.contains(&"compose=True"), "stdout: {stdout}");
     // Nothing the check passed sits in %TEMP%, where the user's own
     // processes could change it before the copy into Program Files.
     assert!(lines.contains(&"swapped="), "stdout: {stdout}");
@@ -641,11 +706,21 @@ fn wsl2_engine_user_script_owns_per_user_state_and_avoids_daemon_json_hosts() {
     // TCP exposure must be a systemd drop-in, not daemon.json "hosts"
     // (which conflicts with Ubuntu's -H fd:// unit).
     assert!(script.contains("docker.service.d"));
-    assert!(script.contains("-H fd:// -H tcp://127.0.0.1:2375"));
     assert!(!script.contains("\"hosts\""));
+    // The listener needs a client certificate (wsl_engine_tls.rs): plain TCP on 2375 answered
+    // every program and account on the machine, and web pages through DNS rebinding.
+    assert!(script.contains("-H fd:// -H tcp://127.0.0.1:2376 --tlsverify"));
+    assert!(
+        !script.contains("2375"),
+        "the installer must never open the unauthenticated port"
+    );
+    // The client copy is the signed-in user's alone.
+    assert!(script.contains(r"'.docker\companionhub-wsl'"));
+    assert!(script.contains("/inheritance:r"));
     // Per-user context routing (no env vars) + logon keepalive — generated in
     // the non-elevated phase so they land in the real user's profile.
-    assert!(script.contains("context create wsl-engine"));
+    assert!(script.contains("context $contextVerb wsl-engine --docker $endpoint"));
+    assert!(script.contains("host=tcp://127.0.0.1:2376,ca="));
     assert!(script.contains("GetFolderPath('Startup')"));
     assert!(script.contains("sleep infinity"));
     // Must restart only the target distro, not every running WSL distro.
@@ -653,6 +728,19 @@ fn wsl2_engine_user_script_owns_per_user_state_and_avoids_daemon_json_hosts() {
     assert!(!script.contains("--shutdown"));
     // Systemd boot check before the docker-info poll loop.
     assert!(script.contains("is-system-running"));
+}
+
+#[cfg(any(test, target_os = "windows"))]
+#[test]
+fn wsl2_engine_user_script_never_pipes_a_shell_script_into_wsl() {
+    let script = wsl2_engine_user_script();
+    // Windows PowerShell adds CRLF after text it pipes to a program: the TLS script's last `fi`
+    // reached sh as `fi\r` and the install failed with `Syntax error: end of file unexpected
+    // (expecting "fi")`. Both root scripts go as base64 in an argument instead.
+    assert!(!script.contains("| & wsl.exe"));
+    assert!(script.contains(r#"-e sh -c "echo $b64 | base64 -d | sh""#));
+    assert!(script.contains("Invoke-WslRootScript $distro $setup"));
+    assert!(script.contains("$tlsOut = (Invoke-WslRootScript $distro $tls)"));
 }
 
 #[test]
@@ -933,4 +1021,135 @@ fn an_installed_system_or_a_stock_live_session_is_not_a_companion_live_session()
         live_session_state_at(stock_live.path()),
         LiveSessionState::default()
     );
+}
+
+#[test]
+fn the_wsl_ollama_install_gets_zstd_before_running_install_sh() {
+    // Ollama ships .tar.zst; without zstd its install.sh stops after "Installing ollama to".
+    let script = OLLAMA_WSL_INSTALL_SCRIPT;
+    let zstd = script
+        .find(r#"missing="$missing zstd""#)
+        .expect("zstd check");
+    let install = script.find(r#"sh "$tmp""#).expect("runs install.sh");
+    assert!(zstd < install);
+    assert!(script.contains("apt-get install -y $missing"));
+    let status = std::process::Command::new("sh")
+        .args(["-n", "-c", script])
+        .status()
+        .expect("sh runs");
+    assert!(status.success());
+}
+
+#[test]
+fn wsl_without_virtual_machine_platform_is_not_ready() {
+    // WSL 3.0.5 with the package in and Virtual Machine Platform off: exit 0, and this text.
+    let vmp_off = "Default Distribution: docker-desktop\nDefault Version: 2\nWSL2 is unable to start since virtualization is not enabled on this machine.\nPlease ensure the \"Virtual Machine Platform\" optional component is enabled and virtualization is turned on in your computer's firmware settings.\n\nEnable \"Virtual Machine Platform\" by running: wsl.exe --install --no-distribution\n";
+    assert!(!wsl_status_says_ready(true, vmp_off));
+    // Translated Windows: only the suggested command stays in English.
+    assert!(!wsl_status_says_ready(
+        true,
+        "Plateforme : wsl.exe --install --no-distribution"
+    ));
+    assert!(!wsl_status_says_ready(
+        false,
+        "The Windows Subsystem for Linux is not installed."
+    ));
+    assert!(wsl_status_says_ready(
+        true,
+        "Default Distribution: Ubuntu\nDefault Version: 2\n"
+    ));
+}
+
+#[test]
+fn the_elevated_phase_turns_on_virtual_machine_platform_or_says_why_it_cant() {
+    let script = wsl2_engine_elevated_script();
+    assert!(script.contains("$wslStatus = (& wsl.exe --status 2>&1 | Out-String)"));
+    assert!(script.contains("-notmatch 'Virtual Machine Platform|--no-distribution'"));
+    // Already on and still not starting: firmware, not another restart.
+    assert!(
+        script.contains("Get-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform")
+    );
+    // No hypervisor is not ready either; with the processor reporting virtualization off in the
+    // firmware, or the feature on and WSL still unable to start, it's the firmware.
+    assert!(script
+        .contains("$hypervisor = [bool](Get-CimInstance Win32_ComputerSystem).HypervisorPresent"));
+    assert!(script.contains("$wslPresent = $wslInstalled -and $hypervisor -and"));
+    assert!(script.contains(
+        "if ((-not $hypervisor -and -not $firmwareVirtualization) -or ($wslInstalled -and \"$vmp\" -eq 'Enabled')) {"
+    ));
+    let firmware = script
+        .find("firmware (BIOS or UEFI")
+        .expect("firmware message");
+    let restart = script.find("exit 100").expect("restart exit");
+    assert!(firmware < restart);
+}
+
+/// The elevated script's Phase 1 under Windows PowerShell, with `wsl --status` answering as WSL
+/// 3.0.5 did (exit 0, nothing wrong said) and Windows answering `HypervisorPresent` and
+/// `VirtualizationFirmwareEnabled` as given. Prints the exit code and the error file's text.
+#[cfg(target_os = "windows")]
+fn run_elevated_phase_one(
+    hypervisor: bool,
+    firmware_virtualization: bool,
+    feature: &str,
+) -> String {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("elevated.ps1"),
+        wsl2_engine_elevated_script(),
+    )
+    .expect("write the elevated script");
+    let flag = |on: bool| if on { "$true" } else { "$false" };
+    let script = format!(
+        r#"$root = '{root}'
+$global:Installed = $false
+function wsl.exe {{
+  if ($args -contains '--install') {{ $global:Installed = $true }}
+  $global:LASTEXITCODE = 0
+  'Default Distribution: Ubuntu'
+}}
+function Get-CimInstance {{
+  param([Parameter(Position = 0)][string]$ClassName)
+  if ($ClassName -eq 'Win32_ComputerSystem') {{ [pscustomobject]@{{ HypervisorPresent = {hypervisor} }} }}
+  else {{ [pscustomobject]@{{ VirtualizationFirmwareEnabled = {firmware} }} }}
+}}
+function Get-WindowsOptionalFeature {{ [pscustomobject]@{{ State = '{feature}' }} }}
+$env:ProgramW6432 = Join-Path $root 'Program Files'
+$errorFile = Join-Path $root 'error.txt'
+& (Join-Path $root 'elevated.ps1') -ErrorFile $errorFile
+"exit=$LASTEXITCODE"
+"installed=$global:Installed"
+if (Test-Path $errorFile) {{ "error=$([System.IO.File]::ReadAllText($errorFile))" }}
+"#,
+        root = escape_powershell_single_quoted(&dir.path().to_string_lossy()),
+        hypervisor = flag(hypervisor),
+        firmware = flag(firmware_virtualization),
+        feature = feature,
+    );
+    let output = run_windows_powershell(dir.path(), &script, &[]);
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn with_virtualization_off_in_the_firmware_the_installer_says_so_instead_of_asking_for_a_restart() {
+    // Seen on Windows with VT-x off: `wsl --status` fine, no hypervisor, the processor says off.
+    let stdout = run_elevated_phase_one(false, false, "Disabled");
+    assert!(stdout.contains("exit=1"), "stdout: {stdout}");
+    assert!(stdout.contains("installed=False"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("virtualization is turned off in this PC's firmware"),
+        "stdout: {stdout}"
+    );
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn with_virtualization_on_but_no_hypervisor_yet_the_installer_turns_wsl_on_and_asks_for_a_restart()
+{
+    // Virtual Machine Platform waiting on a restart: no hypervisor, firmware fine.
+    let stdout = run_elevated_phase_one(false, true, "EnablePending");
+    assert!(stdout.contains("exit=100"), "stdout: {stdout}");
+    assert!(stdout.contains("installed=True"), "stdout: {stdout}");
+    assert!(!stdout.contains("error="), "stdout: {stdout}");
 }
