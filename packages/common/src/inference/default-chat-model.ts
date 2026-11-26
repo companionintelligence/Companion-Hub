@@ -48,3 +48,22 @@ export function defaultChatModelId<T extends ModelRow>(options: {
   }
   return first(() => true);
 }
+
+type SizedRow = Pick<CuratedModel, 'requirements' | 'runtime'>;
+
+/** What fetching a model costs on disk: its download, or its footprint for a row that names none. */
+export function modelDownloadMb(model: SizedRow): number {
+  return model.requirements?.diskMb || model.runtime.memoryFootprintMb;
+}
+
+/**
+ * The model to download for an app that has nothing on this computer it can run and none on its way:
+ * the smallest of `models`, the first of equals. The Hub pre-pulls it (`AppCredentialsService`) and the
+ * setup wizard names it with its size, so the two must pick from the same list (#2538).
+ */
+export function smallestDownload<T extends SizedRow>(models: readonly T[]): T | undefined {
+  return models.reduce<T | undefined>(
+    (smallest, model) => (smallest && modelDownloadMb(smallest) <= modelDownloadMb(model) ? smallest : model),
+    undefined,
+  );
+}

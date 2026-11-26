@@ -863,7 +863,8 @@ export const AiSetupStep = ({
   const diskTotalMb = profile.resourceEstimate.diskTotalMb;
   const inferenceMemory = inferenceMemoryMb(profile);
   const canAutoInstallRunners = isTauriDesktopApp();
-  const engineBlocked = buildConfig()?.engineBlocked === true;
+  const renderedConfig = buildConfig();
+  const engineBlocked = renderedConfig?.engineBlocked === true;
   const memoryStep = isInsufficient ? 3 : 5;
   const appsStep = isInsufficient ? 4 : 6;
   const cloudStep = isInsufficient ? 5 : 7;
@@ -1007,9 +1008,15 @@ export const AiSetupStep = ({
             chatBackend={selectedBackend}
             notice={
               <AgentModelFitNotice
-                model={profile.availableModels.find((m) => m.id === preferredModelId)}
-                frameworks={agentFrameworks}
+                model={profile.availableModels.find((m) => m.id === renderedConfig?.preferredModelId)}
+                // With none ticked on an engine that did not answer, Continue keeps the saved chat model,
+                // which this page cannot see, so it cannot say what the agents get.
+                frameworks={renderedConfig?.keepSavedChatModel ? [] : agentFrameworks}
                 backend={selectedBackend}
+                availableModels={profile.availableModels}
+                recommendedModels={profile.recommendedModels}
+                installedIds={installedCatalogIds}
+                tickedIds={selectedModelIds}
               />
             }
           >
