@@ -343,7 +343,7 @@ describe('addPublicPathRouters', () => {
     const labels = withPaths({ exposureMode: 'tailscale' });
 
     expect(labels[`${R}-tailscale-public-paths.rule`]).toContain('PathPrefix(`/hook/`)');
-    expect(labels[`${R}-tailscale-public-paths` + '.middlewares']).toBeUndefined();
+    expect(labels[`${R}-tailscale-public-paths.middlewares`]).toBeUndefined();
   });
 
   it('adds nothing with the login off (everything is open) or with no paths', () => {

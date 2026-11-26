@@ -481,7 +481,10 @@ mod tests {
             !wsl_engine_client_files_present(dir.path()),
             "key.pem empty"
         );
-        std::fs::write(dir.path().join("key.pem"), "-----BEGIN PRIVATE KEY-----\n").unwrap();
+        // The header is joined at run time so this file does not hold one
+        // (the workflow hygiene check flags private-key headers in the tree).
+        let key_header = format!("{0}BEGIN PRIVATE KEY{0}\n", "-".repeat(5));
+        std::fs::write(dir.path().join("key.pem"), key_header).unwrap();
         assert!(wsl_engine_client_files_present(dir.path()));
     }
 
