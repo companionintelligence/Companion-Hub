@@ -9438,10 +9438,15 @@
           "portalUrl": {
             "nullable": true,
             "type": "string"
+          },
+          "deviceId": {
+            "nullable": true,
+            "type": "string"
           }
         },
         "required": [
-          "portalUrl"
+          "portalUrl",
+          "deviceId"
         ],
         "additionalProperties": false
       },

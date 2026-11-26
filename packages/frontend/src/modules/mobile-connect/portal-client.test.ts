@@ -67,6 +67,7 @@ describe('listHubDevices', () => {
             url: 'https://hub-core3-bc.companionintelligence.com',
             deviceName: 'hub-core3-bc',
             deviceSlug: 'core3-bc',
+            resource: 'urn:ci:device:dev-core3',
           },
         ],
       }),
@@ -82,8 +83,30 @@ describe('listHubDevices', () => {
         name: 'hub-core3-bc',
         status: 'active',
         hubUrl: 'https://hub-core3-bc.companionintelligence.com',
+        resource: 'urn:ci:device:dev-core3',
       },
     ]);
+  });
+
+  // The phone signs in before it knows the Hub, and keeps the code unspent until one is picked.
+  it('lists Hubs with the unspent sign-in code, never a token, and keeps only an appliance resource', async () => {
+    httpFetch.mockResolvedValue(
+      json({
+        apps: [
+          { slug: 'hub', url: 'https://hub-a.ci.computer', deviceName: 'A', deviceSlug: 'a', resource: 'urn:ci:device:dev-a' },
+          { slug: 'hub', url: 'https://hub-b.ci.computer', deviceName: 'B', deviceSlug: 'b', resource: 'https://not-an-appliance' },
+        ],
+      }),
+    );
+
+    const devices = await listHubDevices({ token: null, cookie: null, kind: 'code', signInCode: { code: 'c1', verifier: 'v1' } });
+
+    const [url, init] = httpFetch.mock.calls[0] ?? [];
+    expect(url).toBe(`${DEFAULT_PORTAL_URL}/api/users/me/apps/by-code?slug=hub`);
+    expect(init.method).toBe('POST');
+    expect(init.headers.Authorization).toBeUndefined();
+    expect(JSON.parse(init.body)).toEqual({ code: 'c1', code_verifier: 'v1' });
+    expect(devices.map((d) => d.resource)).toEqual(['urn:ci:device:dev-a', null]);
   });
 
   it('tries Hub name aliases when slug=hub returns no apps', async () => {
@@ -136,6 +159,14 @@ describe('persisted Portal URL and auth', () => {
   it('still honours a non-internal host saved by an older build', () => {
     localStorage.setItem('ci-hub.portalUrl', 'https://other.example.com/');
     expect(readPersistedPortalUrl()).toBe('https://other.example.com');
+  });
+
+  it('round-trips an unspent sign-in code, and drops one missing its verifier', () => {
+    writePortalAuth({ token: null, cookie: null, kind: 'code', signInCode: { code: 'c1', verifier: 'v1' } });
+    expect(readStoredPortalAuth()).toEqual({ token: null, cookie: null, kind: 'code', signInCode: { code: 'c1', verifier: 'v1' } });
+
+    sessionStorage.setItem('ci-hub.portalAuth', JSON.stringify({ token: null, cookie: null, kind: 'code', signInCode: { code: 'c1' } }));
+    expect(readStoredPortalAuth()).toBeNull();
   });
 
   it('round-trips Portal auth used by Advanced → /connect', () => {

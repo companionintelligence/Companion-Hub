@@ -3,6 +3,8 @@ import { stashPendingInstallIntent } from '@/lib/deep-link-install';
 import type { AppDetails, AppInfo, AppMetadata } from '@/types/app.types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
+import type { AppUrn } from '@ci-hub/common/types';
+import { setDataProgress } from '../../helpers/use-data-progress';
 import { AppActions } from './app-actions';
 import { IDLE_APP_URL_AVAILABILITY, type AppUrlAvailability } from '../../helpers/use-app-url-availability';
 
@@ -1175,6 +1177,42 @@ describe('AppActions', () => {
       renderUpdating();
 
       expect(screen.getByTestId('icon-action-common_cancel')).toBeDisabled();
+    });
+
+    describe('a backup or restore under way', () => {
+      const urn = info.urn as AppUrn;
+
+      afterEach(() => {
+        act(() => setDataProgress(urn, null));
+      });
+
+      it('shows how far it has got, and fills the bar to match', () => {
+        hoisted.updatePhase = 'backing_up';
+        act(() => setDataProgress(urn, { step: 'archiving', doneBytes: 9_800_000_000, totalBytes: 21_000_000_000, bytesPerSecond: 45_000_000 }));
+        renderUpdating();
+
+        const bar = screen.getByRole('progressbar');
+        expect(bar).toHaveAttribute('aria-valuenow', '47');
+        expect(bar.getAttribute('aria-valuetext')).toMatch(/^APP_DATA_STEP_ARCHIVING: /);
+      });
+
+      it('names a step it cannot measure during a rollback', () => {
+        hoisted.updatePhase = 'rolling_back';
+        act(() => setDataProgress(urn, { step: 'removing_data' }));
+        renderUpdating();
+
+        expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuetext', 'APP_DATA_STEP_REMOVING_DATA');
+      });
+
+      it('lets the cancel speak until the rollback begins', () => {
+        hoisted.updatePhase = 'backing_up';
+        act(() => setDataProgress(urn, { step: 'archiving', doneBytes: 9, totalBytes: 21 }));
+        renderUpdating();
+
+        act(() => hoisted.cancelUpdateProps?.onCancelStart?.());
+
+        expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuetext', 'APP_STATUS_CANCELLING');
+      });
     });
 
     it('shows Cancelling once the cancel was accepted, then the rollback', () => {

@@ -10,7 +10,7 @@ import {
 import { tailscaleStatusQueryKey } from '@/lib/api-routes/named-status-routes';
 import { PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY } from '@/lib/cloudflare-api';
 import { getInstalledAppUrnsQueryKey } from '@/lib/installed-app-urns-query';
-import type { AppServiceFailure, HostPortMove, UpdatePhase } from '@ci-hub/common/schemas';
+import type { AppServiceFailure, DataProgress, HostPortMove, UpdatePhase } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { QueryClient } from '@tanstack/react-query';
 import { installQueueQueryKey, type InstallQueueState } from './install-queue';
@@ -18,6 +18,7 @@ import { CI_MEMORY_APP_NAME } from './memory-provider';
 import { MEMORY_STATUS_QUERY_PREFIX } from './use-memory-connection';
 import { updateInstallationProgress } from './use-installation-progress';
 import { setUpdatePhase } from './use-update-phase';
+import { setDataProgress } from './use-data-progress';
 
 // Reserved app-directory name of Companion Memory (shared with the provider gate).
 // When ci-memory itself changes lifecycle state, every consumer app's
@@ -68,6 +69,8 @@ export type AppSsePayload = {
   totalBytes?: number;
   /** An update's `status_change` only: the step it is in. */
   updatePhase?: UpdatePhase;
+  /** A backup or restore under way, alone or within an update: its step and how far it has got. */
+  dataProgress?: DataProgress;
   active?: InstallQueueState['active'];
   queued?: InstallQueueState['queued'];
 };
@@ -398,6 +401,8 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
     if (event === 'update_success' || event === 'update_error' || event === 'update_cancelled') {
       setUpdatePhase(urn, null);
     }
+    // A backup, restore or update that ended: the next one must not open on this one's last figure.
+    setDataProgress(urn, null);
     setCachedAppStatus(queryClient, appUrn, appStatus, { allowDowngradeFromTransitional: true });
     // A `start_success`/`restart_success` (etc.) landing the app on `running` proves any earlier
     // install failure is stale — the same rule the `status_change` branch below already applies.
@@ -426,6 +431,14 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
   if (appStatus === 'updating' && data.updatePhase) {
     setCachedAppStatus(queryClient, appUrn, appStatus);
     setUpdatePhase(urn, data.updatePhase);
+    setDataProgress(urn, data.dataProgress ?? null);
+    return;
+  }
+
+  // A figure every couple of seconds: nothing else about the app has changed, so nothing is refetched.
+  if ((appStatus === 'backing_up' || appStatus === 'restoring') && data.dataProgress) {
+    setCachedAppStatus(queryClient, appUrn, appStatus);
+    setDataProgress(urn, data.dataProgress);
     return;
   }
 
@@ -452,6 +465,7 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
   // left from one whose end this tab missed would otherwise show (and gate Cancel) until its first step.
   if (appStatus) {
     setUpdatePhase(urn, null);
+    setDataProgress(urn, null);
   }
 
   if (appStatus === 'install_failed' && error) {

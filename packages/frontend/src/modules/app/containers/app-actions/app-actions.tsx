@@ -42,6 +42,8 @@ import { UpdateSettingsDialog } from '../../components/dialogs/update-settings-d
 import { useAppStatus } from '../../helpers/use-app-status';
 import { useInstallationProgress } from '../../helpers/use-installation-progress';
 import { useUpdatePhase } from '../../helpers/use-update-phase';
+import { dataProgressPercent, dataProgressText } from '../../helpers/data-progress-display';
+import { useDataProgress } from '../../helpers/use-data-progress';
 import { useMemoryConnection } from '../../helpers/use-memory-connection';
 import { useLocation, useNavigate, Link, useSearchParams } from 'react-router';
 import { invalidateAppQueries, invalidateUpdatesAvailable, type AppInstallErrorCache } from '../../helpers/app-sse-cache';
@@ -238,6 +240,8 @@ const UPDATE_PHASE_LABEL_KEYS: Record<UpdatePhase, string> = {
 const UPDATE_PHASES_PAST_CANCEL = new Set<UpdatePhase>(['finalizing', 'rolling_back']);
 
 // In-progress statuses that render the LoadingButton, mapped to their status label key.
+const DATA_PROGRESS_STATUSES: ReadonlySet<string> = new Set(['updating', 'backing_up', 'restoring']);
+
 const LOADING_STATUS_LABEL_KEYS: Partial<Record<AppStatus, string>> = {
   installing: 'APP_STATUS_INSTALLING',
   uninstalling: 'APP_STATUS_UNINSTALLING',
@@ -285,6 +289,7 @@ export const AppActions = ({
   const { setOptimisticStatus } = useAppStatus();
   const installationProgress = useInstallationProgress(app?.status === 'installing' ? (info.urn as AppUrn) : undefined);
   const updatePhase = useUpdatePhase(app?.status === 'updating' ? (info.urn as AppUrn) : undefined);
+  const dataProgress = useDataProgress(app?.status && DATA_PROGRESS_STATUSES.has(app.status) ? (info.urn as AppUrn) : undefined);
   const location = useLocation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -471,14 +476,17 @@ export const AppActions = ({
   );
   const LoadingButton = (() => {
     const progress = app?.status === 'installing' ? installationProgress : null;
-    const progressValue = progress === null ? 12 : Math.max(8, Math.min(99, progress.percent));
+    const shownPercent = progress?.percent ?? (dataProgress ? dataProgressPercent(dataProgress) : null);
+    const progressValue = shownPercent === null ? 12 : Math.max(8, Math.min(99, shownPercent));
 
     const cancellingUpdate = isCancellingUpdate && app?.status === 'updating';
     const cancelling = (isCancellingInstall && app?.status === 'installing') || cancellingUpdate;
     const statusLabel = cancelling ? t('APP_STATUS_CANCELLING') : t((app?.status && LOADING_STATUS_LABEL_KEYS[app.status]) ?? 'COMMON_INSTALLING');
 
     let stageText = t('APP_ACTION_PREPARING');
-    if (app?.status === 'updating' && updatePhase === 'rolling_back') {
+    if (dataProgress && (!cancelling || updatePhase === 'rolling_back')) {
+      stageText = dataProgressText(t, dataProgress);
+    } else if (app?.status === 'updating' && updatePhase === 'rolling_back') {
       stageText = t(UPDATE_PHASE_LABEL_KEYS.rolling_back);
     } else if (cancelling) {
       stageText = t('APP_STATUS_CANCELLING');
@@ -501,7 +509,7 @@ export const AppActions = ({
           aria-label={statusLabel}
           aria-valuemin={0}
           aria-valuemax={100}
-          aria-valuenow={progress?.percent}
+          aria-valuenow={shownPercent ?? undefined}
           aria-valuetext={stageText}
         >
           <div className="installation-progress-fill" style={{ width: `${progressValue}%` }} />

@@ -1732,6 +1732,10 @@ describe('DockerService', () => {
       expect(script).toContain('! -type b ! -type c ! -type p ! -type s');
       expect(script).toContain('-path "./app-data/*backups*" -prune');
       expect(script).toContain('tar -czf /out/backup.tar.gz --numeric-owner --no-recursion -T /tmp/entries');
+      // The figure is the count of the gzip tar starts, not tar's own: tar's ran at two to three times the data.
+      expect(script).toContain('/proc/$pid/task/$pid/children');
+      expect(script).toContain('"/proc/$c/io"');
+      expect(script).not.toContain('"/proc/$pid/io"');
       expect(script).toContain('chown "$1" /out/backup.tar.gz');
       expect(args.slice(18)).toEqual(['sh', '1000:1000']);
     });
@@ -1789,10 +1793,14 @@ describe('DockerService', () => {
           `${hostStaging}/in:/in:ro`,
           '-v',
           `${hostAppData}:/x/app-data:rw`,
+          '-v',
+          `${hostStaging}/progress-out:/p:rw`,
           'alpine:3.20',
           'sh',
           '-c',
-          'tar -C /x -xpf /in/backup.tar.gz --numeric-owner "$1"; status=$?; ' +
+          'tar -C /x -xpf /in/backup.tar.gz --numeric-owner "$1" & pid=$!; ' +
+            // Followed from the background, so nothing about the figure can fail the restore.
+            `( while kill -0 "$pid" 2>/dev/null; do r=$(sed -n "s/^rchar: //p" "/proc/$pid/io" 2>/dev/null) || r=""; if [ -n "$r" ]; then echo "$r $3" > "/p/progress.tmp" && mv -f "/p/progress.tmp" "/p/progress"; fi; sleep 2; done ) >/dev/null 2>&1 & wait "$pid"; status=$?; ` +
             'find /x/app-data \\( -type b -o -type c -o -type p -o -type s \\) -delete || status=1; ' +
             'find /x/app-data -type f \\( -perm -4000 -o -perm -2000 \\) -exec chmod ug-s {} + || status=1; ' +
             // The folder and app.env are the Hub's, whatever uid the archive gave them.
@@ -1802,6 +1810,7 @@ describe('DockerService', () => {
           'sh',
           './app-data',
           '1000:1000',
+          '0',
         ],
         { stdio: 'pipe' },
       );

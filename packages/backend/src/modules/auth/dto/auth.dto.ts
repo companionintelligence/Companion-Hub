@@ -98,9 +98,14 @@ const portalDesktopExchangeResponseSchema = z.object({
   redirectPath: z.string(),
 });
 
-/** The Portal origin the desktop app signs in against. Null when this Hub has no Portal configured. */
+/**
+ * The Portal origin the desktop app signs in against (null when this Hub has no Portal configured), and
+ * the device id Portal knows this Hub by, which the app names as `resource` so Portal addresses the
+ * id_token to this Hub (`urn:ci:device:<id>`). Neither is secret.
+ */
 const portalDesktopConfigResponseSchema = z.object({
   portalUrl: z.string().nullable(),
+  deviceId: z.string().nullable(),
 });
 
 /*

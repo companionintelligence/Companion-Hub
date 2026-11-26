@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setTauriSessionId } from '@/lib/api-fetch';
-import { DesktopSignInError, nativeTokenFetch, signInDesktopWithPortal } from './desktop-portal-sign-in';
+import { addressingHub, DesktopSignInError, nativeTokenFetch, signInDesktopWithPortal } from './desktop-portal-sign-in';
 
 // The system browser is the only thing the test cannot run: it captures the authorize URL instead.
 const { openAuthInSystemBrowser, authorizeUrls } = vi.hoisted(() => {
@@ -70,9 +70,18 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
+/** The id_token Portal's token reply carries; a test sets it to undefined for a reply without one. */
+const idTokenReply: { value: string | undefined } = { value: 'portal-id-token' };
+
 const tokenFetch = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async (input) => {
   if (String(input) === TOKEN_ENDPOINT) {
-    return jsonResponse({ access_token: 'portal-access', token_type: 'Bearer', expires_in: 3600, refresh_token: 'portal-refresh' });
+    return jsonResponse({
+      access_token: 'portal-access',
+      token_type: 'Bearer',
+      expires_in: 3600,
+      refresh_token: 'portal-refresh',
+      id_token: idTokenReply.value,
+    });
   }
   throw new Error(`unexpected fetch ${String(input)}`);
 });
@@ -91,6 +100,7 @@ async function s256(verifier: string): Promise<string> {
 }
 
 beforeEach(() => {
+  idTokenReply.value = 'portal-id-token';
   keychain.clear();
   authorizeUrls.length = 0;
   openAuthInSystemBrowser.mockClear();
@@ -104,7 +114,7 @@ beforeEach(() => {
   apiFetch.mockReset();
   apiFetch.mockImplementation(async (path: string) => {
     if (path === '/api/auth/portal/desktop-config') {
-      return jsonResponse({ portalUrl: PORTAL });
+      return jsonResponse({ portalUrl: PORTAL, deviceId: 'hub-device-1' });
     }
     if (path === '/api/auth/portal/desktop-session') {
       return jsonResponse({ sessionId: 'hub-session-1', redirectPath: '/home' });
@@ -148,19 +158,29 @@ describe('signInDesktopWithPortal', () => {
     expect(body.get('grant_type')).toBe('authorization_code');
     expect(body.get('code')).toBe('test-code');
     expect(body.get('client_id')).toBe('ci-hub');
+    // Names this Hub, so Portal addresses the id_token to it and no other Hub can spend it.
+    expect(body.get('resource')).toBe('urn:ci:device:hub-device-1');
 
     const verifier = body.get('code_verifier') ?? '';
     expect(verifier).toMatch(/^[A-Za-z0-9_-]{43,}$/);
     expect(new URL(authorizeUrls[0] ?? '').searchParams.get('code_challenge')).toBe(await s256(verifier));
   });
 
-  it('sends the Portal access token to the Hub in an Authorization header, never in the URL', async () => {
+  it('sends the Portal access token and id_token to the Hub in headers, never in the URL', async () => {
     await signInDesktopWithPortal();
 
     const [path, init] = apiFetch.mock.calls.find(([called]) => called === '/api/auth/portal/desktop-session') ?? [];
     expect(path).toBe('/api/auth/portal/desktop-session');
     expect(init.method).toBe('POST');
-    expect(init.headers).toEqual({ Authorization: 'Bearer portal-access' });
+    // The id_token says the sign-in was for the Hub's own client; an access token alone does not.
+    expect(init.headers).toEqual({ Authorization: 'Bearer portal-access', 'X-Portal-Id-Token': 'portal-id-token' });
+  });
+
+  it('stops before asking the Hub when Portal returned no id_token', async () => {
+    idTokenReply.value = undefined;
+
+    await expect(signInDesktopWithPortal()).rejects.toBeInstanceOf(DesktopSignInError);
+    expect(apiFetch.mock.calls.some(([called]) => called === '/api/auth/portal/desktop-session')).toBe(false);
   });
 
   it('keeps the Portal refresh token and the Hub session id in the keychain, and no access token', async () => {
@@ -183,6 +203,27 @@ describe('signInDesktopWithPortal', () => {
     const failure = signInDesktopWithPortal();
     await expect(failure).rejects.toBeInstanceOf(DesktopSignInError);
     await expect(failure).rejects.toMatchObject({ status: 401 });
+  });
+});
+
+describe('addressingHub', () => {
+  const sent = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response('{}'));
+  const bodyOf = (call: number) => new URLSearchParams(String(sent.mock.calls[call]?.[1]?.body));
+
+  it('names the Hub on the code exchange only: Portal refuses resource on a refresh', async () => {
+    const fetch = addressingHub(sent, 'dev-1');
+    await fetch(TOKEN_ENDPOINT, { method: 'POST', body: 'grant_type=authorization_code&code=c&code_verifier=v' });
+    await fetch(TOKEN_ENDPOINT, { method: 'POST', body: 'grant_type=refresh_token&refresh_token=r' });
+
+    expect(bodyOf(0).get('resource')).toBe('urn:ci:device:dev-1');
+    expect(bodyOf(0).get('code')).toBe('c');
+    expect(bodyOf(1).has('resource')).toBe(false);
+  });
+
+  it('replaces a resource already in the body rather than sending two', async () => {
+    await addressingHub(sent, 'dev-1')(TOKEN_ENDPOINT, { method: 'POST', body: 'grant_type=authorization_code&resource=urn%3Aci%3Adevice%3Aother' });
+
+    expect(new URLSearchParams(String(sent.mock.calls.at(-1)?.[1]?.body)).getAll('resource')).toEqual(['urn:ci:device:dev-1']);
   });
 });
 

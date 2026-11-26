@@ -35,10 +35,18 @@ const SPAWN_OUTPUT_LIMIT_BYTES = 32 * 1024 * 1024;
  * (extracting an archive, then replacing live files) must be able to tell them apart.
  * It never rejects; a spawn failure resolves with `exitCode: null` and the error message
  * as `stderr`.
+ *
+ * @param onSpawn told the process id once the program runs, for a caller that follows its progress
  */
-export const spawnAsync = (command: string, args: string[], options: SpawnOptionsWithoutStdio = {}): Promise<SpawnResult> =>
+export const spawnAsync = (
+  command: string,
+  args: string[],
+  options: SpawnOptionsWithoutStdio = {},
+  onSpawn?: (pid: number) => void,
+): Promise<SpawnResult> =>
   new Promise((resolve) => {
     const child = spawn(command, args, { ...options, stdio: ['ignore', 'pipe', 'pipe'] });
+    if (child.pid !== undefined) onSpawn?.(child.pid);
 
     let stdout = '';
     let stderr = '';
@@ -108,9 +116,11 @@ export const spawnLines = (
   args: string[],
   onLine: (line: string) => void,
   options: SpawnOptionsWithoutStdio = {},
+  onSpawn?: (pid: number) => void,
 ): Promise<SpawnLinesResult> =>
   new Promise((resolve) => {
     const child = spawn(command, args, { ...options, stdio: ['ignore', 'pipe', 'pipe'] });
+    if (child.pid !== undefined) onSpawn?.(child.pid);
     const decoder = new StringDecoder('utf8');
 
     let pending = '';

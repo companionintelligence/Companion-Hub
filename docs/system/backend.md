@@ -347,11 +347,26 @@ is set, so the source-address check alone passed public tunnel traffic with no c
   inside the appliance when its resolved address is private, none of `TUNNEL_MARKER_HEADERS` is
   present, and every hop of `x-forwarded-for` is private. An internal request is admitted before
   `Authorization` is read, so an app sending `Bearer ollama` on every turn costs no key-store lookup.
-  The tailnet (100.64.0.0/10, `fd7a:115c:a1e0::/48`) counts as private, so a tailnet caller is admitted
-  here by default. With `HUB_INFERENCE_TAILNET_AUTH=require-key` the guard passes
+  The tailnet (100.64.0.0/10, `fd7a:115c:a1e0::/48`) counts as private, but by default the guard passes
   `{ tailnetIsOutside: true }` and `internalOriginRefusal` answers `tailnet-address` for a resolved
-  address or forwarded hop on the tailnet, which sends the caller to leg 2. Only this guard asks; the
+  address or forwarded hop on the tailnet, which sends the caller to leg 2: a tailnet device needs an
+  `inference` key (since 2026-11-25; a shared tailnet holds other people's devices too).
+  `HUB_INFERENCE_TAILNET_AUTH=trust` lets the tailnet in by origin again. Hub-to-Hub pooling is
+  unaffected: peers use the signed `/api/inference/pool/local/*` routes. Only this guard asks; the
   app-only guards (`InternalOriginGuard`, `AppContainerOriginGuard`) and Portal SSO keep the default.
+  A device on the LAN is outside by default: the guard passes `{ lanIsOutside: true }`, and
+  `internalOriginRefusal` answers `lan-address` for a private address, resolved or forwarded, that is
+  on none of the Hub's own networks (`isOnOwnNetwork` in `common/helpers/ip-address.ts`: loopback and
+  the subnets of the Hub container's interfaces, so its Docker networks and every app network it
+  joins). The API port is published on every interface, so before this any device on the network
+  spent this Hub's GPU, and its peers', with no key. `HUB_INFERENCE_LAN_AUTH=trust` lets the LAN in by
+  origin again. Run natively (not in its container) the Hub's interfaces include the host's LAN, so
+  there the LAN stays inside.
+  The gateway of each of those networks (its first address) is outside too while either setting asks for
+  a key (`gateway-address`): it is the Docker host, which is both a program on the Hub's machine using the
+  published API port and a tailnet device's connection to that port, which Tailscale's firewall rules
+  masquerade on the way in, so it arrives with no tailnet address. Neither can be told apart, so both need
+  a key; apps on the Hub come from their own networks and need none.
 - **Leg 2, key.** Otherwise the request needs `Authorization: Bearer <key>` where the token is
   64 lowercase hex (`HUB_API_KEY_SHAPE` in `api-key.service.ts` — the one definition `AuthMiddleware`
   screens `qa:read` tokens with too) and resolves with the `inference` scope. The guard sets

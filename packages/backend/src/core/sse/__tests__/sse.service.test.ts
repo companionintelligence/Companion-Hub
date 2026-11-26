@@ -254,6 +254,22 @@ describe('SSEService app stream', () => {
     const appUrn = 'uptime-kuma:ci-marketplace';
     const step = (updatePhase: 'pulling' | 'verifying') => ({ event: 'status_change', appUrn, appStatus: 'updating', updatePhase }) as const;
 
+    it("gets a manual backup's latest figure right after the hello", async () => {
+      const figure = {
+        event: 'status_change',
+        appUrn,
+        appStatus: 'backing_up',
+        dataProgress: { step: 'archiving', doneBytes: 9, totalBytes: 21 },
+      } as const;
+      service.emit('app', figure);
+
+      const pending = collect(2);
+      service.emit('app', { event: 'install_queue', active: null, queued: [] });
+      const [, second] = await pending;
+
+      expect(JSON.parse(second.data as string)).toEqual(figure);
+    });
+
     it('gets the step the update is in right after the hello', async () => {
       service.emit('app', step('pulling'));
       service.emit('app', step('verifying'));

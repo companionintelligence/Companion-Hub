@@ -53,12 +53,15 @@ vi.mock('./portal-client', async (orig) => ({
   listHubDevices: (...a: unknown[]) => listHubDevices(...a),
 }));
 
-const loginWithPortalOidc = vi.fn();
-const resumePendingOidcLogin = vi.fn<(...args: unknown[]) => Promise<null>>(async () => null);
+// Sign-in stops at the unspent code; the picker lists Hubs with it (CODE_AUTH).
+const SIGN_IN = { portal: 'https://hub.ci.computer', code: 'code-1', verifier: 'verifier-1' };
+const CODE_AUTH = { token: null, cookie: null, kind: 'code', signInCode: { code: 'code-1', verifier: 'verifier-1' } };
+const signInToPortal = vi.fn();
+const resumePendingPortalSignIn = vi.fn<(...args: unknown[]) => Promise<null>>(async () => null);
 vi.mock('./oidc', async (orig) => ({
   ...(await orig<typeof import('./oidc')>()),
-  loginWithPortalOidc: (...a: unknown[]) => loginWithPortalOidc(...a),
-  resumePendingOidcLogin: (...a: unknown[]) => resumePendingOidcLogin(...a),
+  signInToPortal: (...a: unknown[]) => signInToPortal(...a),
+  resumePendingPortalSignIn: (...a: unknown[]) => resumePendingPortalSignIn(...a),
 }));
 
 const { toastError } = vi.hoisted(() => ({ toastError: vi.fn() }));
@@ -95,9 +98,9 @@ beforeEach(() => {
   mc.clearHub.mockClear();
   mc.init.mockClear();
   listHubDevices.mockReset();
-  loginWithPortalOidc.mockReset();
-  resumePendingOidcLogin.mockReset();
-  resumePendingOidcLogin.mockResolvedValue(null);
+  signInToPortal.mockReset();
+  resumePendingPortalSignIn.mockReset();
+  resumePendingPortalSignIn.mockResolvedValue(null);
   toastError.mockClear();
   localStorage.clear();
   sessionStorage.clear();
@@ -105,7 +108,7 @@ beforeEach(() => {
 
 describe('mobile login journey', () => {
   it('OIDC → Portal → pick Hub → hands off to /login with native fetch active', async () => {
-    loginWithPortalOidc.mockResolvedValue({ accessToken: 'AT', idToken: null, tokenType: 'Bearer', expiresIn: 3600 });
+    signInToPortal.mockResolvedValue(SIGN_IN);
     listHubDevices.mockResolvedValue(DEVICES);
     renderJourney();
 
@@ -113,7 +116,7 @@ describe('mobile login journey', () => {
 
     // The OIDC access token is forwarded to the Portal device listing.
     expect(await screen.findByText('Apple Hub')).toBeInTheDocument();
-    expect(listHubDevices).toHaveBeenCalledWith({ token: 'AT', cookie: null, kind: 'oauth' }, expect.any(String));
+    expect(listHubDevices).toHaveBeenCalledWith(CODE_AUTH, expect.any(String));
 
     await user.click(screen.getByTestId('hub-row-reg-1'));
     expect(await screen.findByTestId('hub-login-screen')).toBeInTheDocument();
@@ -150,7 +153,7 @@ describe('mobile login journey', () => {
   });
 
   it('a failed sign-in surfaces an error and keeps the user on the connect screen', async () => {
-    loginWithPortalOidc.mockRejectedValue(new Error('Invalid credentials'));
+    signInToPortal.mockRejectedValue(new Error('Invalid credentials'));
     renderJourney();
 
     await user.click(await screen.findByTestId('oidc-login-btn'));
@@ -163,7 +166,7 @@ describe('mobile login journey', () => {
   });
 
   it('an unreachable Hub cannot be connected (row disabled, no handoff)', async () => {
-    loginWithPortalOidc.mockResolvedValue({ accessToken: 'AT', idToken: null, tokenType: 'Bearer', expiresIn: 3600 });
+    signInToPortal.mockResolvedValue(SIGN_IN);
     listHubDevices.mockResolvedValue(DEVICES);
     renderJourney();
 

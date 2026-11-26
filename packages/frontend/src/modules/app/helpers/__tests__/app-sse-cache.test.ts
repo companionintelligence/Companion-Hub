@@ -5,9 +5,14 @@ import { cachedAppName, handleAppSseEvent } from '../app-sse-cache';
 import { installQueueQueryKey } from '../install-queue';
 import { updateInstallationProgress } from '../use-installation-progress';
 import { setUpdatePhase } from '../use-update-phase';
+import { setDataProgress } from '../use-data-progress';
 
 vi.mock('../use-installation-progress', () => ({
   updateInstallationProgress: vi.fn(),
+}));
+
+vi.mock('../use-data-progress', () => ({
+  setDataProgress: vi.fn(),
 }));
 
 vi.mock('../use-update-phase', () => ({
@@ -182,6 +187,40 @@ describe('handleAppSseEvent', () => {
 
     expect(setUpdatePhase).toHaveBeenCalledWith('uptime-kuma:ci-marketplace', 'verifying');
     expect(queryClient.invalidateQueries).not.toHaveBeenCalled();
+  });
+
+  it.each(['backing_up', 'restoring', 'updating'])('records the figures of %s without refetching anything', (appStatus) => {
+    const dataProgress = { step: 'archiving', doneBytes: 9, totalBytes: 21 } as const;
+    handleAppSseEvent(
+      queryClient as unknown as QueryClient,
+      {
+        event: 'status_change',
+        appUrn: 'uptime-kuma:ci-marketplace',
+        appStatus,
+        dataProgress,
+        ...(appStatus === 'updating' ? { updatePhase: 'backing_up' } : {}),
+      } as never,
+    );
+
+    expect(setDataProgress).toHaveBeenCalledWith('uptime-kuma:ci-marketplace', dataProgress);
+    expect(queryClient.invalidateQueries).not.toHaveBeenCalled();
+  });
+
+  it('forgets the figures when an update moves to a step without any', () => {
+    handleAppSseEvent(queryClient as unknown as QueryClient, {
+      event: 'status_change',
+      appUrn: 'uptime-kuma:ci-marketplace',
+      appStatus: 'updating',
+      updatePhase: 'starting',
+    });
+
+    expect(setDataProgress).toHaveBeenCalledWith('uptime-kuma:ci-marketplace', null);
+  });
+
+  it.each(['backup_success', 'backup_error', 'restore_success', 'restore_error'])('forgets the figures on %s', (event) => {
+    handleAppSseEvent(queryClient as unknown as QueryClient, { event, appUrn: 'uptime-kuma:ci-marketplace', appStatus: 'running' } as never);
+
+    expect(setDataProgress).toHaveBeenCalledWith('uptime-kuma:ci-marketplace', null);
   });
 
   it("forgets a previous update's step when a new update starts", () => {

@@ -1,4 +1,5 @@
-import { isIP, SocketAddress } from 'node:net';
+import { BlockList, isIP, SocketAddress } from 'node:net';
+import os from 'node:os';
 
 export function normalizeIpLiteral(raw: string | undefined | null): string | null {
   if (!raw) return null;
@@ -100,4 +101,79 @@ export function isPoolProbeTarget(ip: string): boolean {
   if (a === 172 && b >= 16 && b <= 31) return true;
   if (a === 192 && b === 168) return true;
   return false;
+}
+
+/** One subnet of this process's own network interfaces. */
+export interface InterfaceSubnet {
+  address: string;
+  prefix: number;
+  family: 'ipv4' | 'ipv6';
+}
+
+/**
+ * The subnets this process's own network interfaces sit on: in the Hub's container, exactly its Docker
+ * networks (the Hub's own, and each app network it joins at runtime), so read on every call rather
+ * than cached. Loopback and IPv6 link-local are left out: every interface carries an `fe80::/64`, and
+ * it says nothing about which network a caller is on.
+ *
+ * ⚠ Run outside a container (a Hub started natively for development) this includes the host's LAN.
+ */
+export function ownInterfaceSubnets(interfaces: NodeJS.Dict<os.NetworkInterfaceInfo[]> = os.networkInterfaces()): InterfaceSubnet[] {
+  const out: InterfaceSubnet[] = [];
+  for (const infos of Object.values(interfaces)) {
+    for (const info of infos ?? []) {
+      if (info.internal || !info.cidr) continue;
+      const prefix = Number(info.cidr.split('/')[1]);
+      if (!Number.isInteger(prefix)) continue;
+      if (info.family === 'IPv6' && info.address.toLowerCase().startsWith('fe80:')) continue;
+      out.push({ address: info.address, prefix, family: info.family === 'IPv6' ? 'ipv6' : 'ipv4' });
+    }
+  }
+  return out;
+}
+
+/**
+ * Whether `ip` is the gateway of one of `subnets` (by default this process's own): the first address of
+ * the subnet, which Docker gives each network's gateway unless a network names one (none of the Hub's
+ * do). Traffic from the gateway is the Docker host: a program on the Hub's machine reaching a published
+ * port, or a tailnet device's connection that Tailscale's own firewall rules forwarded and masqueraded
+ * on the way in, so it arrives without the device's address. Nothing tells the two apart.
+ */
+export function isOwnNetworkGateway(ip: string | undefined | null, subnets: InterfaceSubnet[] = ownInterfaceSubnets()): boolean {
+  const normalized = normalizeIpLiteral(ip);
+  if (!normalized || isIP(normalized) !== 4) return false;
+  const value = ipv4ToNumber(normalized);
+  return subnets.some((subnet) => {
+    if (subnet.family !== 'ipv4' || subnet.prefix >= 31) return false;
+    const mask = subnet.prefix === 0 ? 0 : (0xffffffff << (32 - subnet.prefix)) >>> 0;
+    const network = (ipv4ToNumber(subnet.address) & mask) >>> 0;
+    return value === network + 1;
+  });
+}
+
+function ipv4ToNumber(ip: string): number {
+  return ip.split('.').reduce((acc, part) => ((acc << 8) | Number(part)) >>> 0, 0);
+}
+
+/**
+ * Whether `ip` is loopback, or on one of `subnets` (by default this process's own,
+ * {@link ownInterfaceSubnets}): a caller on the same Docker network as the Hub, or on the Hub's own
+ * machine through the Docker gateway. A LAN device reaching a published port keeps its own address,
+ * so it is on none of them.
+ */
+export function isOnOwnNetwork(ip: string | undefined | null, subnets: InterfaceSubnet[] = ownInterfaceSubnets()): boolean {
+  const normalized = normalizeIpLiteral(ip);
+  if (!normalized) return false;
+  if (normalized === '::1' || normalized.startsWith('127.')) return true;
+  const family = isIP(normalized);
+  if (family === 0) return false;
+  const list = new BlockList();
+  for (const subnet of subnets) {
+    try {
+      list.addSubnet(subnet.address, subnet.prefix, subnet.family);
+    } catch {
+      // An interface Node reports with an address BlockList will not take holds no caller.
+    }
+  }
+  return list.check(normalized, family === 6 ? 'ipv6' : 'ipv4');
 }

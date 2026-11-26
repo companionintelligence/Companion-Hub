@@ -24,8 +24,17 @@ export const DEFAULT_PORTAL_URL = 'https://hub.ci.computer';
 export interface PortalAuth {
   token: string | null;
   cookie: string | null;
-  /** `oauth` = OIDC access token; `session` = email/password cookie/token. */
-  kind?: 'session' | 'oauth';
+  /**
+   * `oauth` = OIDC access token; `session` = email/password cookie/token; `code` = a finished cloud-connect
+   * sign-in whose code is not spent yet ({@link signInCode}).
+   */
+  kind?: 'session' | 'oauth' | 'code';
+  /**
+   * The cloud-connect sign-in's code and PKCE verifier, kept unspent until a Hub is picked: the Hubs are
+   * listed with it (`POST /api/users/me/apps/by-code`), then it is exchanged once with that Hub's
+   * `resource`, so Portal addresses the id_token to that Hub and no other Hub can spend it.
+   */
+  signInCode?: { code: string; verifier: string } | null;
   /**
    * Portal id_token from cloud connect. The Hub the person picks can turn this
    * into a local session, so they are not asked to sign in a second time.
@@ -42,6 +51,8 @@ export interface HubDevice {
   status: string;
   /** Fully-qualified appliance Hub URL, e.g. https://hub-cp-apple-acme.ci.computer */
   hubUrl: string | null;
+  /** What Portal addresses an id_token to this Hub with (`urn:ci:device:<id>`), as it lists the Hub. */
+  resource?: string | null;
   organizationId?: string;
   /** Optional LAN IP address advertised by device or local network discovery. */
   lanIp?: string | null;
@@ -125,6 +136,16 @@ export function readStoredPortalAuth(): PortalAuth | null {
     const raw = sessionStorage.getItem(PORTAL_AUTH_STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as PortalAuth;
+    const signInCode = parsed.signInCode;
+    if (
+      parsed.kind === 'code' &&
+      typeof signInCode?.code === 'string' &&
+      typeof signInCode.verifier === 'string' &&
+      signInCode.code &&
+      signInCode.verifier
+    ) {
+      return { token: null, cookie: null, kind: 'code', signInCode: { code: signInCode.code, verifier: signInCode.verifier } };
+    }
     if (!(parsed.token || parsed.cookie)) return null;
     const idToken = typeof parsed.idToken === 'string' && parsed.idToken.trim() ? parsed.idToken : null;
     return {
@@ -145,10 +166,12 @@ function hubUrlForDevice(device: { apps?: Array<{ slug?: string; name?: string; 
   return hub?.url ?? null;
 }
 
-async function listHubsWithOauthToken(auth: PortalAuth, portal: string, doFetch: typeof fetch): Promise<HubDevice[]> {
-  const headers: Record<string, string> = {};
-  if (auth.token) headers.Authorization = `Bearer ${auth.token}`;
-
+/**
+ * The person's Hubs from Portal's app list, asked once per name Portal may list the Hub under. `ask`
+ * fetches one slug's list: with an access token (`GET /me/apps`) or with the unspent sign-in code
+ * (`POST /me/apps/by-code`, paired Hubs only).
+ */
+async function listHubsFromApps(ask: (slug: string) => Promise<Response>): Promise<HubDevice[]> {
   // Portal matches application.slug or application.name. The Hub appliance
   // is usually slug `hub`; try the first-party aliases if that is empty.
   const slugs = ['hub', 'ci-hub', 'OS Hub'];
@@ -156,16 +179,12 @@ async function listHubsWithOauthToken(auth: PortalAuth, portal: string, doFetch:
   const devices: HubDevice[] = [];
 
   for (const slug of slugs) {
-    const res = await doFetch(`${portal}/api/users/me/apps?slug=${encodeURIComponent(slug)}`, {
-      method: 'GET',
-      headers,
-      signal: AbortSignal.timeout(15_000),
-    });
+    const res = await ask(slug);
     if (!res.ok) {
       throw new Error(`Could not load your Hubs (${res.status}).`);
     }
     const body = (await res.json()) as {
-      apps?: Array<{ slug?: string; url?: string; deviceName?: string; deviceSlug?: string }>;
+      apps?: Array<{ slug?: string; url?: string; deviceName?: string; deviceSlug?: string; resource?: string }>;
     };
     for (const app of body.apps ?? []) {
       const key = app.url || app.deviceSlug || app.deviceName;
@@ -176,6 +195,7 @@ async function listHubsWithOauthToken(auth: PortalAuth, portal: string, doFetch:
         name: app.deviceName || app.deviceSlug || key,
         status: 'active',
         hubUrl: app.url ?? null,
+        resource: typeof app.resource === 'string' && app.resource.startsWith('urn:ci:device:') ? app.resource : null,
       });
     }
     if (devices.length > 0) break;
@@ -184,11 +204,34 @@ async function listHubsWithOauthToken(auth: PortalAuth, portal: string, doFetch:
   return devices;
 }
 
+async function listHubsWithOauthToken(auth: PortalAuth, portal: string, doFetch: typeof fetch): Promise<HubDevice[]> {
+  const headers: Record<string, string> = {};
+  if (auth.token) headers.Authorization = `Bearer ${auth.token}`;
+  return listHubsFromApps((slug) =>
+    doFetch(`${portal}/api/users/me/apps?slug=${encodeURIComponent(slug)}`, { method: 'GET', headers, signal: AbortSignal.timeout(15_000) }),
+  );
+}
+
+/** The Hubs listed with the unspent sign-in code: it stays unspent, for the Hub the person picks. */
+async function listHubsWithSignInCode(signInCode: { code: string; verifier: string }, portal: string, doFetch: typeof fetch): Promise<HubDevice[]> {
+  return listHubsFromApps((slug) =>
+    doFetch(`${portal}/api/users/me/apps/by-code?slug=${encodeURIComponent(slug)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ code: signInCode.code, code_verifier: signInCode.verifier }),
+      signal: AbortSignal.timeout(15_000),
+    }),
+  );
+}
+
 /** List the Hub appliances the authenticated user owns. */
 export async function listHubDevices(auth: PortalAuth, portalUrl = DEFAULT_PORTAL_URL): Promise<HubDevice[]> {
   const portal = normalizePortalUrl(portalUrl);
   const doFetch = await nativeFetch();
 
+  if (auth.kind === 'code' && auth.signInCode) {
+    return listHubsWithSignInCode(auth.signInCode, portal, doFetch);
+  }
   if (auth.kind === 'oauth') {
     return listHubsWithOauthToken(auth, portal, doFetch);
   }

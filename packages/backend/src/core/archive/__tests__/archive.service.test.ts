@@ -69,19 +69,19 @@ describe('ArchiveService (argument vectors)', () => {
   it.each(HOSTILE_NAMES)('creates an archive named %j as one literal argument', async (name) => {
     await service.createTarGz('/tmp/src dir', name);
 
-    expect(spawnAsyncMock).toHaveBeenCalledWith('tar', ['-czpf', name, '-C', '/tmp/src dir', '.']);
+    expect(spawnAsyncMock).toHaveBeenCalledWith('tar', ['-czpf', name, '-C', '/tmp/src dir', '.'], {}, undefined);
   });
 
   it('extracts a gzip archive with the gzip flag', async () => {
     await service.extractTarGz(gzipFile, '/tmp/dest dir');
 
-    expect(spawnAsyncMock).toHaveBeenCalledWith('tar', ['-xzpf', gzipFile, '-C', '/tmp/dest dir']);
+    expect(spawnAsyncMock).toHaveBeenCalledWith('tar', ['-xzpf', gzipFile, '-C', '/tmp/dest dir'], {}, undefined);
   });
 
   it('extracts a plain tar without the gzip flag', async () => {
     await service.extractTarGz(tarFile, '/tmp/dest');
 
-    expect(spawnAsyncMock).toHaveBeenCalledWith('tar', ['-xpf', tarFile, '-C', '/tmp/dest']);
+    expect(spawnAsyncMock).toHaveBeenCalledWith('tar', ['-xpf', tarFile, '-C', '/tmp/dest'], {}, undefined);
   });
 
   it('throws when tar does not exit cleanly, so a caller never proceeds on a failed extraction', async () => {
@@ -126,7 +126,7 @@ describe('ArchiveService (argument vectors)', () => {
     it('pairs each path with its entry type from the verbose listing', async () => {
       mockListings(BUSYBOX_VERBOSE, BUSYBOX_PATHS);
 
-      await expect(service.listTarGz(gzipFile)).resolves.toEqual([
+      await expect(service.listTarGz(gzipFile)).resolves.toMatchObject([
         { path: './', type: 'd' },
         { path: 'app-data/', type: 'd' },
         { path: 'app-data/my file.txt', type: '-' },
@@ -134,18 +134,39 @@ describe('ArchiveService (argument vectors)', () => {
       ]);
     });
 
+    it('reads the size of each entry from the verbose listing, and has none for a device node', async () => {
+      mockListings(
+        '-rw-r--r-- 1000/1000 200000000 2026-09-01 10:00:00 big file.bin\nbrw-r----- 0/0 8,0 2026-09-01 10:00:00 sda\n',
+        'big file.bin\nsda\n',
+      );
+
+      await expect(service.listTarGz(gzipFile)).resolves.toEqual([
+        { path: 'big file.bin', type: '-', size: 200_000_000 },
+        { path: 'sda', type: 'b', size: undefined },
+      ]);
+    });
+
+    it('tells the caller which tar to follow', async () => {
+      mockListings('', '');
+      const onProcess = vi.fn();
+
+      await service.listTarGz(gzipFile, onProcess);
+
+      expect(spawnLinesMock).toHaveBeenCalledWith('tar', ['-tzvf', gzipFile], expect.any(Function), {}, onProcess);
+    });
+
     it('lists a gzip archive with the gzip flags and a plain one without', async () => {
       mockListings('', '');
 
       await service.listTarGz(gzipFile);
-      expect(spawnLinesMock).toHaveBeenCalledWith('tar', ['-tzvf', gzipFile], expect.any(Function));
+      expect(spawnLinesMock).toHaveBeenCalledWith('tar', ['-tzvf', gzipFile], expect.any(Function), {}, undefined);
       expect(spawnLinesMock).toHaveBeenCalledWith('tar', ['-tzf', gzipFile], expect.any(Function));
 
       spawnLinesMock.mockClear();
       mockListings('', '');
 
       await service.listTarGz(tarFile);
-      expect(spawnLinesMock).toHaveBeenCalledWith('tar', ['-tvf', tarFile], expect.any(Function));
+      expect(spawnLinesMock).toHaveBeenCalledWith('tar', ['-tvf', tarFile], expect.any(Function), {}, undefined);
       expect(spawnLinesMock).toHaveBeenCalledWith('tar', ['-tf', tarFile], expect.any(Function));
     });
 
@@ -165,7 +186,7 @@ describe('ArchiveService (argument vectors)', () => {
     it('skips the blank lines a trailing newline leaves', async () => {
       mockListings('-rw-r--r-- 0/0 1 2026-09-01 10:00:00 a.txt\n', 'a.txt\n');
 
-      await expect(service.listTarGz(gzipFile)).resolves.toEqual([{ path: 'a.txt', type: '-' }]);
+      await expect(service.listTarGz(gzipFile)).resolves.toEqual([{ path: 'a.txt', type: '-', size: 1 }]);
     });
 
     it('rejects listings whose lengths disagree rather than guess which line is which', async () => {

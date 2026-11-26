@@ -10,6 +10,19 @@ const baseField = (type: FormField['type'], env_variable = 'TEST_VAR'): FormFiel
     required: false,
   }) as FormField;
 
+describe('localSubdomain', () => {
+  // The Hub's own hostname is `hub-<device>-<org>`, and the desktop app opens any `hub…` host as the Hub.
+  it.each(['hub', 'hub-admin', 'HUB-x'])('refuses %s, which names the Hub', (localSubdomain) => {
+    expect(validateAppFormFields({ exposedLocal: true, localSubdomain }, [])).toEqual([
+      expect.objectContaining({ env_variable: 'localSubdomain', messageKey: 'APP_INSTALL_FORM_ERROR_LOCAL_SUBDOMAIN_HUB' }),
+    ]);
+  });
+
+  it.each(['hubitat', 'my-hub'])('accepts %s', (localSubdomain) => {
+    expect(validateAppFormFields({ exposedLocal: true, localSubdomain }, [])).toEqual([]);
+  });
+});
+
 describe('validateField URL types', () => {
   it('accepts localhost URLs for app_base_url', () => {
     expect(validateField(baseField('app_base_url'), 'http://localhost')).toBeUndefined();

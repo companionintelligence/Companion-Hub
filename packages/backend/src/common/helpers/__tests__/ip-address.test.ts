@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isPoolProbeTarget, isPrivateOrLocalIp, isTailnetIp } from '../ip-address';
+import { isOnOwnNetwork, isOwnNetworkGateway, isPoolProbeTarget, isPrivateOrLocalIp, isTailnetIp, ownInterfaceSubnets } from '../ip-address';
 
 describe('isTailnetIp', () => {
   it('knows the whole 100.64.0.0/10 range and nothing past its edges', () => {
@@ -116,5 +116,51 @@ describe('isPoolProbeTarget', () => {
   it('does not widen past the CGNAT /10 boundary', () => {
     expect(isPoolProbeTarget('100.63.255.255')).toBe(false);
     expect(isPoolProbeTarget('100.128.0.1')).toBe(false);
+  });
+});
+
+describe("the Hub's own networks", () => {
+  // What os.networkInterfaces() reports in the Hub's container: loopback, its bridge, an app network.
+  const interfaces = {
+    lo: [{ address: '127.0.0.1', netmask: '255.0.0.0', family: 'IPv4', mac: '00:00:00:00:00:00', internal: true, cidr: '127.0.0.1/8' }],
+    eth0: [
+      { address: '172.18.0.3', netmask: '255.255.0.0', family: 'IPv4', mac: '02:42:ac:12:00:03', internal: false, cidr: '172.18.0.3/16' },
+      {
+        address: 'fe80::42:acff:fe12:3',
+        netmask: 'ffff:ffff:ffff:ffff::',
+        family: 'IPv6',
+        mac: '02:42:ac:12:00:03',
+        internal: false,
+        cidr: 'fe80::42:acff:fe12:3/64',
+        scopeid: 2,
+      },
+    ],
+    eth1: [
+      { address: '10.128.12.254', netmask: '255.255.255.0', family: 'IPv4', mac: '02:42:0a:80:0c:fe', internal: false, cidr: '10.128.12.254/24' },
+    ],
+  } as never;
+
+  it('reads the subnets off the interfaces, leaving out loopback and link-local', () => {
+    expect(ownInterfaceSubnets(interfaces)).toEqual([
+      { address: '172.18.0.3', prefix: 16, family: 'ipv4' },
+      { address: '10.128.12.254', prefix: 24, family: 'ipv4' },
+    ]);
+  });
+
+  // Docker gives each network's gateway the subnet's first address: the Docker host, which is also what a
+  // tailnet connection Tailscale masqueraded on its way to a published port arrives as.
+  it("names each network's gateway, and nothing else, as the gateway", () => {
+    const subnets = ownInterfaceSubnets(interfaces);
+    for (const ip of ['172.18.0.1', '10.128.12.1']) expect(isOwnNetworkGateway(ip, subnets), ip).toBe(true);
+    for (const ip of ['172.18.0.3', '172.18.0.2', '10.128.12.254', '10.128.13.1', '127.0.0.1', '192.168.86.1', 'x'])
+      expect(isOwnNetworkGateway(ip, subnets), ip).toBe(false);
+  });
+
+  it('places loopback, the bridge and the app network on them, and the LAN on none', () => {
+    const subnets = ownInterfaceSubnets(interfaces);
+    for (const ip of ['127.0.0.1', '::1', '::ffff:127.0.0.1', '172.18.0.1', '172.18.200.9', '10.128.12.7'])
+      expect(isOnOwnNetwork(ip, subnets), ip).toBe(true);
+    for (const ip of ['192.168.86.40', '10.128.13.7', '172.19.0.2', '10.0.0.7', 'fe80::1', 'not-an-ip', '', null])
+      expect(isOnOwnNetwork(ip, subnets), String(ip)).toBe(false);
   });
 });

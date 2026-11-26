@@ -277,8 +277,6 @@ export const TRUSTED_APP_SECURITY_ALLOWLIST: Record<string, AppSecurityGrants> =
   // to isolate arbitrary AI-agent-generated code, matching upstream's own
   // docker-compose.yml.
   refly: { privileged: true },
-  // Host file explorer: bind-mounts Hub root so the UI can browse/edit device files.
-  'filebrowser-quantum': { hostPaths: ['/'] },
 
   /*
    * NET_ADMIN for apps whose whole function is the network stack: a VPN or tunnel endpoint
@@ -344,6 +342,8 @@ export const TRUSTED_APP_SECURITY_ALLOWLIST: Record<string, AppSecurityGrants> =
   zigbee2mqtt: { devices: ['${ZIGBEE2MQTT_DEVICE}'] },
   // biome-ignore lint/suspicious/noTemplateCurlyInString: a compose expansion, matched literally
   'zwave-js-ui': { devices: ['${ZWAVE_DEVICE_PATH}'] },
+  // Game streaming: a virtual keyboard, mouse and gamepad for the remote player.
+  sunshine: { devices: ['/dev/uinput'] },
   // biome-ignore lint/suspicious/noTemplateCurlyInString: a compose expansion, matched literally
   navidrome: { hostPaths: ['${NAVIDROME_MUSIC_FOLDER:-${APP_DATA_DIR}/music}'] },
 };
@@ -462,12 +462,23 @@ function isKnownNetworkMode(networkMode: string): boolean {
  * real installs and buy nothing. The escape is a device that IS the host: the tree itself, the
  * memory and port devices, and any block device, including the aliases that reach one under another
  * name (`/dev/disk/by-id/*`, `/dev/block/*`, `/dev/mapper/*`, `/dev/root`).
+ *
+ * Also the devices that reach the same things another way, or the person at the host:
+ * - `/dev/sg*` (SCSI generic): raw commands to a disk, behind the block-device refusal above.
+ * - `/dev/uinput`: makes a virtual keyboard and mouse, so the app types into the host's session.
+ * - `/dev/input/*` and `/dev/hidraw*`: the host's keyboards, mice and security keys, keystrokes included.
+ * - `/dev/bus/usb/*`: raw access to every USB device on the host (those same keyboards and keys, a
+ *   phone, a disk), below any driver. One dongle is `/dev/ttyUSB0` or `/dev/ttyACM0`, which stay open.
+ * Sunshine streams games and needs `/dev/uinput`, by a grant ({@link TRUSTED_APP_SECURITY_ALLOWLIST}).
  */
 const DENIED_DEVICE_PATTERNS = [
   /^\/dev\/?$/,
   /^\/dev\/(sd|nvme|vd|hd|xvd|loop|dm-|md|mmcblk|nbd|zd|ram|sr|pmem|dasd)/i,
   /^\/dev\/(disk|block|mapper)(\/|$)/i,
   /^\/dev\/(mem|kmem|port|root)$/i,
+  /^\/dev\/(sg\d*|bsg)(\/|$)/i,
+  /^\/dev\/(uinput|input|hidraw\d*)(\/|$)/i,
+  /^\/dev\/bus(\/|$)/i,
 ];
 
 function isDeniedDeviceHostPath(hostHalf: string, grants?: AppSecurityGrants): boolean {

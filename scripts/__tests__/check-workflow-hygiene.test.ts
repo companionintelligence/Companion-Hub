@@ -358,10 +358,13 @@ describe('unpinned-uses', () => {
     }
   });
 
-  it('is report-only, so it does not fail the run', () => {
-    expect([...REPORT_ONLY_RULES]).toEqual(['unpinned-uses']);
+  // Report-only until every reference was pinned; a moving reference fails the run now.
+  it("fails the run, for GitHub's own actions too", () => {
+    expect([...REPORT_ONLY_RULES]).toEqual([]);
     const [found] = scan(withSteps('- uses: example-org/example-action@v1'));
-    expect(found && isReportOnly(found)).toBe(true);
+    expect(found && isReportOnly(found)).toBe(false);
+    const [own] = scan(withSteps('- uses: actions/checkout@v7'));
+    expect(own?.rule).toBe('unpinned-uses');
     const [other] = scan(fixture('pull-request-target.yml'));
     expect(other && isReportOnly(other)).toBe(false);
   });
@@ -911,6 +914,7 @@ describe('the command line', () => {
     expect(code).toBe(1);
     expect(err).toEqual([
       '.github/workflows/a.yml:9: [secrets-inherit] job call hands every secret to the workflow it calls; list the secret names instead',
+      '.github/workflows/b.yml:10: [unpinned-uses] example-org/example-action@v1 can move; pin it to a full commit and name the release in a trailing comment',
     ]);
   });
 
@@ -920,24 +924,22 @@ describe('the command line', () => {
     );
   });
 
-  it('does not fail on report-only findings, and lists them only with --report', () => {
+  // Report-only until every action reference was pinned: a moving one fails the run now.
+  it('fails on an action reference that can move, and names it', () => {
     const root = makeRepo({ '.github/workflows/b.yml': fixture('tag-pinned.yml') });
-    const quiet = run(['--root', root]);
-    expect(quiet.code).toBe(0);
-    expect(quiet.out.join('\n')).toContain('0 finding(s), 0 allow-listed, 1 report-only');
-    expect(quiet.out.join('\n')).not.toContain('example-org/example-action');
-    const loud = run(['--root', root, '--report']);
-    expect(loud.code).toBe(0);
-    expect(loud.out[0]).toBe(
-      '.github/workflows/b.yml:10: [unpinned-uses] example-org/example-action@v1 can move; pin it to a full commit and name the release in a trailing comment (report only)',
-    );
+    const { code, out, err } = run(['--root', root]);
+    expect(code).toBe(1);
+    expect(err).toEqual([
+      '.github/workflows/b.yml:10: [unpinned-uses] example-org/example-action@v1 can move; pin it to a full commit and name the release in a trailing comment',
+    ]);
+    expect(out.join('\n')).toContain('1 finding(s), 0 allow-listed, 0 report-only');
   });
 
   it('accepts the separator that a package manager forwards before the flags', () => {
     const root = makeRepo({ '.github/workflows/b.yml': fixture('tag-pinned.yml') });
     const viaPnpm = run(['--', '--report', '--root', root]);
-    expect({ code: viaPnpm.code, err: viaPnpm.err }).toEqual({ code: 0, err: [] });
-    expect(viaPnpm.out[0]).toContain('[unpinned-uses]');
+    expect(viaPnpm.code).toBe(1);
+    expect(viaPnpm.err[0]).toContain('[unpinned-uses]');
   });
 
   it('exits 2 for an argument it does not know, a missing value, and a directory that is not a repository', () => {
@@ -1019,8 +1021,10 @@ describe('the real tree', () => {
     expect(refused(withFifth)).toEqual({ kept: ['missing-permissions:fifth'], stale: [] });
   });
 
-  it('lists a tag-referenced action as report-only while the actions are not pinned, and nothing else as report-only', () => {
-    expect(new Set(real.findings.filter(isReportOnly).map((f) => f.rule))).toEqual(new Set(['unpinned-uses']));
+  // Every action reference is pinned to a commit, GitHub's own included, so nothing is left to report.
+  it('finds no unpinned action reference and nothing report-only', () => {
+    expect(real.findings.filter((f) => f.rule === 'unpinned-uses')).toEqual([]);
+    expect(real.findings.filter(isReportOnly)).toEqual([]);
   });
 
   it('would catch a hand-over of every secret added to a real workflow', () => {

@@ -25,7 +25,21 @@ import { HubPoolOllamaCompatController } from '@/modules/hub-pool/hub-pool-ollam
 import { HubPoolController } from '@/modules/hub-pool/hub-pool.controller';
 import { InferenceController } from '@/modules/inference/inference.controller';
 import { TunnelErrorStatusInterceptor } from '@/modules/inference/tunnel-error-status.interceptor';
-import { InferenceAccessGuard, type InferenceAuthenticatedRequest, inferenceTailnetAuth } from '../inference-access.guard';
+import { InferenceAccessGuard, type InferenceAuthenticatedRequest, inferenceLanAuth, inferenceTailnetAuth } from '../inference-access.guard';
+
+/*
+ * The Hub container's own networks, as `ownInterfaceSubnets` reads them off its interfaces: its Docker
+ * bridge and the app networks it joins. Pinned so the verdicts do not depend on the machine running the
+ * tests; a caller on none of them (a LAN device) is outside under HUB_INFERENCE_LAN_AUTH's default.
+ */
+vi.mock('@/common/helpers/ip-address', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/common/helpers/ip-address')>();
+  const HUB_NETWORKS = [
+    { address: '172.18.0.3', prefix: 16, family: 'ipv4' as const },
+    { address: '10.128.0.5', prefix: 16, family: 'ipv4' as const },
+  ];
+  return { ...actual, ownInterfaceSubnets: () => HUB_NETWORKS };
+});
 
 const INFERENCE_KEY = 'a'.repeat(64);
 const MCP_KEY = 'b'.repeat(64);
@@ -124,12 +138,14 @@ describe('InferenceAccessGuard', () => {
       expect(req.inferenceApiKey).toBeUndefined();
     });
 
-    it('includes a wholly private forwarded chain — a tailnet peer behind the Docker bridge', async () => {
+    it('includes a wholly private forwarded chain — a tailnet peer behind the Docker bridge, on a Hub that trusts the tailnet', async () => {
+      vi.stubEnv('HUB_INFERENCE_TAILNET_AUTH', 'trust');
       const req = request('172.18.0.2', { 'x-forwarded-for': '172.18.0.2, 100.101.102.103' });
 
       await expect(guard.canActivate(contextFor(req, fakeResponse()))).resolves.toBe(true);
 
       expect(repo.findByHash).not.toHaveBeenCalled();
+      vi.unstubAllEnvs();
     });
   });
 
@@ -229,21 +245,113 @@ describe('InferenceAccessGuard', () => {
    * "a tailnet peer behind the Docker bridge" above). `HUB_INFERENCE_TAILNET_AUTH=require-key` is the
    * opt-in for a fleet whose tailnet carries devices that should not spend its GPUs for free.
    */
+  // The API port is published on every interface, so any device on the network reached these routes,
+  // and the GPUs of every paired peer, with no key (2026-11-20 audit).
+  describe('HUB_INFERENCE_LAN_AUTH', () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('reads the setting: require-key unless it says trust, whatever its case or padding', () => {
+      expect(inferenceLanAuth({})).toBe('require-key');
+      expect(inferenceLanAuth({ HUB_INFERENCE_LAN_AUTH: '' })).toBe('require-key');
+      expect(inferenceLanAuth({ HUB_INFERENCE_LAN_AUTH: 'nope' })).toBe('require-key');
+      expect(inferenceLanAuth({ HUB_INFERENCE_LAN_AUTH: '  Trust ' })).toBe('trust');
+    });
+
+    it.each([
+      ['on the published port', () => request('192.168.86.40')],
+      ['behind Traefik', () => request('172.18.0.9', { 'x-forwarded-for': '192.168.86.40' })],
+      ['in another private range', () => request('10.0.0.7')],
+    ])('asks a LAN device %s for a key, by default, naming the setting', async (_label, req) => {
+      const { error, res } = await refusalOf(req());
+
+      expect(error).toBeInstanceOf(UnauthorizedException);
+      expect(res.statusCode).toBe(HttpStatus.UNAUTHORIZED);
+      const body = res.body as { error: { code: string; message: string } };
+      expect(body.error.code).toBe('missing_api_key');
+      expect(body.error.message).toContain('HUB_INFERENCE_LAN_AUTH=trust');
+      expect(JSON.stringify(logger.warn.mock.calls)).toContain('origin=lan-address');
+    });
+
+    it('admits a LAN device that sends an inference key', async () => {
+      const req = request('192.168.86.40', bearer(INFERENCE_KEY));
+      await expect(guard.canActivate(contextFor(req, fakeResponse()))).resolves.toBe(true);
+      expect(req.inferenceApiKey?.name).toBe('laptop-zed');
+    });
+
+    it('still admits the appliance itself, with no lookup: containers, app networks, loopback', async () => {
+      for (const req of [
+        request('172.18.0.5', bearer('ollama')),
+        request('10.128.12.5'),
+        request('127.0.0.1'),
+        request('::1'),
+        request('172.18.0.2', { 'x-forwarded-for': '10.128.1.9' }),
+      ]) {
+        await expect(guard.canActivate(contextFor(req, fakeResponse()))).resolves.toBe(true);
+      }
+      expect(repo.findByHash).not.toHaveBeenCalled();
+    });
+
+    // Tailscale's firewall rules masquerade a tailnet device's connection to the published API port, so it
+    // arrives as the Docker gateway, as a program on the Hub's own machine does: neither can be placed.
+    it('asks the Docker gateway for a key, naming who it may be', async () => {
+      const { error, res } = await refusalOf(request('172.18.0.1'));
+
+      expect(error).toBeInstanceOf(UnauthorizedException);
+      expect((res.body as { error: { message: string } }).error.message).toContain("Docker's gateway");
+      expect(JSON.stringify(logger.warn.mock.calls)).toContain('origin=gateway-address');
+    });
+
+    it('lets the Docker gateway in by origin only when neither the LAN nor the tailnet needs a key', async () => {
+      vi.stubEnv('HUB_INFERENCE_LAN_AUTH', 'trust');
+      expect((await refusalOf(request('172.18.0.1'))).error).toBeInstanceOf(UnauthorizedException);
+      vi.stubEnv('HUB_INFERENCE_TAILNET_AUTH', 'trust');
+      await expect(guard.canActivate(contextFor(request('172.18.0.1'), fakeResponse()))).resolves.toBe(true);
+    });
+
+    it('trust lets the LAN in by origin again', async () => {
+      vi.stubEnv('HUB_INFERENCE_LAN_AUTH', 'trust');
+      for (const req of [request('192.168.86.40'), request('172.18.0.9', { 'x-forwarded-for': '192.168.86.40' })]) {
+        await expect(guard.canActivate(contextFor(req, fakeResponse()))).resolves.toBe(true);
+      }
+      expect(repo.findByHash).not.toHaveBeenCalled();
+    });
+
+    it('leaves tailnet callers to HUB_INFERENCE_TAILNET_AUTH', async () => {
+      vi.stubEnv('HUB_INFERENCE_LAN_AUTH', 'trust');
+      expect((await refusalOf(request('100.101.102.103'))).error).toBeInstanceOf(UnauthorizedException);
+      vi.stubEnv('HUB_INFERENCE_TAILNET_AUTH', 'trust');
+      vi.stubEnv('HUB_INFERENCE_LAN_AUTH', 'require-key');
+      await expect(guard.canActivate(contextFor(request('100.101.102.103'), fakeResponse()))).resolves.toBe(true);
+    });
+  });
+
   describe('HUB_INFERENCE_TAILNET_AUTH', () => {
     afterEach(() => {
       vi.unstubAllEnvs();
     });
 
-    it('reads the setting: trust unless it says require-key, whatever its case or padding', () => {
-      expect(inferenceTailnetAuth({})).toBe('trust');
-      expect(inferenceTailnetAuth({ HUB_INFERENCE_TAILNET_AUTH: '' })).toBe('trust');
-      expect(inferenceTailnetAuth({ HUB_INFERENCE_TAILNET_AUTH: 'trust' })).toBe('trust');
-      expect(inferenceTailnetAuth({ HUB_INFERENCE_TAILNET_AUTH: 'yes please' })).toBe('trust');
+    // The default was `trust` until 2026-11-25: every device on a tailnet the Hub joined spent its GPU.
+    it('reads the setting: require-key unless it says trust, whatever its case or padding', () => {
+      expect(inferenceTailnetAuth({})).toBe('require-key');
+      expect(inferenceTailnetAuth({ HUB_INFERENCE_TAILNET_AUTH: '' })).toBe('require-key');
+      expect(inferenceTailnetAuth({ HUB_INFERENCE_TAILNET_AUTH: 'yes please' })).toBe('require-key');
       expect(inferenceTailnetAuth({ HUB_INFERENCE_TAILNET_AUTH: 'require-key' })).toBe('require-key');
-      expect(inferenceTailnetAuth({ HUB_INFERENCE_TAILNET_AUTH: '  Require-Key ' })).toBe('require-key');
+      expect(inferenceTailnetAuth({ HUB_INFERENCE_TAILNET_AUTH: 'trust' })).toBe('trust');
+      expect(inferenceTailnetAuth({ HUB_INFERENCE_TAILNET_AUTH: '  Trust ' })).toBe('trust');
     });
 
-    it('unset (the default) admits a tailnet caller by origin and never asks the key store', async () => {
+    it('unset (the default) asks a tailnet caller for a key, naming the opt-out', async () => {
+      for (const req of [request('100.101.102.103'), request('172.18.0.2', { 'x-forwarded-for': '100.101.102.103' })]) {
+        const { error, res } = await refusalOf(req);
+        expect(error).toBeInstanceOf(UnauthorizedException);
+        expect((res.body as { error: { message: string } }).error.message).toContain('HUB_INFERENCE_TAILNET_AUTH=trust');
+      }
+    });
+
+    it('trust admits a tailnet caller by origin and never asks the key store', async () => {
+      vi.stubEnv('HUB_INFERENCE_TAILNET_AUTH', 'trust');
       for (const req of [request('100.101.102.103'), request('172.18.0.2', { 'x-forwarded-for': '100.101.102.103' })]) {
         await expect(guard.canActivate(contextFor(req, fakeResponse()))).resolves.toBe(true);
       }

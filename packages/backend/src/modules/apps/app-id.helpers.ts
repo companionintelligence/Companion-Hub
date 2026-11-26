@@ -2,7 +2,7 @@ import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { HUB_ROUTE_NAME_SUFFIXES } from '@/modules/docker/builders/traefik-labels.builder';
 import { HUB_TRAEFIK_NAMES } from '@ci-hub/common/schemas';
-import type { AppUrn } from '@ci-hub/common/types';
+import { type AppUrn, isHubHostLabel } from '@ci-hub/common/types';
 import { HttpStatus } from '@nestjs/common';
 
 /** An app's id: its name and its store's slug joined by a dash. The Hub names its Traefik routes by it. */
@@ -30,6 +30,10 @@ export function assertAppIdFree(appUrn: AppUrn, installed: ReadonlyArray<{ appNa
   const { appName, appStoreId } = extractAppUrn(appUrn);
   const appId = appIdOf(appName, appStoreId);
   const id = appId.toLowerCase();
+  // From any store: the app's hostnames start with its name, and `hub…` is the Hub's own (`isHubHostLabel`).
+  if (isHubHostLabel(appName)) {
+    throw new TranslatableError('APP_ERROR_APP_NAME_HUB_HOST', { id: appUrn }, HttpStatus.CONFLICT);
+  }
   if (HUB_TRAEFIK_NAMES.includes(id)) {
     throw new TranslatableError('APP_ERROR_APP_ID_RESERVED', { id: appUrn, appId }, HttpStatus.CONFLICT);
   }

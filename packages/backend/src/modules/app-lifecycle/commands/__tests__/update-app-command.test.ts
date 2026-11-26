@@ -1,3 +1,4 @@
+import type { DataProgressListener } from '@/common/helpers/data-progress';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mock, mockDeep } from 'vitest-mock-extended';
 import { UpdateAppCommand } from '../update-app-command';
@@ -139,7 +140,10 @@ describe('UpdateAppCommand', () => {
       const result = await command.execute(appUrn, {});
 
       expect(result.success).toBe(false);
-      expect(backupManager.restoreApp).toHaveBeenCalledWith(appUrn, 'test-app-backup.tar.gz', undefined);
+      expect(backupManager.restoreApp).toHaveBeenCalledWith(appUrn, 'test-app-backup.tar.gz', undefined, {
+        appFiles: 'from-backup',
+        onProgress: expect.any(Function),
+      });
       // The new version never started: the only `up` is the rollback's, after the data came back.
       const ups = dockerService.composeApp.mock.calls
         .map((call, index) => ({ cmd: call[1], order: dockerService.composeApp.mock.invocationCallOrder[index] as number }))
@@ -153,7 +157,7 @@ describe('UpdateAppCommand', () => {
     const result = await command.execute(appUrn, {});
 
     expect(result).toEqual({ success: true, message: `App ${appUrn} updated successfully` });
-    expect(backupManager.backupApp).toHaveBeenCalledWith(appUrn, undefined);
+    expect(backupManager.backupApp).toHaveBeenCalledWith(appUrn, undefined, expect.any(Function));
     // A backup was taken, so the snapshot covers the installed files only.
     expect(dockerService.createPreUpdateVolumeSnapshot).toHaveBeenCalledWith(appUrn, { includeData: false });
     expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'pull');
@@ -215,7 +219,10 @@ describe('UpdateAppCommand', () => {
     const result = await command.execute(appUrn, {});
 
     expect(result.success).toBe(false);
-    expect(backupManager.restoreApp).toHaveBeenCalledWith(appUrn, 'test-app-backup.tar.gz', undefined);
+    expect(backupManager.restoreApp).toHaveBeenCalledWith(appUrn, 'test-app-backup.tar.gz', undefined, {
+      appFiles: 'from-backup',
+      onProgress: expect.any(Function),
+    });
     expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'down --remove-orphans');
     expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'up --detach --force-recreate --remove-orphans');
   });
@@ -570,7 +577,7 @@ describe('UpdateAppCommand', () => {
       expect(backupManager.assertBackupPossible.mock.invocationCallOrder[0]).toBeLessThan(
         dockerService.composeApp.mock.invocationCallOrder[stop] as number,
       );
-      expect(backupManager.backupApp).toHaveBeenCalledWith(appUrn, undefined);
+      expect(backupManager.backupApp).toHaveBeenCalledWith(appUrn, undefined, expect.any(Function));
     });
 
     it('stops nothing when the backup cannot be made (the helper for unreadable data cannot run)', async () => {
@@ -768,7 +775,10 @@ describe('UpdateAppCommand', () => {
       const result = await command.execute(appUrn, {});
 
       expect(result).toMatchObject({ success: false, rolledBack: true });
-      expect(backupManager.restoreApp).toHaveBeenCalledWith(appUrn, 'test-app-backup.tar.gz', undefined);
+      expect(backupManager.restoreApp).toHaveBeenCalledWith(appUrn, 'test-app-backup.tar.gz', undefined, {
+        appFiles: 'from-backup',
+        onProgress: expect.any(Function),
+      });
     });
 
     it('keeps the snapshot, and says it could not roll back, when the backup cannot be restored', async () => {
@@ -936,6 +946,43 @@ describe('UpdateAppCommand', () => {
       expect(ctx.setPhase.mock.calls.map(([phase]) => phase)).toEqual(['preparing', 'pulling', 'preparing', 'composing', 'verifying', 'finalizing']);
     });
 
+    it("shows the backup's figures under the step it is in, without telling the registry anything new", async () => {
+      backupManager.backupApp.mockImplementation(async (_urn: unknown, _deadline: unknown, onProgress: DataProgressListener) => {
+        onProgress({ step: 'archiving', doneBytes: 9, totalBytes: 21 });
+        return { filename: 'test-app-backup.tar.gz' };
+      });
+
+      await command.execute(appUrn, {}, ctx);
+
+      expect(sseService.emit).toHaveBeenCalledWith('app', {
+        event: 'status_change',
+        appUrn,
+        appStatus: 'updating',
+        updatePhase: 'backing_up',
+        dataProgress: { step: 'archiving', doneBytes: 9, totalBytes: 21 },
+      });
+      expect(ctx.setPhase.mock.calls.map(([phase]) => phase)).toEqual(['preparing', 'pulling', 'preparing', 'composing', 'verifying', 'finalizing']);
+    });
+
+    it("shows the rollback's figures under the rollback's step", async () => {
+      backupManager.restoreApp.mockImplementation(
+        async (_urn: unknown, _file: unknown, _deadline: unknown, options: { onProgress?: DataProgressListener }) => {
+          options.onProgress?.({ step: 'unpacking_backup', doneBytes: 4, totalBytes: 21 });
+        },
+      );
+      dockerService.verifyContainerHealthProbe.mockResolvedValue({ healthy: false, message: 'summary-service (restarting)' } as never);
+
+      await command.execute(appUrn, {}, ctx);
+
+      expect(sseService.emit).toHaveBeenCalledWith('app', {
+        event: 'status_change',
+        appUrn,
+        appStatus: 'updating',
+        updatePhase: 'rolling_back',
+        dataProgress: { step: 'unpacking_backup', doneBytes: 4, totalBytes: 21 },
+      });
+    });
+
     it('says a stopped app is getting its new files, not that it is being started', async () => {
       command = new UpdateAppCommand(moduleRef, docker, true, false);
       (command as any).assertMarketplaceEntitlement = vi.fn().mockResolvedValue(undefined);
@@ -955,7 +1002,10 @@ describe('UpdateAppCommand', () => {
       const result = await command.execute(appUrn, {}, ctx);
 
       expect(result).toMatchObject({ success: false, cancelled: true, rolledBack: true });
-      expect(backupManager.restoreApp).toHaveBeenCalledWith(appUrn, 'test-app-backup.tar.gz', ctx.deadline);
+      expect(backupManager.restoreApp).toHaveBeenCalledWith(appUrn, 'test-app-backup.tar.gz', ctx.deadline, {
+        appFiles: 'from-backup',
+        onProgress: expect.any(Function),
+      });
       expect(dockerService.composeApp).toHaveBeenLastCalledWith(appUrn, 'up --detach --force-recreate --remove-orphans');
       expect(phasesShown().at(-1)).toBe('rolling_back');
     });
@@ -1245,7 +1295,10 @@ describe('UpdateAppCommand', () => {
       const result = await command.execute(appUrn, {}, ctx);
 
       expect(result).toMatchObject({ success: false, cancelled: true, rolledBack: true });
-      expect(backupManager.restoreApp).toHaveBeenCalledWith(appUrn, 'test-app-backup.tar.gz', ctx.deadline);
+      expect(backupManager.restoreApp).toHaveBeenCalledWith(appUrn, 'test-app-backup.tar.gz', ctx.deadline, {
+        appFiles: 'from-backup',
+        onProgress: expect.any(Function),
+      });
       expect(phasesShown()).not.toContain('finalizing');
     });
 

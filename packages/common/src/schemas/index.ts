@@ -99,6 +99,8 @@ import type {
 
 import {
   type AppServiceFailure,
+  type DataProgress,
+  type DataProgressStep,
   type HostPortMove,
   type SSE,
   type Topic,
@@ -109,10 +111,12 @@ import {
   sseSchema,
 } from './sse.js';
 
+import { hostDockerArgvRefusal } from './mcp-host-docker.js';
 import { toJsonSchema } from './utils/to-json-schema.js';
 import { bindSourceKey, describeNestedBindMounts, findNestedBindMounts, type BindMountRef, type NestedBindMount } from './bind-mount-nesting.js';
 
 export {
+  hostDockerArgvRefusal,
   dynamicComposeSchema,
   dynamicComposeFormSchema,
   customAppComposeSchema,
@@ -225,5 +229,7 @@ export {
   type AppServiceFailure,
   type SSE,
   type Topic,
+  type DataProgress,
+  type DataProgressStep,
   type UpdatePhase,
 };
