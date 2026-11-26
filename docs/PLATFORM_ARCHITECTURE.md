@@ -266,15 +266,18 @@ in traefik-labels.builder.ts). The Hub writes dynamic.yml on every boot, while i
 change only with the installed compose file.
 
 Routes without the sign-in still serve apps with a login of their own, whose answers to a signed-in
-visitor are just as private. Next to every app router on the `web` entry point apps.yml holds a
-`-session` copy (`sessionRouter` in traefik-config.service.ts). port-expose.yml holds one next to
-every port-expose route. Each copy matches the
-same requests only when they carry a `Cookie` or `Authorization` header, ranks one above the router
-and puts `ci-hub-session-no-edge-cache` first in the same chain. That middleware sets
+visitor are just as private: apps whose operator switched the Hub login off, and the twins of the
+paths the operator exempted from it (`-public-paths`). Next to every app router on the `web` entry
+point apps.yml holds a `-session` copy (`sessionRouter` in traefik-config.service.ts), twins and
+routers with the login included. port-expose.yml holds one next to every port-expose route. Each copy
+matches the same requests only when they carry a `Cookie` or `Authorization` header, ranks one above
+the router and puts `ci-hub-session-no-edge-cache` first in the same chain, so it has the login
+exactly when its router has it. That middleware sets
 `Cloudflare-CDN-Cache-Control: no-store`, which only Cloudflare reads and which it does not pass on,
 so browsers keep the app's own `Cache-Control`. Requests without either header go to the router
 itself and a public site's files stay cached at the edge. The copies live only in the file provider
-and outrank the Docker provider's routers, so the Hub container's labels don't change.
+and outrank the Docker provider's routers, so the Hub container's labels don't change. The routes on
+Tailscale Service hostnames (tailscale-services.yml) get none: they answer over the tailnet only.
 
 Every app router ends with `ci-hub-app-starting@file`, an `errors` middleware for 502 and 504.
 It leaves 503 alone: apps send that on purpose, with a body their own clients read. While an

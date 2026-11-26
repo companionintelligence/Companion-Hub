@@ -266,7 +266,7 @@ export class TraefikConfigService {
           middlewares: route.requireLogin ? [FORWARD_AUTH_MIDDLEWARE, APP_STARTING_MIDDLEWARE] : [APP_STARTING_MIDDLEWARE],
         };
         config.http.routers[routerId] = router;
-        // A service behind a port never has the Hub sign-in. One on Public Web may have a login of its own.
+        // With the Hub login switched off, the service behind the port may have a login of its own.
         config.http.routers[`${routerId}${SESSION_ROUTER_SUFFIX}`] = sessionRouter(router, ruleRank(router.rule));
         config.http.services[routerId] = {
           loadBalancer: {
@@ -291,7 +291,9 @@ export class TraefikConfigService {
    * picks the app here, and the login answers first, as on every other route of the app. The
    * operator's login-free paths get a twin router without the login, as the app's own routers do
    * (`TraefikLabelsBuilder.addPublicPathRouters`). A file, not container labels: the hostname is
-   * known only once the tailnet is, and labels would mean recreating the app to learn it.
+   * known only once the tailnet is, and labels would mean recreating the app to learn it. No
+   * `-session` copies here ({@link sessionRouter}): a Service answers over the tailnet only, and
+   * nothing on the way keeps a copy of its answers the way Cloudflare does.
    */
   public async syncTailscaleServiceRoutes(routes: TailscaleServiceRoute[]): Promise<void> {
     const { directories } = this.config.getConfig();
