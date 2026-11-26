@@ -555,6 +555,47 @@ describe('ModelRegistryService', () => {
     });
   });
 
+  // After a restart nothing is tracked and a request's load is weighed only for a tracked model (#2539).
+  describe('tracking an installed model a request names', () => {
+    const omlx = { omlxSpellings: false };
+
+    it('tracks the catalog row an engine lists, by its tag or its catalog id, as pulled', () => {
+      expect(service.trackInstalledModel('qwen3:8b', [{ backend: 'ollama', models: ['qwen3:8b'] }], omlx)).toMatchObject({
+        catalogId: 'qwen3-8b',
+        backend: 'ollama',
+        state: 'pulled',
+      });
+      expect(service.trackInstalledModel('llama3-2-3b', [{ backend: 'ollama', models: ['llama3.2:3b'] }], omlx)?.catalogId).toBe('llama3-2-3b');
+      // Lemonade 10.2.0 lists a model the Hub registered under `user.`.
+      expect(
+        service.trackInstalledModel('nomic-embed-text-v1.5-GGUF', [{ backend: 'lemonade', models: ['user.nomic-embed-text-v1.5-GGUF'] }], omlx)
+          ?.catalogId,
+      ).toBe('nomic-embed-text-v1-5-lemonade');
+    });
+
+    it('tracks nothing for a custom tag, or for a row whose own tag no engine lists', () => {
+      expect(service.trackInstalledModel('mystery:7b', [{ backend: 'ollama', models: ['mystery:7b'] }], omlx)).toBeUndefined();
+      expect(service.trackInstalledModel('qwen3:8b', [{ backend: 'lemonade', models: ['qwen3:8b'] }], omlx)).toBeUndefined();
+      // Only the row's own tag counts: the Hub's load of the row asks Ollama for `qwen3.8:27b`, which it does not have
+      // beside the MTP build or a quant the catalog does not spell out.
+      expect(service.trackInstalledModel('qwen3.8:27b', [{ backend: 'ollama', models: ['qwen3.8:27b-mtp-q4_K_M'] }], omlx)).toBeUndefined();
+      expect(service.trackInstalledModel('qwen3.8:27b', [{ backend: 'ollama', models: ['qwen3.8:27b-q8_0'] }], omlx)).toBeUndefined();
+      expect(service.getTrackedModels()).toEqual([]);
+    });
+
+    it("finds a row by oMLX's own spelling only when asked to", () => {
+      const listed = [{ backend: 'omlx' as const, models: ['Qwen3-8B-4bit'] }];
+      expect(service.trackInstalledModel('Qwen3-8B-4bit', listed, omlx)).toBeUndefined();
+      expect(service.trackInstalledModel('Qwen3-8B-4bit', listed, { omlxSpellings: true })?.catalogId).toBe('qwen3-8b-mlx');
+    });
+
+    it('leaves a row it tracks already as it is', () => {
+      service.trackModel('qwen3-8b', 'loaded');
+      expect(service.trackInstalledModel('qwen3:8b', [{ backend: 'ollama', models: ['qwen3:8b'] }], omlx)).toBeUndefined();
+      expect(service.getTrackedModel('qwen3-8b')?.state).toBe('loaded');
+    });
+  });
+
   // ─── S-MM-3: Pinning ──────────────────────────────────────────────
 
   describe('Model pinning (MM-3)', () => {

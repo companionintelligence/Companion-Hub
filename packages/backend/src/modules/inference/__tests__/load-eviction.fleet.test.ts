@@ -39,6 +39,8 @@ type Resident = { id: string; processMb: number; sizeVramMb: number; refs: numbe
 class FakeOllama {
   readonly resident = new Map<string, Resident>();
   readonly installed = new Set<string>();
+  /** Installed models it has been caught unable to serve, as its health check reports them (`unservableModels`). */
+  readonly withheld = new Set<string>();
   readonly loads: string[] = [];
   readonly unloads: string[] = [];
   /** The most memory the runner ever held at once. */
@@ -84,7 +86,12 @@ class FakeOllama {
       type: 'ollama',
       getBaseUrl: () => 'http://fake-ollama:11434',
       // Ollama's inventory is what is installed, resident or not.
-      healthCheck: async () => ({ running: true, healthy: true, modelsLoaded: [...this.installed] }),
+      healthCheck: async () => ({
+        running: true,
+        healthy: true,
+        modelsLoaded: [...this.installed],
+        ...(this.withheld.size > 0 ? { unservableModels: [...this.withheld] } : {}),
+      }),
       isModelLoaded: async (id: string) => this.find(id) !== undefined,
       loadModel: async (id: string) => {
         const size = this.loadSizesMb[id] ?? 1_000;
@@ -764,6 +771,144 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
       expect(outcome).toMatchObject({ loaded: false });
       expect(outcome).not.toHaveProperty('systemMemory');
       await expect(w.router.prepareTrackedModel('qwen3-coder:30b')).resolves.toBeNull();
+    });
+  });
+
+  // A Strix Halo machine, 2026-11-25 (#2539): right after the Hub restarted it tracked nothing and a request
+  // for qwen3:8b, on disk but not used since, went to Ollama with no fit check. Ollama loaded 9.9 GB. The same
+  // request answered 503 once a pull check had made the Hub track the model. Each case is a fresh router:
+  // an empty tracker over an engine that lists the model.
+  describe('after a restart, a request for a model on disk that nothing has used since', () => {
+    const MINIMAX = 'gabegoodhart/minimax-m2:230b';
+    type Router = InferenceRouterService;
+    const routes: Array<[string, string, (router: Router, model: string) => Promise<unknown>]> = [
+      ['chat', '/v1/chat/completions', (router, model) => router.routeChatCompletion({ model, messages: [] })],
+      ['completions', '/v1/completions', (router, model) => router.routeCompletion({ model, prompt: 'hi' })],
+      ['embeddings', '/v1/embeddings', (router, model) => router.routeEmbeddings({ model, input: 'hi' })],
+    ];
+
+    /** The local engine requests reach, recorded instead of sent. */
+    function forwardedBy(router: Router): Array<[string, string, string]> {
+      const forwarded: Array<[string, string, string]> = [];
+      vi.spyOn(router as unknown as { proxyToBackend: (...args: unknown[]) => Promise<unknown> }, 'proxyToBackend').mockImplementation(
+        async (backend, model, _body, path) => {
+          forwarded.push([String(backend), String(model), String(path)]);
+          return { data: {}, backend: String(backend) };
+        },
+      );
+      return forwarded;
+    }
+
+    async function strixHaloWorld() {
+      ollama = new FakeOllama({ 'qwen3.6:35b': 22_000, [MINIMAX]: 72_243, 'qwen3:8b': 9_900 });
+      ollama.hold('qwen3.6:35b', 22_000);
+      const hardware = strixHalo(60_000, [ollama]);
+      return world(await hardware.getProfile(), ollama, { 'minimax-m2-community-230b': 72_243, 'qwen3-8b': 9_900 }, { hardware });
+    }
+
+    it.each(routes)('is weighed on the local /v1 %s route and refused when it does not fit in unified memory', async (_route, _path, send) => {
+      const w = await strixHaloWorld();
+      ollama.installed.add(MINIMAX);
+      const forwarded = forwardedBy(w.router);
+
+      await expect(send(w.router, MINIMAX)).rejects.toMatchObject({ status: 503, code: 'insufficient_memory' });
+
+      expect(forwarded).toEqual([]);
+      expect(ollama.loads).toEqual([]);
+      // Tracked from then on, as a pull check of an installed model tracks it.
+      expect(w.registry.getTrackedModel('minimax-m2-community-230b')).toMatchObject({ state: 'pulled', backend: 'ollama' });
+    });
+
+    it.each(routes)('is loaded by the Hub on the local /v1 %s route when it fits, then sent on', async (_route, path, send) => {
+      const w = await strixHaloWorld();
+      ollama.installed.add('qwen3:8b');
+      const forwarded = forwardedBy(w.router);
+
+      await send(w.router, 'qwen3:8b');
+
+      expect(ollama.loads).toEqual(['qwen3:8b']);
+      expect(forwarded).toEqual([['ollama', 'qwen3:8b', path]]);
+    });
+
+    // The second request finds the model untracked and waits for its sweep while the first tracks it. It used
+    // to go to Ollama unweighed, because the registry leaves a row it tracks already alone.
+    it('refuses two requests that arrive together, not only the one that tracked the model', async () => {
+      const w = await strixHaloWorld();
+      ollama.installed.add(MINIMAX);
+      const forwarded = forwardedBy(w.router);
+
+      const results = await Promise.allSettled([
+        w.router.routeChatCompletion({ model: MINIMAX, messages: [] }),
+        w.router.routeChatCompletion({ model: MINIMAX, messages: [] }),
+      ]);
+
+      expect(results.map((result) => result.status)).toEqual(['rejected', 'rejected']);
+      expect(forwarded).toEqual([]);
+      expect(ollama.loads).toEqual([]);
+    });
+
+    it('is still sent on unweighed when the catalog does not know it and is not tracked', async () => {
+      const w = await strixHaloWorld();
+      ollama.installed.add('mystery:7b');
+      const forwarded = forwardedBy(w.router);
+
+      await w.router.routeChatCompletion({ model: 'mystery:7b', messages: [] });
+
+      expect(forwarded).toEqual([['ollama', 'mystery:7b', '/v1/chat/completions']]);
+      expect(ollama.loads).toEqual([]);
+      expect(w.registry.getTrackedModels()).toEqual([]);
+    });
+
+    // Ollama lists a model on disk whose every load fails. Tracked, the Hub would unload its own idle models
+    // for a load that then fails as well.
+    it('is neither tracked nor loaded when the engine has withheld it as unservable', async () => {
+      const w = await strixHaloWorld();
+      ollama.installed.add('qwen3:8b');
+      ollama.withheld.add('qwen3:8b');
+      const forwarded = forwardedBy(w.router);
+
+      await w.router.routeChatCompletion({ model: 'qwen3:8b', messages: [] });
+
+      expect(forwarded).toEqual([['ollama', 'qwen3:8b', '/v1/chat/completions']]);
+      expect(ollama.loads).toEqual([]);
+      expect(w.registry.getTrackedModels()).toEqual([]);
+    });
+
+    it('keeps its path when no engine lists it', async () => {
+      const w = await strixHaloWorld();
+      const forwarded = forwardedBy(w.router);
+
+      await expect(w.router.routeChatCompletion({ model: 'qwen3:8b', messages: [] })).rejects.toMatchObject({ status: 404, code: 'model_not_found' });
+
+      expect(forwarded).toEqual([]);
+      expect(ollama.loads).toEqual([]);
+      expect(w.registry.getTrackedModels()).toEqual([]);
+    });
+
+    it('is still sent on when it does not fit on a discrete card (beta-1)', async () => {
+      ollama.hold('gemma4:e4b', 6_640);
+      ollama.installed.add('qwen3-coder:30b');
+      const w = world(BETA_1, ollama, { 'qwen3-coder-30b': 19_000 });
+      const forwarded = forwardedBy(w.router);
+
+      await w.router.routeChatCompletion({ model: 'qwen3-coder:30b', messages: [] });
+
+      expect(forwarded).toEqual([['ollama', 'qwen3-coder:30b', '/v1/chat/completions']]);
+      expect(ollama.loads).toEqual([]);
+    });
+
+    // The sweep is the one step 4 makes for a model the Hub does not serve itself: a tracked model never pays for it.
+    it('asks no engine for its list when the model is tracked already', async () => {
+      const w = await strixHaloWorld();
+      ollama.hold('qwen3:8b', 9_900);
+      w.registry.trackModel('qwen3-8b', 'loaded');
+      const forwarded = forwardedBy(w.router);
+      const probe = vi.spyOn(w.router as unknown as { probeBackends: () => Promise<unknown> }, 'probeBackends');
+
+      await w.router.routeChatCompletion({ model: 'qwen3:8b', messages: [] });
+
+      expect(forwarded).toEqual([['ollama', 'qwen3:8b', '/v1/chat/completions']]);
+      expect(probe).not.toHaveBeenCalled();
     });
   });
 
