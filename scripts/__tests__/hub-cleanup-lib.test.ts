@@ -107,19 +107,23 @@ describe('hub-cleanup-lib', () => {
     expect(isRelatedVolume('ci_hub_pgdata')).toBe(true);
     expect(isRelatedVolume('ci_hub_app_data')).toBe(true);
     expect(isRelatedVolume('hub_tailscale_state')).toBe(true);
-    expect(isRelatedVolume('ci-os-hub_test_data')).toBe(true);
-    expect(isRelatedVolume('ci_os_hub-prod_db_data')).toBe(true);
-    expect(isRelatedVolume('runcihub_media_data')).toBe(true);
-    expect(isRelatedVolume('runcihub_media')).toBe(true);
-    // `runtipi_*` is the prefix appliances actually created. #1143 (c88a83580) renamed the
-    // matcher to `runcihub_` by substring, so uninstall stopped seeing real volumes and
-    // silently left them behind. A volume name is fixed at create time — match both.
-    expect(isRelatedVolume('runtipi_media_data')).toBe(true);
-    expect(isRelatedVolume('runtipi_media')).toBe(true);
+    expect(isRelatedVolume('runtipi_ci_hub_pgdata')).toBe(true);
     expect(isRelatedVolume('postgres_data')).toBe(false);
     expect(isRelatedVolume('anotherstack_prod_data')).toBe(false);
     // The cross-domain e2e stack's database, which a match on `ci_hub_pgdata` anywhere in the name used to catch.
     expect(isRelatedVolume('ci-hub-e2e_ci_hub_pgdata')).toBe(true);
+  });
+
+  it('leaves the rest of a Hub project to its compose label, and names that only look like one alone', () => {
+    // Appliances installed as `runtipi` (or `runcihub` after #1143's rename) and pre-rename `ci-os-hub` stacks:
+    // runHubCleanup finds these by label, so a volume that merely carries such a prefix isn't taken.
+    for (const name of ['ci-os-hub_test_data', 'runtipi_media', 'runcihub_media_data']) {
+      expect(isRelatedVolume(name)).toBe(false);
+    }
+    // CI-OS deploys its own Hubs under project names that start with ci-os-hub (#2587).
+    for (const name of ['ci-os-hub-staging_ci_hub_pgdata', 'ci_os_hub-prod_db_data', 'ci-os-hub-docs-cache', 'ci-hub_custom_data']) {
+      expect(isRelatedVolume(name)).toBe(false);
+    }
   });
 
   it("matches the Hub stack's volumes by their whole name, never a name that only contains one", () => {
@@ -631,10 +635,59 @@ describe('hub-cleanup-lib', () => {
       expect(commands).toContain('docker network rm ci-hermes_ci-marketplace_network');
       expect(commands).toContain('docker volume rm ci-hermes_ci-marketplace_data');
       expect(commands).toContain('docker image rm -f sha256:appimage');
-      // The Hub-stack project is excluded from the marketplace loop (handled by Hub teardown).
-      expect(commands.some((command) => command.startsWith('docker volume ls --filter label=com.docker.compose.project=ci-os-hub'))).toBe(false);
+      // The Hub-stack project is excluded from the marketplace loop (handled by Hub teardown, which lists its
+      // volumes once).
+      expect(commands.filter((command) => command.startsWith('docker volume ls --filter label=com.docker.compose.project=ci-os-hub '))).toHaveLength(
+        1,
+      );
       expect(commands.some((command) => command.startsWith('docker network ls --filter label=com.docker.compose.project=ci-os-hub'))).toBe(false);
     });
+  });
+
+  it("removes the Hub projects' volumes by label and the Hub stack's by name, and keeps lookalikes (cihub uninstall)", () => {
+    const commands: string[] = [];
+    const volumes: [string, string][] = [
+      ['ci_hub_pgdata', 'ci-hub'],
+      ['hub_tailscale_state', ''],
+      ['ci-hub_custom_data', 'ci-hub'],
+      ['ci-os-hub_pgdata', 'ci-os-hub'],
+      ['runtipi_media', 'runtipi'],
+      ['ci-hub-e2e_ci_hub_pgdata', 'ci-hub-e2e'],
+      // Not the Hub's: CI-OS's own staging Hub, a backup, a dated copy and another app's volume.
+      ['ci-os-hub-staging_ci_hub_pgdata', 'ci-os-hub-staging'],
+      ['ci_hub_pgdata_backup', ''],
+      ['ci-hub_ci_hub_pgdata_2026-11-24', ''],
+      ['myapp_ci_hub_app_data', 'myapp'],
+      ['ci-os-hub-docs-cache', ''],
+      // A volume plugin can choose a name like this. It never reaches a docker argv.
+      ['ci-hub_x;touch pwned', 'ci-hub'],
+    ];
+
+    withXdgHome('/home/dev', () => {
+      runHubCleanup({
+        cwd: '/home/dev/ci-hub',
+        homeDir: '/home/dev',
+        platform: 'linux',
+        execFile: (file, args) => {
+          commands.push([file, ...args].join(' '));
+          if (file === 'docker' && args[0] === 'volume' && args[1] === 'ls') {
+            const filter = args.find((arg) => arg.startsWith('label=com.docker.compose.project='));
+            const project = filter?.slice('label=com.docker.compose.project='.length);
+            const names = volumes.filter(([, label]) => project === undefined || label === project).map(([name]) => name);
+            return { ok: true, stdout: names.join('\n') };
+          }
+          return { ok: true, stdout: '' };
+        },
+        exists: () => false,
+        removeDir: () => {},
+        logger: { info: () => {}, warn: () => {}, error: () => {} },
+      });
+    });
+
+    const removed = commands.filter((command) => command.startsWith('docker volume rm ')).map((command) => command.slice('docker volume rm '.length));
+    expect(removed.sort()).toEqual(
+      ['ci_hub_pgdata', 'hub_tailscale_state', 'ci-hub_custom_data', 'ci-os-hub_pgdata', 'runtipi_media', 'ci-hub-e2e_ci_hub_pgdata'].sort(),
+    );
   });
 
   it('completes with no directory failures when cwd is within the user home', () => {

@@ -1,4 +1,4 @@
-import { requiresHubLoginOnPublicRoute, servedOpenPort } from '@ci-hub/common/schemas';
+import { requiresHubLogin, servedOpenPort } from '@ci-hub/common/schemas';
 import {
   buildPublicWebIdentity,
   normalizeStoredHostname,
@@ -90,7 +90,7 @@ export function guestPublicUrl(
 }
 
 // Defined in @ci-hub/common so the install form's edit dialog shows what this builder serves.
-export { requiresHubLoginOnPublicRoute };
+export { requiresHubLogin };
 
 /**
  * True when this app will actually EMIT a public identity into its compose env.

@@ -4,7 +4,7 @@ import {
   didPublicRoutingIdentityChange,
   guestPublicUrl,
   publishesCloudflarePublicRoute,
-  requiresHubLoginOnPublicRoute,
+  requiresHubLogin,
   resolveRoutingSubdomain,
 } from '../app-public-routing.helpers';
 
@@ -88,27 +88,16 @@ describe('app-public-routing.helpers', () => {
     });
   });
 
-  describe('requiresHubLoginOnPublicRoute', () => {
-    const edgeAuthOn = { exposable: true, hub_integration: { edge_auth: { default: true } } };
-
-    it('honours an explicit operator choice over the manifest and the port', () => {
-      expect(requiresHubLoginOnPublicRoute({ enableAuth: false, openPort: true }, edgeAuthOn)).toBe(false);
-      expect(requiresHubLoginOnPublicRoute({ enableAuth: true, openPort: false })).toBe(true);
+  describe('requiresHubLogin', () => {
+    it('honours an operator who switched it off, and nothing else', () => {
+      expect(requiresHubLogin({ enableAuth: false })).toBe(false);
+      expect(requiresHubLogin({ enableAuth: true })).toBe(true);
     });
 
-    it('falls back to the manifest edge-auth default for a stored form that never decided', () => {
-      // The 2026-09-28 OpenClaw shape: openPort false, no enableAuth key. The route must carry the
-      // login as soon as the manifest asks for it, without waiting for a settings re-save.
-      expect(requiresHubLoginOnPublicRoute({ openPort: false }, edgeAuthOn)).toBe(true);
-      expect(requiresHubLoginOnPublicRoute({ openPort: false }, { exposable: true })).toBe(false);
-      // A manifest default only counts for an exposable app.
-      expect(requiresHubLoginOnPublicRoute({ openPort: false }, { exposable: false, hub_integration: { edge_auth: { default: true } } })).toBe(false);
-    });
-
-    it('turns the login on for an open host port when neither the form nor a manifest decided', () => {
-      expect(requiresHubLoginOnPublicRoute({ openPort: true })).toBe(true);
-      expect(requiresHubLoginOnPublicRoute({ openPort: false })).toBe(false);
-      expect(requiresHubLoginOnPublicRoute({})).toBe(false);
+    it('is on for a stored form that never decided', () => {
+      // The 2026-09-28 OpenClaw shape: openPort false, no enableAuth key. It once had no login.
+      expect(requiresHubLogin({ openPort: false } as { enableAuth?: boolean })).toBe(true);
+      expect(requiresHubLogin({})).toBe(true);
     });
   });
 

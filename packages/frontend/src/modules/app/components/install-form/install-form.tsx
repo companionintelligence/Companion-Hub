@@ -33,7 +33,7 @@ import type { AvailableDomain } from '@ci-hub/common/types';
 import { buildPublicWebIdentity, sanitizeAppSubdomain, selectOfferedDomains, servedExposureMode } from '@ci-hub/common/types';
 import { resolveExposureMode } from '@/modules/onboarding/helpers/agent-onboarding';
 import { saveBlobAsFile, splitSavedPath } from '@/lib/save-file';
-import { requiresHubLoginOnPublicRoute, servedOpenPort } from '@ci-hub/common/schemas';
+import { hostPortStaysOnLoopback, MAX_PUBLIC_PATHS, publicPathSchema, requiresHubLogin, servedOpenPort } from '@ci-hub/common/schemas';
 import { isMcpOptionalOnlyInstall } from '@ci-hub/common/validation';
 import {
   type LastUsedInstallConfig,
@@ -141,6 +141,10 @@ export type FormValues = {
   customDomainExpected?: string;
   isVisibleOnGuestDashboard?: boolean;
   enableAuth: boolean;
+  /** Publish the app's host ports on every interface, with no Hub login (`publishesHostPortsOnNetwork`). */
+  portOnNetwork?: boolean;
+  /** Paths served without the Hub login. Edited as `publicPathsText`, which is never submitted. */
+  publicPaths?: string[];
   maxBackups?: number;
   cpuLimit?: string;
   [key: string]: unknown;
@@ -148,6 +152,12 @@ export type FormValues = {
 
 const EMPTY_AVAILABLE_DOMAINS: AvailableDomain[] = [];
 const EMPTY_CUSTOM_DOMAINS: AvailableCustomDomainsResponseDto['domains'] = [];
+
+/** The paths in what the public-paths field holds: its raw text while edited, a list once saved. */
+function publicPathList(value: unknown): string[] {
+  const parts = Array.isArray(value) ? value : typeof value === 'string' ? value.split(/[\s,]+/) : [];
+  return [...new Set(parts.map((part) => String(part).trim()).filter(Boolean))];
+}
 
 function buildTailscalePortHost(nodeFqdn?: string | null, port?: number | null): string | null {
   const cleanNodeFqdn = nodeFqdn?.trim();
@@ -364,39 +374,27 @@ export const InstallForm: React.FC<IProps> = ({
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(() => isMcpOptionalOnlyInstall(info));
 
   const mcpOptionalOnly = useMemo(() => isMcpOptionalOnlyInstall(info), [info]);
-  // What the enable-auth switch shows, and submits, when the form holds no value. A fresh install
-  // starts protected. An EDIT shows what the Hub actually serves for a stored form that never
-  // decided, by the rule the route builder uses (`requiresHubLoginOnPublicRoute`): the manifest's
-  // `hub_integration.edge_auth.default`, else the login while the host port is open, else off. The
-  // switch used to show `?? true` on an edit while the backend persisted `?? false` and built the
-  // route without the login, so an install that never decided looked protected and was not
-  // (OpenClaw, 2026-09-28). Then it showed the manifest default alone, which is OFF for a stored
-  // form on an open host port that the Hub serves WITH the login, and a save wrote that OFF over it.
-  //
-  // "Open host port" is `servedOpenPort`, not `Boolean(openPort)`: a stored form with NO `openPort`
-  // key (an API, MCP or onboarding install) is replayed through the queue schema, which defaults it
-  // to open, so the Hub serves it with the login. Reading the missing key as closed showed OFF for
-  // exactly the installs that never decided. An app with no public route (not exposable) has no
-  // login to show.
+  // What the enable-auth switch shows, and submits, when the form holds no value: on. The Hub puts
+  // its login in front of every route unless the operator switched it off (`requiresHubLogin`), so an
+  // install, and a stored form that never decided, both have it. Only a stored `false` shows off.
+  const enableAuthFallback = requiresHubLogin(undefined);
+  // The host port a stored form is served on: a form with no `openPort` key (an API, MCP or onboarding
+  // install) is replayed through the queue schema, which defaults it to open.
   const storedOpenPort = servedOpenPort(initialValues);
-  const enableAuthFallback = useMemo(
-    () => (isEdit ? Boolean(info.exposable) && requiresHubLoginOnPublicRoute({ openPort: storedOpenPort }, info) : true),
-    [isEdit, info, storedOpenPort],
-  );
   const hasAuthSwitch = Boolean(info.exposable && info.dynamic_config);
-  // The app goes on Public Web with the Hub login off. Simple mode shows the "Enable authentication"
-  // switch for this too, however the form got here (an import, a recently used config, the exposure
-  // buttons, or an app saved that way), so nobody puts an app on the internet without the login and
-  // without seeing it (#1984). The other modes don't count: the login guards the Public Web route only.
+  // The Hub login is off. Simple mode shows the "Enable authentication" switch for this too, however
+  // the form got here (an import, a recently used config, the exposure buttons, or an app saved that
+  // way), so nobody takes the login off an app without seeing it (#1984). Every mode counts: the login
+  // guards Public Web, the local network and the Private VPN alike.
   const watchEnableAuth = watch('enableAuth');
-  const loginOffOnPublicWeb = watchExposureMode === 'cloudflare' && (watchEnableAuth ?? enableAuthFallback) === false;
+  const loginOff = hasAuthSwitch && (watchEnableAuth ?? enableAuthFallback) === false;
   // Once shown that way the switch stays, so turning the login back on doesn't hide it.
   const [authSwitchRevealed, setAuthSwitchRevealed] = useState(false);
   useEffect(() => {
-    if (loginOffOnPublicWeb) setAuthSwitchRevealed(true);
-  }, [loginOffOnPublicWeb]);
+    if (loginOff) setAuthSwitchRevealed(true);
+  }, [loginOff]);
   // Whether the switch is drawn. An import reads this too, to tell when it leads somewhere nobody saw.
-  const authSwitchShown = hasAuthSwitch && (isAdvancedMode || showAdvancedSettings || loginOffOnPublicWeb || authSwitchRevealed);
+  const authSwitchShown = hasAuthSwitch && (isAdvancedMode || showAdvancedSettings || loginOff || authSwitchRevealed);
   const watchedFormValues = watch();
 
   // Client-side install-config export/import + "recently used" list (no backend involved — see
@@ -409,8 +407,8 @@ export const InstallForm: React.FC<IProps> = ({
   }, [info.id]);
 
   /**
-   * Sets the values. Returns true when they leave the app on Public Web with the Hub login off while
-   * the "Enable authentication" switch was hidden: the switch shows now (`loginOffOnPublicWeb`), and
+   * Sets the values. Returns true when they leave the app with the Hub login off while
+   * the "Enable authentication" switch was hidden: the switch shows now (`loginOff`), and
    * the caller says why in its toast (#1984).
    */
   const applyImportedValues = useCallback(
@@ -418,9 +416,7 @@ export const InstallForm: React.FC<IProps> = ({
       for (const [key, value] of Object.entries(values)) {
         setValue(key, value as string, { shouldDirty: true, shouldValidate: true });
       }
-      return (
-        hasAuthSwitch && !authSwitchShown && getValues('exposureMode') === 'cloudflare' && (getValues('enableAuth') ?? enableAuthFallback) === false
-      );
+      return hasAuthSwitch && !authSwitchShown && (getValues('enableAuth') ?? enableAuthFallback) === false;
     },
     [setValue, getValues, enableAuthFallback, hasAuthSwitch, authSwitchShown],
   );
@@ -680,11 +676,17 @@ export const InstallForm: React.FC<IProps> = ({
   // disabled. Derived during render: `dirtyFields` is mutated in place, so an effect keyed on it
   // alone never re-runs.
   // The routing name is what a field with nothing stored opened on, and a save sends none for it.
-  const hasEdits = Object.keys(dirtyFields).some(
-    (key) =>
+  // The paths box edits `publicPaths` as text, so it is compared as that list: an emptied box was
+  // compared with a stored `publicPathsText` that never exists, read as unchanged, and kept Update off.
+  const hasEdits = Object.keys(dirtyFields).some((key) => {
+    if (key === 'publicPathsText') {
+      return !isSameFormValue(publicPathList(watchedFormValues.publicPathsText), publicPathList(initialValues?.publicPaths));
+    }
+    return (
       !(key === 'localSubdomain' && holdsRoutingName(watchedFormValues.localSubdomain)) &&
-      !isSameFormValue(watchedFormValues[key], initialValues?.[key]),
-  );
+      !isSameFormValue(watchedFormValues[key], initialValues?.[key])
+    );
+  });
 
   useEffect(() => {
     onDirtyChange?.(hasEdits);
@@ -1147,33 +1149,133 @@ export const InstallForm: React.FC<IProps> = ({
     );
   };
 
-  const renderAdvancedExposureOptions = () => {
-    if (!authSwitchShown) return null;
+  const renderPortOnNetworkSwitch = () => {
+    // An app that must stay on loopback gets nothing from it (`hostPortStaysOnLoopback`).
+    if (hostPortStaysOnLoopback(info)) return null;
+    if (!(isAdvancedMode || showAdvancedSettings || watch('portOnNetwork') === true)) return null;
 
     return (
       <Controller
         control={control}
-        name="enableAuth"
-        defaultValue={enableAuthFallback}
+        name="portOnNetwork"
+        defaultValue={false}
         render={({ field: { onChange, value, ref, ...props } }) => (
           <Switch
             {...props}
             className="mb-3"
             ref={ref}
-            checked={value ?? enableAuthFallback}
+            checked={value ?? false}
             onCheckedChange={onChange}
             label={
               <>
-                {t('APP_INSTALL_FORM_ENABLE_AUTH')}
-                <HintMarker anchorClass="enable-auth-hint" hint={t('APP_INSTALL_FORM_ENABLE_AUTH_HINT')} />
-                {info.hub_integration?.edge_auth?.default ? (
-                  <span className="ms-2 text-sm text-muted-foreground">{t('APP_INSTALL_FORM_ENABLE_AUTH_RECOMMENDED')}</span>
-                ) : null}
+                {watchPort ? t('APP_INSTALL_FORM_PORT_ON_NETWORK_WITH_PORT', { port: watchPort }) : t('APP_INSTALL_FORM_PORT_ON_NETWORK')}
+                <HintMarker anchorClass="port-on-network-hint" hint={t('APP_INSTALL_FORM_PORT_ON_NETWORK_HINT')} />
               </>
             }
           />
         )}
       />
+    );
+  };
+
+  const suggestedPublicPaths = info.hub_integration?.edge_auth?.suggested_public_paths ?? [];
+
+  const renderPublicPathsField = () => {
+    // Only while the login is on: with it off, every path is already open.
+    if (!hasAuthSwitch || (watchEnableAuth ?? enableAuthFallback) === false) return null;
+    const current = publicPathList(watch('publicPathsText') ?? initialValues?.publicPaths);
+    if (!(isAdvancedMode || showAdvancedSettings || suggestedPublicPaths.length > 0 || current.length > 0)) return null;
+
+    return (
+      <div className="mb-3">
+        {suggestedPublicPaths.map((path) => (
+          <Switch
+            key={path}
+            className="mb-2"
+            checked={current.includes(path)}
+            onCheckedChange={(on) => {
+              const next = on ? [...current, path] : current.filter((existing) => existing !== path);
+              setValue('publicPathsText', next.join(', '), { shouldDirty: true, shouldValidate: true });
+            }}
+            label={
+              <>
+                {t('APP_INSTALL_FORM_PUBLIC_PATH_SUGGESTED', { path })}
+                <HintMarker anchorClass="public-path-suggested-hint" hint={t('APP_INSTALL_FORM_PUBLIC_PATH_SUGGESTED_HINT', { path })} />
+              </>
+            }
+          />
+        ))}
+        <Controller
+          control={control}
+          name="publicPathsText"
+          defaultValue={publicPathList(initialValues?.publicPaths).join(', ')}
+          rules={{
+            validate: (value) => {
+              const paths = publicPathList(value);
+              if (paths.length > MAX_PUBLIC_PATHS) return t('APP_INSTALL_FORM_PUBLIC_PATHS_TOO_MANY', { max: MAX_PUBLIC_PATHS });
+              const bad = paths.find((path) => !publicPathSchema.safeParse(path).success);
+              return bad ? t('APP_INSTALL_FORM_PUBLIC_PATHS_INVALID', { path: bad }) : true;
+            },
+          }}
+          render={({ field: { onChange, value, ref, ...props } }) => (
+            <Input
+              {...props}
+              ref={ref}
+              value={typeof value === 'string' ? value : ''}
+              onChange={(event) => onChange(event.target.value)}
+              placeholder="/webhook, /api/events"
+              label={
+                <>
+                  {t('APP_INSTALL_FORM_PUBLIC_PATHS')}
+                  <HintMarker anchorClass="public-paths-hint" hint={t('APP_INSTALL_FORM_PUBLIC_PATHS_HINT')} />
+                </>
+              }
+              error={typeof errors.publicPathsText?.message === 'string' ? errors.publicPathsText.message : undefined}
+            />
+          )}
+        />
+      </div>
+    );
+  };
+
+  const renderAdvancedExposureOptions = () => {
+    if (!authSwitchShown) {
+      return (
+        <>
+          {renderPublicPathsField()}
+          {renderPortOnNetworkSwitch()}
+        </>
+      );
+    }
+
+    return (
+      <>
+        <Controller
+          control={control}
+          name="enableAuth"
+          defaultValue={enableAuthFallback}
+          render={({ field: { onChange, value, ref, ...props } }) => (
+            <Switch
+              {...props}
+              className="mb-3"
+              ref={ref}
+              checked={value ?? enableAuthFallback}
+              onCheckedChange={onChange}
+              label={
+                <>
+                  {t('APP_INSTALL_FORM_ENABLE_AUTH')}
+                  <HintMarker anchorClass="enable-auth-hint" hint={t('APP_INSTALL_FORM_ENABLE_AUTH_HINT')} />
+                  {info.hub_integration?.edge_auth?.default ? (
+                    <span className="ms-2 text-sm text-muted-foreground">{t('APP_INSTALL_FORM_ENABLE_AUTH_RECOMMENDED')}</span>
+                  ) : null}
+                </>
+              }
+            />
+          )}
+        />
+        {renderPublicPathsField()}
+        {renderPortOnNetworkSwitch()}
+      </>
     );
   };
 
@@ -1188,11 +1290,15 @@ export const InstallForm: React.FC<IProps> = ({
         withFieldDefaults[field.env_variable] = field.default;
       }
     }
+    // The text the paths were typed in is not part of the form the Hub takes: it goes in as the list.
+    const { publicPathsText, ...withoutPathsText } = withFieldDefaults;
     const formValues = {
-      ...withFieldDefaults,
+      ...withoutPathsText,
       exposureMode,
       exposedLocal: info.exposable && exposureMode === 'cloudflare', // backward compat
       enableAuth: withFieldDefaults.enableAuth ?? enableAuthFallback,
+      // Edited as text; saved as the list it names. A form that never showed the field leaves it out.
+      ...(publicPathsText === undefined ? {} : { publicPaths: publicPathList(publicPathsText) }),
       port: withFieldDefaults.port || (info.port ? info.port.toString() : undefined),
     };
 

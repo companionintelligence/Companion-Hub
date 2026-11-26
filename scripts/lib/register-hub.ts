@@ -10,7 +10,8 @@ import { HubUnreachableError, resolveHubApiBase } from '../public-web-cli.js';
  */
 const PAIR_REQUEST_TIMEOUT_MS = 90_000;
 
-export type RegistrationPhase = 'unregistered' | 'paired' | 'provisioning' | 'locally_ready' | 'publicly_ready' | 'degraded';
+/** `starting`: the Hub has just started and hasn't read its registration back yet. */
+export type RegistrationPhase = 'starting' | 'unregistered' | 'paired' | 'provisioning' | 'locally_ready' | 'publicly_ready' | 'degraded';
 
 export type RegistrationStatusResponse = {
   phase: RegistrationPhase;

@@ -5,8 +5,9 @@ import { getHubBaseUrlSync, isMobileClient } from '@/lib/mobile-connection';
 import { handleSessionExpired } from '@/lib/session-expired';
 
 /**
- * How long "unpaired" has to last before an open page acts on it. A Hub that just started answers
- * `unregistered` once before it reads its registration back, so a single answer proves nothing.
+ * How long "unpaired" has to last before an open page acts on it. A Hub that has just started says
+ * `starting` until it has read its registration back (#2590), which this leaves alone. One
+ * `unregistered` still isn't enough to sign someone out on, so the check asks once more.
  */
 export const UNPAIRED_CONFIRM_MS = 3_000;
 

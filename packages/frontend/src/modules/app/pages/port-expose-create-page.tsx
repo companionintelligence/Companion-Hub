@@ -13,6 +13,8 @@ import type { CreatePortExposeAppDto } from '@/api-client/types.gen';
 import { Input } from '@/components/ui/Input/Input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
+import { Switch } from '@/components/ui/Switch';
+import { HintMarker } from '@/components/ui/field-hint/field-hint';
 import { useAppContext } from '@/context/app-context';
 import { asLegacyTranslate } from '@/lib/i18n/legacy-translate';
 import { resolveExposureMode } from '@/modules/onboarding/helpers/agent-onboarding';
@@ -42,6 +44,8 @@ type FormValues = {
   exposureMode: ExposureMode;
   localSubdomain?: string;
   publicDomain?: string;
+  /** The Hub login in front of the port: on unless switched off (`requiresHubLogin`). */
+  enableAuth: boolean;
 };
 
 const EMPTY_AVAILABLE_DOMAINS: AvailableDomain[] = [];
@@ -75,6 +79,7 @@ export default function PortExposeCreatePage() {
   } = useForm<FormValues>({
     defaultValues: {
       exposureMode: resolveExposureMode(undefined, { cloudflareAvailable, tailscaleAvailable }),
+      enableAuth: true,
     },
   });
 
@@ -288,10 +293,12 @@ export default function PortExposeCreatePage() {
       exposureMode,
       localSubdomain: exposureMode === 'cloudflare' ? sanitizeAppSubdomain(values.localSubdomain || slug) : undefined,
       publicDomain: exposureMode === 'cloudflare' ? publicDomain : undefined,
+      enableAuth: values.enableAuth !== false,
     };
 
-    // The Hub puts no sign-in in front of an exposed port, so going on Public web is asked first.
-    if (exposureMode === 'cloudflare') {
+    // Asked first when the port goes on Public web with the Hub login switched off: then anyone with
+    // the address reaches it.
+    if (exposureMode === 'cloudflare' && body.enableAuth === false) {
       setPublicPortBody(body);
       return;
     }
@@ -433,6 +440,25 @@ export default function PortExposeCreatePage() {
                   t={t}
                 />
               ) : null}
+
+              <Controller
+                control={control}
+                name="enableAuth"
+                render={({ field: { onChange, value, ref, ...props } }) => (
+                  <Switch
+                    {...props}
+                    ref={ref}
+                    checked={value !== false}
+                    onCheckedChange={onChange}
+                    label={
+                      <>
+                        {t('APP_INSTALL_FORM_ENABLE_AUTH')}
+                        <HintMarker anchorClass="port-expose-enable-auth-hint" hint={t('PORT_EXPOSE_ENABLE_AUTH_HINT')} />
+                      </>
+                    }
+                  />
+                )}
+              />
 
               {/* Cancel, then the action, on the right: the order the Hub's dialogs and the custom app form use. */}
               <div className="-mx-6 -mb-6 mt-2 flex flex-wrap items-center justify-end gap-2 border-t border-border px-6 py-3">

@@ -147,10 +147,26 @@ describe('PortExposeCreatePage', () => {
     expect(await screen.findByText('PORT_EXPOSE_PORT_INVALID')).toBeInTheDocument();
   });
 
-  describe('asks before a port goes on Public web, which has no Hub sign-in in front', () => {
+  // The login is on by default now, so the question is only for a port going on Public web with it off.
+  it('asks nothing before a port goes on Public web behind the Hub sign-in, and saves the login on', async () => {
+    renderPage();
+
+    fireEvent.change(screen.getByPlaceholderText('CUSTOM_APP_NAME_PLACEHOLDER'), { target: { value: 'Dev Server' } });
+    fireEvent.change(screen.getByPlaceholderText('PORT_EXPOSE_PORT_PLACEHOLDER'), { target: { value: '3000' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'PORT_EXPOSE_SUBMIT' }));
+    });
+
+    await waitFor(() => expect(createMutation.mutate).toHaveBeenCalledOnce());
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(createMutation.mutate.mock.calls[0]?.[0]).toMatchObject({ exposureMode: 'cloudflare', enableAuth: true });
+  });
+
+  describe('asks before a port goes on Public web with the Hub sign-in switched off', () => {
     const fillAndSubmit = async () => {
       fireEvent.change(screen.getByPlaceholderText('CUSTOM_APP_NAME_PLACEHOLDER'), { target: { value: 'Dev Server' } });
       fireEvent.change(screen.getByPlaceholderText('PORT_EXPOSE_PORT_PLACEHOLDER'), { target: { value: '3000' } });
+      fireEvent.click(screen.getByRole('switch', { name: /APP_INSTALL_FORM_ENABLE_AUTH/ }));
       await act(async () => {
         fireEvent.click(screen.getByRole('button', { name: 'PORT_EXPOSE_SUBMIT' }));
       });

@@ -7,11 +7,10 @@ import {
   type ServiceInput,
   serviceSchema,
   collectServiceSecurityViolations,
-  describeNestedBindMounts,
-  findNestedBindMounts,
   collectTraefikLabelIssues,
   isReservedHubLabel,
   LOOPBACK_HOST_PORT_INTERFACE,
+  publishesHostPortsOnNetwork,
 } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import * as yaml from 'yaml';
@@ -20,12 +19,14 @@ import {
   labelsOfRoutersLosingTheirChain,
   TraefikLabelsBuilder,
   withAppStartingPage,
+  withHubLoginOnEveryRouter,
   withHubMiddlewaresFirst,
   withSignInUnderFileProvider,
 } from './traefik-labels.builder';
 import { publishesHostPort } from '@/modules/apps/app-exposure.helpers';
-import { requiresHubLoginOnPublicRoute } from '@/modules/apps/app-public-routing.helpers';
+import { requiresHubLogin } from '@/modules/apps/app-public-routing.helpers';
 import { securityGrantsFor } from '@/modules/apps/security-grants';
+import { nestedManifestMountsRefusal } from '@/modules/docker/bind-mount-guard';
 import { isHubReservedServiceName } from '@/modules/network/network-constants';
 import { z } from 'zod';
 
@@ -73,11 +74,6 @@ export interface ComposeBuilderOptions {
    */
   loopbackHostPort?: boolean;
   /**
-   * The app's manifest, when the caller could resolve it. Only its `hub_integration.edge_auth.default`
-   * is read, by `requiresHubLoginOnPublicRoute`, for a stored form that never decided `enableAuth`.
-   */
-  manifest?: Parameters<typeof requiresHubLoginOnPublicRoute>[1];
-  /**
    * The operator's Default app CPU limit from Settings, for services the install form and the
    * manifest leave uncapped. Only that setting belongs here, never the resource allocator's
    * host-sized recommendation: see the limits in `buildService`.
@@ -102,6 +98,14 @@ export interface ComposeBuilderOptions {
    * produced keeps the volume of the path it came from, so the data is still there after the move.
    */
   dataMoves?: readonly DataMove[];
+  /**
+   * Whether a bind mount inside another folder the app can write to stops the build, as it does by
+   * default. Off only where the compose is written to stop or take down the version already
+   * installed (`prepareAppComposeDir`'s `forTeardown`): nothing starts from it. Every start checks
+   * the mounts again (`DockerService.assertBindMountsSafe`). An app installed from a listing that
+   * nested its folders can then still be stopped and updated to a version that keeps them apart.
+   */
+  refuseNestedBindMounts?: boolean;
 }
 
 /**
@@ -204,10 +208,10 @@ export class DockerComposeBuilder {
   private networkIsolationOptions?: NetworkIsolationOptions;
   private securityOptions?: string[];
   private loopbackHostPort = false;
-  private manifest?: Parameters<typeof requiresHubLoginOnPublicRoute>[1];
   private defaultAppCpuLimit?: string;
   private knownAppIds: string[] = [];
   private hostVariables?: string[];
+  private refuseNestedBindMounts = true;
 
   /**
    * @param posixPermissionsSupported Whether the app-data filesystem can carry POSIX
@@ -284,9 +288,6 @@ export class DockerComposeBuilder {
     if (options.loopbackHostPort !== undefined) {
       this.loopbackHostPort = options.loopbackHostPort;
     }
-    if (options.manifest !== undefined) {
-      this.manifest = options.manifest;
-    }
     if (options.defaultAppCpuLimit !== undefined) {
       this.defaultAppCpuLimit = options.defaultAppCpuLimit.trim() || undefined;
     }
@@ -298,6 +299,9 @@ export class DockerComposeBuilder {
     }
     if (options.dataMoves !== undefined) {
       this.volumePathsBeforeMoves = volumePathsBeforeMoves(options.dataMoves);
+    }
+    if (options.refuseNestedBindMounts !== undefined) {
+      this.refuseNestedBindMounts = options.refuseNestedBindMounts;
     }
     return this;
   }
@@ -525,7 +529,13 @@ export class DockerComposeBuilder {
       .setRestartPolicy(params.restart ?? 'unless-stopped')
       .setExtraHosts(extraHosts.length > 0 ? extraHosts : undefined)
       .setUlimits(params.ulimits)
-      .setPorts(params.addPorts)
+      // A listing's extra ports too: on 127.0.0.1 unless the operator opened the app's ports on the
+      // network. A listing's own `interface` only counts then, so it cannot widen what the app answers.
+      .setPorts(
+        publishesHostPortsOnNetwork(form, this.loopbackHostPort)
+          ? params.addPorts
+          : params.addPorts?.map((port) => ({ ...port, interface: LOOPBACK_HOST_PORT_INTERFACE })),
+      )
       .setNetworkMode(params.networkMode)
       .setCapAdd(params.capAdd)
       .setDeploy(deployConfig)
@@ -571,8 +581,8 @@ export class DockerComposeBuilder {
           // biome-ignore lint/suspicious/noTemplateCurlyInString: intended
           hostPort: '${APP_PORT}',
           // Without an interface Docker binds 0.0.0.0 and [::], reachable from the LAN and the
-          // tailnet with no Hub login in front of it.
-          interface: this.loopbackHostPort ? LOOPBACK_HOST_PORT_INTERFACE : undefined,
+          // tailnet with no Hub login in front of it: only when the operator asked for that.
+          interface: publishesHostPortsOnNetwork(form, this.loopbackHostPort) ? undefined : LOOPBACK_HOST_PORT_INTERFACE,
         });
       }
     }
@@ -587,7 +597,8 @@ export class DockerComposeBuilder {
         appId: appName,
         storeId: appStoreId,
         exposureMode: effectiveExposureMode as 'local' | 'cloudflare' | 'tailscale',
-        enableAuth: requiresHubLoginOnPublicRoute(form, this.manifest),
+        enableAuth: requiresHubLogin(form),
+        publicPaths: form.publicPaths,
         cloudflareOriginHostname: this.cloudflareOriginHostname,
         cloudflarePublicHostname: this.cloudflarePublicHostname,
         localDomain: this.localDomain,
@@ -596,6 +607,8 @@ export class DockerComposeBuilder {
 
       traefikBuilder.addCloudflareLabels();
       traefikBuilder.addTailscaleLabels();
+      // Last, so it sees every router the two above made.
+      traefikBuilder.addPublicPathRouters();
       traefikLabels = traefikBuilder.build();
     }
 
@@ -632,7 +645,15 @@ export class DockerComposeBuilder {
       .interpolateVariables(appId, localDomain)
       // After interpolation, so a manifest's `{{CI_HUB_APP_ID}}` router is the same router as ours.
       .transformLabels((labels) => withHubMiddlewaresFirst(labels, traefikLabels))
+      // First a listing's `ci-hub@docker` becomes `ci-hub@file` where it stood (CI-Engineering#510);
+      // then the login goes to the head of every router's chain, and onto routers that had none.
       .transformLabels(withSignInUnderFileProvider)
+      .transformLabels((labels) =>
+        withHubLoginOnEveryRouter(labels, traefikLabels, {
+          requireLogin: requiresHubLogin(form),
+          publicWeb: effectiveExposureMode === 'cloudflare',
+        }),
+      )
       .transformLabels(withAppStartingPage);
 
     return service.build();
@@ -692,19 +713,10 @@ export class DockerComposeBuilder {
     // One folder inside another the app can write to is a host escape (see bind-mount-nesting.ts in
     // @ci-hub/common). Refused here, with the manifest's own paths, so an install fails before it
     // starts anything; every start checks the expanded mounts again (DockerService.assertBindMountsSafe).
-    const nestedMounts = findNestedBindMounts(
-      fixedServices.flatMap((service) =>
-        (service.volumes ?? []).flatMap((volume) =>
-          volume.hostPath === undefined ? [] : [{ service: service.name, source: volume.hostPath, readOnly: volume.readOnly === true }],
-        ),
-      ),
-      { grantedHostPaths: securityGrantsFor(appUrn).hostPaths },
-    );
-    if (nestedMounts.length > 0) {
-      throw new Error(
-        `App "${extractAppUrn(appUrn).appName}" mounts a folder inside another folder it can write to: ${describeNestedBindMounts(nestedMounts)}. ` +
-          'Code in the app could replace the inner folder with a link to anywhere on this computer. Give each mount a folder of its own, side by side.',
-      );
+    // A compose written only to stop the installed version skips it (`refuseNestedBindMounts`).
+    const nestedRefusal = this.refuseNestedBindMounts ? nestedManifestMountsRefusal(fixedServices, appUrn) : null;
+    if (nestedRefusal) {
+      throw nestedRefusal;
     }
 
     const myServices = fixedServices.map((service) => this.buildService(service, form, appUrn, envFile, options));

@@ -12,7 +12,7 @@ exports[`DockerComposeBuilder > should be able to parse a compose.json file 1`] 
       UPLOAD_FOLDER: /var/uploads
       DATABASE_URL: mysql+pymysql://cihub:\${CTFD_MYSQL_DB_PASSWORD}@ctfd-db/ctfd
     ports:
-      - \${APP_PORT}:8000
+      - 127.0.0.1:\${APP_PORT}:8000
     volumes:
       - \${APP_DATA_DIR}/data/uploads:/var/log/CTFd
       - \${APP_DATA_DIR}/data/uploads:/var/uploads
@@ -133,7 +133,7 @@ exports[`DockerComposeBuilder > should correctly format a complex docker-compose
       PORT: 80
       SOME_VAR: value
     ports:
-      - 3400:9091
+      - 127.0.0.1:3400:9091
     volumes:
       - \${APP_DATA_DIR}/host/path:/container/path:ro
       - \${APP_DATA_DIR}/host/path2:/container/path2

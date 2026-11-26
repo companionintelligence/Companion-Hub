@@ -197,8 +197,10 @@ const GUARDED_ROUTE_TOOLS: Record<string, string[]> = {
   'SystemUpdateController.setAutoUpdates': ['hub_set_auto_updates'],
   'TailscaleController.connectWithAuthKey': [],
   'TailscaleController.disconnect': [],
+  'TailscaleController.setUpServices': [],
   'TailscaleController.startAuth': [],
   'TailscaleController.syncExposure': [],
+  'TailscaleController.turnOffServices': [],
   'TrainingController.cancelTrainingJob': [],
   'TrainingController.submitTrainingJob': [],
 };

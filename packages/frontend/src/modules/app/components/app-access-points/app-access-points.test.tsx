@@ -27,7 +27,9 @@ vi.mock('@tanstack/react-query', () => ({
     const data =
       queryKey[0] === 'tailscale-status'
         ? { installed: true, connected: true, servePermission: tailscaleStatus.servePermission }
-        : { entries: [{ listenPort: 3000 }, { listenPort: 8311 }] };
+        : queryKey[0] === 'tailscale-services'
+          ? { services: [] }
+          : { entries: [{ listenPort: 3000 }, { listenPort: 8311 }] };
     return { data: select ? select(data) : data };
   },
 }));
@@ -35,6 +37,7 @@ vi.mock('@tanstack/react-query', () => ({
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getServeStatusOptions: () => ({ queryKey: ['serve-status'], queryFn: vi.fn() }),
   getStatus3Options: () => ({ queryKey: ['tailscale-status'], queryFn: vi.fn() }),
+  getServicesStatusOptions: () => ({ queryKey: ['tailscale-services'], queryFn: vi.fn() }),
 }));
 
 vi.mock('@/context/app-context', () => ({
@@ -109,6 +112,28 @@ describe('buildAppAccessPoints', () => {
     expect(accessPoints[2]).toMatchObject({
       key: 'local',
       url: 'http://127.0.0.1:3000/login',
+    });
+  });
+
+  it("links a Private VPN app on its own Tailscale Service to that hostname, not a port of the Hub's", () => {
+    const accessPoints = buildAppAccessPoints({
+      app: { status: 'running', port: 3000, localSubdomain: 'openwebui', exposureMode: 'tailscale' } as any,
+      info,
+      sslPort: 443,
+      internalIp: '0.0.0.0',
+      cloudflareAvailable: false,
+      tailscaleAvailable: true,
+      tailscaleNodeFqdn: 'hub-tailscale-1.example.ts.net',
+      // The Hub node's HTTPS setting and its port listeners say nothing about a Service.
+      tailscaleHttpsEnabled: false,
+      tailscaleServedPorts: new Set(),
+      tailscaleServiceUrl: 'https://openwebui.example.ts.net/',
+    });
+
+    expect(accessPoints.find((point) => point.key === 'vpn')).toMatchObject({
+      url: 'https://openwebui.example.ts.net/login',
+      host: 'openwebui.example.ts.net',
+      state: 'active',
     });
   });
 
@@ -241,7 +266,7 @@ describe('buildAppAccessPoints', () => {
         exposureMode: 'tailscale',
         exposedLocal: true,
         openPort: false,
-        config: { exposureMode: 'tailscale', exposedLocal: true, openPort: false },
+        config: { exposureMode: 'tailscale', exposedLocal: true, openPort: false, portOnNetwork: true },
       } as any,
       info: { ...info, port: 8080, url_suffix: '' },
       sslPort: 443,
@@ -422,7 +447,15 @@ describe('buildAppAccessPoints', () => {
   });
 
   describe('Local access link', () => {
-    const localApp = { status: 'running', port: 18790, localSubdomain: 'hermes', exposureMode: 'local', openPort: true } as any;
+    // Opened on the network by the operator: only then does the port answer a LAN address at all.
+    const localApp = {
+      status: 'running',
+      port: 18790,
+      localSubdomain: 'hermes',
+      exposureMode: 'local',
+      openPort: true,
+      config: { portOnNetwork: true },
+    } as any;
     const base = {
       app: localApp,
       info: { ...info, url_suffix: '' },
@@ -519,7 +552,14 @@ describe('buildAppAccessPoints', () => {
   });
 
   describe('an app whose host port stays on loopback', () => {
-    const localInstall = { status: 'running', port: 18789, localSubdomain: 'openclaw', exposureMode: 'local', openPort: false } as any;
+    const localInstall = {
+      status: 'running',
+      port: 18789,
+      localSubdomain: 'openclaw',
+      exposureMode: 'local',
+      openPort: false,
+      config: { portOnNetwork: true },
+    } as any;
     const build = (appInfo: typeof info) =>
       buildAppAccessPoints({
         app: localInstall,
@@ -540,8 +580,22 @@ describe('buildAppAccessPoints', () => {
       }
     });
 
-    it('keeps the LAN address for every other app', () => {
+    it('keeps the LAN address for every other app whose port the operator opened on the network', () => {
       expect(build(info)[2]).toMatchObject({ key: 'local', url: 'http://192.168.1.9:18789/login' });
+    });
+
+    // Ports once answered the LAN by default; now only when the operator opened them.
+    it('offers loopback for an app whose port the operator did not open on the network', () => {
+      const accessPoints = buildAppAccessPoints({
+        app: { ...localInstall, config: {} },
+        info,
+        sslPort: 443,
+        internalIp: '192.168.1.9',
+        cloudflareAvailable: true,
+        tailscaleAvailable: false,
+      } as never);
+
+      expect(accessPoints[2]).toMatchObject({ key: 'local', url: 'http://127.0.0.1:18789/login' });
     });
   });
 });

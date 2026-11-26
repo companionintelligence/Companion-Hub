@@ -208,6 +208,15 @@ fn start_hub_inner(
         ),
     );
 
+    // The WSL engine answers only TLS clients with this user's certificate; one still on plain TCP is
+    // moved over first, so that waking it below already asks the listener it now has.
+    #[cfg(target_os = "windows")]
+    ensure_wsl_engine_tls(data_dir).map_err(|error| {
+        let message = format!("Couldn't secure the Docker engine in WSL: {error}");
+        let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+        with_view_logs_hint(message)
+    })?;
+
     // The WSL engine stops whenever WSL does. Start it before choosing an engine: with no engine
     // answering, the start would fail with Docker Desktop advice that doesn't apply.
     #[cfg(target_os = "windows")]

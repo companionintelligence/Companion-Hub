@@ -19,7 +19,13 @@ import {
   probeRegistrationDomain,
 } from '@/lib/registration-api';
 import type { RegistrationStatus } from '@/lib/registration-status';
-import { isRegistrationOperational, isRegistrationPending, requiresDeviceRegistration, requiresPortalRePairing } from '@/lib/registration-status';
+import {
+  isHubStarting,
+  isRegistrationOperational,
+  isRegistrationPending,
+  requiresDeviceRegistration,
+  requiresPortalRePairing,
+} from '@/lib/registration-status';
 import { cacheRegistrationStatus, clearRegistrationCache } from '@/lib/registration-cache';
 import { toast } from 'sonner';
 import { HintText, LabelWithHint } from '@/components/ui/field-hint/field-hint';
@@ -54,6 +60,12 @@ const HEADLESS_POLL_INTERVAL_MS = 5000; // Poll less often while waiting for ext
  * so a request that never settles would otherwise stop the poll for good.
  */
 const STATUS_CHECK_GIVE_UP_MS = 60_000;
+/**
+ * How long a Hub may say `starting` before the page says it is taking long. A paired Hub without its
+ * tunnel token file restarts the tunnel first, which takes seconds; a database that never answers keeps
+ * it there for good (#2590).
+ */
+const STARTING_SLOW_HINT_MS = 30_000;
 const DOMAIN_PROBE_INTERVAL_MS = 5000;
 const MAX_DOMAIN_PROBE_ATTEMPTS = 60;
 const REQUIRED_CONSECUTIVE_PROBES = 2;
@@ -232,6 +244,8 @@ export default function DeviceRegistrationPage() {
   const [redirectStatusKey, setRedirectStatusKey] = useState('DEVICE_REGISTRATION_SETTING_UP_HUB_ELLIPSIS');
   /** True while this page is checking the public URL after pairing, which can take several minutes. */
   const [followingPublicUrl, setFollowingPublicUrl] = useState(false);
+  /** The Hub has said `starting` for longer than STARTING_SLOW_HINT_MS. */
+  const [startingTooLong, setStartingTooLong] = useState(false);
 
   const pairingInputRef = useRef<HTMLInputElement>(null);
   const pendingPairTargetRef = useRef<PairingTarget | null>(null);
@@ -338,6 +352,11 @@ export default function DeviceRegistrationPage() {
       lastStatusFetchSucceededRef.current = true;
       setRegistrationStatus(status);
       setStatusError(null);
+
+      // The Hub hasn't read its registration back yet. Keep what is cached and ask again.
+      if (isHubStarting(status)) {
+        return status;
+      }
 
       if (requiresDeviceRegistration(status)) {
         completionStartedRef.current = false;
@@ -489,14 +508,15 @@ export default function DeviceRegistrationPage() {
     // blip: keep polling, and let Retry run a check immediately.
     const isUnregistered = registrationStatus?.phase === 'unregistered';
     const isPending = Boolean(registrationStatus && isRegistrationPending(registrationStatus));
+    const isStarting = Boolean(registrationStatus && isHubStarting(registrationStatus));
     const retryingUnknownStatus = !registrationStatus && statusError !== null;
-    const shouldPoll = isPending || isUnregistered || retryingUnknownStatus;
+    const shouldPoll = isPending || isStarting || isUnregistered || retryingUnknownStatus;
 
     if (!shouldPoll) {
       return;
     }
 
-    const intervalMs = isPending ? STATUS_POLL_INTERVAL_MS : HEADLESS_POLL_INTERVAL_MS;
+    const intervalMs = isPending || isStarting ? STATUS_POLL_INTERVAL_MS : HEADLESS_POLL_INTERVAL_MS;
     const intervalId = window.setInterval(() => {
       // A check that is still running answers for this one. Starting another on every tick stacked
       // requests onto a Hub that was slow to answer, and made it slower still.
@@ -511,6 +531,18 @@ export default function DeviceRegistrationPage() {
       window.clearInterval(intervalId);
     };
   }, [refreshRegistrationStatus, registrationStatus, statusError]);
+
+  const hubStarting = Boolean(registrationStatus && isHubStarting(registrationStatus));
+  useEffect(() => {
+    setStartingTooLong(false);
+    if (!hubStarting) {
+      return;
+    }
+    const timer = window.setTimeout(() => setStartingTooLong(true), STARTING_SLOW_HINT_MS);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [hubStarting]);
 
   useEffect(() => {
     if (
@@ -783,13 +815,16 @@ export default function DeviceRegistrationPage() {
   const loginUrl = driftChoice === 'restore' ? `${portalUrl}/home` : (registrationUrl ?? portalUrl);
   const signupUrl = buildPortalSignupUrl(portalUrl, deviceId);
 
-  if (isLoading) {
+  if (isLoading || hubStarting) {
     return (
       <div className="flex flex-col items-center gap-4 py-4 text-center">
         <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-primary" />
         <div>
           <h2 className="text-xl font-medium text-foreground">{t('DEVICE_REGISTRATION_CHECKING_STATUS')}</h2>
           <p className="mt-1 text-sm text-muted-foreground">{t('DEVICE_REGISTRATION_PLEASE_WAIT')}</p>
+          {/* A Hub that stopped answering while it was starting: say so rather than spin with no word. */}
+          {!isLoading && statusError ? <p className="mt-3 text-sm text-muted-foreground">{statusError}</p> : null}
+          {!isLoading && startingTooLong ? <p className="mt-3 text-sm text-muted-foreground">{t('DEVICE_REGISTRATION_HUB_STILL_STARTING')}</p> : null}
         </div>
       </div>
     );

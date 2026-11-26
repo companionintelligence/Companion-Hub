@@ -1124,6 +1124,80 @@
         ]
       }
     },
+    "/api/tailscale/services": {
+      "get": {
+        "operationId": "getServicesStatus",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TailscaleServicesStatusDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Whether Private VPN apps are on their own Tailscale Services, and if not why",
+        "tags": [
+          "Tailscale"
+        ]
+      },
+      "delete": {
+        "operationId": "turnOffServices",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TailscaleServicesStatusDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Stop using Tailscale Services: remove them and forget the saved OAuth client",
+        "tags": [
+          "Tailscale"
+        ]
+      }
+    },
+    "/api/tailscale/services/setup": {
+      "post": {
+        "operationId": "setUpServices",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TailscaleServicesSetupBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TailscaleServicesStatusDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Save a Tailscale OAuth client and sign the Hub's own node in as a tagged device",
+        "tags": [
+          "Tailscale"
+        ]
+      }
+    },
     "/api/system/load": {
       "get": {
         "operationId": "systemLoad",
@@ -8701,6 +8775,121 @@
         ],
         "additionalProperties": false
       },
+      "TailscaleServicesStatusDto": {
+        "type": "object",
+        "properties": {
+          "configured": {
+            "type": "boolean"
+          },
+          "savedInHub": {
+            "type": "boolean"
+          },
+          "tag": {
+            "type": "string"
+          },
+          "ready": {
+            "type": "boolean"
+          },
+          "blocker": {
+            "nullable": true,
+            "type": "string",
+            "enum": [
+              "not-set-up",
+              "node-not-running",
+              "node-signed-out",
+              "node-not-tagged",
+              "node-too-old",
+              "tailnet-unknown"
+            ]
+          },
+          "node": {
+            "type": "object",
+            "properties": {
+              "running": {
+                "type": "boolean"
+              },
+              "nodeFqdn": {
+                "nullable": true,
+                "type": "string"
+              },
+              "tags": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "version": {
+                "nullable": true,
+                "type": "string"
+              }
+            },
+            "required": [
+              "running",
+              "nodeFqdn",
+              "tags",
+              "version"
+            ],
+            "additionalProperties": false
+          },
+          "services": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "appUrn": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "appUrn",
+                "name",
+                "url"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "configured",
+          "savedInHub",
+          "tag",
+          "ready",
+          "blocker",
+          "node",
+          "services"
+        ],
+        "additionalProperties": false
+      },
+      "TailscaleServicesSetupBody": {
+        "type": "object",
+        "properties": {
+          "clientId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "clientSecret": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "tag": {
+            "type": "string",
+            "maxLength": 70
+          }
+        },
+        "required": [
+          "clientId",
+          "clientSecret"
+        ],
+        "additionalProperties": false
+      },
       "LoadDto": {
         "type": "object",
         "properties": {
@@ -10592,6 +10781,15 @@
                           "properties": {
                             "default": {
                               "type": "boolean"
+                            },
+                            "suggested_public_paths": {
+                              "maxItems": 16,
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "maxLength": 128,
+                                "pattern": "^(?:\\/[A-Za-z0-9._~-]+)+\\/?$"
+                              }
                             }
                           },
                           "additionalProperties": false
@@ -11956,6 +12154,15 @@
                           "properties": {
                             "default": {
                               "type": "boolean"
+                            },
+                            "suggested_public_paths": {
+                              "maxItems": 16,
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "maxLength": 128,
+                                "pattern": "^(?:\\/[A-Za-z0-9._~-]+)+\\/?$"
+                              }
                             }
                           },
                           "additionalProperties": false
@@ -13625,6 +13832,15 @@
                     "properties": {
                       "default": {
                         "type": "boolean"
+                      },
+                      "suggested_public_paths": {
+                        "maxItems": 16,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "maxLength": 128,
+                          "pattern": "^(?:\\/[A-Za-z0-9._~-]+)+\\/?$"
+                        }
                       }
                     },
                     "additionalProperties": false
@@ -15017,6 +15233,18 @@
           "openPort": {
             "type": "boolean"
           },
+          "portOnNetwork": {
+            "type": "boolean"
+          },
+          "publicPaths": {
+            "maxItems": 16,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 128,
+              "pattern": "^(?:\\/[A-Za-z0-9._~-]+)+\\/?$"
+            }
+          },
           "domain": {
             "type": "string"
           },
@@ -15626,6 +15854,9 @@
           "publicDomain": {
             "type": "string",
             "minLength": 1
+          },
+          "enableAuth": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -16896,6 +17127,9 @@
           "publicDomain": {
             "type": "string",
             "minLength": 1
+          },
+          "enableAuth": {
+            "type": "boolean"
           }
         },
         "required": [

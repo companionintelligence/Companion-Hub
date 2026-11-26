@@ -40,3 +40,30 @@ const tailscaleStatusSchema = z.object({
 });
 
 export class TailscaleStatusDto extends createZodDto(tailscaleStatusSchema) {}
+
+/** See `TailscaleServicesStatus` in `tailscale-services.service.ts`. */
+const tailscaleServicesStatusSchema = z.object({
+  configured: z.boolean(),
+  savedInHub: z.boolean(),
+  tag: z.string(),
+  ready: z.boolean(),
+  blocker: z.enum(['not-set-up', 'node-not-running', 'node-signed-out', 'node-not-tagged', 'node-too-old', 'tailnet-unknown']).nullable(),
+  node: z.object({
+    running: z.boolean(),
+    nodeFqdn: z.string().nullable(),
+    tags: z.array(z.string()),
+    version: z.string().nullable(),
+  }),
+  services: z.array(z.object({ appUrn: z.string(), name: z.string(), url: z.string() })),
+});
+
+export class TailscaleServicesStatusDto extends createZodDto(tailscaleServicesStatusSchema) {}
+
+/** `POST /tailscale/services/setup`: the operator's Tailscale OAuth client. */
+const tailscaleServicesSetupSchema = z.object({
+  clientId: z.string().trim().min(1).max(200),
+  clientSecret: z.string().trim().min(1).max(500),
+  tag: z.string().trim().max(70).optional(),
+});
+
+export class TailscaleServicesSetupBody extends createZodDto(tailscaleServicesSetupSchema) {}

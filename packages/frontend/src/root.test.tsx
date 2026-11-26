@@ -67,7 +67,8 @@ vi.mock('./api-client/client.gen', () => ({
   },
 }));
 
-const { clientLoader, ErrorBoundary, shouldRevalidate, shouldStartBootstrapRevalidation, ROOT_BOOTSTRAP_RUN_LIMIT_MS } = await import('./root');
+const { clientLoader, ErrorBoundary, shouldRevalidate, shouldStartBootstrapRevalidation, ROOT_BOOTSTRAP_RUN_LIMIT_MS, ROOT_STARTING_WAIT_MS } =
+  await import('./root');
 import { cacheRegistrationStatus } from './lib/registration-cache';
 import { resetMobileClientCacheForTests } from './lib/mobile-connection';
 
@@ -340,6 +341,54 @@ describe('root clientLoader registration gating', () => {
 
     expect(result).toBe(userResult);
     expect(userContext).toHaveBeenCalledTimes(1);
+  });
+
+  // #2590: a Hub that has just started says `starting` until it has read its registration back. Taking
+  // that for unpaired sent an open page, or one loaded as the Hub came up, to pairing.
+  it('waits on a Hub that is still starting instead of sending the page to pairing', async () => {
+    const userResult = {
+      data: {
+        isConfigured: true,
+        isLoggedIn: true,
+        isGuestDashboardEnabled: false,
+      },
+    };
+    resolveRegistrationStatus.mockResolvedValue(makeStatus('starting'));
+    userContext.mockResolvedValue(userResult);
+    vi.useFakeTimers();
+    try {
+      const load = async (path: string) => {
+        const result = clientLoader({ request: new Request(`http://localhost${path}`) } as never);
+        await vi.advanceTimersByTimeAsync(ROOT_STARTING_WAIT_MS + 1_000);
+        return result;
+      };
+
+      const homeResult = await load('/home');
+      const loginResult = await load('/login');
+      const pairingResult = await load('/device-registration');
+      const rootResult = (await load('/')) as Response;
+
+      expect(homeResult).toBe(userResult);
+      expect(loginResult).toBeNull();
+      expect(pairingResult).toBeNull();
+      expect(rootResult.headers.get('Location')).toBe('/login');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('asks a starting Hub again and sends the page to pairing once it says it is unpaired', async () => {
+    resolveRegistrationStatus.mockResolvedValueOnce(makeStatus('starting')).mockResolvedValue(makeStatus('unregistered'));
+    vi.useFakeTimers();
+    try {
+      const result = clientLoader({ request: new Request('http://localhost/') } as never);
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(((await result) as Response).headers.get('Location')).toBe('/device-registration');
+      expect(resolveRegistrationStatus).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('redirects away from device registration when the Hub is already operational', async () => {

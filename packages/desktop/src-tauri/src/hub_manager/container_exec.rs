@@ -1,6 +1,6 @@
 //! Running commands inside the Hub's containers, on an engine that loses `docker exec` output.
 //!
-//! Through the Docker engine the Windows desktop app runs in WSL2 (`tcp://127.0.0.1:2375`), the
+//! Through the Docker engine the Windows desktop app runs in WSL2 (`tcp://127.0.0.1:2376`, TLS), the
 //! docker CLI half-closes the exec stream at once when no stdin is attached, and WSL's localhost
 //! forwarding drops the rest. `docker exec` exits 0 whatever the command did, and what the command
 //! prints may not come back, or only its first part may: rabbitmqctl's banner without the error

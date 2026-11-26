@@ -14,6 +14,7 @@ import {
   type RegistrationCheckIn,
   type RegistrationPhaseReport,
   type RegistrationStatus,
+  type RegistrationStatusPhase,
 } from '@ci-hub/common/types';
 
 // Re-export shared types so existing imports from this module continue to work.
@@ -25,6 +26,7 @@ export {
   type RegistrationCheckIn,
   type RegistrationPhaseReport,
   type RegistrationStatus,
+  type RegistrationStatusPhase,
 };
 
 // ---------------------------------------------------------------------------
@@ -54,7 +56,7 @@ export function isLegalTransition(from: ProvisioningPhase, to: ProvisioningPhase
  * Returns true when the Hub is operational (usable by the owner).
  * Used by the registration guard and the backward-compat `registered` flag.
  */
-export function isOperational(phase: ProvisioningPhase): boolean {
+export function isOperational(phase: RegistrationStatusPhase): boolean {
   return phase === 'locally_ready' || phase === 'publicly_ready' || phase === 'degraded';
 }
 
@@ -88,14 +90,14 @@ export function sameDegradedReasons(a: readonly DegradedReason[], b: readonly De
 }
 
 /** Transient phases while a pairing request is being provisioned — not state drift. */
-export function isActiveRegistrationPhase(phase: ProvisioningPhase): boolean {
+export function isActiveRegistrationPhase(phase: RegistrationStatusPhase): boolean {
   return phase === 'paired' || phase === 'provisioning';
 }
 
 /**
  * Build a {@link RegistrationStatus} snapshot from phase + reasons.
  */
-export function buildRegistrationStatus(phase: ProvisioningPhase, degradedReasons: DegradedReason[] = []): RegistrationStatus {
+export function buildRegistrationStatus(phase: RegistrationStatusPhase, degradedReasons: DegradedReason[] = []): RegistrationStatus {
   return {
     phase,
     degradedReasons: phase === 'degraded' ? degradedReasons : [],

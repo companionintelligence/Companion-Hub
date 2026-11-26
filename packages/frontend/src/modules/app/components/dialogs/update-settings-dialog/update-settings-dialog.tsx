@@ -1,8 +1,8 @@
-import { updateAppConfigMutation } from '@/api-client/@tanstack/react-query.gen';
+import { getAppQueryKey, updateAppConfigMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import type { AppInfo, AppStatus } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type React from 'react';
 import { useEffect, useId, useState } from 'react';
 import { toast } from 'sonner';
@@ -23,6 +23,7 @@ const RUNNING_STATUSES: AppStatus[] = ['running', 'starting', 'restarting'];
 
 export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, onClose, status }) => {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
   const formId = useId();
   const [hasChanges, setHasChanges] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -40,11 +41,17 @@ export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, o
     onError: (e: TranslatableError) => {
       toast.error(t(e.message, e.intlParams ?? {}));
     },
-    onMutate: () => {
-      onClose();
-    },
-    onSuccess: () => {
+    /*
+     * Closes once the save has landed, not on the click. The Hub answers after it has written the
+     * settings and synced the app's public address, which took ~11 s on a running app; closing on the
+     * click left that time with nothing on screen, and settings reopened in it showed the old values.
+     * Update stays busy until then, and a failed save keeps the edits here to retry. The app is read
+     * again first, so settings reopened at once show what was saved.
+     */
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: getAppQueryKey({ path: { urn: info.urn } }) });
       toast.success(isRunning ? t('APP_UPDATE_CONFIG_SUCCESS') : t('APP_UPDATE_CONFIG_SUCCESS_STOPPED'));
+      onClose();
     },
   });
 

@@ -299,34 +299,73 @@ function DockerDesktopGuide({
  * Engine in WSL2). Docker Desktop needs a paid subscription for orgs with
  * >250 employees or >$10M revenue; these run the open-source Engine instead.
  * Desktop-app only — hidden in web clients, which cannot trigger installs.
+ *
+ * On Windows it does what the desktop's startup screen does (`packages/desktop/bootstrap`): Start
+ * Docker in WSL for an engine this PC already has set up, else the install. It used to always
+ * install. The Hub start that follows is this gate's own (it starts a Stopped Hub on Windows once
+ * Docker answers), so the panel only says it is coming; starting it here too would start it twice.
  */
-function EngineAlternativePanel({ platform, onInstallStart }: { platform: 'windows' | 'macos'; onInstallStart?: () => void }) {
+function EngineAlternativePanel({
+  platform,
+  onInstallStart,
+  wslEngineSetUp = false,
+}: {
+  platform: 'windows' | 'macos';
+  onInstallStart?: () => void;
+  wslEngineSetUp?: boolean;
+}) {
   const { t } = useTranslation();
-  const [installState, setInstallState] = useState<LinuxInstallState>('idle');
+  const [installState, setInstallState] = useState<AltEngineState>('idle');
   const [errorMessage, setErrorMessage] = useState<string>('');
+  const [action, setAction] = useState<'install' | 'start'>('install');
 
   const handleInstall = useCallback(async () => {
     const invoke = getTauriInvoke();
     if (!invoke) return;
     onInstallStart?.();
+    const start = platform === 'windows' && wslEngineSetUp;
+    setAction(start ? 'start' : 'install');
     setInstallState('installing');
     setErrorMessage('');
     try {
-      const result = (await invoke('install_docker_engine_alternative_command')) as {
-        state: 'completed' | 'needs_restart';
-        detail: string | null;
-      };
-      setInstallState(result.state === 'needs_restart' ? 'needs_restart' : 'completed');
+      if (start) {
+        await invoke('start_wsl_engine_command');
+      } else {
+        const result = (await invoke('install_docker_engine_alternative_command')) as {
+          state: 'completed' | 'needs_restart';
+          detail: string | null;
+        };
+        if (result.state === 'needs_restart') {
+          setInstallState('needs_restart');
+          return;
+        }
+      }
     } catch (err) {
-      setErrorMessage(getErrorMessage(err));
+      // The installer's own lead-in only repeats that it failed.
+      setErrorMessage(getErrorMessage(err).replace(/^WSL2 Docker Engine installation failed: /, ''));
       setInstallState('error');
+      return;
     }
-  }, [onInstallStart]);
+    setInstallState('completed');
+  }, [onInstallStart, platform, wslEngineSetUp]);
 
   if (!getTauriInvoke()) return null;
 
-  const installLabel = platform === 'macos' ? t('HUB_STATUS_DOCKER_ALT_INSTALL_MAC') : t('HUB_STATUS_DOCKER_ALT_INSTALL_WINDOWS');
-  const description = platform === 'macos' ? t('HUB_STATUS_DOCKER_ALT_DESC_MAC') : t('HUB_STATUS_DOCKER_ALT_DESC_WINDOWS');
+  const windows = platform === 'windows';
+  const starting = action === 'start';
+  const installLabel = windows
+    ? t(wslEngineSetUp ? 'HUB_STATUS_DOCKER_ALT_START_WINDOWS' : 'HUB_STATUS_DOCKER_ALT_INSTALL_WINDOWS')
+    : t('HUB_STATUS_DOCKER_ALT_INSTALL_MAC');
+  const description = windows
+    ? t(wslEngineSetUp ? 'HUB_STATUS_DOCKER_ALT_SET_UP_WINDOWS' : 'HUB_STATUS_DOCKER_ALT_DESC_WINDOWS')
+    : t('HUB_STATUS_DOCKER_ALT_DESC_MAC');
+  const runningText = windows
+    ? t(starting ? 'HUB_STATUS_DOCKER_ALT_STARTING_WINDOWS' : 'HUB_STATUS_DOCKER_ALT_INSTALLING_WINDOWS')
+    : t('HUB_STATUS_DOCKER_ALT_INSTALLING');
+  // Windows: the gate starts the Hub as Docker answers. macOS: its Start Hub screen follows.
+  const completedText = windows
+    ? t(starting ? 'HUB_STATUS_DOCKER_ALT_STARTED_STARTING_HUB_WINDOWS' : 'HUB_STATUS_DOCKER_ALT_INSTALLED_STARTING_HUB_WINDOWS')
+    : t('HUB_STATUS_DOCKER_ALT_SUCCESS');
 
   return (
     <SetupCard>
@@ -349,14 +388,24 @@ function EngineAlternativePanel({ platform, onInstallStart }: { platform: 'windo
         {installState === 'installing' && (
           <div className="flex items-center justify-center gap-2 rounded-md border border-border px-6 py-3 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-            {t('HUB_STATUS_DOCKER_ALT_INSTALLING')}
+            {runningText}
           </div>
         )}
 
-        {(installState === 'completed' || installState === 'needs_restart') && (
+        {installState === 'completed' && (
           <div className="flex items-start gap-3 rounded-md border border-success/30 bg-success/10 px-4 py-3 text-sm text-success">
             <CheckCircle className="h-4 w-4 shrink-0 mt-0.5" aria-hidden />
-            <span>{installState === 'needs_restart' ? t('HUB_STATUS_DOCKER_ALT_NEEDS_RESTART') : t('HUB_STATUS_DOCKER_ALT_SUCCESS')}</span>
+            <span>{completedText}</span>
+          </div>
+        )}
+
+        {installState === 'needs_restart' && (
+          // Nothing comes before the restart, so no button beside it.
+          <div className="flex items-start gap-3 rounded-md border border-success/30 bg-success/10 px-4 py-3 text-sm text-success">
+            <CheckCircle className="h-4 w-4 shrink-0 mt-0.5" aria-hidden />
+            <span>
+              <BoldRestartWindows text={t('HUB_STATUS_DOCKER_ALT_NEEDS_RESTART')} />
+            </span>
           </div>
         )}
 
@@ -377,6 +426,23 @@ function EngineAlternativePanel({ platform, onInstallStart }: { platform: 'windo
         )}
       </div>
     </SetupCard>
+  );
+}
+
+type AltEngineState = 'idle' | 'installing' | 'completed' | 'needs_restart' | 'error';
+
+const RESTART_WINDOWS = 'Restart Windows';
+
+/** The text, with "Restart Windows" in bold where it says so: the one step left, as on the startup screen. */
+function BoldRestartWindows({ text }: { text: string }) {
+  const at = text.indexOf(RESTART_WINDOWS);
+  if (at < 0) return <>{text}</>;
+  return (
+    <>
+      {text.slice(0, at)}
+      <strong className="font-semibold">{RESTART_WINDOWS}</strong>
+      {text.slice(at + RESTART_WINDOWS.length)}
+    </>
   );
 }
 
@@ -503,7 +569,7 @@ const WSL_ENGINE_STARTED_GRACE_MS = 15_000;
  * The desktop app starts the engine again by itself; Start engine does it now and says why when
  * it can't. Docker Desktop's steps don't apply to this engine, so they aren't offered.
  */
-function WslEngineGuide() {
+function WslEngineGuide({ cannotStart = null }: { cannotStart?: string | null }) {
   const { t } = useTranslation();
   const [startState, setStartState] = useState<WslEngineStartState>('idle');
   const [errorMessage, setErrorMessage] = useState('');
@@ -539,13 +605,17 @@ function WslEngineGuide() {
         <div className="space-y-4">
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-1">
-              <h2 className="text-xl font-medium text-foreground">{t('HUB_STATUS_WSL_ENGINE_STOPPED')}</h2>
-              <p className="text-sm text-muted-foreground">{t('HUB_STATUS_WSL_ENGINE_STOPPED_DESC')}</p>
+              {/* No hypervisor, so no engine to start: say what to change, and offer no Start that
+                  would wait for one (the desktop app words why, as on its startup screen). */}
+              <h2 className="text-xl font-medium text-foreground">
+                {cannotStart ? t('HUB_STATUS_WSL_ENGINE_CANT_START') : t('HUB_STATUS_WSL_ENGINE_STOPPED')}
+              </h2>
+              <p className="text-sm text-muted-foreground">{cannotStart ?? t('HUB_STATUS_WSL_ENGINE_STOPPED_DESC')}</p>
             </div>
             <Container className="h-10 w-10 shrink-0 text-primary" aria-hidden />
           </div>
 
-          {startState === 'starting' ? (
+          {cannotStart ? null : startState === 'starting' ? (
             <div className="flex items-center justify-center gap-2 rounded-md border border-border px-6 py-3 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
               {t('HUB_STATUS_WSL_ENGINE_STARTING')}
@@ -572,7 +642,26 @@ function WslEngineGuide() {
 /** Docker states Start engine can't fix: the Docker CLI is missing, or Docker refuses this user. */
 const NOT_AN_ENGINE_STOP: ReadonlySet<DockerAccessState> = new Set<DockerAccessState>(['not_installed', 'permission_denied']);
 
-type DockerRead = Pick<StartupProgress, 'docker_engine' | 'docker_access'>;
+type DockerRead = Pick<StartupProgress, 'docker_engine' | 'docker_access' | 'wsl_engine_set_up' | 'wsl_engine_cannot_start'>;
+
+/** The parts of a startup-progress read the gate keeps (an unchanged one doesn't re-render it). */
+function dockerReadOf(raw: StartupProgress): DockerRead {
+  return {
+    docker_engine: raw.docker_engine,
+    docker_access: raw.docker_access,
+    wsl_engine_set_up: raw.wsl_engine_set_up,
+    wsl_engine_cannot_start: raw.wsl_engine_cannot_start,
+  };
+}
+
+function sameDockerRead(a: DockerRead, b: DockerRead): boolean {
+  return (
+    a.docker_engine === b.docker_engine &&
+    a.docker_access === b.docker_access &&
+    a.wsl_engine_set_up === b.wsl_engine_set_up &&
+    a.wsl_engine_cannot_start === b.wsl_engine_cannot_start
+  );
+}
 
 interface DockerReadState {
   /** Null from an older shell that doesn't say. */
@@ -609,11 +698,11 @@ function useDockerRead(dockerUnavailable: boolean): DockerReadState {
       try {
         const raw = readStartupProgress(await invoke('get_startup_progress_command'));
         if (active) {
-          setProgress((previous) =>
-            raw && previous && previous.docker_engine === raw.docker_engine && previous.docker_access === raw.docker_access
-              ? previous
-              : raw && { docker_engine: raw.docker_engine, docker_access: raw.docker_access },
-          );
+          setProgress((previous) => {
+            if (!raw) return null;
+            const next = dockerReadOf(raw);
+            return previous && sameDockerRead(previous, next) ? previous : next;
+          });
         }
       } catch {
         // Keep what the last read said.
@@ -646,19 +735,38 @@ function isWslEngineStopped(read: DockerRead | null): boolean {
   return read?.docker_engine === 'wsl-engine' && !NOT_AN_ENGINE_STOP.has(read.docker_access);
 }
 
-function DockerInstallGuide({ wslEngineStopped, onInstallStart }: { wslEngineStopped: boolean; onInstallStart: () => void }) {
+/**
+ * Why the Hub's WSL engine can't start (no hypervisor), as the desktop app words it; null while it
+ * can, while the engine is another, and from an older shell that doesn't say.
+ */
+function wslEngineCannotStart(read: DockerRead | null): string | null {
+  return isWslEngineStopped(read) ? (read?.wsl_engine_cannot_start ?? null) : null;
+}
+
+function DockerInstallGuide({
+  wslEngineStopped,
+  onInstallStart,
+  wslEngineSetUp = false,
+  wslEngineCannotStartReason = null,
+}: {
+  wslEngineStopped: boolean;
+  onInstallStart: () => void;
+  /** This PC has the WSL engine set up while the Hub is saved on another (Start Docker in WSL). */
+  wslEngineSetUp?: boolean;
+  wslEngineCannotStartReason?: string | null;
+}) {
   const platform = detectPlatform();
 
   if (platform === 'windows') {
     if (wslEngineStopped) {
-      return <WslEngineGuide />;
+      return <WslEngineGuide cannotStart={wslEngineCannotStartReason} />;
     }
     const guide = getDockerDesktopGuideContent('windows', false);
     return (
       <DockerDesktopGuide
         {...guide}
         footer={guide.hint ? <p className="text-xs text-muted-foreground">{guide.hint}</p> : undefined}
-        alternative={<EngineAlternativePanel platform="windows" onInstallStart={onInstallStart} />}
+        alternative={<EngineAlternativePanel platform="windows" onInstallStart={onInstallStart} wslEngineSetUp={wslEngineSetUp} />}
       />
     );
   }
@@ -725,6 +833,10 @@ interface StartupProgress {
   hub_api_live: boolean;
   /** The engine the Hub runs on, such as `wsl-engine`; null from a shell that doesn't say. */
   docker_engine: string | null;
+  /** While Docker doesn't answer: this PC has the WSL engine set up, so Start beats an install. */
+  wsl_engine_set_up: boolean;
+  /** Why the Hub's WSL engine can't start (no hypervisor), when that is why Docker doesn't answer. */
+  wsl_engine_cannot_start: string | null;
 }
 
 const SERVICE_STATES: ReadonlySet<string> = new Set<ServiceState>(['pending', 'starting', 'ready', 'failed', 'stopped', 'not_started']);
@@ -790,6 +902,9 @@ function readStartupProgress(raw: unknown): StartupProgress | null {
     docker_access_detail: readDockerAccessDetail(payload.docker_access),
     hub_api_live: payload.hub_api_live === true,
     docker_engine: typeof payload.docker_engine === 'string' ? payload.docker_engine : null,
+    wsl_engine_set_up: payload.wsl_engine_set_up === true,
+    wsl_engine_cannot_start:
+      typeof payload.wsl_engine_cannot_start === 'string' && payload.wsl_engine_cannot_start.trim() !== '' ? payload.wsl_engine_cannot_start : null,
   };
 }
 
@@ -1141,9 +1256,9 @@ function StartupScreen({
   };
   let panelError = failedService ? null : errorText;
   if (view === 'docker_refused') {
-    // Docker's own words. Refused also covers Windows asking for elevation and an unreadable
-    // ~/.docker/config.json, where the docker group line doesn't fit. Only the first line, since
-    // `docker info` prints the client's version and plugins after the error.
+    // Docker's own words. Refused also covers Windows asking for elevation, where the docker group
+    // line doesn't fit. Only the first line, since `docker info` prints the client's version and
+    // plugins after the error.
     panelError =
       progress?.docker_access_detail
         ?.split('\n')
@@ -1792,7 +1907,12 @@ export function HubStatus({ children }: HubStatusProps) {
     <SetupPageShell title={gateTitle} className="bg-transparent" contentClassName="items-center" fitShortWindows>
       <div className="flex flex-col items-center gap-6 w-full max-w-3xl px-4">
         {status === 'DockerNotAvailable' && !dockerRefused ? (
-          <DockerInstallGuide wslEngineStopped={wslEngineStopped} onInstallStart={markDockerInstallRan} />
+          <DockerInstallGuide
+            wslEngineStopped={wslEngineStopped}
+            onInstallStart={markDockerInstallRan}
+            wslEngineSetUp={dockerRead?.wsl_engine_set_up === true}
+            wslEngineCannotStartReason={wslEngineCannotStart(dockerRead)}
+          />
         ) : (
           <StartupScreen
             status={screenStatus}

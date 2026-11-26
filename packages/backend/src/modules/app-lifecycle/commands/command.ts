@@ -109,7 +109,7 @@ export class AppLifecycleCommand {
   protected async ensureAppDir(
     appUrn: AppUrn,
     form: AppEventFormInput,
-    options?: { excludeSubnets?: string[]; createVolumeDirs?: boolean; applyDataMoves?: boolean },
+    options?: { excludeSubnets?: string[]; createVolumeDirs?: boolean; applyDataMoves?: boolean; forTeardown?: boolean },
   ): Promise<void> {
     return prepareAppComposeDir(this.moduleRef, this.docker, appUrn, form, options);
   }
