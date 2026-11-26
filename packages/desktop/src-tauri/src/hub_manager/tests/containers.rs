@@ -148,7 +148,7 @@ fn does_not_treat_pull_access_denied_as_oci_runtime_error() {
 
 /// An engine running the Hub, whose Node prints `node_arch` for `process.arch`.
 struct FakeHubEngine {
-    /// False acts like the WSL engine at `tcp://127.0.0.1:2375`: `docker exec` exits 0 whatever the
+    /// False acts like the WSL engine at `tcp://127.0.0.1:2376`: `docker exec` exits 0 whatever the
     /// command did and prints only `plain_exec_prints`.
     streams_output: bool,
     /// With `streams_output` false, the part of Node's answer a plain `docker exec` brings back, as

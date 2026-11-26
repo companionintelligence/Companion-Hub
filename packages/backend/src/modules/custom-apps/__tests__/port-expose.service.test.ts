@@ -87,6 +87,25 @@ describe('PortExposeService', () => {
     vi.clearAllMocks();
   });
 
+  describe('syncPortExposeRoutes', () => {
+    it('puts the Hub login on each route unless the app has it switched off', async () => {
+      appsRepository.getApps.mockResolvedValue([
+        { appName: 'on', appStoreSlug: '_user', status: 'running', exposureMode: 'local', localSubdomain: 'on', enableAuth: true, port: 8080 },
+        { appName: 'off', appStoreSlug: '_user', status: 'running', exposureMode: 'local', localSubdomain: 'off', enableAuth: false, port: 8081 },
+      ] as any);
+      appFilesManager.getInstalledAppInfo.mockImplementation(
+        async (urn) => ({ kind: PORT_EXPOSE_KIND, port: urn.startsWith('on') ? 8080 : 8081 }) as any,
+      );
+
+      await service.syncPortExposeRoutes();
+
+      expect(traefikConfigService.syncPortExposeRoutes).toHaveBeenCalledWith([
+        expect.objectContaining({ appUrn: 'on:_user', requireLogin: true }),
+        expect.objectContaining({ appUrn: 'off:_user', requireLogin: false }),
+      ]);
+    });
+  });
+
   describe('createPortExposeApp', () => {
     it('creates a local port-expose workload with kind in persisted config', async () => {
       const result = await service.createPortExposeApp({
@@ -104,9 +123,17 @@ describe('PortExposeService', () => {
             port: 8080,
             exposureMode: 'local',
           }),
+          // It once wrote `false`: the route had no Hub login.
+          enableAuth: true,
         }),
       );
       expect(traefikConfigService.syncPortExposeRoutes).toHaveBeenCalled();
+    });
+
+    it('creates it with the Hub login switched off when the operator asks', async () => {
+      await service.createPortExposeApp({ name: 'hook', port: 8080, exposureMode: 'local', enableAuth: false });
+
+      expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ enableAuth: false }));
     });
 
     it('derives a URL-safe slug from a free-form display name', async () => {
@@ -230,6 +257,18 @@ describe('PortExposeService', () => {
       );
       expect(traefikConfigService.syncPortExposeRoutes).toHaveBeenCalled();
       expect(exposureSyncService.syncExposurePublic).toHaveBeenCalled();
+    });
+
+    it('keeps the Hub login as it is when the update leaves it out', async () => {
+      await service.updatePortExposeApp('my-workload:_user', { port: 9090, exposureMode: 'local' });
+
+      expect(appsRepository.updateAppById.mock.calls.at(-1)?.[1]).not.toHaveProperty('enableAuth');
+    });
+
+    it('switches the Hub login off for a webhook that others call without signing in', async () => {
+      await service.updatePortExposeApp('my-workload:_user', { port: 9090, exposureMode: 'local', enableAuth: false });
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, expect.objectContaining({ enableAuth: false }));
     });
 
     it('throws when cloudflare mode is missing a subdomain', async () => {

@@ -560,7 +560,7 @@ describe('DockerComposeBuilder', () => {
     );
     const yamlObject = yaml.parse(compose);
 
-    expect(yamlObject.services.service.ports).toEqual(['${APP_PORT}:440']);
+    expect(yamlObject.services.service.ports).toEqual(['127.0.0.1:${APP_PORT}:440']);
   });
 
   describe('named volumes', () => {
@@ -788,7 +788,7 @@ describe('DockerComposeBuilder', () => {
     const yamlObject = yaml.parse(compose);
 
     expect(yamlObject.services.service.ports).toBeDefined();
-    expect(yamlObject.services.service.ports[0]).toBe('${APP_PORT}:440');
+    expect(yamlObject.services.service.ports[0]).toBe('127.0.0.1:${APP_PORT}:440');
   });
 
   it('should only add default labels when service is not main', async () => {
@@ -829,7 +829,7 @@ describe('DockerComposeBuilder', () => {
     const yamlObject = yaml.parse(compose);
 
     expect(yamlObject.services.service.ports).toBeDefined();
-    expect(yamlObject.services.service.ports[0]).toBe('${APP_PORT}:440');
+    expect(yamlObject.services.service.ports[0]).toBe('127.0.0.1:${APP_PORT}:440');
     expect(yamlObject.services.service.labels['traefik.enable']).toBeUndefined();
   });
 
@@ -877,10 +877,39 @@ describe('DockerComposeBuilder', () => {
       );
     });
 
-    it('binds every interface when the option is absent, as it always has', async () => {
+    // It once bound every interface by default: the LAN reached the app on its port with no login.
+    it('binds loopback when the operator did not open the port on the network', async () => {
       const yamlObject = yaml.parse(await composeBuilder.getDockerCompose([main], { exposureMode: 'local' }, urn, subnet));
 
+      expect(yamlObject.services.service.ports).toEqual(['127.0.0.1:${APP_PORT}:18789']);
+    });
+
+    it('binds every interface only when the operator opened the port on the network', async () => {
+      const yamlObject = yaml.parse(
+        await composeBuilder.getDockerCompose([main], { exposureMode: 'local', portOnNetwork: true } as never, urn, subnet),
+      );
+
       expect(yamlObject.services.service.ports).toEqual(['${APP_PORT}:18789']);
+    });
+
+    it('keeps an app that must stay on loopback there, even when the operator opened its port', async () => {
+      const builder = new DockerComposeBuilder('ci.computer', 'ci.lan', true, { loopbackHostPort: true });
+      const yamlObject = yaml.parse(await builder.getDockerCompose([main], { exposureMode: 'local', portOnNetwork: true } as never, urn, subnet));
+
+      expect(yamlObject.services.service.ports).toEqual(['127.0.0.1:${APP_PORT}:18789']);
+    });
+
+    it("puts a listing's extra ports on loopback too, whatever interface it named, until the operator opens them", async () => {
+      const withExtra = { ...main, addPorts: [{ containerPort: 53, hostPort: 53, udp: true, interface: '0.0.0.0' }] } as never;
+
+      const closed = yaml.parse(await composeBuilder.getDockerCompose([withExtra], { exposureMode: 'local' }, urn, subnet));
+      const opened = yaml.parse(
+        await composeBuilder.getDockerCompose([withExtra], { exposureMode: 'local', portOnNetwork: true } as never, urn, subnet),
+      );
+
+      expect(closed.services.service.ports.slice(0, -1).every((port: string) => port.startsWith('127.0.0.1:'))).toBe(true);
+      expect(closed.services.service.ports.join(' ')).not.toContain('0.0.0.0');
+      expect(opened.services.service.ports.join(' ')).toContain('0.0.0.0:53:53');
     });
   });
 
@@ -1073,12 +1102,13 @@ describe('DockerComposeBuilder — public web hostname in Traefik labels', () =>
       ]);
     });
 
-    it('does not change a route that served without a host port before', async () => {
+    // It once served with no login: a closed host port and no decision left the route open.
+    it('puts the login on a route with a closed host port whose form never decided', async () => {
       const middlewares = await routeMiddlewares({ exposureMode: 'cloudflare', openPort: false });
 
       expect(middlewares).toEqual([
-        'ci-hub-edge-headers@file,nginx-store-id-public-host@docker,ci-hub-app-starting@file',
-        'ci-hub-edge-headers@file,nginx-store-id-public-host@docker,ci-hub-app-starting@file',
+        'ci-hub-edge-headers@file,ci-hub@file,nginx-store-id-public-host@docker,ci-hub-app-starting@file',
+        'ci-hub-edge-headers@file,ci-hub@file,nginx-store-id-public-host@docker,ci-hub-app-starting@file',
       ]);
     });
   });
@@ -1183,11 +1213,32 @@ describe('DockerComposeBuilder — the app-starting page on every app router', (
     ]);
 
     expect(services.admin?.labels['traefik.http.routers.nginx-store-id-admin.rule']).toBe('Host(`${APP_DOMAIN}`) && PathPrefix(`/admin`)');
-    expect(services.admin?.labels['traefik.http.routers.nginx-store-id-admin.middlewares']).toBe('ci-hub-app-starting@file');
+    // Behind the edge strip and the Hub login like the app's own route: it once served /admin with neither.
+    expect(services.admin?.labels['traefik.http.routers.nginx-store-id-admin.middlewares']).toBe(
+      'ci-hub-edge-headers@file,ci-hub@file,ci-hub-app-starting@file',
+    );
   });
 
-  it('covers the Private VPN router too', async () => {
+  // After the Hub login, which this router once went without: it listens on `web`, which the LAN reaches.
+  it('covers the Private VPN router too, behind the Hub login', async () => {
     const services = await labelsFor({ exposureMode: 'tailscale' });
+
+    expect(services.nginx?.labels['traefik.http.routers.nginx-store-id-tailscale.middlewares']).toBe('ci-hub@file,ci-hub-app-starting@file');
+  });
+
+  it("gives the operator's paths a router of their own without the login, and keeps it on the rest", async () => {
+    const services = await labelsFor({ exposureMode: 'cloudflare', publicPaths: ['/webhook'] });
+    const labels = services.nginx?.labels ?? {};
+
+    expect(labels['traefik.http.routers.nginx-store-id-insecure-public-paths.rule']).toBe(
+      '(Host(`nginx-hub1-acme.ci.lan`)) && (Path(`/webhook`) || PathPrefix(`/webhook/`))',
+    );
+    expect(String(labels['traefik.http.routers.nginx-store-id-insecure-public-paths.middlewares']).split(',')).not.toContain('ci-hub@file');
+    expect(String(labels['traefik.http.routers.nginx-store-id-insecure.middlewares']).split(',')).toContain('ci-hub@file');
+  });
+
+  it('leaves the Private VPN router without the login only when the operator switched it off', async () => {
+    const services = await labelsFor({ exposureMode: 'tailscale', enableAuth: false });
 
     expect(services.nginx?.labels['traefik.http.routers.nginx-store-id-tailscale.middlewares']).toBe('ci-hub-app-starting@file');
   });
@@ -1543,7 +1594,10 @@ describe('DockerComposeBuilder — an app’s Traefik labels stay inside the app
       },
     );
 
-    expect(labels['traefik.http.routers.my-app-_user-files.middlewares']).toBe('my-app-_user-strip@docker,ci-hub@file,ci-hub-app-starting@file');
+    // At the head, behind the edge strip: a rewrite ahead of the login would change the request it sees.
+    expect(labels['traefik.http.routers.my-app-_user-files.middlewares']).toBe(
+      'ci-hub-edge-headers@file,ci-hub@file,my-app-_user-strip@docker,ci-hub-app-starting@file',
+    );
     expect(Object.values(labels).some((value) => String(value).includes('ci-hub@docker'))).toBe(false);
   });
 

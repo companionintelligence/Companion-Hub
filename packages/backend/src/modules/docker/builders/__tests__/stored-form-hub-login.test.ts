@@ -11,9 +11,9 @@ import { DockerComposeBuilder } from '../compose.builder';
  * settings dialog (`install-form.test.tsx`, "an edit shows and submits what the Hub serves") pins
  * the same table by hand on its side, so a change to either end fails one of the two.
  *
- * The case that mattered: a form with NO `openPort` key (an API, MCP or onboarding install). The
- * queue schema gives it `openPort: true`, so the route carries the Hub login unless something
- * decided otherwise, and a dialog that read the missing key as closed showed the switch OFF.
+ * The login is on unless the form says `enableAuth: false` (`requiresHubLogin`). It once also
+ * depended on the host port and the manifest's `edge_auth.default`, and a form that never decided
+ * could end up with none; the table below keeps those inputs varying to show they no longer count.
  */
 const urn = createAppUrn('openclaw', 'store-id');
 const subnet = '10.128.1.0/24';
@@ -23,8 +23,7 @@ type Tri = boolean | undefined;
 const tri: Tri[] = [true, false, undefined];
 
 /** The expectation, written out by hand and not derived from the code under test. */
-const loginExpected = (openPort: Tri, enableAuth: Tri, edgeDefault: Tri, exposable: boolean) =>
-  enableAuth ?? ((exposable && edgeDefault === true) || (openPort ?? true));
+const loginExpected = (enableAuth: Tri) => enableAuth !== false;
 
 const storedForm = (openPort: Tri, enableAuth: Tri) => ({
   exposureMode: 'cloudflare',
@@ -32,15 +31,10 @@ const storedForm = (openPort: Tri, enableAuth: Tri) => ({
   ...(enableAuth === undefined ? {} : { enableAuth }),
 });
 
-const routeMiddlewares = async (storedConfig: Record<string, unknown>, manifest: { exposable: boolean; edgeDefault: Tri }) => {
+const routeMiddlewares = async (storedConfig: Record<string, unknown>) => {
   // The queue consumer's own parse, as `start` replays the stored config.
   const event = appEventSchema.parse({ command: 'start', appUrn: urn, requestId: REQUEST_ID, form: storedConfig });
-  const builder = new DockerComposeBuilder('ci.computer', 'ci.lan', true, {
-    manifest: {
-      exposable: manifest.exposable,
-      ...(manifest.edgeDefault === undefined ? {} : { hub_integration: { edge_auth: { default: manifest.edgeDefault } } }),
-    } as never,
-  });
+  const builder = new DockerComposeBuilder('ci.computer', 'ci.lan', true, {});
   const result = await builder.getDockerCompose(
     [{ name: 'openclaw', image: 'openclaw:latest', internalPort: 18789, isMain: true }],
     event.form,
@@ -66,29 +60,13 @@ describe('the Hub login on the public route of a stored install form', () => {
     expect(servedOpenPort({ openPort: true })).toBe(true);
   });
 
-  const exposableCases = tri.flatMap((openPort) => tri.flatMap((enableAuth) => tri.map((edgeDefault) => ({ openPort, enableAuth, edgeDefault }))));
+  const cases = tri.flatMap((openPort) => tri.map((enableAuth) => ({ openPort, enableAuth })));
 
-  it.each(exposableCases)(
-    'exposable app, openPort $openPort, enableAuth $enableAuth, manifest edge default $edgeDefault',
-    async ({ openPort, enableAuth, edgeDefault }) => {
-      const middlewares = await routeMiddlewares(storedForm(openPort, enableAuth), { exposable: true, edgeDefault });
-      const withLogin = loginExpected(openPort, enableAuth, edgeDefault, true);
+  it.each(cases)('openPort $openPort, enableAuth $enableAuth', async ({ openPort, enableAuth }) => {
+    const middlewares = await routeMiddlewares(storedForm(openPort, enableAuth));
 
-      for (const chain of middlewares) {
-        expect(chain.split(',').includes('ci-hub@file')).toBe(withLogin);
-      }
-    },
-  );
-
-  it.each(tri.map((openPort) => ({ openPort })))(
-    'app that is not exposable, openPort $openPort: the manifest edge default never turns a login on',
-    async ({ openPort }) => {
-      const middlewares = await routeMiddlewares(storedForm(openPort, undefined), { exposable: false, edgeDefault: true });
-      const withLogin = loginExpected(openPort, undefined, true, false);
-
-      for (const chain of middlewares) {
-        expect(chain.split(',').includes('ci-hub@file')).toBe(withLogin);
-      }
-    },
-  );
+    for (const chain of middlewares) {
+      expect(chain.split(',').includes('ci-hub@file')).toBe(loginExpected(enableAuth));
+    }
+  });
 });

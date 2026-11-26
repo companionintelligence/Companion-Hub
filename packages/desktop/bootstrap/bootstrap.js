@@ -62,6 +62,7 @@
     keepWaiting: byId('keep-waiting'),
     tryAgain: byId('try-again'),
     installDocker: byId('install-docker'),
+    installWslEngine: byId('install-wsl-engine'),
     startEngine: byId('start-engine'),
     copyError: byId('copy-error'),
     openLogs: byId('open-logs'),
@@ -220,6 +221,14 @@
     installResult: null,
     /** True while Install Docker is running. The status note reports it, not the button label. */
     installRunning: false,
+    /** True while Install Docker Engine in WSL is running (it can take several minutes). */
+    wslInstallRunning: false,
+    /** What the running or last WSL button did: 'install', or 'start' for an engine set up already. */
+    wslAction: 'install',
+    /** Why the last WSL engine install didn't finish. */
+    wslInstallError: null,
+    /** Last install_docker_engine_alternative_command result, kept on screen like installResult. */
+    wslInstallResult: null,
     /** True while Start engine waits for Docker in WSL. */
     engineStarting: false,
     /** Why the last Start engine didn't get Docker in WSL answering. */
@@ -421,6 +430,20 @@
     return node;
   }
 
+  const RESTART_WINDOWS = 'Restart Windows';
+
+  /** The Docker screen's note, with "Restart Windows" in bold where it says so: the one step left. */
+  function dockerNoteNode(text) {
+    const node = textNode('p', '', 'rows-note');
+    const at = text.indexOf(RESTART_WINDOWS);
+    if (at < 0) {
+      node.textContent = text;
+    } else {
+      node.append(text.slice(0, at), textNode('strong', RESTART_WINDOWS), text.slice(at + RESTART_WINDOWS.length));
+    }
+    return node;
+  }
+
   /**
    * One SVG, so the dot stays centred in the ring. Drawn as a bordered box with an inset
    * dot, each box was rounded to device pixels separately, and with desktop text scaling
@@ -447,7 +470,33 @@
     return progress?.docker_engine === 'wsl-engine' && (state === 'daemon_unavailable' || state === 'error');
   }
 
-  function dockerHead(access, wslEngineDown) {
+  /**
+   * Install Docker Engine in WSL is on offer: on Windows, while Docker is missing, stopped or not
+   * answering, and the Hub isn't on a WSL engine that only needs starting (Start engine does that).
+   * It used to be offered only inside the Hub, which can't open until Docker runs, so someone with
+   * Docker Desktop stopped or uninstalled was told to open Docker Desktop and given no other way.
+   */
+  function offersWslEngine(view, progress) {
+    if (osType() !== 'windows' || view !== 'docker' || wslEngineStopped(progress)) return false;
+    // Installed and the Hub starting on it: the page shows Docker as missing until its next poll.
+    if (page.wslInstallResult?.state === 'completed' && page.commandRunning) return false;
+    // Waiting on a Windows restart, which a second click can't replace: the button looked as if
+    // the install hadn't finished.
+    if (page.wslInstallResult?.state === 'needs_restart') return false;
+    const state = progress?.docker_access?.state;
+    return state === 'not_installed' || state === 'daemon_unavailable' || state === 'error';
+  }
+
+  /**
+   * Why the Hub's WSL engine can't start (no hypervisor: virtualization off in the firmware, or
+   * Virtual Machine Platform off), from the app. Start engine can't help then.
+   */
+  function wslEngineCannotStart(progress) {
+    return wslEngineStopped(progress) && typeof progress?.wsl_engine_cannot_start === 'string' ? progress.wsl_engine_cannot_start : '';
+  }
+
+  function dockerHead(access, wslEngineDown, cannotStart) {
+    if (cannotStart) return ["Docker in WSL can't start", cannotStart];
     if (wslEngineDown) {
       return [
         "Docker in WSL isn't running",
@@ -466,7 +515,9 @@
           "Docker isn't running",
           osType() === 'linux'
             ? 'Companion Hub runs on Docker. Start Docker and Companion Hub will carry on from here.'
-            : 'Companion Hub runs on Docker. Open Docker Desktop and Companion Hub will carry on from here.',
+            : osType() === 'windows'
+              ? 'Companion Hub runs on Docker. Open Docker Desktop, or use Docker Engine in WSL instead, and Companion Hub will carry on from here.'
+              : 'Companion Hub runs on Docker. Open Docker Desktop and Companion Hub will carry on from here.',
         ];
     }
   }
@@ -476,7 +527,7 @@
       case 'checking':
         return ['Checking Companion Hub', "Looking at Docker and the Hub's services…"];
       case 'docker':
-        return dockerHead(progress.docker_access, wslEngineStopped(progress));
+        return dockerHead(progress.docker_access, wslEngineStopped(progress), wslEngineCannotStart(progress));
       case 'failed': {
         const failed = failedService(core);
         if (!failed) return ["Companion Hub couldn't start", "Companion Hub won't retry on its own until you try again."];
@@ -579,6 +630,23 @@
   function dockerStatusNote() {
     if (engineStarting()) return 'Starting the engine… This can take a minute.';
     if (page.engineError) return `The engine didn't start. ${page.engineError}`;
+    const starting = page.wslAction === 'start';
+    if (page.wslInstallRunning) {
+      return starting
+        ? 'Starting Docker in WSL… This can take a minute.'
+        : 'Installing Docker Engine in WSL… This can take several minutes, and Windows may ask for permission.';
+    }
+    if (page.wslInstallError) {
+      return starting
+        ? `Docker in WSL didn't start. ${page.wslInstallError}`
+        : `Docker Engine in WSL didn't finish installing. ${page.wslInstallError}`;
+    }
+    if (page.wslInstallResult?.state === 'completed' && page.commandRunning) {
+      return starting ? 'Docker in WSL is running. Starting Companion Hub…' : 'Docker Engine is installed in WSL. Starting Companion Hub…';
+    }
+    if (page.wslInstallResult?.state === 'needs_restart') {
+      return page.wslInstallResult.detail || 'WSL is turned on. Restart Windows, then open Companion Hub to finish setting up Docker.';
+    }
     if (page.installRunning) return 'Installing Docker… This can take a few minutes.';
     if (page.installError) return `Docker install didn't finish. ${page.installError}`;
     const result = page.installResult;
@@ -588,6 +656,11 @@
     }
     if (result?.state === 'completed') {
       return result.detail || 'Docker is installed. Companion Hub will carry on once Docker is running.';
+    }
+    if (offersWslEngine(page.view, page.progress)) {
+      return page.progress?.wsl_engine_set_up
+        ? 'Docker Engine is already set up in WSL on this PC. Companion Hub can start it and run on it instead of Docker Desktop.'
+        : 'No Docker Desktop needed: Companion Hub can install the free, open-source Docker Engine inside WSL and start itself on it.';
     }
     return 'Service status shows here once Docker is running.';
   }
@@ -618,7 +691,7 @@
     } else {
       el.rows.dataset.signature = signature;
       if (view === 'docker') {
-        el.rows.replaceChildren(textNode('p', dockerStatusNote(), 'rows-note'));
+        el.rows.replaceChildren(dockerNoteNode(dockerStatusNote()));
       } else {
         const stuck = view === 'stuck' ? stuckService(core) : null;
         el.rows.replaceChildren(...core.map((service) => serviceRow(service, service === stuck)));
@@ -667,25 +740,53 @@
     el.command.hidden = !command;
     el.commandText.textContent = command;
 
+    // Nothing comes before a Windows restart: no install button or "Waiting for Docker…" spinner
+    // to pull the eye away from the line that says to restart.
+    const restartNeeded = page.wslInstallResult?.state === 'needs_restart' || page.installResult?.state === 'needs_restart';
     const shown = {
       startHub: view === 'stopped',
       restartHub: view === 'stuck',
       keepWaiting: view === 'stuck',
       tryAgain: view === 'failed',
-      installDocker: view === 'docker' && access === 'not_installed',
-      startEngine: view === 'docker' && wslEngineStopped(progress),
+      installDocker: view === 'docker' && access === 'not_installed' && !restartNeeded,
+      installWslEngine: offersWslEngine(view, progress) && !restartNeeded,
+      startEngine: view === 'docker' && wslEngineStopped(progress) && !wslEngineCannotStart(progress),
       copyError: view === 'failed' && Boolean(errorToCopy(progress)),
       openLogs: view === 'stuck' || view === 'failed' || (view === 'starting' && elapsed > LOGS_LINK_AFTER_S),
     };
     for (const [key, visible] of Object.entries(shown)) el[key].hidden = !visible;
-    el.installDocker.disabled = page.installRunning;
+    // One install at a time: both change which Docker the Hub ends up on.
+    const installing = page.installRunning || page.wslInstallRunning;
+    el.installDocker.disabled = installing;
     el.installDocker.setAttribute('aria-busy', page.installRunning ? 'true' : 'false');
+    el.installWslEngine.disabled = installing;
+    el.installWslEngine.setAttribute('aria-busy', page.wslInstallRunning ? 'true' : 'false');
+    // Second to Install Docker when both show; the way forward when it is the only one.
+    el.installWslEngine.className = shown.installDocker ? 'btn btn-outline' : 'btn btn-primary';
+    setText(el.installWslEngine, progress?.wsl_engine_set_up ? 'Start Docker in WSL' : 'Install Docker Engine in WSL');
     const starting = engineStarting();
     el.startEngine.disabled = starting;
     el.startEngine.setAttribute('aria-busy', starting ? 'true' : 'false');
     el.actions.hidden = !Object.values(shown).some(Boolean);
     el.aside.hidden = view !== 'stopped';
-    el.waiting.hidden = view !== 'docker';
+    el.waiting.hidden = !waitingForDocker(view, access, shown, restartNeeded);
+  }
+
+  /**
+   * The "Waiting for Docker…" spinner, only while the page is waiting on something it can't hurry:
+   * an install or engine start running, or Docker installed and not up yet. Not while one of the
+   * Docker buttons can be clicked: the moving spinner read as something already under way rather
+   * than a choice left to make. Not with Docker missing and nothing running, nor while a restart
+   * is needed. (Linux's command to copy is no such choice: Docker is installed, and the page waits
+   * for it to start.)
+   */
+  function waitingForDocker(view, access, shown, restartNeeded) {
+    // Nothing to wait for while the engine can't start: the person has to change a setting first.
+    if (view !== 'docker' || restartNeeded || wslEngineCannotStart(page.progress)) return false;
+    const clickable = ['installDocker', 'installWslEngine', 'startEngine'].some((key) => shown[key] && !el[key].disabled);
+    if (clickable) return false;
+    const running = page.installRunning || page.wslInstallRunning || engineStarting();
+    return running || access !== 'not_installed';
   }
 
   function giveUpChecking(now) {
@@ -841,6 +942,47 @@
     }
   }
 
+  /**
+   * Install Docker Engine in WSL (the same installer the Hub's own Docker panel runs), then start
+   * the Hub on it. The launch skipped its auto-start while Docker was missing, and nothing else
+   * starts the Hub when Docker appears later, so without the start this page would stop at Start Hub.
+   */
+  async function installWslEngine() {
+    if (page.installRunning || page.wslInstallRunning) return;
+    // An engine set up already only needs choosing and starting (start_wsl_engine_command), which
+    // is quicker and says what it does; the installer would skip every step and get there too.
+    const start = Boolean(page.progress?.wsl_engine_set_up);
+    page.wslAction = start ? 'start' : 'install';
+    page.wslInstallRunning = true;
+    page.wslInstallError = null;
+    page.wslInstallResult = null;
+    render();
+    let installed = false;
+    try {
+      if (start) {
+        await invoke('start_wsl_engine_command');
+        page.wslInstallResult = { state: 'completed', detail: null };
+      } else {
+        page.wslInstallResult = await invoke('install_docker_engine_alternative_command');
+      }
+      installed = page.wslInstallResult?.state === 'completed';
+    } catch (error) {
+      // The note already says it didn't finish; the installer's own lead-in would say it twice.
+      const why = (errorText(error) || '').replace(/^WSL2 Docker Engine installation failed: /, '');
+      page.wslInstallError = why || 'Try again, or open Docker Desktop instead.';
+    } finally {
+      page.wslInstallRunning = false;
+      render();
+    }
+    if (installed) {
+      // Ask again first, so the page sees Docker answering and moves to the start screen.
+      await pollProgress();
+      await runStart('start_hub_command');
+    } else {
+      void pollProgress();
+    }
+  }
+
   /** Start the Docker engine inside WSL now, rather than wait for the app's next try. */
   async function startEngine() {
     if (engineStarting()) return;
@@ -904,6 +1046,7 @@
     render();
   });
   el.installDocker.addEventListener('click', () => void installDocker());
+  el.installWslEngine.addEventListener('click', () => void installWslEngine());
   el.startEngine.addEventListener('click', () => void startEngine());
   el.copyError.addEventListener('click', () => void copyText(errorToCopy(page.progress), el.copyError));
   el.commandCopy.addEventListener('click', () => void copyText(el.commandText.textContent, el.commandCopy));

@@ -34,17 +34,40 @@ pub(crate) fn docker_server_os_and_kernel() -> Option<(String, String)> {
 /// Docker Desktop). Docker Desktop manages the container GPU runtime itself; a native
 /// engine needs nvidia-container-toolkit installed inside the distro. Mirrors the
 /// backend's `detectContainerHostKind` and the CLI's `detectWindowsDockerBackend`.
+///
+/// The Hub's own engine decides first: a Hub on the WSL engine is on it whatever the Docker CLI's
+/// context says. Docker Desktop sets that context back to `desktop-linux` when it starts, and the
+/// app moves a Hub whose saved engine stopped answering to the WSL engine without touching it. Seen
+/// on Windows: the Hub ran on the WSL engine with the context on `desktop-linux`, and this said
+/// no, so Install Ollama would have put it on Windows, out of the Hub's reach, and the GPU runtime
+/// and Ollama setup in the distro would be skipped. Not the other way round: Start Docker in WSL
+/// and the TLS move rely on the context while the Hub is still saved on Docker Desktop.
 #[cfg(windows)]
 pub(crate) fn is_wsl_engine_docker_backend() -> bool {
-    if let Some(context) = current_docker_context_name(None) {
-        if context == DOCKER_CONTEXT_WSL_ENGINE {
-            return true;
-        }
-        if context == "desktop-linux" || context == "desktop-windows" {
-            return false;
-        }
+    wsl_engine_backend_from(
+        hub_docker_engine(&get_hub_data_dir()).map(|engine| engine.kind),
+        current_docker_context_name(None).as_deref(),
+        docker_server_os_and_kernel,
+    )
+}
+
+/// [`is_wsl_engine_docker_backend`]'s answer from what it reads: the Hub's engine, the Docker CLI's
+/// current context, and the daemon's own OS and kernel (asked only when the first two don't say).
+#[cfg(any(test, windows))]
+pub(crate) fn wsl_engine_backend_from(
+    hub_engine: Option<crate::docker_engine::DockerEngineKind>,
+    cli_context: Option<&str>,
+    server_os_and_kernel: impl FnOnce() -> Option<(String, String)>,
+) -> bool {
+    if hub_engine == Some(crate::docker_engine::DockerEngineKind::WslEngine) {
+        return true;
     }
-    if let Some((os, kernel)) = docker_server_os_and_kernel() {
+    match cli_context {
+        Some(crate::docker_engine::DOCKER_CONTEXT_WSL_ENGINE) => return true,
+        Some("desktop-linux" | "desktop-windows") => return false,
+        _ => {}
+    }
+    if let Some((os, kernel)) = server_os_and_kernel() {
         if os.contains("Docker Desktop") {
             return false;
         }
@@ -119,9 +142,8 @@ fn wsl_listing_names(listing: &str) -> impl Iterator<Item = &str> {
         .map(|line| line.trim().trim_matches('\u{0}').trim())
 }
 
-/// Run a shell script as root inside a WSL2 distro (`wsl -d <distro> -u root -- sh -lc`).
-/// Returns whether it exited 0. WSL_UTF8 keeps wsl.exe output UTF-8; CREATE_NO_WINDOW
-/// suppresses a console flash. Shared by the GPU and Ollama in-distro setup steps.
+/// Run a shell script as root inside a WSL2 distro (`wsl -d <distro> -u root -e sh -lc`).
+/// Returns whether it exited 0. Shared by the GPU and Ollama in-distro setup steps.
 #[cfg(windows)]
 pub(crate) fn run_wsl_root_script(distro: &str, script: &str) -> bool {
     run_wsl_root_script_capture(distro, script).is_some()
@@ -131,15 +153,65 @@ pub(crate) fn run_wsl_root_script(distro: &str, script: &str) -> bool {
 /// failure), so callers can branch on a marker the script echoes.
 #[cfg(windows)]
 pub(crate) fn run_wsl_root_script_capture(distro: &str, script: &str) -> Option<String> {
+    run_wsl_root_script_output(distro, script).ok()
+}
+
+/// Runs `script` as root in `distro` and returns its trimmed stdout, or why it failed: the exit code
+/// and the end of stderr.
+///
+/// `-e` matters. After `--`, wsl.exe hands the rest of its command line to the distro's shell to
+/// parse again, so a script's `$dir` became empty and its quotes were eaten before `sh` saw it (the
+/// TLS script died with "mkdir: cannot create directory ''"). With `-e`, wsl.exe execs `sh` with the
+/// arguments as Windows splits them, and Rust quotes them by those same rules, so the script arrives
+/// byte for byte. Stdin stays free, so an `apt-get` in the script can't read the rest of it.
+/// WSL_UTF8 keeps wsl.exe output UTF-8; CREATE_NO_WINDOW suppresses a console flash.
+#[cfg(windows)]
+pub(crate) fn run_wsl_root_script_output(distro: &str, script: &str) -> Result<String, String> {
     let mut command = Command::new("wsl.exe");
     command.creation_flags(CREATE_NO_WINDOW);
     command.env("WSL_UTF8", "1");
-    command.args(["-d", distro, "-u", "root", "--", "sh", "-lc", script]);
-    let output = command.output().ok()?;
-    if !output.status.success() {
-        return None;
+    command.args(["-d", distro, "-u", "root", "-e", "sh", "-lc", script]);
+    let output = command
+        .output()
+        .map_err(|error| format!("Couldn't run wsl.exe: {error}"))?;
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
     }
-    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    Err(wsl_script_failure(
+        output.status.code(),
+        &String::from_utf8_lossy(&output.stdout),
+        &String::from_utf8_lossy(&output.stderr),
+    ))
+}
+
+/// The last `max` characters of `text`, trimmed.
+#[cfg(any(test, windows))]
+fn text_tail(text: &str, max: usize) -> String {
+    let chars: Vec<char> = text.trim().chars().collect();
+    chars[chars.len().saturating_sub(max)..].iter().collect()
+}
+
+/// Why a script run in WSL failed: its exit code and the ends of its stderr and stdout, which say
+/// what failed (a long apt or openssl transcript before them is mostly noise). Stdout too, since
+/// some scripts report their error there: Ollama's install.sh printed "This version requires zstd"
+/// on stdout, and its stderr ended at the step before.
+#[cfg(any(test, windows))]
+pub(crate) fn wsl_script_failure(code: Option<i32>, stdout: &str, stderr: &str) -> String {
+    let code = code.map_or_else(
+        || "It ended without an exit code.".to_string(),
+        |code| format!("It exited with code {code}."),
+    );
+    let stderr = text_tail(stderr, 600);
+    let stdout = text_tail(stdout, 300);
+    let mut message = if stderr.is_empty() {
+        format!("{code} It printed nothing on stderr.")
+    } else {
+        format!("{code} stderr: {stderr}")
+    };
+    if !stdout.is_empty() {
+        message.push_str(&format!(" stdout ends: {stdout}"));
+    }
+    message
 }
 
 /// Install + configure nvidia-container-toolkit inside the WSL2 distro so the native
@@ -219,7 +291,7 @@ pub(crate) fn ensure_wsl_engine_gpu_runtime(data_dir: &Path) {
     }
     // The setup script restarts the in-distro dockerd so it loads the nvidia runtime.
     // That briefly drops the daemon the host CLI — and the imminent, UN-RETRIED
-    // database bootstrap (start_database_first) — reach over tcp://127.0.0.1:2375.
+    // database bootstrap (start_database_first) — reach over tcp://127.0.0.1:2376 (TLS).
     // Wait for the daemon to be responsive again before returning so that bootstrap
     // never hits a mid-restart daemon; report whether the runtime registered.
     const READINESS_WAIT_SECS: u32 = 20;
@@ -563,10 +635,12 @@ fn start_wsl_keepalive(data_dir: &Path, force: bool) -> Result<KeepaliveStart, S
 #[cfg(windows)]
 pub(crate) fn revive_wsl_engine(data_dir: &Path) {
     static REVIVING: AtomicBool = AtomicBool::new(false);
+    // No hypervisor, no distro to start: wsl.exe would fail at once, every poll.
     if !wsl_engine_should_revive(
         hub_docker_engine(data_dir).as_ref(),
         is_user_stopped(data_dir),
-    ) || REVIVING.swap(true, Ordering::SeqCst)
+    ) || !hypervisor_running()
+        || REVIVING.swap(true, Ordering::SeqCst)
     {
         return;
     }
@@ -579,6 +653,88 @@ pub(crate) fn revive_wsl_engine(data_dir: &Path) {
         });
     if spawned.is_err() {
         REVIVING.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Why the WSL engine can't start, when Windows' hypervisor isn't running: from whether the
+/// processor reports virtualization on in the firmware (`None` when Windows couldn't say).
+#[cfg(any(test, windows))]
+pub(crate) fn wsl_cannot_start_reason(firmware_virtualization: Option<bool>) -> String {
+    const FIRMWARE: &str = "virtualization is turned off in this PC's firmware (BIOS or UEFI settings). Turn on the setting called Virtualization Technology, VT-x or SVM there, restart, then try again.";
+    const FEATURE: &str = "Turn on Virtual Machine Platform: run wsl.exe --install --no-distribution as administrator, then restart Windows.";
+    match firmware_virtualization {
+        Some(false) => format!("WSL can't start because {FIRMWARE}"),
+        Some(true) => format!("WSL can't start because Windows' hypervisor isn't running. {FEATURE}"),
+        None => format!(
+            "WSL can't start because Windows' hypervisor isn't running. Either {FIRMWARE} Or: {FEATURE}"
+        ),
+    }
+}
+
+/// `VirtualizationFirmwareEnabled` for the processors, from Windows. Read while no hypervisor runs,
+/// which is when Windows reports it (with one running, it reads as off). A PowerShell call, so only
+/// on the way to a failure.
+#[cfg(windows)]
+fn firmware_virtualization_enabled() -> Option<bool> {
+    let mut command = Command::new("powershell.exe");
+    command.creation_flags(CREATE_NO_WINDOW);
+    let output = command
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "(Get-CimInstance Win32_Processor).VirtualizationFirmwareEnabled",
+        ])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let answers: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    (!answers.is_empty()).then(|| {
+        answers
+            .iter()
+            .any(|answer| answer.eq_ignore_ascii_case("True"))
+    })
+}
+
+/// Why the WSL engine can't start right now, or `None` when Windows' hypervisor runs. A Hub on the
+/// WSL engine whose PC lost virtualization (turned off in the BIOS, or reset by a BIOS update)
+/// waited 90 seconds at every launch, Hub start and Start engine for an engine that couldn't
+/// start, and was told only that Docker didn't answer. Cheap when it runs (one CPU instruction).
+#[cfg(windows)]
+pub(crate) fn wsl_engine_cannot_start() -> Option<String> {
+    if hypervisor_running() {
+        return None;
+    }
+    Some(wsl_cannot_start_reason(firmware_virtualization_enabled()))
+}
+
+/// [`wsl_engine_cannot_start`] for the startup screen's polls, for a Hub on the WSL engine only,
+/// and remembered for 30 seconds: on the failing path it runs PowerShell, and the screen asks every
+/// few seconds.
+pub fn wsl_engine_cannot_start_for_screen(data_dir: &Path) -> Option<String> {
+    #[cfg(windows)]
+    {
+        hub_wsl_engine(data_dir)?;
+        static LAST: Mutex<Option<(Instant, Option<String>)>> = Mutex::new(None);
+        let mut last = lock_recovering(&LAST);
+        if let Some((asked_at, why)) = last.as_ref() {
+            if asked_at.elapsed() < Duration::from_secs(30) {
+                return why.clone();
+            }
+        }
+        let why = wsl_engine_cannot_start();
+        *last = Some((Instant::now(), why.clone()));
+        why
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = data_dir;
+        None
     }
 }
 
@@ -635,6 +791,9 @@ fn start_wsl_engine_and_wait(
         forget_docker_access_check();
         return Ok(());
     }
+    if let Some(why) = wsl_engine_cannot_start() {
+        return Err(why);
+    }
     let deadline = Instant::now() + WSL_ENGINE_START_TIMEOUT;
     let outcome = wait_for_wsl_engine(
         probe,
@@ -665,11 +824,31 @@ fn start_wsl_engine_and_wait(
     }
 }
 
+/// The WSL engine a start or launch wakes: the one the Hub is pinned to or saved, or else, while the
+/// Docker CLI's current context is the WSL engine's, that engine at its TLS listener. The second is
+/// a Hub whose saved engine is still Docker Desktop on a machine now pointed at the WSL engine, as
+/// an engine install that stopped after Docker came up leaves it: nothing woke that engine, so
+/// nothing answered, so no start ran to finish its move to TLS.
+#[cfg(windows)]
+fn wsl_engine_to_wake(data_dir: &Path) -> Option<crate::docker_engine::PinnedDockerEngine> {
+    hub_wsl_engine(data_dir).or_else(|| {
+        let context = crate::docker_engine::current_docker_context_name(None)?;
+        (context == DOCKER_CONTEXT_WSL_ENGINE).then(|| crate::docker_engine::PinnedDockerEngine {
+            docker_host: crate::docker_engine::WSL_ENGINE_TLS_HOST.to_string(),
+            kind: crate::docker_engine::DockerEngineKind::WslEngine,
+            context_name: Some(context),
+            reason: "the Docker CLI's current context is the WSL engine".to_string(),
+            selected_at: 0,
+            path_style: Some("wsl-mnt".to_string()),
+        })
+    })
+}
+
 /// For a Hub start: when the Hub runs on the WSL engine and Docker doesn't answer, start the
 /// engine and wait for it. `Ok` when there was nothing to do too.
 #[cfg(windows)]
 pub(crate) fn wake_wsl_engine_for_start(data_dir: &Path) -> Result<(), String> {
-    let Some(engine) = hub_wsl_engine(data_dir) else {
+    let Some(engine) = wsl_engine_to_wake(data_dir) else {
         return Ok(());
     };
     if crate::docker_engine::probe_docker_host_reachable(&engine.docker_host) {
@@ -686,12 +865,65 @@ pub(crate) fn wake_wsl_engine_for_start(data_dir: &Path) -> Result<(), String> {
     start_wsl_engine_and_wait(data_dir, &engine)
 }
 
-/// Start engine on the startup screens: start the WSL engine and wait until Docker answers.
+/// Start Docker in WSL for a Hub still saved on another engine (Docker Desktop, stopped), when an
+/// earlier install set the WSL engine up: points the Docker CLI's context at it, then moves it to
+/// TLS if it isn't (which starts the distro, and needs the context first: it acts only for a WSL
+/// engine Hub or context). Returns the engine to wake.
+#[cfg(windows)]
+fn choose_set_up_wsl_engine(
+    data_dir: &Path,
+) -> Result<crate::docker_engine::PinnedDockerEngine, String> {
+    if !wsl_engine_set_up() {
+        return Err(
+            "This Hub doesn't run on the Docker engine inside WSL, and none is set up on this PC."
+                .to_string(),
+        );
+    }
+    let cert_dir = crate::docker_engine::wsl_engine_client_cert_dir().ok_or_else(|| {
+        "There is no user profile with the WSL engine's client certificate.".to_string()
+    })?;
+    point_wsl_engine_context_at_tls(&cert_dir)?;
+    let output = docker_command()
+        .env_remove("DOCKER_HOST")
+        .args(["context", "use", DOCKER_CONTEXT_WSL_ENGINE])
+        .output()
+        .map_err(|error| format!("Couldn't run docker context use: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "docker context use {DOCKER_CONTEXT_WSL_ENGINE} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let _ = append_desktop_log_for(
+        data_dir,
+        "wsl.engine",
+        "Start Docker in WSL: the Docker CLI uses the WSL engine this PC has set up again.",
+    );
+    // Keepalive first. The TLS check boots the distro to run its script, and WSL stops a distro
+    // nothing holds open a few seconds after: seen on Windows, the Hub came up on it, the distro
+    // stopped nine seconds later, and the wait below had to start it again, restarting the Hub.
+    start_wsl_keepalive(data_dir, true)?;
+    ensure_wsl_engine_tls(data_dir)?;
+    wsl_engine_to_wake(data_dir)
+        .ok_or_else(|| "The Docker CLI didn't switch to the WSL engine.".to_string())
+}
+
+/// Start engine on the startup screens: start the WSL engine and wait until Docker answers. For a
+/// Hub saved on another engine, the WSL engine this PC has set up (Start Docker in WSL).
 pub fn start_wsl_engine(data_dir: &Path) -> Result<String, String> {
     #[cfg(windows)]
     {
-        let engine = hub_wsl_engine(data_dir)
-            .ok_or_else(|| "This Hub doesn't run on the Docker engine inside WSL.".to_string())?;
+        let engine = match hub_wsl_engine(data_dir) {
+            Some(engine) => engine,
+            None => choose_set_up_wsl_engine(data_dir).map_err(|error| {
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "wsl.engine",
+                    &format!("Start Docker in WSL: {error}"),
+                );
+                error
+            })?,
+        };
         start_wsl_engine_and_wait(data_dir, &engine).map_err(|error| {
             let _ =
                 append_desktop_log_for(data_dir, "wsl.engine", &format!("Start engine: {error}"));
@@ -728,12 +960,42 @@ pub(crate) fn docker_answers_for_launch(
     Ok(docker_answers())
 }
 
+/// [`ensure_wsl_engine_tls`] at launch. Not fatal here; a Hub start runs it again and reports it.
+#[cfg(windows)]
+fn secure_wsl_engine_at_launch(data_dir: &Path) {
+    match ensure_wsl_engine_tls(data_dir) {
+        Ok(()) => forget_docker_access_check(),
+        Err(error) => {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "setup",
+                &format!("Couldn't secure the Docker engine in WSL: {error}"),
+            );
+        }
+    }
+}
+
 /// Whether Docker answers for the auto-start at launch. A Hub on the WSL engine whose engine
 /// stopped gets it started first, and waited for, unless the user stopped the Hub.
 pub fn docker_available_for_launch(data_dir: &Path) -> bool {
     #[cfg(windows)]
     {
+        // An engine an earlier build set up still answers anyone on plain TCP. Its Hub is running,
+        // so this launch starts nothing, and only a start moved it to TLS: without this it stayed
+        // open (the logon keepalive brings it back on 2375 after every reboot). Seen on Windows.
+        // Even with the Hub stopped by the user, since the engine answers anyway.
+        if wsl_engine_to_wake(data_dir).is_some()
+            && crate::docker_engine::probe_docker_host_reachable(
+                crate::docker_engine::WSL_ENGINE_LEGACY_HOST,
+            )
+        {
+            secure_wsl_engine_at_launch(data_dir);
+        }
         docker_answers_for_launch(is_docker_available, is_user_stopped(data_dir), || {
+            // Before the wake: an engine left half moved to TLS answers on neither port, and the
+            // Hub start that would finish the move (it runs this too) never runs while nothing
+            // answers.
+            secure_wsl_engine_at_launch(data_dir);
             wake_wsl_engine_for_start(data_dir)
         })
         .unwrap_or_else(|error| {

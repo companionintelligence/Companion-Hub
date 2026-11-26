@@ -75,7 +75,7 @@ export const app = pgTable(
     exposureMode: varchar('exposure_mode').default('local').notNull(), // 'local' | 'cloudflare' | 'tailscale'
     appStoreSlug: varchar('app_store_slug').notNull(),
     appName: varchar('app_name').notNull(),
-    enableAuth: boolean('enable_auth').default(false).notNull(),
+    enableAuth: boolean('enable_auth').default(true).notNull(),
     subnet: varchar().unique(),
     localSubdomain: varchar('local_subdomain'),
     publicDomain: varchar('public_domain'),

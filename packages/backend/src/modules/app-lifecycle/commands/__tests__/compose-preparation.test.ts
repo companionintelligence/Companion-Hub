@@ -939,10 +939,8 @@ describe('prepareAppComposeDir', () => {
 
       await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm({ exposureMode: 'local' }));
 
-      // The manifest rides along so the route builder can fall back to its edge-auth default.
       expect(lastConstruction().options).toEqual({
         loopbackHostPort: true,
-        manifest,
         knownAppIds: [],
         hostVariables: [],
         refuseNestedBindMounts: true,
@@ -963,7 +961,6 @@ describe('prepareAppComposeDir', () => {
 
       expect(lastConstruction().options).toEqual({
         loopbackHostPort: true,
-        manifest,
         knownAppIds: [],
         hostVariables: [],
         refuseNestedBindMounts: true,
@@ -979,7 +976,6 @@ describe('prepareAppComposeDir', () => {
 
       expect(lastConstruction().options).toEqual({
         loopbackHostPort: false,
-        manifest,
         knownAppIds: [],
         hostVariables: [],
         refuseNestedBindMounts: true,
@@ -992,10 +988,8 @@ describe('prepareAppComposeDir', () => {
 
       await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
 
-      // No manifest to hand the route builder either: it decides from the form and the port alone.
       expect(lastConstruction().options).toEqual({
         loopbackHostPort: false,
-        manifest: undefined,
         knownAppIds: [],
         hostVariables: [],
         refuseNestedBindMounts: true,

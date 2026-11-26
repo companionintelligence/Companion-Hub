@@ -186,8 +186,8 @@ export async function prepareAppComposeDir(
      * reaches the container over the Docker network. A `!openPort` guard here (added in #678 from
      * the env identity rule) left open-port apps on Traefik's 404 while the app page said "Public
      * domain: Enabled", including every install that omitted the field, because the queue form
-     * defaults `openPort` to true. Those routes are new, so the compose builder puts the Hub login
-     * in front of them unless the form decided otherwise (`requiresHubLoginOnPublicRoute`).
+     * defaults `openPort` to true. The compose builder puts the Hub login in front of every route
+     * unless the operator turned it off (`requiresHubLogin`).
      */
     if (publishesCloudflarePublicRoute(form)) {
       const registrationService = moduleRef.get(RegistrationService, { strict: false });
@@ -275,11 +275,8 @@ export async function prepareAppComposeDir(
       }
     }
 
-    // The manifest also carries the edge-auth default the route builder falls back to for a stored
-    // form that never decided `enableAuth` (see `requiresHubLoginOnPublicRoute`).
     const dockerComposeBuilder = new DockerComposeBuilder(domain, localDomain, posixPermissionsSupported, {
       loopbackHostPort,
-      manifest: appInfo ?? undefined,
       // A mount a data move relocated keeps its named volume where the Hub uses one (see `dataMoves`).
       dataMoves: appInfo?.data_moves,
       refuseNestedBindMounts: options?.forTeardown !== true,

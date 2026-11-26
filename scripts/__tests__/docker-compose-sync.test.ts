@@ -59,10 +59,11 @@ describe('docker-compose.prod.yml sync', () => {
     expect(content).toContain('traefik.http.services.ci-hub.loadbalancer.server.port: "5002"');
   });
 
-  it('advertises both Hub bridges over Tailscale during the network migration', () => {
+  it('advertises no Docker bridge over Tailscale by default', () => {
     const content = readCompose(rootCompose);
 
-    expect(content).toContain('--advertise-routes=172.18.0.0/16,172.19.0.0/16');
+    expect(content).toContain('TS_EXTRA_ARGS: ${HUB_TAILSCALE_EXTRA_ARGS:---login-server=https://controlplane.tailscale.com --accept-routes}');
+    expect(content).not.toContain('--advertise-routes');
   });
 
   it('inference URLs default to host.docker.internal', () => {

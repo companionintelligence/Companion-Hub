@@ -5,6 +5,8 @@ import { AppFilesManager } from '../../apps/app-files-manager';
 import { ExposureSyncService } from '../exposure-sync.service';
 import { TailscaleServeOwnership } from '../tailscale-serve-ownership';
 import { servePermissionCommand, TailscaleService } from '../../tailscale/tailscale.service';
+import { TailscaleServicesService } from '../../tailscale/tailscale-services.service';
+import { TraefikConfigService } from '../../docker/traefik-config.service';
 
 const hubPortProbeAddressMock = vi.fn(async (): Promise<string | null> => '172.17.0.1');
 vi.mock('@/modules/custom-apps/port-expose-reachability', async (importOriginal) => ({
@@ -153,8 +155,14 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
   /**
    * A fresh Hub process over `tailscaled`; `apps` is read on every pass, so tests can stop an app between passes.
    * `installedInfo` is what the app's installed files say about it, by app name (an **Expose a port** entry, say).
+   * `extras` are the other services the sync looks up, by token.
    */
-  function buildSync(tailscaled: FakeHostTailscaled, apps: PrivateVpnApp[] = [], installedInfo: Record<string, unknown> = {}): ExposureSyncService {
+  function buildSync(
+    tailscaled: FakeHostTailscaled,
+    apps: PrivateVpnApp[] = [],
+    installedInfo: Record<string, unknown> = {},
+    extras = new Map<unknown, unknown>(),
+  ): ExposureSyncService {
     tailscale = new TailscaleService();
     sse = { emit: vi.fn() };
     vi.spyOn(tailscale, 'isInstalled').mockResolvedValue(true);
@@ -165,7 +173,7 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
 
     const appFiles = { getInstalledAppInfo: vi.fn(async (appUrn: string) => installedInfo[appUrn.split(':')[0] ?? ''] ?? null) };
     const moduleRef = {
-      get: vi.fn((token: unknown) => (token === TailscaleService ? tailscale : token === AppFilesManager ? appFiles : null)),
+      get: vi.fn((token: unknown) => (token === TailscaleService ? tailscale : token === AppFilesManager ? appFiles : (extras.get(token) ?? null))),
     };
     const appRepository = { getApps: vi.fn(async () => apps) };
     const dockerReadFacade = {
@@ -634,6 +642,87 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
       expect(tailscaled.writes).toEqual([HUB_PUBLISH]);
       expect(tailscaled.serveConfig()).toEqual(JSON.parse(FZZY_SERVE_STATUS));
       expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('port 443 is reserved'));
+    });
+  });
+
+  describe('Tailscale Services', () => {
+    it("moves an app off its port listener once it is on a Service, and routes the Service's hostname through the login", async () => {
+      const apps = [privateVpnApp('anything-llm', 3001, 'http://172.18.0.10:3001'), privateVpnApp('open-webui', 3002, 'http://172.18.0.11:8080')];
+      const tailscaled = new FakeHostTailscaled('laptop.tailxyz.ts.net', '{}');
+      const servicesOn = { value: false };
+      const services = {
+        sync: vi.fn(async (desired: Array<{ appUrn: string }>) => ({
+          ready: servicesOn.value,
+          published: new Map(
+            servicesOn.value
+              ? desired
+                  .filter((d) => d.appUrn === 'anything-llm:companion')
+                  .map((d) => [d.appUrn, { name: 'svc:anything-llm', fqdn: 'anything-llm.tailxyz.ts.net' }])
+              : [],
+          ),
+        })),
+      };
+      const traefik = { syncTailscaleServiceRoutes: vi.fn(async () => undefined) };
+      const sync = buildSync(
+        tailscaled,
+        apps,
+        {},
+        new Map<unknown, unknown>([
+          [TailscaleServicesService, services],
+          [TraefikConfigService, traefik],
+        ]),
+      );
+
+      await sync.syncTailscaleExposurePublic();
+      expect(tailscaled.serveConfig().Web?.['laptop.tailxyz.ts.net:3001']).toBeDefined();
+
+      servicesOn.value = true;
+      await sync.syncTailscaleExposurePublic();
+
+      expect(services.sync).toHaveBeenLastCalledWith(
+        [
+          { appUrn: 'anything-llm:companion', label: 'anything-llm' },
+          { appUrn: 'open-webui:companion', label: 'open-webui' },
+        ],
+        'https://laptop.tailxyz.ts.net',
+      );
+      // Its old listener goes; the app that is not on a Service keeps its own.
+      expect(tailscaled.serveConfig().Web?.['laptop.tailxyz.ts.net:3001']).toBeUndefined();
+      expect(tailscaled.serveConfig().Web?.['laptop.tailxyz.ts.net:3002']).toBeDefined();
+      expect(traefik.syncTailscaleServiceRoutes).toHaveBeenLastCalledWith([
+        {
+          appUrn: 'anything-llm:companion',
+          host: 'anything-llm.tailxyz.ts.net',
+          upstreamUrl: 'http://172.18.0.10:3001',
+          requireLogin: true,
+          publicPaths: [],
+        },
+      ]);
+    });
+
+    it('keeps every app on its port when the Traefik routes cannot be written', async () => {
+      const apps = [privateVpnApp('anything-llm', 3001, 'http://172.18.0.10:3001')];
+      const tailscaled = new FakeHostTailscaled('laptop.tailxyz.ts.net', '{}');
+      const services = {
+        sync: vi.fn(async () => ({
+          ready: true,
+          published: new Map([['anything-llm:companion', { name: 'svc:anything-llm', fqdn: 'anything-llm.tailxyz.ts.net' }]]),
+        })),
+      };
+      const traefik = { syncTailscaleServiceRoutes: vi.fn(async () => Promise.reject(new Error('EACCES'))) };
+      const sync = buildSync(
+        tailscaled,
+        apps,
+        {},
+        new Map<unknown, unknown>([
+          [TailscaleServicesService, services],
+          [TraefikConfigService, traefik],
+        ]),
+      );
+
+      await sync.syncTailscaleExposurePublic();
+
+      expect(tailscaled.serveConfig().Web?.['laptop.tailxyz.ts.net:3001']).toBeDefined();
     });
   });
 });
