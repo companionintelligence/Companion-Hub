@@ -2190,7 +2190,8 @@ describe('InstallForm', () => {
       expect(onSubmit.mock.calls[0]?.[0].enableAuth).toBe(false);
     });
 
-    it('leaves a closed host port with no decision and no manifest default OFF, as the Hub serves it', async () => {
+    // It once showed and saved OFF: a closed port with no decision and no manifest default had no login.
+    it('shows and saves the login ON for a closed host port with no decision, as the Hub serves it', async () => {
       vi.mocked(useAppContext).mockReturnValue(exposableContext());
       const onSubmit = vi.fn();
 
@@ -2206,26 +2207,184 @@ describe('InstallForm', () => {
           />
         </MemoryRouter>,
       );
-      await waitFor(() => expect(getEnableAuthSwitch()).not.toBeChecked());
+      await waitFor(() => expect(getEnableAuthSwitch()).toBeChecked());
 
       await act(async () => {
         fireEvent.submit(container.querySelector('form') as HTMLFormElement);
       });
 
       await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
-      expect(onSubmit.mock.calls[0]?.[0].enableAuth).toBe(false);
+      expect(onSubmit.mock.calls[0]?.[0].enableAuth).toBe(true);
+    });
+  });
+
+  describe('paths without the Hub login', () => {
+    const pathsField = () => screen.queryByPlaceholderText('/webhook, /api/events');
+    const suggestion = () => screen.queryByRole('switch', { name: /APP_INSTALL_FORM_PUBLIC_PATH_SUGGESTED/ });
+    const withSuggestion = () =>
+      ({ ...(exposableInfo() as object), hub_integration: { edge_auth: { suggested_public_paths: ['/webhook'] } } }) as unknown as AppInfo;
+    const renderWith = (info: AppInfo, onSubmit = vi.fn()) =>
+      render(
+        <MemoryRouter>
+          <InstallForm info={info} onSubmit={onSubmit} formId="test-form" formFields={[]} />
+        </MemoryRouter>,
+      );
+    const submit = async (container: HTMLElement) => {
+      await act(async () => {
+        fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+      });
+    };
+
+    it("shows a listing's suggestion off, even in simple mode, and saves it only once turned on", async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext({ user: { advancedMode: false } }));
+      const onSubmit = vi.fn();
+      const { container } = renderWith(withSuggestion(), onSubmit);
+
+      await waitFor(() => expect(suggestion()).toBeInTheDocument());
+      expect(suggestion()).not.toBeChecked();
+      fireEvent.click(suggestion() as HTMLElement);
+      await submit(container);
+
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+      expect(onSubmit.mock.calls[0]?.[0].publicPaths).toEqual(['/webhook']);
+    });
+
+    // Emptying the box once read as no change, so Update stayed off and a saved path could not be removed.
+    it('counts an emptied box as a change, and the saved paths typed back as none', async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext());
+      const onDirtyChange = vi.fn();
+      const onSubmit = vi.fn();
+      const { container } = render(
+        <MemoryRouter>
+          <InstallForm
+            info={exposableInfo()}
+            onSubmit={onSubmit}
+            formId="test-form"
+            formFields={[]}
+            initialValues={{ exposureMode: 'cloudflare', publicPaths: ['/hook'] }}
+            isEdit
+            onDirtyChange={onDirtyChange}
+          />
+        </MemoryRouter>,
+      );
+
+      await waitFor(() => expect(pathsField()).toHaveValue('/hook'));
+      fireEvent.change(pathsField() as HTMLElement, { target: { value: '' } });
+      await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true));
+
+      fireEvent.change(pathsField() as HTMLElement, { target: { value: ' /hook ' } });
+      await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false));
+
+      fireEvent.change(pathsField() as HTMLElement, { target: { value: '' } });
+      await submit(container);
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+      expect(onSubmit.mock.calls[0]?.[0].publicPaths).toEqual([]);
+    });
+
+    it('saves typed paths as a list', async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext());
+      const onSubmit = vi.fn();
+      const { container } = renderWith(exposableInfo(), onSubmit);
+
+      await waitFor(() => expect(pathsField()).toBeInTheDocument());
+      fireEvent.change(pathsField() as HTMLElement, { target: { value: '/hook, /api/events  /hook' } });
+      await submit(container);
+
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+      expect(onSubmit.mock.calls[0]?.[0].publicPaths).toEqual(['/hook', '/api/events']);
+    });
+
+    it('refuses a path the Hub could not open, and saves nothing', async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext());
+      const onSubmit = vi.fn();
+      const { container } = renderWith(exposableInfo(), onSubmit);
+
+      await waitFor(() => expect(pathsField()).toBeInTheDocument());
+      fireEvent.change(pathsField() as HTMLElement, { target: { value: '/hook/../admin' } });
+      await submit(container);
+
+      await waitFor(() => expect(screen.getByText('APP_INSTALL_FORM_PUBLIC_PATHS_INVALID')).toBeInTheDocument());
+      expect(onSubmit).not.toHaveBeenCalled();
+    });
+
+    it('is not offered with the login off: every path is open then', async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext());
+      renderWith(withSuggestion());
+
+      await waitFor(() => expect(getEnableAuthSwitch()).toBeInTheDocument());
+      fireEvent.click(getEnableAuthSwitch());
+
+      await waitFor(() => expect(pathsField()).not.toBeInTheDocument());
+      expect(suggestion()).not.toBeInTheDocument();
+    });
+  });
+
+  describe('opening the port on the network', () => {
+    const portSwitch = () => screen.queryByRole('switch', { name: /APP_INSTALL_FORM_PORT_ON_NETWORK/ });
+    const renderWith = (info: AppInfo, onSubmit = vi.fn(), initialValues?: Record<string, unknown>) =>
+      render(
+        <MemoryRouter>
+          <InstallForm info={info} onSubmit={onSubmit} formId="test-form" formFields={[]} initialValues={initialValues} isEdit={!!initialValues} />
+        </MemoryRouter>,
+      );
+
+    it('offers it in advanced mode, off, and saves it when turned on', async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext());
+      const onSubmit = vi.fn();
+      const { container } = renderWith(exposableInfo(), onSubmit);
+
+      await waitFor(() => expect(portSwitch()).toBeInTheDocument());
+      expect(portSwitch()).not.toBeChecked();
+      fireEvent.click(portSwitch() as HTMLElement);
+      await act(async () => {
+        fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+      });
+
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+      expect(onSubmit.mock.calls[0]?.[0].portOnNetwork).toBe(true);
+    });
+
+    it("names the app's port in its label, and leaves the number out when there is none", async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext());
+      const first = renderWith(exposableInfo());
+      await waitFor(() => expect(portSwitch()).toBeInTheDocument());
+      expect(screen.getByRole('switch', { name: /APP_INSTALL_FORM_PORT_ON_NETWORK_WITH_PORT/ })).toBeInTheDocument();
+      first.unmount();
+
+      renderWith({ ...(exposableInfo() as object), port: undefined } as unknown as AppInfo);
+      await waitFor(() => expect(portSwitch()).toBeInTheDocument());
+      expect(screen.queryByRole('switch', { name: /APP_INSTALL_FORM_PORT_ON_NETWORK_WITH_PORT/ })).not.toBeInTheDocument();
+    });
+
+    it('is not on screen in simple mode unless an installed app has it on', async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext({ user: { advancedMode: false } }));
+      const first = renderWith(exposableInfo());
+      await waitFor(() => expect(screen.getByRole('switch', { name: 'APP_INSTALL_FORM_SHOW_ADVANCED_SETTINGS' })).toBeInTheDocument());
+      expect(portSwitch()).not.toBeInTheDocument();
+      first.unmount();
+
+      renderWith(exposableInfo(), vi.fn(), { exposureMode: 'local', portOnNetwork: true });
+      await waitFor(() => expect(portSwitch()).toBeChecked());
+    });
+
+    it('is never offered for an app whose port must stay on this machine', async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext());
+      renderWith({ ...(exposableInfo() as object), hub_integration: { mcp_client: true } } as unknown as AppInfo);
+
+      await waitFor(() => expect(getEnableAuthSwitch()).toBeInTheDocument());
+      expect(portSwitch()).not.toBeInTheDocument();
     });
   });
 
   // What the Hub serves for a stored form, written out by hand: the queue gives a missing `openPort`
-  // the value true (`queueAppFormSchema`), and the route builder puts the login in front of the
-  // public route when the form says so, else when the manifest defaults edge auth on, else while
-  // the host port is open (`requiresHubLoginOnPublicRoute`). The backend's own matrix test pins the
-  // same table against the real queue schema and compose builder.
+  // the value true (`queueAppFormSchema`), and the route builder puts the login in front of every
+  // route unless the form says `enableAuth: false` (`requiresHubLogin`). The port and the manifest's
+  // edge-auth default once counted too; they still vary below to show they no longer do. The
+  // backend's own matrix test pins the same table against the real queue schema and compose builder.
   describe('an edit shows and submits what the Hub serves for every stored shape', () => {
     type Tri = boolean | undefined;
     const tri: Tri[] = [true, false, undefined];
-    const served = (openPort: Tri, enableAuth: Tri, edgeDefault: Tri) => enableAuth ?? (edgeDefault === true || (openPort ?? true));
+    const served = (_openPort: Tri, enableAuth: Tri, _edgeDefault: Tri) => enableAuth !== false;
 
     const infoWith = (exposable: boolean, edgeDefault: Tri) =>
       ({
@@ -2282,7 +2441,7 @@ describe('InstallForm', () => {
     );
 
     it.each(tri.flatMap((openPort) => ([false, undefined] as Tri[]).map((enableAuth) => ({ openPort, enableAuth }))))(
-      'app that is not exposable, openPort $openPort, enableAuth $enableAuth: never submits a login for a route it does not have',
+      'app that is not exposable, openPort $openPort, enableAuth $enableAuth: submits the login as stored, on unless switched off',
       async ({ openPort, enableAuth }) => {
         vi.mocked(useAppContext).mockReturnValue(exposableContext());
         const onSubmit = vi.fn();
@@ -2304,7 +2463,7 @@ describe('InstallForm', () => {
           fireEvent.submit(container.querySelector('form') as HTMLFormElement);
         });
         await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
-        expect(onSubmit.mock.calls[0]?.[0].enableAuth).toBe(false);
+        expect(onSubmit.mock.calls[0]?.[0].enableAuth).toBe(enableAuth !== false);
       },
     );
 
@@ -3907,34 +4066,49 @@ describe('InstallForm - an imported config that turns the Hub login off', () => 
     expect(authSwitch()).not.toBeInTheDocument();
   });
 
-  // "Never chose" is only unprotected where the Hub serves it unprotected: a closed host port, with a manifest that
-  // leaves the login off. A stored form with NO openPort key is served open, with the login, so it is its own case
-  // below, and must not raise this warning.
-  it.each([
-    ['saved with the login off', { enableAuth: false }],
-    ['that never chose, on a closed host port, on a manifest that leaves the login off', { openPort: false }],
-  ])('shows the switch turned off, and says so, when a file only moves an installed app %s onto Public Web', async (_, saved) => {
+  // The login guards every route, so an app saved with it off shows the switch in every mode, from the start.
+  it('shows the switch turned off from the start for an installed app saved with the login off, on This Machine Only', async () => {
     const onSubmit = vi.fn();
     const { container } = renderForm({
       isEdit: true,
       onSubmit,
-      initialValues: { ADMIN_EMAIL: 'ops@example.org', exposureMode: 'local', ...saved },
+      initialValues: { ADMIN_EMAIL: 'ops@example.org', exposureMode: 'local', enableAuth: false },
     });
     await screen.findByLabelText(/Admin Email/);
-    expect(authSwitch()).not.toBeInTheDocument();
-
-    await importFile(container, JSON.stringify({ schemaVersion: 1, appId: 'cyberchef', values: { exposureMode: 'cloudflare' } }));
-
     await waitFor(() => expect(authSwitch()).toBeInTheDocument());
     expect(authSwitch()).not.toBeChecked();
-    expect(toast.warning).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_AUTH_OFF', { duration: 8000 });
-    expect(toast.success).not.toHaveBeenCalled();
 
+    // Already on screen, so a file that only moves the app is a plain import.
+    await importFile(container, JSON.stringify({ schemaVersion: 1, appId: 'cyberchef', values: { exposureMode: 'cloudflare' } }));
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_SUCCESS'));
+    expect(toast.warning).not.toHaveBeenCalled();
     await act(async () => {
       fireEvent.submit(container.querySelector('form') as HTMLFormElement);
     });
     await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
     expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ enableAuth: false, exposureMode: 'cloudflare' });
+  });
+
+  // It once warned here: a closed host port and no decision was served with no login.
+  it('does not warn when a file moves an installed app that never chose, on a closed host port, onto Public Web', async () => {
+    const onSubmit = vi.fn();
+    const { container } = renderForm({
+      isEdit: true,
+      onSubmit,
+      initialValues: { ADMIN_EMAIL: 'ops@example.org', exposureMode: 'local', openPort: false },
+    });
+    await screen.findByLabelText(/Admin Email/);
+
+    await importFile(container, JSON.stringify({ schemaVersion: 1, appId: 'cyberchef', values: { exposureMode: 'cloudflare' } }));
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_SUCCESS'));
+    expect(toast.warning).not.toHaveBeenCalled();
+    await act(async () => {
+      fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+    });
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    expect(onSubmit.mock.calls[0]?.[0].enableAuth).not.toBe(false);
   });
 
   it('does not warn when a file moves an installed app with no stored openPort key onto Public Web: the Hub serves it open, with the login', async () => {
@@ -3961,35 +4135,31 @@ describe('InstallForm - an imported config that turns the Hub login off', () => 
     expect(saved.enableAuth).not.toBe(false);
   });
 
-  // The Hub login sits on the Public Web route only, so on This Machine Only or Private VPN a file
-  // that turns it off changes nothing anyone can reach.
-  it.each(['local', 'tailscale'])('keeps the plain toast when a file turns the login off on %s', async (exposureMode) => {
+  // The Hub login guards every route, so a file that turns it off is worth saying so in every mode.
+  it.each(['local', 'tailscale'])('shows the switch turned off, and says so, when a file turns the login off on %s', async (exposureMode) => {
     vi.mocked(useAppContext).mockReturnValue({ ...context(false), tailscaleAvailable: true });
     const { container } = renderForm();
     await screen.findByLabelText(/Admin Email/);
 
     await importFile(container, configFile({ exposureMode, enableAuth: false }));
 
-    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_SUCCESS'));
-    expect(toast.warning).not.toHaveBeenCalled();
-    expect(advancedSettingsSwitch()).not.toBeChecked();
-    expect(authSwitch()).not.toBeInTheDocument();
+    await waitFor(() => expect(authSwitch()).toBeInTheDocument());
+    expect(authSwitch()).not.toBeChecked();
+    expect(toast.warning).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_AUTH_OFF', { duration: 8000 });
+    expect(toast.success).not.toHaveBeenCalled();
   });
 
-  it('shows the switch when someone picks Public Web for an app whose login is off, and keeps it there once turned on', async () => {
+  it('keeps the switch on screen once someone turns a login that was off back on', async () => {
     renderForm({
       isEdit: true,
       initialValues: { ADMIN_EMAIL: 'ops@example.org', exposureMode: 'local', enableAuth: false },
     });
     await screen.findByLabelText(/Admin Email/);
-    expect(authSwitch()).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE' }));
-
     await waitFor(() => expect(authSwitch()).toBeInTheDocument());
     expect(authSwitch()).not.toBeChecked();
     expect(advancedSettingsSwitch()).not.toBeChecked();
 
+    fireEvent.click(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE' }));
     // Turning the login on must not make the switch vanish under the pointer.
     fireEvent.click(authSwitch() as HTMLElement);
     await waitFor(() => expect(authSwitch()).toBeChecked());

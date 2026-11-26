@@ -302,7 +302,7 @@ describe('HubStatus Docker guidance', () => {
 
     expect(await screen.findByText('Licensing-free alternative')).toBeInTheDocument();
     expect(screen.getByText(/paid subscription for organizations/)).toBeInTheDocument();
-    const button = screen.getByRole('button', { name: 'Auto-Install Docker Engine in WSL2' });
+    const button = screen.getByRole('button', { name: 'Install Docker Engine in WSL' });
 
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd === 'install_docker_engine_alternative_command') {
@@ -319,7 +319,7 @@ describe('HubStatus Docker guidance', () => {
     await flushAsyncWork();
 
     expect(invoke).toHaveBeenCalledWith('install_docker_engine_alternative_command');
-    expect(screen.getByText(/Restart Windows, then reopen Companion Hub/)).toBeInTheDocument();
+    expect(screen.getByText(/then reopen Companion Hub to continue setup/)).toBeInTheDocument();
   });
 
   it('offers the Colima alternative on macOS and reports success', async () => {
@@ -344,6 +344,108 @@ describe('HubStatus Docker guidance', () => {
 
     expect(invoke).toHaveBeenCalledWith('install_docker_engine_alternative_command');
     expect(screen.getByText(/Docker should become available momentarily/)).toBeInTheDocument();
+  });
+
+  // The panel does what the desktop's startup screen does (seen on Windows: it always installed and
+  // stopped at "Docker should become available momentarily").
+  describe('the WSL engine panel, as on the startup screen', () => {
+    /** Windows, Docker not answering, the desktop's startup progress as given, and `commands`. */
+    function renderWindowsDockerGate(progress: Record<string, unknown>, commands: Record<string, () => Promise<unknown>> = {}) {
+      const invoke = vi.fn<(cmd: string) => Promise<unknown>>(async (cmd: string) => {
+        if (commands[cmd]) return commands[cmd]();
+        switch (cmd) {
+          case 'get_hub_status_command':
+            return 'DockerNotAvailable';
+          case 'check_docker_access_command':
+            return { state: 'daemon_unavailable', detail: null };
+          case 'is_stack_dev_mode_command':
+            return false;
+          case 'get_startup_progress_command':
+            return { services: [], progress_pct: 0, image_pulled: 0, image_total: 0, image_pull_pct: 0, all_ready: false, ...progress };
+          default:
+            throw new Error(`Unexpected invoke command: ${cmd}`);
+        }
+      });
+      mockWindowsTauri(invoke);
+      render(
+        <HubStatus>
+          <div>Hub child</div>
+        </HubStatus>,
+      );
+      return invoke;
+    }
+
+    it('starts the WSL engine this PC has set up instead of installing it again', async () => {
+      const invoke = renderWindowsDockerGate(
+        { docker_engine: 'desktop', docker_access: { state: 'daemon_unavailable' }, wsl_engine_set_up: true },
+        { start_wsl_engine_command: async () => 'Docker in WSL is running.' },
+      );
+
+      expect(await screen.findByText(/already set up in WSL on this PC/)).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Start Docker in WSL' }));
+      await flushAsyncWork();
+
+      expect(invoke).toHaveBeenCalledWith('start_wsl_engine_command');
+      expect(invoke).not.toHaveBeenCalledWith('install_docker_engine_alternative_command');
+      expect(screen.getByText('Docker in WSL is running. Starting Companion Hub…')).toBeInTheDocument();
+    });
+
+    it('installs when nothing is set up, and leaves the Hub start to the gate, which starts it as Docker answers', async () => {
+      const invoke = renderWindowsDockerGate(
+        { docker_engine: 'desktop', docker_access: { state: 'daemon_unavailable' } },
+        { install_docker_engine_alternative_command: async () => ({ state: 'completed', detail: null }) },
+      );
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Install Docker Engine in WSL' }));
+      await flushAsyncWork();
+
+      expect(invoke).toHaveBeenCalledWith('install_docker_engine_alternative_command');
+      expect(screen.getByText('Docker Engine is installed in WSL. Starting Companion Hub…')).toBeInTheDocument();
+      // A second start beside the gate's own would start the Hub twice.
+      expect(invoke).not.toHaveBeenCalledWith('start_hub_command');
+    });
+
+    it("shows the installer's reason without its lead-in", async () => {
+      renderWindowsDockerGate(
+        { docker_engine: 'desktop', docker_access: { state: 'daemon_unavailable' } },
+        {
+          install_docker_engine_alternative_command: async () => {
+            throw new Error(
+              "WSL2 Docker Engine installation failed: WSL can't start because virtualization is turned off in this PC's firmware (BIOS or UEFI settings).",
+            );
+          },
+        },
+      );
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Install Docker Engine in WSL' }));
+      await flushAsyncWork();
+
+      expect(screen.getByText(/^WSL can't start because virtualization is turned off/)).toBeInTheDocument();
+      expect(screen.queryByText(/WSL2 Docker Engine installation failed/)).not.toBeInTheDocument();
+    });
+
+    it('says to restart Windows, in bold, with no button beside it', async () => {
+      renderWindowsDockerGate(
+        { docker_engine: 'desktop', docker_access: { state: 'daemon_unavailable' } },
+        { install_docker_engine_alternative_command: async () => ({ state: 'needs_restart', detail: null }) },
+      );
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Install Docker Engine in WSL' }));
+      await flushAsyncWork();
+
+      expect(screen.getByText('Restart Windows').tagName).toBe('STRONG');
+      expect(screen.queryByRole('button', { name: 'Install Docker Engine in WSL' })).not.toBeInTheDocument();
+    });
+
+    it("says why the Hub's WSL engine can't start, and offers no Start engine that would wait for it", async () => {
+      const why =
+        "WSL can't start because virtualization is turned off in this PC's firmware (BIOS or UEFI settings). Turn on the setting called Virtualization Technology, VT-x or SVM there, restart, then try again.";
+      renderWindowsDockerGate({ docker_engine: 'wsl-engine', docker_access: { state: 'daemon_unavailable' }, wsl_engine_cannot_start: why });
+
+      expect(await screen.findByRole('heading', { name: "Docker in WSL can't start" })).toBeInTheDocument();
+      expect(screen.getByText(why)).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Start engine' })).not.toBeInTheDocument();
+    });
   });
 
   it('does not show the alternative panel on Linux (the Engine is already licensing-free)', async () => {

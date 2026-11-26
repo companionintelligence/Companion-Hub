@@ -1426,4 +1426,42 @@ describe('AiSettingsContainer', () => {
     const banner = await screen.findByTestId('cloud-fallback-policy-banner');
     expect(banner).toHaveTextContent('Cloud Inference Fallback Enabled (CI_HUB_ALLOW_CLOUD_FALLBACK=true)');
   });
+
+  // With Ollama the engine, Settings showed no card for it, so after onboarding nothing here offered
+  // to install it or said it was missing (seen on Windows on a fresh Hub).
+  describe('with Ollama the engine', () => {
+    afterEach(() => {
+      delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    });
+
+    it('shows Ollama’s setup, which says when Ollama answers', async () => {
+      fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama' });
+      renderAiSettings();
+
+      const setup = await screen.findByTestId('ollama-backend-setup');
+      expect(setup).toHaveTextContent('Set up Ollama');
+      await waitFor(() => expect(setup).toHaveTextContent('Ollama detected'));
+    });
+
+    it('offers to install Ollama in the desktop window when it is missing, and runs the desktop’s installer', async () => {
+      const invoke = vi.fn().mockResolvedValue({ state: 'completed', detail: null });
+      (window as unknown as { __TAURI_INTERNALS__: { invoke: typeof invoke } }).__TAURI_INTERNALS__ = { invoke };
+      fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama' });
+      fetchOllamaInstallStatus.mockResolvedValue({ ready: false, running: false, endpointUrl: 'http://localhost:11434' });
+      renderAiSettings();
+
+      const setup = await screen.findByTestId('ollama-backend-setup');
+      await waitFor(() => expect(setup).toHaveTextContent('Ollama not detected'));
+      await userEvent.click(screen.getByRole('button', { name: /Run this automatically/ }));
+
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith('install_ollama_command'));
+    });
+
+    it('is not shown for another engine, whose own setup is shown instead', async () => {
+      renderAiSettings();
+
+      await waitFor(() => expect(screen.getByTestId('selected-backend')).toHaveTextContent('vllm'));
+      expect(screen.queryByTestId('ollama-backend-setup')).not.toBeInTheDocument();
+    });
+  });
 });

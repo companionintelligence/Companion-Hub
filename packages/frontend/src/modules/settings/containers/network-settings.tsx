@@ -18,6 +18,7 @@ import { useTailscaleReadinessSync } from '@/lib/hooks/use-tailscale-readiness-s
 import { Detail, DetailGrid, LoadingCard, SectionHeader, StatusBadge } from '../components/network-section/network-section';
 import { HubAccountSection } from './hub-account-settings';
 import { HubPoolSection } from './hub-pool-settings';
+import { TailscaleServicesSection } from './tailscale-services-settings';
 
 interface CloudflareStatus {
   tunnelEnabled: boolean;
@@ -325,6 +326,7 @@ export const NetworkSettingsContainer = () => (
   <div className="space-y-6" data-testid="network-settings">
     <LocalNetworkSection />
     <TailscaleSidecarSection />
+    <TailscaleServicesSection />
     <HubPoolSection />
     <CloudflareSection />
     <HubAccountSection />

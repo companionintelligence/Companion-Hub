@@ -9,6 +9,11 @@ interface TraefikLabelsArgs {
   exposureMode: ExposureMode;
   storeId: string;
   enableAuth?: boolean;
+  /**
+   * Paths, and what is under them, served without the Hub login (`publicPaths`, the operator's choice,
+   * each one already checked against `publicPathSchema`). Only read while the login is on.
+   */
+  publicPaths?: string[];
   cloudflareOriginHostname?: string;
   cloudflarePublicHostname?: string;
   localDomain?: string;
@@ -41,8 +46,10 @@ export const HUB_ROUTE_NAME_SUFFIXES: readonly string[] = [
 /** The file-provider middleware that strips visitor-set forwarded headers from tunnel requests. */
 export const EDGE_HEADERS_MIDDLEWARE = 'ci-hub-edge-headers@file';
 /** The Hub's sign-in (cache header, then forward auth) under the file provider. Its `@docker` twin vanishes when the Hub's labels flap. */
-const FORWARD_AUTH_MIDDLEWARE = 'ci-hub@file';
+export const FORWARD_AUTH_MIDDLEWARE = 'ci-hub@file';
 /** See `ci-hub-sw-reset` in assets/traefik/dynamic/dynamic.yml. */
+/** The router a Hub router gets for the operator's paths without the login (`addPublicPathRouters`). */
+export const PUBLIC_PATHS_ROUTER_SUFFIX = '-public-paths';
 export const SW_RESET_MIDDLEWARE = 'ci-hub-sw-reset@file';
 /** What a browser sends when it fetches a service worker script. Nothing else sends this header. */
 const SW_RESET_RULE_SUFFIX = ' && Path(`/sw.js`) && Header(`Service-Worker`, `script`)';
@@ -146,6 +153,63 @@ export function withSignInUnderFileProvider(labels: Record<string, string | bool
       }
     }
     result[key] = renamed.join(',');
+  }
+  return result;
+}
+
+/**
+ * Puts the Hub's middlewares at the head of every HTTP router a manifest declared itself: the edge
+ * header strip on a Public web app, then the Hub login unless the operator switched it off
+ * (`requiresHubLogin`).
+ *
+ * A manifest may route its own hosts (`${APP_DOMAIN}`, `${APP_LOCAL_DOMAIN}`, `${APP_BASE_HOST}`) to
+ * its own services, and those routers carried whatever chain it gave them: none of them had to hold
+ * the login, and one with a longer rule outranked the Hub's router on the same host. Any of the
+ * Hub's middlewares a manifest placed further down its chain move to the head, so nothing of the
+ * app's (a path rewrite, say) runs before the login sees the request.
+ *
+ * The routers the Hub built (`hubLabels`) are left as {@link withHubMiddlewaresFirst} ordered them:
+ * the service-worker reset runs ahead of the login there on purpose. Runs after interpolation, and
+ * tells routers apart without regard to case, as Traefik does.
+ */
+export function withHubLoginOnEveryRouter(
+  labels: Record<string, string | boolean>,
+  hubLabels: Record<string, string | boolean>,
+  { requireLogin, publicWeb }: { requireLogin: boolean; publicWeb: boolean },
+): Record<string, string | boolean> {
+  const hubRouters = new Set<string>();
+  for (const key of Object.keys(hubLabels)) {
+    const router = HTTP_ROUTER_LABEL.exec(key)?.[1];
+    if (router) hubRouters.add(router.toLowerCase());
+  }
+  const head = [...(publicWeb ? [EDGE_HEADERS_MIDDLEWARE] : []), ...(requireLogin ? [FORWARD_AUTH_MIDDLEWARE] : [])];
+  const hubOwned = new Set([EDGE_HEADERS_MIDDLEWARE.toLowerCase(), ...HUB_FORWARD_AUTH_MIDDLEWARES]);
+
+  // Each manifest router under the first spelling seen, with every key that sets its chain.
+  const routers = new Map<string, { name: string; chainKeys: string[] }>();
+  for (const key of Object.keys(labels)) {
+    const [, router, option] = HTTP_ROUTER_LABEL.exec(key) ?? [];
+    if (!router || !option || hubRouters.has(router.toLowerCase())) continue;
+    let entry = routers.get(router.toLowerCase());
+    if (!entry) {
+      entry = { name: router, chainKeys: [] };
+      routers.set(router.toLowerCase(), entry);
+    }
+    if (option.toLowerCase() === 'middlewares') entry.chainKeys.push(key);
+  }
+
+  const result = { ...labels };
+  for (const { name, chainKeys } of routers.values()) {
+    const own: string[] = [];
+    for (const chainKey of chainKeys) {
+      for (const middleware of middlewareChain(result[chainKey])) {
+        const lower = middleware.toLowerCase();
+        if (!hubOwned.has(lower) && !own.some((existing) => existing.toLowerCase() === lower)) own.push(middleware);
+      }
+      delete result[chainKey];
+    }
+    const chain = [...head, ...own];
+    if (chain.length > 0) result[`traefik.http.routers.${name}.middlewares`] = chain.join(',');
   }
   return result;
 }
@@ -359,16 +423,72 @@ export class TraefikLabelsBuilder {
     return this;
   }
 
+  /**
+   * Gives each router this builder made with the Hub login a twin for the operator's `publicPaths`:
+   * the same host, entry point, service and certificate, the same chain without the login, and a rule
+   * narrowed to those paths. Traefik ranks a router by the length of its rule, so the twin answers
+   * those paths and the router with the login everything else. Each path matches itself and what is
+   * under it (`/hook` and `/hook/...`, not `/hookx`). The service-worker reset routers get none: they
+   * answer one fetch of `/sw.js`, which the login decides.
+   *
+   * Call it after the routers are added. Routers a manifest declares get no twin: their paths are the
+   * manifest's own, and the login stays in front of them (`withHubLoginOnEveryRouter`).
+   */
+  addPublicPathRouters() {
+    const paths = this.params.publicPaths ?? [];
+    if (!this.params.enableAuth || paths.length === 0) {
+      return this;
+    }
+
+    const pathRule = paths
+      .map((path) => path.replace(/\/+$/, ''))
+      .map((path) => `Path(\`${path}\`) || PathPrefix(\`${path}/\`)`)
+      .join(' || ');
+
+    const routers = new Map<string, Record<string, string | boolean>>();
+    for (const [key, value] of Object.entries(this.labels)) {
+      const [, router, option] = HTTP_ROUTER_LABEL.exec(key) ?? [];
+      if (!router || !option) continue;
+      const options = routers.get(router) ?? {};
+      options[option] = value;
+      routers.set(router, options);
+    }
+
+    for (const [router, options] of routers) {
+      const chain = middlewareChain(options.middlewares);
+      if (router.includes(SW_RESET_ROUTER_SUFFIX) || !chain.includes(FORWARD_AUTH_MIDDLEWARE) || typeof options.rule !== 'string') {
+        continue;
+      }
+      const twin = `traefik.http.routers.${router}${PUBLIC_PATHS_ROUTER_SUFFIX}`;
+      for (const [option, value] of Object.entries(options)) {
+        if (option === 'rule' || option === 'middlewares') continue;
+        this.labels[`${twin}.${option}`] = value;
+      }
+      this.labels[`${twin}.rule`] = `(${options.rule}) && (${pathRule})`;
+      const open = chain.filter((name) => name !== FORWARD_AUTH_MIDDLEWARE);
+      if (open.length > 0) {
+        this.labels[`${twin}.middlewares`] = open.join(',');
+      }
+    }
+    return this;
+  }
+
   addTailscaleLabels() {
     if (this.effectiveMode === 'tailscale') {
       const hostname = this.params.tailscaleHostname || `${this.params.appId}.${this.params.storeId}`;
+      const router = `traefik.http.routers.${this.params.appId}-${this.params.storeId}${TAILSCALE_ROUTER_SUFFIX}`;
 
       Object.assign(this.labels, {
         'traefik.enable': true,
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}${TAILSCALE_ROUTER_SUFFIX}.rule`]: `Host(\`${hostname}\`)`,
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}${TAILSCALE_ROUTER_SUFFIX}.entrypoints`]: 'web',
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}${TAILSCALE_ROUTER_SUFFIX}.service`]: `${this.params.appId}-${this.params.storeId}`,
+        [`${router}.rule`]: `Host(\`${hostname}\`)`,
+        [`${router}.entrypoints`]: 'web',
+        [`${router}.service`]: `${this.params.appId}-${this.params.storeId}`,
       });
+      // This router listens on `web`, which answers the LAN: any request there naming the host above
+      // reached the app with no login. The same login as the Public web routes, on the same terms.
+      if (this.params.enableAuth) {
+        this.labels[`${router}.middlewares`] = FORWARD_AUTH_MIDDLEWARE;
+      }
     }
     return this;
   }

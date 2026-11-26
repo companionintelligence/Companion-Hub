@@ -397,7 +397,6 @@ describe('TailscaleService', () => {
         'tskey-auth-testkey',
         '--login-server=https://controlplane.tailscale.com',
         '--accept-routes',
-        '--advertise-routes=172.18.0.0/16,172.19.0.0/16',
       ],
       expect.objectContaining({ timeout: 120_000 }),
       expect.any(Function),
@@ -474,6 +473,112 @@ describe('TailscaleService', () => {
     expect(upCall).toBeDefined();
     expect(upCall[1]).toContain('--auth-key');
     expect(upCall[1]).not.toContain('--reset');
+  });
+
+  describe('the Docker bridge routes an older Hub advertised on a host Tailscale client', () => {
+    /** Host strategy with `debug prefs` answering `prefs` (or failing when it is an Error). */
+    function hostWithPrefs(prefs: unknown) {
+      vi.mocked(access).mockResolvedValue(undefined);
+      execFileMock.mockImplementation(
+        (cmd: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => {
+          if (cmd === '/usr/bin/tailscale' && args.includes('version')) {
+            process.nextTick(() => cb(null, '1.82.0\n', ''));
+            return;
+          }
+          if (cmd === '/usr/bin/tailscale' && args[0] === 'debug' && args[1] === 'prefs') {
+            if (prefs instanceof Error) process.nextTick(() => cb(prefs, '', ''));
+            else process.nextTick(() => cb(null, JSON.stringify(prefs), ''));
+            return;
+          }
+          if (cmd === '/usr/bin/tailscale' && args.includes('up')) {
+            process.nextTick(() => cb(null, '', ''));
+            return;
+          }
+          process.nextTick(() => cb(new Error('unexpected'), '', ''));
+        },
+      );
+    }
+
+    async function upArgs(): Promise<string[]> {
+      await service.connectWithAuthKey('tskey-auth-testkey');
+      const upCall = execFileMock.mock.calls.find(([cmd, args]: [string, string[]]) => cmd === '/usr/bin/tailscale' && args.includes('up'));
+      return upCall?.[1] ?? [];
+    }
+
+    // Without the flag, `tailscale up` on a host that has those routes refuses to run at all
+    // ("requires mentioning all non-default flags"), checked against tailscale 1.104.7.
+    it("restates the host's routes without the retired two, keeping the owner's own and the exit node", async () => {
+      hostWithPrefs({ AdvertiseRoutes: ['0.0.0.0/0', '::/0', '172.18.0.0/16', '172.19.0.0/16', '10.5.0.0/24'] });
+
+      expect(await upArgs()).toContain('--advertise-routes=0.0.0.0/0,::/0,10.5.0.0/24');
+    });
+
+    it('clears the routes when the retired two were all the host advertised', async () => {
+      hostWithPrefs({ AdvertiseRoutes: ['172.18.0.0/16', '172.19.0.0/16'] });
+
+      expect(await upArgs()).toContain('--advertise-routes=');
+    });
+
+    it("leaves the host's routes alone when it advertises none of the retired two", async () => {
+      hostWithPrefs({ AdvertiseRoutes: ['10.5.0.0/24'] });
+
+      expect((await upArgs()).some((arg) => arg.startsWith('--advertise-routes'))).toBe(false);
+    });
+
+    it('adds no route flag when the prefs cannot be read', async () => {
+      hostWithPrefs(new Error('permission denied'));
+
+      expect((await upArgs()).some((arg) => arg.startsWith('--advertise-routes'))).toBe(false);
+    });
+
+    // HUB_TAILSCALE_EXTRA_ARGS is the sidecar's (CI-Hub#2548): on the host it neither adds routes nor stops the withdrawal.
+    it('ignores HUB_TAILSCALE_EXTRA_ARGS on the host, and still withdraws the retired two', async () => {
+      process.env.HUB_TAILSCALE_EXTRA_ARGS = '--accept-routes --advertise-routes=172.18.0.0/16';
+      hostWithPrefs({ AdvertiseRoutes: ['172.18.0.0/16', '172.19.0.0/16', '10.5.0.0/24'] });
+
+      const args = await upArgs();
+      expect(args.filter((arg) => arg.startsWith('--advertise-routes'))).toEqual(['--advertise-routes=10.5.0.0/24']);
+      expect(args).not.toContain('--accept-routes');
+    });
+
+    // tailscaled names the routes it holds now when it refuses; rerunning that as it stands would put
+    // the retired two back.
+    it("keeps the withdrawal when tailscaled refuses the up and the Hub restates the host's settings", async () => {
+      hostWithPrefs({ AdvertiseRoutes: ['172.18.0.0/16', '172.19.0.0/16', '10.5.0.0/24'] });
+      const refusal = [
+        "Error: changing settings via 'tailscale up' requires mentioning all",
+        'non-default flags. To proceed, either re-run your command with --reset or',
+        'use the command below to explicitly mention the current value of',
+        'all non-default settings:',
+        '',
+        '\ttailscale up --advertise-routes=172.18.0.0/16,172.19.0.0/16,10.5.0.0/24 --operator=hub --ssh',
+        '',
+      ].join('\n');
+      const fallback = execFileMock.getMockImplementation();
+      let refused = false;
+      execFileMock.mockImplementation((cmd: string, args: string[], opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => {
+        if (cmd === '/usr/bin/tailscale' && args[0] === 'up' && !refused) {
+          refused = true;
+          process.nextTick(() => cb(Object.assign(new Error('exit status 1'), { stderr: refusal }), '', refusal));
+          return;
+        }
+        return fallback?.(cmd, args, opts, cb);
+      });
+
+      await service.connectWithAuthKey('tskey-auth-testkey');
+
+      const ups = execFileMock.mock.calls.filter(([cmd, args]: [string, string[]]) => cmd === '/usr/bin/tailscale' && args[0] === 'up').map(([, args]) => args);
+      expect(ups).toHaveLength(2);
+      expect(ups[1]).toEqual(['up', '--auth-key', 'tskey-auth-testkey', '--operator=hub', '--ssh', '--advertise-routes=10.5.0.0/24']);
+    });
+
+    it('applies to startAuth too', async () => {
+      hostWithPrefs({ AdvertiseRoutes: ['172.18.0.0/16', '172.19.0.0/16'] });
+
+      await service.startAuth().catch(() => undefined);
+      const upCall = execFileMock.mock.calls.find(([cmd, args]: [string, string[]]) => cmd === '/usr/bin/tailscale' && args.includes('up'));
+      expect(upCall?.[1]).toContain('--advertise-routes=');
+    });
   });
 
   it('connectWithAuthKey waits for sidecar daemon before running tailscale up', async () => {

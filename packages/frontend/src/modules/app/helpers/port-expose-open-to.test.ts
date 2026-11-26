@@ -4,8 +4,14 @@ import { portExposeOpenTo } from './port-expose-open-to';
 const portExpose = { kind: 'port-expose' as const };
 
 describe('portExposeOpenTo', () => {
-  it('says anyone can open an exposed port on Public web', () => {
-    expect(portExposeOpenTo({ config: portExpose, exposureMode: 'cloudflare' }, portExpose)).toBe('anyone');
+  it('says anyone can open an exposed port on Public web whose Hub sign-in was switched off', () => {
+    expect(portExposeOpenTo({ config: portExpose, exposureMode: 'cloudflare', enableAuth: false }, portExpose)).toBe('anyone');
+  });
+
+  // Exposed ports once had no sign-in at all; they have it now unless the operator switched it off.
+  it('says nothing of an exposed port on Public web behind the Hub sign-in', () => {
+    expect(portExposeOpenTo({ config: portExpose, exposureMode: 'cloudflare', enableAuth: true }, portExpose)).toBeNull();
+    expect(portExposeOpenTo({ config: portExpose, exposureMode: 'cloudflare' }, portExpose)).toBeNull();
   });
 
   // Tailscale Serve sends a tailnet request straight to the port, with nothing of the Hub's in front.
@@ -23,7 +29,7 @@ describe('portExposeOpenTo', () => {
 
   // A save through the generic config route drops `kind` from the stored form; the manifest keeps it.
   it('knows an exposed port by its manifest when the stored form lost its kind', () => {
-    expect(portExposeOpenTo({ config: { exposureMode: 'cloudflare' }, exposureMode: 'cloudflare' }, portExpose)).toBe('anyone');
+    expect(portExposeOpenTo({ config: { exposureMode: 'cloudflare' }, exposureMode: 'cloudflare', enableAuth: false }, portExpose)).toBe('anyone');
   });
 
   it('says nothing while there is no app row', () => {

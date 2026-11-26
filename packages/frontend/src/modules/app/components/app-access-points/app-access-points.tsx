@@ -3,13 +3,13 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card/C
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { QrCode } from '@/components/ui/qr-code';
 import { useAppContext } from '@/context/app-context';
-import { getServeStatusOptions } from '@/api-client/@tanstack/react-query.gen';
+import { getServeStatusOptions, getServicesStatusOptions } from '@/api-client/@tanstack/react-query.gen';
 import { tailscaleStatusOptions } from '@/lib/api-routes/named-status-routes';
 import { openExternal } from '@/lib/helpers/open-external';
 import { cn } from '@/lib/utils';
 import { PORT_EXPOSE_OPEN_TO_COPY, type PortExposeOpenTo } from '@/modules/app/helpers/port-expose-open-to';
 import type { AppDetails, AppInfo } from '@/types/app.types';
-import { hostPortStaysOnLoopback, LOOPBACK_HOST_PORT_INTERFACE } from '@ci-hub/common/schemas';
+import { hostPortStaysOnLoopback, LOOPBACK_HOST_PORT_INTERFACE, publishesHostPortsOnNetwork } from '@ci-hub/common/schemas';
 import { buildPublicWebIdentity, normalizeStoredHostname, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { publishesHostPort, publishesPublicWebRoute, resolveRoutingSubdomain, storedExposureForm, storedHostPortForm } from '@ci-hub/common/types';
 import { useQuery } from '@tanstack/react-query';
@@ -203,6 +203,8 @@ export function buildAppAccessPoints(input: {
   tailscaleNodeFqdn?: string | null;
   tailscaleHttpsEnabled?: boolean;
   tailscaleServedPorts?: ReadonlySet<number>;
+  /** The app's own Tailscale Service address (`https://<app>.<tailnet>.ts.net/`), when it has one. */
+  tailscaleServiceUrl?: string | null;
   /** Whether tailscaled refuses the Hub's Tailscale Serve changes; see `servePermission` in the Tailscale status. */
   tailscaleServeDenied?: boolean;
   /** Whether the last sync says the Portal refused this app a public address. */
@@ -223,6 +225,7 @@ export function buildAppAccessPoints(input: {
     tailscaleNodeFqdn,
     tailscaleHttpsEnabled = false,
     tailscaleServedPorts = new Set<number>(),
+    tailscaleServiceUrl = null,
     tailscaleServeDenied = false,
     publicAddressRefused = false,
     organizationSlug,
@@ -255,15 +258,19 @@ export function buildAppAccessPoints(input: {
     ? resolveRoutingSubdomain(record.localSubdomain, urnAppName, urnAppStoreSlug)
     : record.localSubdomain || urnAppName;
   const cleanSubdomain = baseSubdomain ? sanitizeAppSubdomain(baseSubdomain) : '';
-  // A `hostPortStaysOnLoopback` app refuses connections on the LAN address. Its loopback URL also
-  // keeps the card from offering a QR code another device could never open.
-  const browserHost = hostPortStaysOnLoopback(info) ? LOOPBACK_HOST_PORT_INTERFACE : resolveBrowserHost(internalIp);
+  // The host port answers on the LAN address only when the operator opened it on the network
+  // (`publishesHostPortsOnNetwork`); otherwise on loopback, whose URL also keeps the card from
+  // offering a QR code another device could never open.
+  const onNetwork = publishesHostPortsOnNetwork(record.config as { portOnNetwork?: boolean } | undefined, hostPortStaysOnLoopback(info));
+  const browserHost = onNetwork ? resolveBrowserHost(internalIp) : LOOPBACK_HOST_PORT_INTERFACE;
   const directPort = app.port ?? info.port ?? null;
   const localEnabled = hasDirectLocalAccess(record, { hasHostPort: directPort != null, dynamicConfig: info.dynamic_config });
   const directScheme = info.https ? 'https' : 'http';
   const directUrl = directPort && localEnabled ? `${directScheme}://${browserHost}:${directPort}${urlSuffix}` : null;
-  const vpnHost = buildTailscalePortHost(tailscaleNodeFqdn, directPort);
-  const vpnUrl = buildTailscalePortUrl(tailscaleNodeFqdn, directPort, urlSuffix);
+  // On its own Tailscale Service the app answers on 443 of its own hostname, not a port of the Hub's.
+  const serviceUrl = tailscaleServiceUrl ? `${tailscaleServiceUrl.replace(/\/+$/, '')}${urlSuffix || '/'}` : null;
+  const vpnHost = serviceUrl ? new URL(serviceUrl).host : buildTailscalePortHost(tailscaleNodeFqdn, directPort);
+  const vpnUrl = serviceUrl ?? buildTailscalePortUrl(tailscaleNodeFqdn, directPort, urlSuffix);
 
   const configuredPublicDomain = record.domain?.trim() || null;
   const resolvedPublicDomain = (record.publicDomain?.trim() || publicDomain || '').trim();
@@ -290,8 +297,9 @@ export function buildAppAccessPoints(input: {
   const expectsTailscalePublish = record.exposureMode === 'tailscale';
   // Legacy (pre-exposureMode) installs may still infer VPN from older flags.
   const legacyVpnActive = !record.exposureMode && (Boolean(record.exposedLocal) || !info.dynamic_config);
-  const vpnPortPublished = isTailscalePortPublished(directPort, tailscaleServedPorts);
-  const tailscalePublishReady = tailscaleAvailable && tailscaleHttpsEnabled && vpnPortPublished;
+  const vpnPortPublished = Boolean(serviceUrl) || isTailscalePortPublished(directPort, tailscaleServedPorts);
+  // A Service carries its own certificate, so the Hub node's HTTPS setting says nothing about it.
+  const tailscalePublishReady = tailscaleAvailable && vpnPortPublished && (Boolean(serviceUrl) || tailscaleHttpsEnabled);
 
   const localState: AccessPointState = directUrl ? 'active' : 'unavailable';
   const vpnState: AccessPointState = vpnUrl
@@ -406,6 +414,13 @@ export const AppAccessPoints = ({ app, info, publicAddressRefusal = null, openWi
 
   const tailscaleServedPorts = useMemo(() => buildTailscaleServedPortSet(serveStatus?.entries ?? []), [serveStatus?.entries]);
 
+  const { data: tailscaleServiceUrl = null } = useQuery({
+    ...getServicesStatusOptions(),
+    select: (status) => status.services.find((service) => service.appUrn === info.urn)?.url ?? null,
+    enabled: tailscaleAvailable,
+    refetchInterval: 30_000,
+  });
+
   // One refusal holds back every Private VPN app, so it comes from the Hub-wide Tailscale status.
   // Not polled: the Hub announces each change over SSE, which refetches this query.
   const { data: tailscaleServeDenied = false } = useQuery({
@@ -425,6 +440,7 @@ export const AppAccessPoints = ({ app, info, publicAddressRefusal = null, openWi
     tailscaleNodeFqdn,
     tailscaleHttpsEnabled,
     tailscaleServedPorts,
+    tailscaleServiceUrl,
     tailscaleServeDenied,
     publicAddressRefused: Boolean(publicAddressRefusal),
     organizationSlug: userSettings.ciHubOrganizationSlug,

@@ -4,7 +4,7 @@ import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
 import { resolveHubPublicDomainRoot } from '@/common/helpers/hub-origin';
 import messages from '@ci-hub/common/i18n/translations/en.json';
 import type { AppServiceFailure, HostPortMove, SSE } from '@ci-hub/common/schemas';
-import { isPortExposeApp, manifestDefaultsEdgeAuthOn, servedOpenPort } from '@ci-hub/common/schemas';
+import { isPortExposeApp, requiresHubLogin, servedOpenPort } from '@ci-hub/common/schemas';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { SSEService } from '@/core/sse/sse.service';
@@ -253,12 +253,13 @@ function dropUnservableCustomDomain(parsedForm: ParsedAppForm, exposable: boolea
  * Returns whether the form asked for anything else, so the caller can say it was reset.
  */
 function keepOnThisMachineOnly(parsedForm: ParsedAppForm): boolean {
-  const moved = Boolean(parsedForm.exposed || parsedForm.exposedLocal || parsedForm.enableAuth) || getEffectiveExposureMode(parsedForm) !== 'local';
+  // Not the login: it is on unless switched off (`requiresHubLogin`), and this app has no route to put it on.
+  const moved = Boolean(parsedForm.exposed || parsedForm.exposedLocal) || getEffectiveExposureMode(parsedForm) !== 'local';
   parsedForm.exposed = false;
   parsedForm.exposedLocal = false;
   parsedForm.exposureMode = 'local';
   parsedForm.openPort = true;
-  parsedForm.enableAuth = false;
+  parsedForm.enableAuth = undefined;
   parsedForm.domain = undefined;
   parsedForm.publicDomain = undefined;
   return moved;
@@ -315,12 +316,6 @@ function normalizeSubmittedForm(parsedForm: ParsedAppForm): ParsedAppForm {
     normalized = { ...normalized, openPort: true };
   }
 
-  // Such a form always had the Hub login, through the host port the Hub used to open for it. Closing
-  // the port must not take the login off a public route unless the form says so.
-  if (publicByFlag && normalized.openPort === false && normalized.enableAuth === undefined) {
-    normalized = { ...normalized, enableAuth: true };
-  }
-
   return normalized;
 }
 
@@ -361,10 +356,11 @@ function keepStoredExposure(parsedForm: ParsedAppForm, submitted: ParsedAppForm,
   parsedForm.openPort = mode === 'local' ? true : (submitted.openPort ?? stored.openPort);
   parsedForm.localSubdomain ??= stored.localSubdomain;
   parsedForm.publicDomain ??= stored.publicDomain;
-  // A form with no `enableAuth` has the Hub login only while its host port is open, so closing the port
-  // here must not take the login off an app that stays public.
-  const closesPortOnLogin = mode === 'cloudflare' && parsedForm.openPort === false && servedOpenPort(stored);
-  parsedForm.enableAuth ??= stored.enableAuth ?? (closesPortOnLogin || undefined);
+  // An operator who switched the login off, or opened the app's ports on the network, keeps that
+  // through a save that does not mention it.
+  parsedForm.enableAuth ??= stored.enableAuth;
+  parsedForm.portOnNetwork ??= stored.portOnNetwork;
+  parsedForm.publicPaths ??= stored.publicPaths;
 }
 
 /**
@@ -2035,16 +2031,6 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     dropUnservableCustomDomain(parsedForm, appInfo.exposable);
 
-    // Manifest edge-auth default (CI-Engineering#74): when the caller did not decide the
-    // "Require Auth" toggle — the onboarding install path sends no enableAuth at all — an
-    // exposable app that ships `hub_integration.edge_auth.default: true` starts protected.
-    // Fallback only: an explicit operator true/false (form or API) always wins, and a
-    // manifest can never force auth OFF. Placed before the queue publish so compose/labels
-    // and the persisted row all see the resolved value.
-    if (parsedForm.enableAuth === undefined) {
-      parsedForm.enableAuth = manifestDefaultsEdgeAuthOn(appInfo) || undefined;
-    }
-
     if (appInfo.force_expose && !servesForcedExposure(parsedForm)) {
       throw new TranslatableError('APP_ERROR_APP_FORCE_EXPOSED', { id: appUrn }, HttpStatus.BAD_REQUEST);
     }
@@ -2195,7 +2181,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           exposureMode: getEffectiveExposureMode(parsedForm),
           appStoreSlug: appStoreId,
           isVisibleOnGuestDashboard,
-          enableAuth: parsedForm.enableAuth ?? false,
+          enableAuth: requiresHubLogin(parsedForm),
           autoRestartOnDomainChange: parsedForm.autoRestartOnDomainChange ?? false,
           ...installerMcpAccess(params.actor, parsedForm),
         });
@@ -2260,7 +2246,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         exposedLocal: parsedForm.exposedLocal ?? !!appInfo.exposable,
         exposureMode: getEffectiveExposureMode(parsedForm),
         isVisibleOnGuestDashboard,
-        enableAuth: parsedForm.enableAuth ?? false,
+        enableAuth: requiresHubLogin(parsedForm),
         ...autoRestartColumn(parsedForm),
       });
       await this.claimCustomDomainIntent(installRecord.id, parsedForm.customDomain);
@@ -3148,21 +3134,20 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       publishForcedExposure(parsedForm);
     }
 
-    // Manifest edge-auth default (CI-Engineering#74): when this update does not carry an
-    // enableAuth decision, inherit the app's STORED choice first, and only fall to the manifest
-    // default when the app never had one (an onboarding-era install). "Explicit operator choice
-    // always wins" must survive a PARTIAL update too: a client that PATCHes some other field
-    // without resending enableAuth must not have a prior explicit `false` silently flipped back
-    // to the manifest's `true`. Inheriting the stored value also keeps hasConfigChanged from
-    // seeing a spurious diff (and restarting the app) on such updates.
-    //
-    // This MUST run before the no-change short-circuit below: a version bump re-submits the
-    // stored config verbatim (updateApp → this method); an onboarding install whose stored config
-    // never decided enableAuth then self-heals to the manifest default here, and that resolved
-    // `true` is what makes hasConfigChanged see a difference at all.
+    // An update that does not mention the login keeps the app's stored choice: a client that PATCHes
+    // some other field must not turn back on a login the operator switched off, and an unchanged
+    // value keeps hasConfigChanged from restarting the app. Undecided stays undecided, which is on
+    // (`requiresHubLogin`).
     if (parsedForm.enableAuth === undefined) {
-      const storedEnableAuth = (app.config as { enableAuth?: boolean } | null | undefined)?.enableAuth;
-      parsedForm.enableAuth = storedEnableAuth ?? (manifestDefaultsEdgeAuthOn(appInfo) || undefined);
+      parsedForm.enableAuth = (app.config as { enableAuth?: boolean } | null | undefined)?.enableAuth;
+    }
+    // The same for ports the operator opened on the network (`publishesHostPortsOnNetwork`).
+    if (parsedForm.portOnNetwork === undefined) {
+      parsedForm.portOnNetwork = (app.config as { portOnNetwork?: boolean } | null | undefined)?.portOnNetwork;
+    }
+    // And for paths the operator let through without the login.
+    if (parsedForm.publicPaths === undefined) {
+      parsedForm.publicPaths = (app.config as { publicPaths?: string[] } | null | undefined)?.publicPaths;
     }
 
     // Before the comparison below, so a choice this app can never be served on
@@ -3251,10 +3236,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     if (!appInfo.exposable) {
       // Read from parsedForm, not the destructured copies taken at the top of this method: both
-      // the production-exposed guard above and the edge-auth defaulting have since mutated it, so
-      // the stale copies would make this warning describe the REQUEST rather than what is actually
-      // being reset — announcing a reset that already happened, and staying silent on an
-      // enableAuth the defaulting just resolved.
+      // the production-exposed guard above and the stored-choice inheritance have since mutated it,
+      // so the stale copies would make this warning describe the REQUEST rather than what is
+      // actually being reset.
       if (keepOnThisMachineOnly(parsedForm)) {
         this.logger.warn(`App ${appUrn} is not exposable, resetting proxy settings`);
       }
@@ -3358,7 +3342,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       ...customDomainColumns(parsedForm),
       config: toStoredConfig(parsedForm),
       isVisibleOnGuestDashboard: parsedForm.isVisibleOnGuestDashboard ?? false,
-      enableAuth: parsedForm.enableAuth ?? false,
+      enableAuth: requiresHubLogin(parsedForm),
       maxBackups: parsedForm.maxBackups ?? null,
     });
 

@@ -1768,8 +1768,10 @@ describe('AppLifecycleService', () => {
         await service.installApp({ actor: TEST_ACTOR, appUrn, form });
 
         const row = appsRepository.createApp.mock.calls[0]?.[0] as any;
-        expect(row).toMatchObject({ exposureMode: 'local', exposedLocal: false, openPort: true, enableAuth: false, publicDomain: null });
-        expect(row.config).toMatchObject({ exposureMode: 'local', exposedLocal: false, openPort: true, enableAuth: false });
+        // The login is not part of the reset: on unless switched off, and this app has no route to put it on.
+        expect(row).toMatchObject({ exposureMode: 'local', exposedLocal: false, openPort: true, enableAuth: true, publicDomain: null });
+        expect(row.config).toMatchObject({ exposureMode: 'local', exposedLocal: false, openPort: true });
+        expect(row.config.enableAuth).toBeUndefined();
         expect(row.config.publicDomain).toBeUndefined();
         expect(appEventsQueue.publish).toHaveBeenCalledWith(
           expect.objectContaining({
@@ -2068,8 +2070,11 @@ describe('AppLifecycleService', () => {
         const row = expect.objectContaining({ exposureMode: 'cloudflare', exposedLocal: true, openPort: false, enableAuth: true });
         expect(appsRepository.createApp).toHaveBeenCalledWith(row);
         expect(appEventsQueue.publish).toHaveBeenCalledWith(
-          expect.objectContaining({ command: 'install', form: expect.objectContaining({ exposedLocal: true, openPort: false, enableAuth: true }) }),
+          expect.objectContaining({ command: 'install', form: expect.objectContaining({ exposedLocal: true, openPort: false }) }),
         );
+        // A form that never decided goes out undecided, which the route builder serves with the login.
+        const published = appEventsQueue.publish.mock.calls.at(-1)?.[0] as { form: { enableAuth?: boolean } };
+        expect(published.form.enableAuth).not.toBe(false);
       });
 
       it('leaves the login off when the form closed the port and turned it off', async () => {
@@ -3238,30 +3243,24 @@ describe('AppLifecycleService', () => {
       expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'local' }));
     });
 
-    // ── manifest edge-auth default (CI-Engineering#74) ────────────────────
-    describe('manifest edge-auth default', () => {
+    // ── the Hub login on install ──────────────────────────────────────────
+    describe('the Hub login on install', () => {
       const edgeAuthApp = { ...baseAppInfo, hub_integration: { edge_auth: { default: true } } };
 
-      it('defaults enableAuth ON for an undecided install when the manifest asks (the onboarding path sends no enableAuth)', async () => {
-        marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(edgeAuthApp as any);
+      // The onboarding, API and MCP paths send no enableAuth. Such an install once had no login
+      // unless its manifest asked for one.
+      it.each([
+        ['with a manifest asking for edge auth', edgeAuthApp],
+        ['with a manifest that says nothing', baseAppInfo],
+      ])('is on for an undecided install %s', async (_label, info) => {
+        marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(info as any);
         await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
         expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ enableAuth: true }));
       });
 
-      it('an explicit operator false always wins over the manifest default', async () => {
+      it('is off when the operator turned it off, whatever the manifest asks', async () => {
         marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(edgeAuthApp as any);
         await service.installApp({ actor: TEST_ACTOR, appUrn, form: { enableAuth: false } });
-        expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ enableAuth: false }));
-      });
-
-      it('a non-exposable app never gets auth defaulted on (the reset also strips the manifest ask)', async () => {
-        marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({ ...edgeAuthApp, exposable: false } as any);
-        await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
-        expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ enableAuth: false }));
-      });
-
-      it('without the manifest field an undecided install stays auth-OFF (existing behavior)', async () => {
-        await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
         expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ enableAuth: false }));
       });
     });
@@ -6708,15 +6707,15 @@ describe('AppLifecycleService', () => {
       expect(appsRepository.clearCustomDomainIntentElsewhere).not.toHaveBeenCalled();
     });
 
-    it('applies the manifest edge-auth default when the stored config never decided it (version-bump self-heal, #74)', async () => {
-      // updateApp re-submits app.config through updateAppConfig; onboarding-era installs
-      // stored no enableAuth key, so the marketplace update that ships edge_auth flips them ON.
+    it('leaves a stored config that never decided the login alone: undecided already means on', async () => {
+      // updateApp re-submits app.config through updateAppConfig. A manifest's edge_auth once made such
+      // a save a change (it wrote `enableAuth: true`), restarting the app; there is nothing to heal now.
       appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, hub_integration: { edge_auth: { default: true } } } as any);
       appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 } } as any);
 
       await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080 } });
 
-      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ enableAuth: true }));
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
     });
 
     it('preserves an explicit stored enableAuth=false through the same path (operator choice wins)', async () => {
@@ -6727,6 +6726,28 @@ describe('AppLifecycleService', () => {
       await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090, enableAuth: false } });
 
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ enableAuth: false }));
+    });
+
+    it('keeps the paths the operator let through without the login through a save that does not mention them', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080, publicPaths: ['/webhook'] } } as any);
+
+      await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090 } });
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({ config: expect.objectContaining({ publicPaths: ['/webhook'] }) }),
+      );
+    });
+
+    it('keeps ports the operator opened on the network through a save that does not mention them', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080, portOnNetwork: true } } as any);
+
+      await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090 } });
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({ config: expect.objectContaining({ portOnNetwork: true }) }),
+      );
     });
 
     it('does not flip a stored explicit enableAuth=false when a partial update omits the field (#74)', async () => {
@@ -7019,18 +7040,14 @@ describe('AppLifecycleService', () => {
       });
     });
 
-    it('warns about the reset using the RESOLVED settings, not the ones the request arrived with', async () => {
-      // The non-exposable reset runs after the edge-auth defaulting has already mutated the form,
-      // so the warning must read the resolved values. Reading the destructured copies taken at the
-      // top of the method would stay silent here — the request carried no enableAuth, yet an
-      // enableAuth of true is exactly what is about to be reset away.
+    it('says so in the log when a save moves an app off a route its listing does not allow', async () => {
       appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, exposable: false } as any);
-      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080, enableAuth: true } } as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 } } as any);
 
-      await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090 } }); // no exposed/exposedLocal/enableAuth
+      await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090, exposureMode: 'cloudflare', exposedLocal: true } });
 
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('not exposable, resetting proxy settings'));
-      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ enableAuth: false }));
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ exposureMode: 'local' }));
     });
 
     it('persists the RESET exposure state, not what the request asked for', async () => {
@@ -7064,7 +7081,7 @@ describe('AppLifecycleService', () => {
             exposureMode: 'local',
             exposedLocal: false,
             openPort: true,
-            enableAuth: false,
+            enableAuth: true,
             publicDomain: null,
             config: expect.objectContaining({ exposureMode: 'local', exposedLocal: false, openPort: true }),
           }),

@@ -42,7 +42,7 @@ This is useful for pre-provisioned devices or admin-managed deployments.
 
 - **Disable:** two switches in the hub `.env` turn off the sidecar and the Hub's Tailscale Serve entries separately. See [Turn Private VPN off](#turn-private-vpn-off).
 - **Auth:** set **`TAILSCALE_AUTHKEY`** for unattended setup, or use browser sign-in from the Hub UI.
-- **Routes:** by default **`HUB_TAILSCALE_EXTRA_ARGS`** targets the public Tailscale control plane and advertises `172.18.0.0/16` so tailnet clients can reach the Hub's Docker bridge. Change this if your Docker network uses a different CIDR. It only applies to the sidecar. A Hub that uses the computer's own Tailscale signs in with a plain `tailscale up` and keeps that machine's settings as they are. If that Tailscale holds settings a plain `tailscale up` can't leave out, the Hub repeats the ones Tailscale names.
+- **Routes:** by default **`HUB_TAILSCALE_EXTRA_ARGS`** targets the public Tailscale control plane, accepts other devices' routes, and advertises **no** subnet route. See [Subnet routes](#subnet-routes) before adding one. It only applies to the sidecar. A Hub that uses the computer's own Tailscale signs in with a plain `tailscale up` and keeps that machine's settings as they are, except that it withdraws the two Docker bridge routes an older Hub advertised. If that Tailscale holds settings a plain `tailscale up` can't leave out, the Hub repeats the ones Tailscale names.
 - **Sidecar name:** CI-Hub uses **`TAILSCALE_SIDECAR_CONTAINER`** when it needs to run `docker exec ... tailscale ...` against a non-default container name.
 
 The backend **`TailscaleService`** talks to Tailscale via `docker exec hub-tailscale tailscale …` when the Hub container has no host Tailscale socket.
@@ -95,13 +95,26 @@ the Serve config, but nothing resolves that name any more. If
 `TAILSCALE_SERVE_USER_DISABLED=true` is set, the Hub does not republish itself; it
 logs one warning with the `tailscale serve` command to run instead.
 
-> **Subnet routes caveat:** the sidecar advertises `172.18.0.0/16` (the Hub's
-> Docker bridge) as a fallback path. Linux clients do not accept subnet routes
-> by default (`--accept-routes`), the route must be approved in the admin
-> console, and any client that itself runs Docker typically owns the same
-> subnet locally — accepting the route there would capture that client's own
-> Docker traffic. Prefer the Serve URLs; treat the subnet route as opt-in for
-> clients that understand the trade-off.
+#### Subnet routes
+
+Older Hubs advertised the Docker bridges (`172.18.0.0/16`, `172.19.0.0/16`) as
+subnet routes by default. This Hub does not, and withdraws them the next time it
+runs `tailscale up`: the sidecar's `--reset` clears them, and on a host Tailscale
+client the Hub restates the host's routes without those two, keeping any the
+owner added. A Hub that stays signed in never runs `up` again, so on an existing
+install remove them by hand: `tailscale set --advertise-routes=` (on a host
+client, list any routes of your own after the `=`), or delete the route in the
+Tailscale admin console.
+
+Nothing needs the route, and it costs something. Once a tailnet admin approves
+it, every tailnet device that accepts routes reaches whatever sits on those
+bridges directly, without Tailscale Serve: the Hub's own API port and Traefik.
+Apps are not on them (each has its own `10.x` network), and Docker gives the
+bridges whatever range is free, so the two fixed ranges often match nothing of
+the Hub's at all. And a client that runs Docker usually owns the same range, so
+accepting the route there captures that client's own Docker traffic. Use the
+Serve URLs. Advertise a route through `HUB_TAILSCALE_EXTRA_ARGS` only for a
+network you mean every approved device to reach.
 
 ### Access apps with Tailscale URLs
 
@@ -153,6 +166,60 @@ it uses port 443, which the Hub keeps for its dashboard, or the port of a runnin
 app with **Tailscale** exposure. If `TAILSCALE_SERVE_USER_DISABLED=true` is set,
 CI-Hub neither publishes nor removes any Serve entry.
 
+### Give each app its own address (Tailscale Services)
+
+On the per-port addresses above, every app shares the Hub's hostname. A browser
+sends every cookie set for a hostname to every port on it, so each app receives
+the others' cookies. Tailscale Serve also hands each port straight to the app's
+container, so the Hub login is not in front of it.
+
+With **Tailscale Services** set up, each Private VPN app gets its own address
+instead, `https://<app>.<tailnet>.ts.net/`. The Hub's own Tailscale device serves
+it to Traefik, where the app's route carries the Hub login like every other
+route, including the operator's login-free paths (`publicPaths`). Until it is set
+up, apps keep their per-port addresses.
+
+Tailscale only lets a **tagged** device host a Service, and tagging a device
+removes its link to the user account it signed in with. So the Services always
+live on the Hub's own `hub-tailscale` container, which signs in as a separate
+tagged device. A host Tailscale client, such as the one on the owner's own
+computer, is left as it is; the Hub starts the container if it is not running.
+
+Setup, in **Settings → Network → Separate addresses for VPN apps**:
+
+1. In the tailnet policy file, add an owner for the tag (default `tag:ci-hub`):
+   ```json
+   "tagOwners": { "tag:ci-hub": ["autogroup:admin"] }
+   ```
+2. Under **Settings → Trust credentials** in the Tailscale admin console, create
+   an OAuth client with write access to **Services**, **Devices (Core)** and
+   **Auth Keys**, and the tag.
+3. Paste its ID and secret into the Hub.
+
+The Hub then signs its device in with the tag (the OAuth secret works as an auth
+key: `?ephemeral=false&preauthorized=true`), and on each sync, for each Private
+VPN app: defines `svc:<app>` through the API (`tcp:443`, the tag, and a comment
+naming this install), serves it from its device to Traefik, approves its own
+device as the host, and writes the app's route to
+`state/traefik/dynamic/tailscale-services.yml`. If another device or Hub already
+owns `svc:<app>`, the Hub uses `svc:<app>-<device>`. When an app stops, or
+Services are turned off, the Hub removes what it served and deletes only the
+Services whose comment names this install.
+
+Who may open a Service is up to the tailnet's policy file. The OAuth client is
+stored in `state/tailscale-oauth.json` (mode 0600). `TAILSCALE_OAUTH_CLIENT_ID` /
+`TAILSCALE_OAUTH_CLIENT_SECRET` (and `TAILSCALE_SERVICES_TAG`) in the env work
+too, but the Hub settings can only remove a client they saved.
+
+Caveats:
+
+- With the default sidecar deployment, that container is also the Hub's main
+  Tailscale device, so the setup turns that device from user-owned into tagged.
+- A `TAILSCALE_AUTHKEY` in the env starts the container through `containerboot`,
+  which signs in with that key. Whether that replaces the tagged login on a later
+  start has not been tested; leave it out on a Hub that uses Services.
+- Hosting a Service needs Tailscale 1.86 or later on the Hub's device.
+
 ## Turn Private VPN off
 
 Two switches in the hub `.env` turn off different parts of Private VPN. Set either
@@ -186,7 +253,7 @@ This workflow is ideal for remote maintenance, operator access, and private demo
 - Use **auth keys created for the correct environment** and rotate them when staff or devices change.
 - Treat **`TAILSCALE_AUTHKEY`** like a secret. Do not paste it into screenshots, tickets, or chat messages.
 - Review which users and devices are approved in the Tailscale admin console.
-- Keep the advertised route in **`HUB_TAILSCALE_EXTRA_ARGS`** limited to the networks CI-Hub actually needs to expose.
+- Advertise no subnet route unless you need one (see [Subnet routes](#subnet-routes)). If you set one in **`HUB_TAILSCALE_EXTRA_ARGS`**, keep it to the networks you mean every approved device to reach.
 - If you use the host Tailscale client instead of the sidecar, make sure the Hub only has access to the socket intentionally.
 
 ## Troubleshooting
@@ -196,7 +263,7 @@ This workflow is ideal for remote maintenance, operator access, and private demo
 | **Tailscale section says not available** | Make sure the `private-vpn` profile is running, or install Tailscale on the host and mount the daemon socket into the Hub container. |
 | **Browser login opens but CI-Hub never shows connected** | Wait a few seconds for the status refresh, then revisit **Settings → Network**. Confirm the device appears in the Tailscale admin console. |
 | **Auth key login fails immediately** | Verify the key starts with `tskey-auth-` and is still valid in the Tailscale admin console. |
-| **Remote device cannot reach the Hub or apps** | Confirm the remote device is logged in to the same tailnet. With the sidecar, also check that the advertised route in `HUB_TAILSCALE_EXTRA_ARGS` matches the Docker network used by the Hub. |
+| **Remote device cannot reach the Hub or apps** | Confirm the remote device is logged in to the same tailnet and opens the Serve URL (`https://<device-name>.<tailnet>.ts.net/` for the Hub, `:<app-port>/` for an app). Container addresses are not reachable over the tailnet. |
 | **Logs still mention `headscale:8080` after upgrading** | Reconnect Tailscale once so the device state is rewritten against `controlplane.tailscale.com`. If you override `HUB_TAILSCALE_EXTRA_ARGS`, keep an explicit `--login-server=https://controlplane.tailscale.com` unless you intentionally run your own control plane. |
 | **App URL works locally but not via Tailscale** | Confirm the Hub and client are on the same tailnet, approve the HTTPS/Serve consent link shown by Hub if needed, then re-save the app with **Tailscale** exposure mode. |
 | **A Private VPN app reads "App not responding" but opens from another device on the tailnet** | Run `tailscale serve status` on the host. The app's port must be listed under the device's current name, and its target must be an app that is running. If the port is missing, **Resolve** publishes it again. If the target refuses connections, the app is stopped or still starting, and **Resolve** restarts a stopped container. If the target is a host name, such as `host.docker.internal`, the Hub can't check it, and the message stays even though the app works. |

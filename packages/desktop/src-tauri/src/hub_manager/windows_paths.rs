@@ -156,33 +156,45 @@ static WINDOWS_DOCKER_HOST_STYLE_GUESS: std::sync::Mutex<Option<WindowsDockerHos
 
 #[cfg(windows)]
 pub(crate) fn windows_docker_host_style() -> WindowsDockerHostStyle {
-    // Prefer the Hub-pinned engine so bind-mount path style stays paired with
-    // DOCKER_HOST for compose / heal operations.
-    if let Some(style) = crate::docker_engine::pinned_path_style(Some(&get_hub_data_dir())) {
-        match style.as_str() {
-            "drive" => return WindowsDockerHostStyle::Drive,
-            "wsl-mnt" => return WindowsDockerHostStyle::WslMnt,
-            _ => {}
-        }
+    // A test build renders with one style. Everything below reads this computer: the process-wide
+    // engine pin (which any test running `docker` sets, by probing the real engines), the Docker
+    // CLI's context and the daemon. On a PC whose WSL engine answered while the context said
+    // Docker Desktop, renders flipped between `/c` and `/mnt/c` mid-test depending on whether
+    // another test had pinned yet. The choice itself is tested through
+    // `windows_docker_host_style_from`.
+    if cfg!(test) {
+        return WindowsDockerHostStyle::Drive;
     }
+    windows_docker_host_style_from(
+        crate::docker_engine::pinned_path_style(Some(&get_hub_data_dir())).as_deref(),
+        windows_docker_host_style_from_cli_signals,
+        || {
+            let mut guess = WINDOWS_DOCKER_HOST_STYLE_GUESS
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *guess.get_or_insert_with(detect_windows_docker_host_style_via_daemon)
+        },
+    )
+}
 
-    // Deterministic CLI signals are re-read on every call (cheap: env vars plus one
-    // small file). This follows backend switches without an app restart — the in-app
-    // WSL2-engine installer runs `docker context use wsl-engine` mid-session and its
-    // setup flow promises the switch applies without restarting the Hub.
-    if let Some(style) = windows_docker_host_style_from_cli_signals() {
-        return style;
+/// [`windows_docker_host_style`]'s choice. The Hub's pinned engine first, so bind-mount path style
+/// stays paired with DOCKER_HOST for compose and heal operations. Then the CLI's deterministic
+/// signals, re-read on every call (cheap: env vars plus one small file), which follows backend
+/// switches without an app restart: the in-app WSL2-engine installer runs `docker context use
+/// wsl-engine` mid-session and promises the switch applies without restarting the Hub. Last, a
+/// guess from the daemon.
+#[cfg(any(windows, test))]
+pub(crate) fn windows_docker_host_style_from(
+    pinned_style: Option<&str>,
+    cli_signals: impl FnOnce() -> Option<WindowsDockerHostStyle>,
+    guess: impl FnOnce() -> WindowsDockerHostStyle,
+) -> WindowsDockerHostStyle {
+    match pinned_style {
+        Some("drive") => return WindowsDockerHostStyle::Drive,
+        Some("wsl-mnt") => return WindowsDockerHostStyle::WslMnt,
+        _ => {}
     }
-
-    let mut guess = WINDOWS_DOCKER_HOST_STYLE_GUESS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(style) = *guess {
-        return style;
-    }
-    let style = detect_windows_docker_host_style_via_daemon();
-    *guess = Some(style);
-    style
+    cli_signals().unwrap_or_else(guess)
 }
 
 /// Style from deterministic CLI configuration, mirroring the docker CLI's own

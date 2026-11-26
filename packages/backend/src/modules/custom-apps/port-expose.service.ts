@@ -8,7 +8,7 @@ import { PortalClientService } from '@/core/portal/portal-client.service';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
 import { buildOriginServerName, deriveAppSlug, PORT_EXPOSE_DEFAULT_SHORT_DESC, RESERVED_APP_NAMES, sanitizeAppSubdomain } from '@ci-hub/common/types';
-import { isPortExposeApp, PORT_EXPOSE_KIND, type AppInfo } from '@ci-hub/common/schemas';
+import { isPortExposeApp, PORT_EXPOSE_KIND, requiresHubLogin, type AppInfo } from '@ci-hub/common/schemas';
 import path from 'node:path';
 import { AppsRepository } from '../apps/apps.repository';
 import { assertAppIdFree } from '../apps/app-id.helpers';
@@ -116,7 +116,9 @@ export class PortExposeService {
         openPort,
         localSubdomain: routingSubdomain,
         publicDomain: exposureMode === 'cloudflare' ? (publicDomain ?? null) : null,
-        enableAuth: false,
+        // Behind the Hub login like any app unless the operator switched it off (`requiresHubLogin`).
+        // This once wrote `false` for every exposed port.
+        enableAuth: dto.enableAuth ?? true,
         isVisibleOnGuestDashboard: false,
       });
 
@@ -207,6 +209,8 @@ export class PortExposeService {
         openPort,
         localSubdomain: routingSubdomain,
         publicDomain: exposureMode === 'cloudflare' ? (publicDomain ?? null) : null,
+        // An update that leaves the login out keeps it as it is.
+        ...(dto.enableAuth === undefined ? {} : { enableAuth: dto.enableAuth }),
         status: 'running',
       });
 
@@ -312,6 +316,7 @@ export class PortExposeService {
         appUrn: `${app.appName}:${app.appStoreSlug}` as AppUrn,
         traefikHost,
         upstreamPort,
+        requireLogin: requiresHubLogin(app),
       });
     }
 

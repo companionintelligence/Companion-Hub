@@ -10,6 +10,7 @@ import { AppsRepository } from '@/modules/apps/apps.repository';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { isMemoryProviderApp } from '@/modules/memory-connect/memory-provider.predicate';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
+import { tailscaleServicesStore } from '@/modules/tailscale/tailscale-services.store';
 import { normalizeForwardedHost } from './utils/forward-auth-host';
 import type { ForwardAuthSigningKeys } from './utils/forward-auth-signing';
 
@@ -87,6 +88,15 @@ export class ForwardAuthSecretResolver {
   ) {}
 
   /** Uses the same normalized host keys as edge SSO ticket binding. */
+  /**
+   * The app a normalized host belongs to: one of its router hostnames, else the Tailscale Service
+   * the Hub published for it (`<label>.<tailnet>.ts.net`). The Service record is read fresh, so a
+   * Service published since the last rebuild is known at once.
+   */
+  private appUrnForKnownHost(host: string): AppUrn | null {
+    return this.hostToUrn.get(host) ?? tailscaleServicesStore.appForServiceHost(host);
+  }
+
   private normalizeHost(forwardedHost: string | string[] | undefined): string {
     return normalizeForwardedHost(forwardedHost);
   }
@@ -221,7 +231,7 @@ export class ForwardAuthSecretResolver {
     } catch {
       // Rebuild failures already fall back to the last-known map.
     }
-    return this.hostToUrn.get(host) ?? null;
+    return this.appUrnForKnownHost(host) ?? null;
   }
 
   /**
@@ -280,7 +290,7 @@ export class ForwardAuthSecretResolver {
     const invalidationsAtStart = this.invalidations;
     try {
       await this.ensureHostMapFresh();
-      const appUrn = this.hostToUrn.get(host);
+      const appUrn = this.appUrnForKnownHost(host);
       if (!appUrn) {
         return this.unsigned();
       }
