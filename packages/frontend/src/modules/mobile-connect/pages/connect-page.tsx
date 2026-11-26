@@ -10,7 +10,7 @@ import { toast } from 'sonner';
 import { redirect, useNavigate } from 'react-router';
 import { markHubSessionIssuedAt, setTauriSessionId } from '@/lib/api-fetch';
 import { rememberPortalAccountEmail } from '@/lib/portal-session-hint';
-import { emailFromIdToken, loginWithPortalOidc, OidcCancelledError, resumePendingOidcLogin } from '../oidc';
+import { emailFromIdToken, exchangePortalSignIn, OidcCancelledError, resumePendingPortalSignIn, signInToPortal } from '../oidc';
 import {
   clearPortalAuth,
   establishHubSessionFromPortal,
@@ -73,21 +73,15 @@ export default function ConnectPage() {
       if (cancelled || inFlight) return;
       inFlight = true;
       try {
-        const tokens = await resumePendingOidcLogin();
-        const stored = tokens ? null : readStoredPortalAuth();
-        if (cancelled || (!tokens && !stored)) return;
-        const portalEmail = tokens ? emailFromIdToken(tokens.idToken) : null;
-        if (portalEmail) rememberPortalAccountEmail(portalEmail);
+        const signIn = await resumePendingPortalSignIn();
+        const stored = signIn ? null : readStoredPortalAuth();
+        if (cancelled || (!signIn && !stored)) return;
         setBusy(true);
         setSignInError(null);
         let portalAuth: PortalAuth;
-        if (tokens) {
-          portalAuth = {
-            token: tokens.accessToken,
-            cookie: null,
-            kind: 'oauth',
-            ...(tokens.idToken ? { idToken: tokens.idToken } : {}),
-          };
+        if (signIn) {
+          // Unspent until a Hub is picked (handleConnect), so Portal can address the id_token to it.
+          portalAuth = { token: null, cookie: null, kind: 'code', signInCode: { code: signIn.code, verifier: signIn.verifier } };
         } else if (stored) {
           portalAuth = stored;
         } else {
@@ -156,16 +150,10 @@ export default function ConnectPage() {
     setBusy(true);
     setSignInError(null);
     try {
-      // Cloud-connect PKCE only — Hub /login OIDC is portal/start + deep-link-auth.
-      const tokens = await loginWithPortalOidc(portalUrl, { signal: controller.signal });
-      const portalEmail = emailFromIdToken(tokens.idToken);
-      if (portalEmail) rememberPortalAccountEmail(portalEmail);
-      await loadDevices({
-        token: tokens.accessToken,
-        cookie: null,
-        kind: 'oauth',
-        ...(tokens.idToken ? { idToken: tokens.idToken } : {}),
-      });
+      // Cloud-connect PKCE only — Hub /login OIDC is portal/start + deep-link-auth. The code stays
+      // unspent: the Hubs are listed with it, and it is exchanged for the one picked (handleConnect).
+      const signIn = await signInToPortal(portalUrl, { signal: controller.signal });
+      await loadDevices({ token: null, cookie: null, kind: 'code', signInCode: { code: signIn.code, verifier: signIn.verifier } });
     } catch (err) {
       if (!(err instanceof OidcCancelledError)) {
         const message = err instanceof Error ? err.message : t('MOBILE_CONNECT_SIGNIN_FAILED');
@@ -213,9 +201,26 @@ export default function ConnectPage() {
           ).baseUrl
         : device.hubUrl;
       await setHubConnection(hubUrl);
+      // Spend the sign-in's code for this Hub, so the id_token Portal mints is addressed to it: a Hub
+      // refuses one addressed to no Hub, which any other Hub could have received. A code that can no
+      // longer be spent (it expired at the picker), or a Hub Portal lists with no address, leaves the
+      // Hub's own sign-in sheet below.
+      let idToken = auth?.idToken ?? null;
+      if (auth?.kind === 'code' && auth.signInCode) {
+        idToken = null;
+        if (device.resource) {
+          try {
+            const tokens = await exchangePortalSignIn({ portal: portalUrl, ...auth.signInCode }, device.resource);
+            idToken = tokens.idToken;
+            const portalEmail = emailFromIdToken(tokens.idToken);
+            if (portalEmail) rememberPortalAccountEmail(portalEmail);
+          } catch {
+            idToken = null;
+          }
+        }
+      }
       // The Portal sign-in has done its job once a Hub is chosen. Keeping its
       // tokens would let a later visit to /connect list Hubs with no sign-in.
-      const idToken = auth?.idToken;
       clearPortalAuth();
       // Cloud connect already signed this person in. The Hub session is that
       // same account. A Hub that cannot take the token still has its own sheet.

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { listen } from '@tauri-apps/api/event';
-import { emailFromIdToken, loginWithPortalOidc, OIDC_CLIENT_ID, OIDC_REDIRECT_URI, resumePendingOidcLogin } from './oidc';
+import { emailFromIdToken, exchangePortalSignIn, OIDC_CLIENT_ID, OIDC_REDIRECT_URI, resumePendingPortalSignIn, signInToPortal } from './oidc';
 import { DEFAULT_PORTAL_URL } from './portal-client';
 
 const { openAuthSession, AuthSessionCancelledError } = vi.hoisted(() => {
@@ -40,6 +40,21 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 function anyListener(): ((event: { payload: string | string[] }) => void) | undefined {
   return listeners.get('deep-link://new-url') ?? listeners.get('deep-link-oidc');
+}
+
+/** The Hub the person picks; the connect page names it when it spends the code. */
+const HUB_RESOURCE = 'urn:ci:device:hub-1';
+
+/*
+ * The sign-in and its exchange, as the connect page runs them: sign in up to the code, then spend it for
+ * the Hub picked. The tests below were written for one call that did both, and still hold for the two.
+ */
+async function loginWithPortalOidc(...args: Parameters<typeof signInToPortal>) {
+  return exchangePortalSignIn(await signInToPortal(...args), HUB_RESOURCE);
+}
+async function resumePendingOidcLogin() {
+  const signIn = await resumePendingPortalSignIn();
+  return signIn ? exchangePortalSignIn(signIn, HUB_RESOURCE) : null;
 }
 
 function tokenResponse(body: unknown, status = 200): Response {
@@ -99,7 +114,23 @@ describe('loginWithPortalOidc', () => {
     expect(body.get('grant_type')).toBe('authorization_code');
     expect(body.get('code')).toBe('auth-code-1');
     expect(body.get('code_verifier')).toMatch(/^[A-Za-z0-9_-]{20,}$/);
+    // Names the Hub, so Portal addresses the id_token to it.
+    expect(body.get('resource')).toBe(HUB_RESOURCE);
     expect(unlisten).toHaveBeenCalled(); // listener cleaned up
+  });
+
+  // The phone signs in before it knows the Hub: spending the code then would mint an id_token addressed
+  // to no Hub, which every Hub refuses.
+  it('signs in up to the code and spends nothing, until the Hub is picked', async () => {
+    const promise = signInToPortal();
+    await fireCallback('auth-code-unspent');
+
+    await expect(promise).resolves.toMatchObject({
+      portal: DEFAULT_PORTAL_URL,
+      code: 'auth-code-unspent',
+      verifier: expect.stringMatching(/^[A-Za-z0-9_-]{20,}$/),
+    });
+    expect(httpFetch).not.toHaveBeenCalled();
   });
 
   it('ignores a callback whose state does not match (CSRF / leftover hop)', async () => {
@@ -128,11 +159,13 @@ describe('loginWithPortalOidc', () => {
     const state = authorizeUrl.searchParams.get('state') ?? '';
     invoke.mockResolvedValue(`${OIDC_REDIRECT_URI}?code=once-code&state=${state}`);
 
+    // The live waiter took the code and dropped the pending sign-in, so a racing resume finds
+    // nothing to pick up; either way the code is spent once.
     const resume = resumePendingOidcLogin();
     release(tokenResponse({ access_token: 'AT' }));
 
     await expect(promise).resolves.toMatchObject({ accessToken: 'AT' });
-    await expect(resume).resolves.toMatchObject({ accessToken: 'AT' });
+    await expect(resume).resolves.toBeNull();
     expect(httpFetch).toHaveBeenCalledTimes(1);
   });
 
