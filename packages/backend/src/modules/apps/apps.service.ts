@@ -7,10 +7,11 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Inject, Injectable, forwardRef } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
-import { type AppInfo, hostPortStaysOnLoopback, LOOPBACK_HOST_PORT_INTERFACE } from '@ci-hub/common/schemas';
+import { type AppInfo, LOOPBACK_HOST_PORT_INTERFACE } from '@ci-hub/common/schemas';
+import { portAnswersNetwork } from './app-exposure.helpers';
 import type { App } from '@/core/database/drizzle/types';
 import type { AppUrn } from '@ci-hub/common/types';
-import { buildPublicWebIdentity, normalizeStoredHostname, storedMainPortOnNetwork } from '@ci-hub/common/types';
+import { buildPublicWebIdentity, normalizeStoredHostname } from '@ci-hub/common/types';
 import axios from 'axios';
 import { httpsGetExcerpt, resolveAtZoneNameservers, type ZoneAnswer } from '../registration/public-reachability';
 import { MarketplaceService } from '../marketplace/marketplace.service';
@@ -402,12 +403,12 @@ function buildTailscalePortUrl(nodeFqdn?: string | null, port?: number | null, s
 
 /**
  * Host for an app's direct `host:port` address. Compose publishes the port on 127.0.0.1 unless the
- * operator opened it on the network (`storedMainPortOnNetwork`), and always for an app whose host port
- * stays on loopback (`hostPortStaysOnLoopback`). Its LAN address then refuses the connection, from the
+ * operator opened it on the network, and always for an app whose host port stays on loopback
+ * (`portAnswersNetwork`). Its LAN address then refuses the connection, from the
  * Hub's own computer too.
  */
-function directAccessHost(app: Parameters<typeof storedMainPortOnNetwork>[0], info: AppInfo, internalIp?: string | null): string {
-  return storedMainPortOnNetwork(app, hostPortStaysOnLoopback(info)) ? resolveBrowserHost(internalIp) : LOOPBACK_HOST_PORT_INTERFACE;
+function directAccessHost(app: Parameters<typeof portAnswersNetwork>[0], info: AppInfo, internalIp?: string | null): string {
+  return portAnswersNetwork(app, info) ? resolveBrowserHost(internalIp) : LOOPBACK_HOST_PORT_INTERFACE;
 }
 
 @Injectable()
@@ -537,7 +538,7 @@ export class AppsService {
    * undefined when another computer can't reach the app on its port.
    *
    * Offered to the user as a route to click, so it follows where compose publishes the
-   * host port (`storedMainPortOnNetwork`): on every interface only when the operator
+   * host port (`portAnswersNetwork`): on every interface only when the operator
    * opened it on the network ("Open this app's port on your network"), on 127.0.0.1
    * otherwise. A Private VPN app's port is on 127.0.0.1 at most, because Tailscale Serve
    * holds it at the tailnet address, and so is the port of an app that must stay on
@@ -553,7 +554,7 @@ export class AppsService {
 
     // On 127.0.0.1 the LAN address refuses the connection, and the loopback one is rejected below for
     // pointing a remote browser at its own machine.
-    if (!storedMainPortOnNetwork(app, hostPortStaysOnLoopback(info))) {
+    if (!portAnswersNetwork(app, info)) {
       return undefined;
     }
 
