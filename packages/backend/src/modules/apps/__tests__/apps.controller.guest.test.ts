@@ -74,6 +74,29 @@ describe('AppsController.getGuestApps', () => {
     expect((result.installed[0]?.app as { publicUrl?: string } | undefined)?.publicUrl).toBe('https://webui-dev-org.example.test');
   });
 
+  it("passes on whether another computer reaches the app's port, which a record with no form can't tell the tile", async () => {
+    const read = mock<AppsReadService>();
+    read.getGuestDashboardApps.mockResolvedValue([
+      {
+        app: { id: 3, status: 'running', appName: 'open-webui' },
+        info: { id: 'open-webui' },
+        metadata: {},
+        publicUrl: null,
+        hostPortOnNetwork: true,
+      },
+    ] as never);
+
+    const result = await new AppsController(
+      read,
+      mock<AppsService>(),
+      mock<AppRuntimeMonitorService>(),
+      mock<ModuleRef>(),
+      mock<MarketplaceWhoIsService>(),
+    ).getGuestApps();
+
+    expect(result.installed[0]?.app).toMatchObject({ hostPortOnNetwork: true });
+  });
+
   it('does not include the install form, whatever the row holds', async () => {
     const result = await controllerServingGuestApps().getGuestApps();
 

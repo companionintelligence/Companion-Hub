@@ -6,6 +6,7 @@ import {
   servedExposureMode,
   storedExposureForm,
   storedHostPortForm,
+  storedMainPortOnNetwork,
 } from '../exposure.js';
 
 describe('publishesPublicWebRoute', () => {
@@ -134,5 +135,30 @@ describe('publishesMainPortOnNetwork', () => {
   it('is false for Private VPN even where the operator opened the ports on the network', () => {
     expect(publishesMainPortOnNetwork({ exposureMode: 'tailscale', portOnNetwork: true }, false)).toBe(false);
     expect(publishesMainPortOnNetwork({ exposureMode: 'tailscale', exposedLocal: true, portOnNetwork: true }, false)).toBe(false);
+  });
+});
+
+describe('storedMainPortOnNetwork', () => {
+  it('is true only where the stored form opened the port on the network', () => {
+    expect(storedMainPortOnNetwork({ config: { exposureMode: 'local', portOnNetwork: true } }, false)).toBe(true);
+    expect(storedMainPortOnNetwork({ config: { exposureMode: 'cloudflare', exposedLocal: true, portOnNetwork: true } }, false)).toBe(true);
+  });
+
+  // Since the switch came in, a port is published on 127.0.0.1 unless the operator turned it on.
+  it('is false for an app whose port answers on 127.0.0.1 only, whatever its row says', () => {
+    expect(storedMainPortOnNetwork({ config: { exposureMode: 'local' }, exposureMode: 'local', openPort: true }, false)).toBe(false);
+    expect(storedMainPortOnNetwork({ config: { exposureMode: 'local', portOnNetwork: false } }, false)).toBe(false);
+    expect(storedMainPortOnNetwork({ config: { exposureMode: 'cloudflare', exposedLocal: true } }, false)).toBe(false);
+  });
+
+  it('is false where compose publishes no host port, or keeps it on loopback', () => {
+    expect(storedMainPortOnNetwork({ config: { exposureMode: 'cloudflare', openPort: false, portOnNetwork: true } }, false)).toBe(false);
+    expect(storedMainPortOnNetwork({ config: { exposureMode: 'tailscale', openPort: true, portOnNetwork: true } }, false)).toBe(false);
+    expect(storedMainPortOnNetwork({ config: { exposureMode: 'local', portOnNetwork: true } }, true)).toBe(false);
+  });
+
+  it('is false for a record with no stored form', () => {
+    expect(storedMainPortOnNetwork({ config: null, exposureMode: 'local', openPort: true }, false)).toBe(false);
+    expect(storedMainPortOnNetwork({ exposureMode: 'cloudflare', exposedLocal: true }, false)).toBe(false);
   });
 });

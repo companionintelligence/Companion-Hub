@@ -248,6 +248,17 @@ describe('MemoryConnectService.startConnect with a loopback ci-memory address', 
     );
   });
 
+  // Since the network switch came in, ci-memory's port is on 127.0.0.1 unless the operator opened it.
+  it("says the refusal is about ci-memory's port, for a LAN or tailnet caller, and keeps a browser on the Hub", async () => {
+    const { service, resolver } = listenAllService();
+    resolver.findProvider.mockResolvedValue({ ...LOOPBACK_PROVIDER, hostPortOnLoopback: true });
+
+    for (const host of ['192.168.1.9:5002', 'hubbox.tail1234.ts.net']) {
+      await expect(service.startConnect('ci-openclaw:local', undefined, 'user-1', { host })).rejects.toMatchObject({ hubComputerOnly: true });
+    }
+    expect(await consentOrigin(service, '127.0.0.1:5002')).toBe('http://127.0.0.1:8642');
+  });
+
   it('leaves a routable ci-memory address alone for every caller', async () => {
     const { service, resolver } = listenAllService();
     resolver.findProvider.mockResolvedValue(PROVIDER);

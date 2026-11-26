@@ -9,8 +9,8 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable, Optional } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
-import { type AppServiceFailure, CURRENT_SCHEMA_VERSION, parseInstalledComposeJson } from '@ci-hub/common/schemas';
-import type { AppUrn } from '@ci-hub/common/types';
+import { type AppServiceFailure, CURRENT_SCHEMA_VERSION, hostPortStaysOnLoopback, parseInstalledComposeJson } from '@ci-hub/common/schemas';
+import { type AppUrn, storedMainPortOnNetwork } from '@ci-hub/common/types';
 import { hasUpdateAvailable } from '@ci-hub/common/validation';
 import { MarketplaceService } from '../marketplace/marketplace.service';
 import { PortAllocationRepository } from '../network/port-allocation.repository';
@@ -260,10 +260,15 @@ export class AppsReadService {
     const hub = this.configurationService.getConfig().userSettings.guestDashboard ? await this.guestRoutingNames() : null;
     const refused = await this.publicAddressRefusals();
 
-    return populated.map((entry) => ({
-      ...entry,
-      publicUrl: hub ? guestPublicUrl(entry.app, entry.info, hub, refused(createAppUrn(entry.app.appName, entry.app.appStoreSlug))) : null,
-    }));
+    return populated.map((entry) => {
+      const appUrn = createAppUrn(entry.app.appName, entry.app.appStoreSlug);
+      return {
+        ...entry,
+        publicUrl: hub ? guestPublicUrl(entry.app, entry.info, hub, refused(appUrn)) : null,
+        // The guest's record carries no form, so the tile can't tell this from the row: a port on 127.0.0.1 answers no other computer.
+        hostPortOnNetwork: storedMainPortOnNetwork(entry.app, hostPortStaysOnLoopback(entry.info)),
+      };
+    });
   }
 
   /** Whether the last answered sync refused an app its platform hostname: that name has no DNS record, so a guest must not be sent there. */

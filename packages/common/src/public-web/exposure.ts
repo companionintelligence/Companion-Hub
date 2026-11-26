@@ -104,3 +104,20 @@ export function storedHostPortForm(app: Parameters<typeof storedExposureForm>[0]
   const { openPort } = config as Record<string, unknown>;
   return { ...storedExposureForm(app), openPort: typeof openPort === 'boolean' ? openPort : undefined };
 }
+
+/**
+ * Whether another computer reaches an installed app on its own port at the Hub's LAN or tailnet
+ * address: compose publishes that port ({@link publishesHostPort}) on every interface
+ * ({@link publishesMainPortOnNetwork}). Otherwise the port answers on 127.0.0.1 at most, so only a
+ * browser on the Hub's own computer opens `<host>:<port>`. Read from the stored install form, as
+ * compose is. A record with none is published on 127.0.0.1 at most.
+ */
+export function storedMainPortOnNetwork(app: Parameters<typeof storedHostPortForm>[0], loopbackOnly: boolean): boolean {
+  const form = storedHostPortForm(app);
+  if (!form) {
+    return false;
+  }
+
+  const { portOnNetwork } = app.config as Record<string, unknown>;
+  return publishesHostPort(form) && publishesMainPortOnNetwork({ ...form, portOnNetwork: portOnNetwork === true }, loopbackOnly);
+}

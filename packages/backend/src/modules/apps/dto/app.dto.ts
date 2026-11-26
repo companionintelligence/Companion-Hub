@@ -116,8 +116,15 @@ export function pickGuestAppFields<T extends object>(app: T): Pick<T, Extract<ke
 const guestAppsSchema = z.object({
   installed: z.array(
     z.object({
-      // The address of an app on Public web. It is public already, and a guest has nothing else to build it from.
-      app: guestAppSchema.extend({ publicUrl: z.string().nullable().optional() }),
+      app: guestAppSchema.extend({
+        // The address of an app on Public web. It is public already, and a guest has nothing else to build it from.
+        publicUrl: z.string().nullable().optional(),
+        /**
+         * Whether another computer reaches the app on its own port at the Hub's address (`storedMainPortOnNetwork`).
+         * The port is on 127.0.0.1 unless the operator opened it on the network, and a guest's record carries no form.
+         */
+        hostPortOnNetwork: z.boolean().optional(),
+      }),
       info: appInfoSchemaRef,
       metadata: metadataSchema,
     }),

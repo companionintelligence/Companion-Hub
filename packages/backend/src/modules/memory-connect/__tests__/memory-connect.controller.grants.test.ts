@@ -90,6 +90,14 @@ describe('MemoryConnectController per-app grants', () => {
     expect(url).toBe('/?memoryConnect=local_only');
   });
 
+  it("lands on the Hub with a marker of its own when CI Memory's port is open on the Hub's computer only", async () => {
+    service.startConnect.mockRejectedValueOnce(new MemoryConsentUnreachableException(true));
+
+    const { url } = await controller.start({ app: APP }, session(7));
+
+    expect(url).toBe('/?memoryConnect=hub_computer_only');
+  });
+
   it('refuses Disconnect with APP_ACTION_GRANT_DENIED to a person without the restart grant', async () => {
     await expect(controller.disconnect(APP, session(8), {})).rejects.toMatchObject({ status: 403, message: 'APP_ACTION_GRANT_DENIED' });
 

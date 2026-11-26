@@ -11131,6 +11131,9 @@
                     "publicUrl": {
                       "nullable": true,
                       "type": "string"
+                    },
+                    "hostPortOnNetwork": {
+                      "type": "boolean"
                     }
                   },
                   "required": [

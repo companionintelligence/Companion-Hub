@@ -10,20 +10,40 @@ const tile = (app: Partial<Tile['app']> = {}, info: Partial<Tile['info']> = {}) 
     info: { port: 3000, dynamic_config: true, url_suffix: '', ...info },
   }) as unknown as Tile;
 
+/** An app whose port the operator opened on the network ("Open this app's port on your network"). */
+const open = (app: Partial<Tile['app']> = {}, info: Partial<Tile['info']> = {}) => tile({ hostPortOnNetwork: true, ...app }, info);
+
 const offered = (data: Tile, viewerHostname: string, sslPort = 443) =>
   guestTileAddresses({ data, sslPort, publicDomain: 'example.com', viewerHostname }).map(({ url }) => url);
 
 describe('guestTileAddresses', () => {
   it('offers a guest on the LAN the public address and the port on the host they came in on', () => {
-    expect(offered(tile(), '192.168.1.20')).toEqual(['https://app-dev-org.example.com', 'http://192.168.1.20:18850']);
+    expect(offered(open(), '192.168.1.20')).toEqual(['https://app-dev-org.example.com', 'http://192.168.1.20:18850']);
   });
 
   it('offers a tailnet name the same way', () => {
-    expect(offered(tile(), 'hub.tailnet.example')).toEqual(['https://app-dev-org.example.com', 'http://hub.tailnet.example:18850']);
+    expect(offered(open(), 'hub.tailnet.example')).toEqual(['https://app-dev-org.example.com', 'http://hub.tailnet.example:18850']);
   });
 
   it('never offers a guest on another machine 127.0.0.1', () => {
-    expect(offered(tile({ publicUrl: undefined }), '192.168.1.20')).toEqual(['http://192.168.1.20:18850']);
+    expect(offered(open({ publicUrl: undefined }), '192.168.1.20')).toEqual(['http://192.168.1.20:18850']);
+  });
+
+  // The Hub publishes a host port on 127.0.0.1 unless the operator opened it on the network, so from another
+  // computer `<host>:<port>` doesn't answer. A guest on the Hub's computer still gets 127.0.0.1.
+  it('offers no port on the LAN or a tailnet name for an app whose port answers on 127.0.0.1 only', () => {
+    for (const data of [tile(), tile({ hostPortOnNetwork: false })]) {
+      expect(offered(data, '192.168.1.20')).toEqual(['https://app-dev-org.example.com']);
+      expect(offered(data, 'hub.tailnet-abc.ts.net')).toEqual(['https://app-dev-org.example.com']);
+      expect(offered(data, 'localhost')).toEqual(['https://app-dev-org.example.com', 'http://127.0.0.1:18850']);
+    }
+  });
+
+  it('has nothing to offer another computer for a This machine only app with its port on 127.0.0.1', () => {
+    const data = tile({ exposureMode: 'local', openPort: true, publicUrl: undefined });
+
+    expect(offered(data, '192.168.1.20')).toEqual([]);
+    expect(offered(data, 'localhost')).toEqual(['http://127.0.0.1:18850']);
   });
 
   it('keeps 127.0.0.1 for a browser on the Hub itself', () => {
@@ -47,7 +67,7 @@ describe('guestTileAddresses', () => {
   });
 
   it('appends the url suffix and the https scheme a manifest asks for', () => {
-    expect(offered(tile({}, { url_suffix: '/ui', https: true }), '192.168.1.20')).toEqual([
+    expect(offered(open({}, { url_suffix: '/ui', https: true }), '192.168.1.20')).toEqual([
       'https://app-dev-org.example.com/ui',
       'https://192.168.1.20:18850/ui',
     ]);
@@ -83,7 +103,7 @@ describe('guestTileAddresses', () => {
   });
 
   it('keeps plain http for a port Tailscale Serve does not hold, on the tailnet name too', () => {
-    expect(offered(tile({ exposureMode: 'cloudflare' }), 'hub.tailnet-abc.ts.net')).toEqual([
+    expect(offered(open({ exposureMode: 'cloudflare' }), 'hub.tailnet-abc.ts.net')).toEqual([
       'https://app-dev-org.example.com',
       'http://hub.tailnet-abc.ts.net:18850',
     ]);
@@ -94,10 +114,11 @@ describe('guestTileAddresses', () => {
   });
 
   it('offers no port link for a port of 0', () => {
-    expect(offered(tile({ port: 0, publicUrl: undefined }, { port: undefined }), '192.168.1.20')).toEqual([]);
+    expect(offered(open({ port: 0, publicUrl: undefined }, { port: undefined }), '192.168.1.20')).toEqual([]);
   });
 
   it('offers no port for an app that does not publish one', () => {
     expect(offered(tile({ exposedLocal: false, openPort: false, publicUrl: undefined }), '192.168.1.20')).toEqual([]);
+    expect(offered(tile({ exposedLocal: false, openPort: false, publicUrl: undefined }), 'localhost')).toEqual([]);
   });
 });

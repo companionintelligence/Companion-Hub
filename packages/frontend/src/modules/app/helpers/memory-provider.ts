@@ -29,6 +29,8 @@ const MEMORY_CONNECT_RESULT_TOASTS: Readonly<Record<string, string>> = {
   unavailable: 'MEMORY_CONNECT_UNAVAILABLE_TOAST',
   // CI Memory answers only on the Hub machine and its local network, and this browser came another way.
   local_only: 'MEMORY_CONNECT_LOCAL_ONLY_TOAST',
+  // CI Memory's port is open on the Hub's own computer only, and this browser is on another one.
+  hub_computer_only: 'MEMORY_CONNECT_HUB_COMPUTER_ONLY_TOAST',
   // The connect failed after another person's connection had been revoked for it.
   previous_removed: 'MEMORY_CONNECT_PREVIOUS_REMOVED_TOAST',
   // Connecting restarts the app, and this person may not restart it.

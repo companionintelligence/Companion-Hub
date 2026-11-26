@@ -1,6 +1,5 @@
 import type { GuestAppsDto } from '@/api-client';
 import { hasDirectLocalAccess, isLoopbackHost, resolveReachableHubHost } from '@/modules/app/components/app-access-points/app-access-points';
-import { hostPortStaysOnLoopback } from '@ci-hub/common/schemas';
 
 const LOOPBACK_HOST = '127.0.0.1';
 const TAILNET_HOST_SUFFIX = '.ts.net';
@@ -15,7 +14,9 @@ export interface GuestTileAddress {
  * The host a guest can reach an app's port on, or `null` when there is none.
  *
  * `127.0.0.1` is the guest's own computer, so it is right only for a browser on the Hub. From a LAN
- * or tailnet address, the name the browser used to reach this page is one it can reach. From the
+ * or tailnet address, the name the browser used to reach this page is one it can reach, but only for
+ * a port the operator opened on the network: any other is published on 127.0.0.1, and a Private VPN
+ * app's always is (`storedMainPortOnNetwork`, which the Hub answers as `hostPortOnNetwork`). From the
  * public hostname nothing is: the tunnel carries 443 only.
  */
 function guestPortHost(data: GuestAppsDto['installed'][number], viewerHostname: string, publicDomain: string): string | null {
@@ -23,8 +24,7 @@ function guestPortHost(data: GuestAppsDto['installed'][number], viewerHostname: 
     return LOOPBACK_HOST;
   }
 
-  // A Private VPN app's port is on loopback at most: Tailscale Serve holds it at the tailnet address (`publishesMainPortOnNetwork`).
-  if (hostPortStaysOnLoopback(data.info) || data.app.exposureMode === 'tailscale') {
+  if (data.app.hostPortOnNetwork !== true) {
     return null;
   }
 
