@@ -5,6 +5,7 @@ import { CI_MARKETPLACE_STORE_SLUG } from '@/core/portal/portal.constants';
 import type { ServiceInput } from '@ci-hub/common/schemas';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import yaml from 'yaml';
+import { NestedBindMountsError } from '../../bind-mount-guard';
 import { DockerComposeBuilder, volumePathsBeforeMoves } from '../compose.builder';
 import { ServiceBuilder } from '../service.builder';
 
@@ -153,6 +154,44 @@ describe('DockerComposeBuilder', () => {
       ];
       await expect(composeBuilder.getDockerCompose(services, {}, urn, subnet)).rejects.toThrow(
         /mounts a folder inside another folder it can write to: "\$\{APP_DATA_DIR\}\/data\/db" \(db\) is inside "\$\{APP_DATA_DIR\}\/data", which web can write to/,
+      );
+    });
+
+    it('refuses nested folders with an error of its own, so the reason reaches the app page', async () => {
+      const services: ServiceInput[] = [
+        {
+          name: 'app',
+          image: 'image',
+          internalPort: 80,
+          isMain: true,
+          volumes: [
+            { hostPath: '${APP_DATA_DIR}/data', containerPath: '/data' },
+            { hostPath: '${APP_DATA_DIR}/data/linuxbrew', containerPath: '/home/linuxbrew' },
+          ],
+        },
+      ];
+      await expect(composeBuilder.getDockerCompose(services, {}, urn, subnet)).rejects.toBeInstanceOf(NestedBindMountsError);
+    });
+
+    it('builds nested folders when the compose only takes the installed version down', async () => {
+      // An app installed from a listing that nested its folders: Stop and an update write its compose
+      // to run `down`. Every start checks the mounts again (DockerService.assertBindMountsSafe).
+      const services: ServiceInput[] = [
+        {
+          name: 'app',
+          image: 'image',
+          internalPort: 80,
+          isMain: true,
+          volumes: [
+            { hostPath: '${APP_DATA_DIR}/data', containerPath: '/data' },
+            { hostPath: '${APP_DATA_DIR}/data/linuxbrew', containerPath: '/home/linuxbrew' },
+          ],
+        },
+      ];
+      const teardown = new DockerComposeBuilder('ci.computer', 'ci.lan', true, { refuseNestedBindMounts: false });
+      const built = yaml.parse(await teardown.getDockerCompose(services, {}, urn, subnet));
+      expect(built.services.app.volumes).toEqual(
+        expect.arrayContaining([expect.stringContaining('/data/linuxbrew:/home/linuxbrew'), expect.stringContaining('/data:/data')]),
       );
     });
 
