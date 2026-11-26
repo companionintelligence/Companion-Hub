@@ -269,7 +269,7 @@ describe('PortExposeCreatePage', () => {
       expect(createMutation.mutate).not.toHaveBeenCalled();
     });
 
-    // The Portal calls its own name taken, and that answer replaced the reason given under the field.
+    // The Portal calls its own name taken. That answer replaced the reason given under the field.
     it('on Public web without asking the Portal about the name', async () => {
       DOMAINS.domains = [{ id: '2', domain: 'ci1.pw', isDefault: true, offered: true }];
       renderPage();

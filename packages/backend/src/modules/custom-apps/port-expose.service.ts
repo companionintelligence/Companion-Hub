@@ -175,7 +175,7 @@ export class PortExposeService {
       throw new TranslatableError('PORT_EXPOSE_SUBDOMAIN_REQUIRED', undefined, HttpStatus.BAD_REQUEST);
     }
 
-    // Outside Public Web the settings dialog has no subdomain field, so the name decides, and a name can't be changed.
+    // Outside Public Web the settings dialog has no subdomain field, so the name decides. A name can't be changed.
     // A subdomain that sanitizes to nothing ("-") leaves the row on the name as well.
     const requestedSubdomain = sanitizeAppSubdomain(localSubdomain?.trim() ?? '');
     assertNotHubSubdomain(requestedSubdomain || extractAppUrn(appUrn).appName, requestedSubdomain ? 'subdomain' : 'existing-name');
@@ -353,7 +353,7 @@ export class PortExposeService {
     /*
      * Never under the Hub's own slug (CI-Portal#1091). A port named Hub before the refusal still holds
      * it. On a Portal row whose Hub kind that port already cleared, a `remove` released the Hub's DNS
-     * record with the row, and removing the port is what PORT_EXPOSE_NAME_RESERVED_FOR_HUB asks for.
+     * record with the row. Removing the port is what PORT_EXPOSE_NAME_RESERVED_FOR_HUB asks for.
      */
     if (entry.slug && isHubReservedSubdomain(entry.slug)) {
       this.logger.warn(

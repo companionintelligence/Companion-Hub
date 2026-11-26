@@ -234,7 +234,7 @@ export default function PortExposeCreatePage() {
 
     const exposureMode = resolveExposureMode(values.exposureMode, { cloudflareAvailable, tailscaleAvailable });
 
-    // Companion Portal files every mode under this name, and `hub` is the Hub's own (CI-Portal#1091).
+    // Companion Portal files every mode under this name. `hub` is the Hub's own (CI-Portal#1091).
     const routingSubdomain = exposureMode === 'cloudflare' ? values.localSubdomain || slug : slug;
     if (isHubReservedSubdomain(routingSubdomain)) {
       setError(exposureMode === 'cloudflare' ? 'localSubdomain' : 'name', {
