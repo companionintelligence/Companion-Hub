@@ -68,34 +68,100 @@ fn check_docker_access_uncached() -> DockerAccessCheck {
         }
     };
 
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    docker_access_from_info_output(
+        output.status.success(),
+        output.status.code(),
+        &String::from_utf8_lossy(&output.stdout),
+        &String::from_utf8_lossy(&output.stderr),
+    )
+}
+
+/// What a finished `docker info` says about this user's access to Docker.
+pub(crate) fn docker_access_from_info_output(
+    succeeded: bool,
+    exit_code: Option<i32>,
+    stdout: &str,
+    stderr: &str,
+) -> DockerAccessCheck {
+    let (stderr, config_file_unreadable) = without_cli_warnings(stderr);
+    let stderr = stderr.trim();
+    let stdout = stdout.trim();
     let combined = if !stderr.is_empty() && !stdout.is_empty() {
         format!("{}\n{}", stderr, stdout)
     } else if !stderr.is_empty() {
-        stderr.clone()
+        stderr.to_string()
     } else {
-        stdout.clone()
+        stdout.to_string()
     };
 
-    if output.status.success() {
-        // `docker info` can exit 0 while printing daemon-unreachable errors to
-        // stderr (e.g. when Docker Desktop is paused or still starting).  Run
-        // the same classifier used for non-zero exits so those cases are caught.
-        let check = classify_docker_access_result(&combined, output.status.code());
-        if matches!(
+    // `docker info` can exit 0 while printing daemon-unreachable errors to stderr (e.g. when
+    // Docker Desktop is paused or still starting). Run the same classifier used for non-zero exits
+    // so those cases are caught.
+    let mut check = classify_docker_access_result(&combined, exit_code);
+    if succeeded
+        && !matches!(
             check.state,
             DockerAccessState::DaemonUnavailable | DockerAccessState::PermissionDenied
-        ) {
-            return check;
-        }
+        )
+    {
         return DockerAccessCheck {
             state: DockerAccessState::Available,
             detail: None,
         };
     }
 
-    classify_docker_access_result(&combined, output.status.code())
+    if config_file_unreadable {
+        // Without its config file the CLI also loses its registry logins and, when no engine is
+        // pinned through DOCKER_HOST, the current context. The warning itself stays out: its
+        // "permission denied" or "Access is denied" would read as Docker refusing this user.
+        // The note goes right after Docker's own error, ahead of the client and server sections
+        // `docker info` prints to stdout, since the screens show only the first lines.
+        let detail = check.detail.get_or_insert_with(String::new);
+        let at = if !stderr.is_empty() && detail.starts_with(stderr) {
+            stderr.len()
+        } else {
+            detail.len()
+        };
+        let note = if at == 0 {
+            CONFIG_FILE_UNREADABLE_NOTE.to_string()
+        } else {
+            format!("\n{CONFIG_FILE_UNREADABLE_NOTE}")
+        };
+        detail.insert_str(at, &note);
+    }
+    check
+}
+
+/// Added after the error when `docker info` warned that it couldn't load or parse its config file.
+pub(crate) const CONFIG_FILE_UNREADABLE_NOTE: &str =
+    "Docker could not read its config file, so it ran without the settings in it, such as the current context.";
+
+/// Drops the warnings the Docker CLI prints about its own files before carrying on and says
+/// whether one of them was about the config file.
+///
+/// "WARNING: Error loading config file: <why>" comes when it can't read the config file.
+/// `sudo docker login` leaves `~/.docker/config.json` owned by root, so the reason is often
+/// "permission denied". "WARNING: Error parsing config file (<path>): <why>" comes when the file
+/// is broken. "WARNING: Plugin \"<path>\" is not valid: ...: permission denied" comes when a CLI
+/// plugin can't be run. These are about files, not the daemon, so they must not read as Docker
+/// refusing this user, nor become the first line of a real error.
+fn without_cli_warnings(stderr: &str) -> (String, bool) {
+    let mut config_file_unreadable = false;
+    let kept = stderr
+        .lines()
+        .filter(|line| {
+            let lower = line.trim_start().to_lowercase();
+            if lower.starts_with("warning: error loading config file")
+                || lower.starts_with("warning: error parsing config file")
+            {
+                config_file_unreadable = true;
+                return false;
+            }
+            !(lower.starts_with("warning: plugin ") && lower.contains(" is not valid"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    (kept, config_file_unreadable)
 }
 
 pub(crate) fn classify_docker_access_result(
@@ -110,6 +176,20 @@ pub(crate) fn classify_docker_access_result(
         && (combined_lower.contains("the system cannot find the file specified")
             || combined_lower.contains("the pipe has been ended")
             || combined_lower.contains("the semaphore timeout period has expired"));
+
+    // The CLI stopped before asking any engine: it couldn't read the current context (left owned
+    // by root by `sudo docker context create`) or the context doesn't exist. Docker 20.10 checks
+    // the context first and prints only its meta.json path and why, so that path counts too. No
+    // daemon refused this user, so the "permission denied" in it must not read as that.
+    if combined_lower.contains("unable to resolve docker endpoint")
+        || combined_lower.contains("contexts/meta/")
+        || combined_lower.contains("contexts\\meta\\")
+    {
+        return DockerAccessCheck {
+            state: DockerAccessState::Error,
+            detail: Some(combined.to_string()),
+        };
+    }
 
     // Docker 29 says "failed to connect to the docker API at ...; check if the path is correct and
     // if the daemon is running" when the socket is gone, which is how a stopped Docker Desktop,
