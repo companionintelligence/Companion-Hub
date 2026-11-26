@@ -11134,6 +11134,10 @@
                     },
                     "hostPortOnNetwork": {
                       "type": "boolean"
+                    },
+                    "tailscaleServiceLabel": {
+                      "nullable": true,
+                      "type": "string"
                     }
                   },
                   "required": [

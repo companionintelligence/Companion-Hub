@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
+import { tailscaleServicesStore } from '../../tailscale/tailscale-services.store';
 import { AppsReadService } from '../apps-read.service';
 import { AppsRepository } from '../apps.repository';
 import { AppFilesManager } from '../app-files-manager';
@@ -366,6 +367,32 @@ describe('AppsReadService.getGuestDashboardApps', () => {
     expect((await build({ config: opened, info: { hub_integration: { mcp_client: true } } }).getGuestDashboardApps())[0]?.hostPortOnNetwork).toBe(
       false,
     );
+  });
+
+  // With Tailscale Services a Private VPN app answers at `https://<label>.<tailnet>.ts.net/`, and its per-port Serve entry is gone.
+  it("gives a Private VPN app's Tailscale Service label, and nothing of the tailnet's name", async () => {
+    const published = vi
+      .spyOn(tailscaleServicesStore, 'publishedServices')
+      .mockReturnValue(new Map([[urn, { name: 'svc:jellyfin', fqdn: 'jellyfin.tailnet-abc.ts.net' }]]) as never);
+    try {
+      const [entry] = await build({ config: { exposureMode: 'tailscale', openPort: true } }).getGuestDashboardApps();
+
+      expect(entry?.tailscaleServiceLabel).toBe('jellyfin');
+      expect(JSON.stringify(entry)).not.toContain('tailnet-abc');
+    } finally {
+      published.mockRestore();
+    }
+  });
+
+  it('gives no Service label to an app the Hub published no Service for', async () => {
+    const published = vi.spyOn(tailscaleServicesStore, 'publishedServices').mockReturnValue(new Map());
+    try {
+      const [entry] = await build({ config: { exposureMode: 'tailscale', openPort: true } }).getGuestDashboardApps();
+
+      expect(entry?.tailscaleServiceLabel).toBeNull();
+    } finally {
+      published.mockRestore();
+    }
   });
 
   it('gives no address the Portal refused, because no DNS record exists for it', async () => {

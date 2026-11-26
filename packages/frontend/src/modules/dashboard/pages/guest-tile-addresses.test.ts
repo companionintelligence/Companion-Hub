@@ -102,6 +102,29 @@ describe('guestTileAddresses', () => {
     expect(offered(open, 'hub.tailnet-abc.ts.net')).toEqual(['https://hub.tailnet-abc.ts.net:18850']);
   });
 
+  // With Tailscale Services the app answers on 443 of its own name, and its port on the Hub's name is taken down.
+  it("links a Private VPN app on its own Tailscale Service at that address, on the viewer's tailnet", () => {
+    const data = tile({ exposureMode: 'tailscale', openPort: true, publicUrl: undefined, tailscaleServiceLabel: 'kuma' });
+
+    expect(offered(data, 'Hub.tailnet-abc.ts.net')).toEqual(['https://kuma.tailnet-abc.ts.net/']);
+    expect(offered(tile({ ...data.app, tailscaleServiceLabel: 'kuma' }, { url_suffix: '/dashboard' }), 'hub.tailnet-abc.ts.net')).toEqual([
+      'https://kuma.tailnet-abc.ts.net/dashboard',
+    ]);
+    expect(guestTileAddresses({ data, sslPort: 443, publicDomain: 'example.com', viewerHostname: 'hub.tailnet-abc.ts.net' })[0]?.label).toBe(
+      'kuma.tailnet-abc.ts.net',
+    );
+  });
+
+  it('keeps the per-port address for a Private VPN app with no Service, and offers no Service off the tailnet', () => {
+    const service = tile({ exposureMode: 'tailscale', openPort: true, publicUrl: undefined, tailscaleServiceLabel: 'kuma' });
+
+    expect(offered(tile({ ...service.app, tailscaleServiceLabel: undefined }), 'hub.tailnet-abc.ts.net')).toEqual([
+      'https://hub.tailnet-abc.ts.net:18850',
+    ]);
+    expect(offered(service, '192.168.1.20')).toEqual([]);
+    expect(offered(service, 'localhost')).toEqual(['http://127.0.0.1:18850']);
+  });
+
   it('keeps plain http for a port Tailscale Serve does not hold, on the tailnet name too', () => {
     expect(offered(open({ exposureMode: 'cloudflare' }), 'hub.tailnet-abc.ts.net')).toEqual([
       'https://app-dev-org.example.com',

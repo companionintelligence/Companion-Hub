@@ -74,7 +74,7 @@ describe('AppsController.getGuestApps', () => {
     expect((result.installed[0]?.app as { publicUrl?: string } | undefined)?.publicUrl).toBe('https://webui-dev-org.example.test');
   });
 
-  it("passes on whether another computer reaches the app's port, which a record with no form can't tell the tile", async () => {
+  it("passes on whether another computer reaches the app's port and its Tailscale Service label, which a record with no form can't tell the tile", async () => {
     const read = mock<AppsReadService>();
     read.getGuestDashboardApps.mockResolvedValue([
       {
@@ -83,6 +83,7 @@ describe('AppsController.getGuestApps', () => {
         metadata: {},
         publicUrl: null,
         hostPortOnNetwork: true,
+        tailscaleServiceLabel: 'open-webui',
       },
     ] as never);
 
@@ -94,7 +95,7 @@ describe('AppsController.getGuestApps', () => {
       mock<MarketplaceWhoIsService>(),
     ).getGuestApps();
 
-    expect(result.installed[0]?.app).toMatchObject({ hostPortOnNetwork: true });
+    expect(result.installed[0]?.app).toMatchObject({ hostPortOnNetwork: true, tailscaleServiceLabel: 'open-webui' });
   });
 
   it('does not include the install form, whatever the row holds', async () => {

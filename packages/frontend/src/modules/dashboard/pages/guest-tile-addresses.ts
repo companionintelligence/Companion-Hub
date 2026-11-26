@@ -60,9 +60,17 @@ export function guestTileAddresses(input: {
   }
 
   // On the node's own name Tailscale Serve holds a Private VPN app's port, over HTTPS and whether or not the host port is open.
+  // An app on its own Tailscale Service answers on 443 of `<label>.<tailnet>.ts.net` instead, and nothing listens on that port.
   const viewer = input.viewerHostname.toLowerCase().replace(/\.+$/, '');
   if (app.exposureMode === 'tailscale' && viewer.endsWith(TAILNET_HOST_SUFFIX)) {
-    addresses.push({ key: 'vpn', url: `https://${viewer}:${directPort}${urlSuffix}`, label: `${viewer}:${directPort}` });
+    // `<node>.<tailnet>.ts.net`: the Service is on the same tailnet as the name this page was opened on.
+    const tailnet = viewer.split('.').length >= 4 ? viewer.slice(viewer.indexOf('.') + 1) : null;
+    const service = app.tailscaleServiceLabel && tailnet ? `${app.tailscaleServiceLabel.toLowerCase()}.${tailnet}` : null;
+    addresses.push(
+      service
+        ? { key: 'vpn', url: `https://${service}${urlSuffix || '/'}`, label: service }
+        : { key: 'vpn', url: `https://${viewer}:${directPort}${urlSuffix}`, label: `${viewer}:${directPort}` },
+    );
     return addresses;
   }
 

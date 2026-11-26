@@ -850,6 +850,7 @@ export type GuestAppsDto = {
             ignoredVersion: number;
             publicUrl?: string;
             hostPortOnNetwork?: boolean;
+            tailscaleServiceLabel?: string;
         };
         info: {
             id: string;

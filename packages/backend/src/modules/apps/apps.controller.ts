@@ -101,8 +101,8 @@ export class AppsController {
   @ApiResponse({ type: GuestAppsDto })
   async getGuestApps() {
     const guest = await this.appsReadService.getGuestDashboardApps();
-    const installed = guest.map(({ app, info, metadata, publicUrl, hostPortOnNetwork }) => ({
-      app: { ...pickGuestAppFields(app), publicUrl, hostPortOnNetwork },
+    const installed = guest.map(({ app, info, metadata, publicUrl, hostPortOnNetwork, tailscaleServiceLabel }) => ({
+      app: { ...pickGuestAppFields(app), publicUrl, hostPortOnNetwork, tailscaleServiceLabel },
       info,
       metadata,
     }));

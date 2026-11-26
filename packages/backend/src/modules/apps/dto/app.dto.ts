@@ -124,6 +124,11 @@ const guestAppsSchema = z.object({
          * The port is on 127.0.0.1 unless the operator opened it on the network, and a guest's record carries no form.
          */
         hostPortOnNetwork: z.boolean().optional(),
+        /**
+         * A Private VPN app on its own Tailscale Service answers at `https://<label>.<tailnet>.ts.net/`, and no longer on the
+         * Hub's per-port address. Only the label: a guest on the tailnet reads the rest from the address they came in on.
+         */
+        tailscaleServiceLabel: z.string().nullable().optional(),
       }),
       info: appInfoSchemaRef,
       metadata: metadataSchema,
