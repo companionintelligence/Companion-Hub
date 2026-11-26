@@ -9,8 +9,8 @@ import type { FilesystemService } from '@/core/filesystem/filesystem.service';
 import type { AppStatus } from '@/core/database/drizzle/types';
 import type { LoggerService } from '@/core/logger/logger.service';
 import type { AppsRepository } from '@/modules/apps/apps.repository';
-import { APP_STARTING_MIDDLEWARE, TraefikLabelsBuilder, withAppStartingPage } from '../builders/traefik-labels.builder';
-import { APP_DOWN_ROUTER_SUFFIX, TraefikConfigService } from '../traefik-config.service';
+import { APP_STARTING_MIDDLEWARE, TraefikLabelsBuilder, withAppStartingPage, withHubLoginOnEveryRouter } from '../builders/traefik-labels.builder';
+import { APP_DOWN_ROUTER_SUFFIX, SESSION_NO_EDGE_CACHE_MIDDLEWARE, SESSION_ROUTER_SUFFIX, TraefikConfigService } from '../traefik-config.service';
 
 const written = new Map<string, string>();
 vi.mock('@/common/helpers/bind-mount-helpers', async (importOriginal) => ({
@@ -21,6 +21,121 @@ vi.mock('@/common/helpers/bind-mount-helpers', async (importOriginal) => ({
 }));
 
 const DYNAMIC_DIR = '/data/state/traefik/dynamic';
+
+/** A request as Traefik's router matching sees it. */
+interface RouteRequest {
+  host: string;
+  path: string;
+  headers?: Record<string, string>;
+}
+
+/**
+ * Whether a router rule matches a request, for the matchers the Hub writes (`Host`, `Path`,
+ * `PathPrefix`, `Header`, `HeaderRegexp`) joined by `&&`, `||`, `!` and parentheses.
+ */
+function ruleMatches(rule: string, request: RouteRequest): boolean {
+  const tokens = rule.match(/\|\||&&|!|\(|\)|,|`[^`]*`|[A-Za-z]+/g) ?? [];
+  let at = 0;
+  const header = (name: string) => Object.entries(request.headers ?? {}).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1];
+  const matcher = (name: string, [first = '', second = '']: string[]): boolean => {
+    switch (name) {
+      case 'Host':
+        return request.host.toLowerCase() === first.toLowerCase();
+      case 'Path':
+        return request.path === first;
+      case 'PathPrefix':
+        return request.path.startsWith(first);
+      case 'Header':
+        return header(first) === second;
+      case 'HeaderRegexp': {
+        const value = header(first);
+        return value !== undefined && new RegExp(second).test(value);
+      }
+      default:
+        throw new Error(`This test knows no matcher ${name}`);
+    }
+  };
+  const factor = (): boolean => {
+    const token = tokens[at++] ?? '';
+    if (token === '!') return !factor();
+    if (token === '(') {
+      const value = or();
+      at++;
+      return value;
+    }
+    // A matcher: its name, then its arguments in backticks between parentheses.
+    at++;
+    const args: string[] = [];
+    while (at < tokens.length && tokens[at] !== ')') {
+      const arg = tokens[at++] ?? '';
+      if (arg !== ',') args.push(arg.slice(1, -1));
+    }
+    at++;
+    return matcher(token, args);
+  };
+  const and = (): boolean => {
+    let value = factor();
+    while (tokens[at] === '&&') {
+      at++;
+      value = factor() && value;
+    }
+    return value;
+  };
+  const or = (): boolean => {
+    let value = and();
+    while (tokens[at] === '||') {
+      at++;
+      value = and() || value;
+    }
+    return value;
+  };
+  return or();
+}
+
+/**
+ * The routers a container's labels give the Docker provider that rank otherwise than their copy in
+ * apps.yml, under `<name>@docker`: those with a priority. Without one a Docker router ranks by the
+ * length of its rule like its copy and the two are the same route.
+ */
+function dockerRoutersWithPriority(
+  labels: Record<string, string>,
+): Record<string, { rule: string; entryPoints: string[]; priority: number; middlewares: string[] }> {
+  const options = new Map<string, Record<string, string>>();
+  for (const [key, value] of Object.entries(labels)) {
+    const [, router, option] = /^traefik\.http\.routers\.([^.]+)\.([^.]+)$/.exec(key) ?? [];
+    if (router && option) options.set(router, { ...options.get(router), [option.toLowerCase()]: value });
+  }
+  return Object.fromEntries(
+    [...options]
+      .filter(([, router]) => Number(router.priority) > 0 && router.rule)
+      .map(([name, router]) => [
+        `${name}@docker`,
+        {
+          rule: router.rule ?? '',
+          entryPoints: (router.entrypoints ?? '').split(','),
+          priority: Number(router.priority),
+          middlewares: (router.middlewares ?? '').split(',').filter(Boolean),
+        },
+      ]),
+  );
+}
+
+/**
+ * The router Traefik sends a request on the `web` entry point to: of those whose rule matches, the
+ * one with the highest priority, or else the longest rule in bytes. A tie at the top fails the test:
+ * Traefik's pick between the two is not defined.
+ */
+function routerFor(routers: Record<string, { rule: string; entryPoints: string[]; priority?: number }>, request: RouteRequest): string | undefined {
+  const ranked = Object.entries(routers)
+    .filter(([, router]) => router.entryPoints.includes('web') && ruleMatches(router.rule, request))
+    .map(([name, router]) => ({ name, rank: router.priority ?? Buffer.byteLength(router.rule, 'utf8') }))
+    .sort((a, b) => b.rank - a.rank);
+  const [first, second] = ranked;
+  if (first && second && first.rank === second.rank) {
+    throw new Error(`${first.name} ties with ${second.name} at ${first.rank}`);
+  }
+  return first?.name;
+}
 
 /**
  * Which routers the Hub writes for Traefik's file provider end with the app-starting page
@@ -147,14 +262,24 @@ describe('TraefikConfigService — routes while an app restarts', () => {
    * A Public Web app from the marketplace behind Hub sign-in (WordPress unless said otherwise),
    * labelled the way the compose builder labels it and compose names its project.
    */
-  const publicWebLabels = ({ appId = 'wordpress', host = ORIGIN_HOST, chain }: { appId?: string; host?: string; chain?: string } = {}) => {
+  const publicWebLabels = ({
+    appId = 'wordpress',
+    host = ORIGIN_HOST,
+    chain,
+    enableAuth = true,
+  }: {
+    appId?: string;
+    host?: string;
+    chain?: string;
+    enableAuth?: boolean;
+  } = {}) => {
     const labels = withAppStartingPage({
       ...new TraefikLabelsBuilder({
         internalPort: 80,
         appId,
         storeId: 'ci-marketplace',
         exposureMode: 'cloudflare',
-        enableAuth: true,
+        enableAuth,
         cloudflareOriginHostname: host,
         cloudflarePublicHostname: host.replace('.localhost', '.ci0.pw'),
       })
@@ -463,6 +588,361 @@ describe('TraefikConfigService — routes while an app restarts', () => {
     const { routers } = parsed('apps.yml').http;
     expect(routers).not.toHaveProperty(`nextcloud-ci-marketplace-insecure${APP_DOWN_ROUTER_SUFFIX}`);
     expect(routers).toHaveProperty('wordpress-ci-marketplace-insecure');
+  });
+
+  describe('requests that carry a session', () => {
+    const SESSION_RULE = 'HeaderRegexp(`Cookie`, `.`) || HeaderRegexp(`Authorization`, `.`)';
+    const HOST_RULE = `Host(\`${ORIGIN_HOST}\`)`;
+    const route = (name: string, rule: string, extra: Record<string, string> = {}) => ({
+      [`traefik.http.routers.${name}.rule`]: rule,
+      [`traefik.http.routers.${name}.entrypoints`]: 'web',
+      [`traefik.http.routers.${name}.service`]: 'wordpress-ci-marketplace',
+      ...Object.fromEntries(Object.entries(extra).map(([key, value]) => [`traefik.http.routers.${name}.${key}`, value])),
+    });
+    type Router = { rule: string; service: string; entryPoints: string[]; middlewares?: string[]; priority?: number };
+    const routers = (): Record<string, Router> => parsed('apps.yml').http.routers;
+
+    it('sends them on an app route without the Hub sign-in through a copy that tells Cloudflare not to keep the answer', async () => {
+      runningContainers(publicWebLabels({ enableAuth: false }));
+      await service.generateTraefikConfig();
+
+      const own = routers()['wordpress-ci-marketplace-insecure'];
+      const copy = routers()[`wordpress-ci-marketplace-insecure${SESSION_ROUTER_SUFFIX}`];
+
+      expect(own?.middlewares).not.toContain('ci-hub@file');
+      expect(own?.middlewares).not.toContain(SESSION_NO_EDGE_CACHE_MIDDLEWARE);
+      expect(copy).toEqual({
+        rule: `(${HOST_RULE}) && (${SESSION_RULE})`,
+        service: own?.service,
+        entryPoints: ['web'],
+        // First, so it has the last word on the answer; then the app route's own chain.
+        middlewares: [SESSION_NO_EDGE_CACHE_MIDDLEWARE, ...(own?.middlewares ?? [])],
+        // Traefik ranks the app route by the length of its rule.
+        priority: HOST_RULE.length + 1,
+      });
+    });
+
+    it('leaves requests without a cookie or Authorization header to the app route, so a public site stays cached', async () => {
+      runningContainers(publicWebLabels({ enableAuth: false }));
+      await service.generateTraefikConfig();
+
+      const plain = Object.entries(routers()).filter(([, router]) => router.rule === HOST_RULE && router.service === 'wordpress-ci-marketplace');
+
+      expect(plain.map(([name]) => name)).toEqual(['wordpress-ci-marketplace-insecure']);
+      expect(plain[0]?.[1].middlewares).not.toContain(SESSION_NO_EDGE_CACHE_MIDDLEWARE);
+      expect(plain[0]?.[1]).not.toHaveProperty('priority');
+    });
+
+    it("keeps the order Traefik gives the app's routers, so a path behind the sign-in still gets it", async () => {
+      // A path behind the Hub sign-in with a priority of its own (as Skyvern's API has) and a longer
+      // rule without one. A copy that outranked either would hand its requests to the open route.
+      runningContainers({
+        ...publicWebLabels({ enableAuth: false }),
+        ...route('wordpress-ci-marketplace-api', `${HOST_RULE} && PathPrefix(\`/api\`)`, {
+          priority: '100',
+          middlewares: 'ci-hub@file,ci-hub-app-starting@file',
+        }),
+        ...route('wordpress-ci-marketplace-files', `${HOST_RULE} && PathPrefix(\`/files\`)`),
+      });
+      await service.generateTraefikConfig();
+
+      const copy = (name: string) => routers()[`wordpress-ci-marketplace-${name}${SESSION_ROUTER_SUFFIX}`];
+
+      expect(copy('api')?.middlewares).toContain('ci-hub@file');
+      expect(copy('api')?.priority).toBe(101);
+      expect(copy('files')?.priority).toBe(`${HOST_RULE} && PathPrefix(\`/files\`)`.length + 1);
+      expect(copy('insecure')?.priority).toBe(HOST_RULE.length + 1);
+      // Each copy over its own route but under every route that ranks above that one.
+      expect(copy('insecure')?.priority).toBeLessThan(`${HOST_RULE} && PathPrefix(\`/files\`)`.length);
+      expect(copy('files')?.priority).toBeLessThan(100);
+    });
+
+    it("ranks a copy over both of its route's ranks when the label sets a priority lower than the rule length", async () => {
+      // The Docker router ranks by the label, its copy in apps.yml by the length of its rule.
+      runningContainers({ ...publicWebLabels({ enableAuth: false }), 'traefik.http.routers.wordpress-ci-marketplace-insecure.priority': '5' });
+      await service.generateTraefikConfig();
+
+      expect(routers()[`wordpress-ci-marketplace-insecure${SESSION_ROUTER_SUFFIX}`]?.priority).toBe(HOST_RULE.length + 1);
+    });
+
+    it('reads a priority label under any spelling, as Traefik does', async () => {
+      runningContainers({ ...publicWebLabels({ enableAuth: false }), 'traefik.http.routers.wordpress-ci-marketplace-insecure.Priority': '500' });
+      await service.generateTraefikConfig();
+
+      expect(routers()[`wordpress-ci-marketplace-insecure${SESSION_ROUTER_SUFFIX}`]?.priority).toBe(501);
+    });
+
+    it('gives a copy to a router whose entry points label is spelled in capitals', async () => {
+      // Traefik serves it on the web entry point all the same. Without a copy it could tie with the
+      // copy of a route it outranks by one.
+      const rule = `${HOST_RULE} && PathPrefix(\`/caps\`)`;
+      runningContainers({
+        ...publicWebLabels({ enableAuth: false }),
+        'traefik.http.routers.wordpress-ci-marketplace-caps.rule': rule,
+        'traefik.http.routers.wordpress-ci-marketplace-caps.entryPoints': 'web',
+        'traefik.http.routers.wordpress-ci-marketplace-caps.service': 'wordpress-ci-marketplace',
+      });
+      await service.generateTraefikConfig();
+
+      expect(routers()[`wordpress-ci-marketplace-caps${SESSION_ROUTER_SUFFIX}`]).toMatchObject({
+        rule: `(${rule}) && (${SESSION_RULE})`,
+        entryPoints: ['web'],
+        priority: rule.length + 1,
+      });
+    });
+
+    it('reads a router spelled two ways as the one router Traefik makes of it', async () => {
+      // Traefik merges the two spellings, sign-in included. Read as two routers, the copy of the half
+      // with the rule had no sign-in and outranked the Docker router for every request with a cookie.
+      const rule = `${HOST_RULE} && PathPrefix(\`/admin\`)`;
+      runningContainers({
+        ...publicWebLabels({ enableAuth: false }),
+        'traefik.http.routers.wordpress-ci-marketplace-admin.middlewares': 'ci-hub@file,ci-hub-app-starting@file',
+        ...route('wordpress-ci-marketplace-ADMIN', rule),
+      });
+      await service.generateTraefikConfig();
+
+      const names = Object.keys(routers()).filter((name) => name.toLowerCase().startsWith('wordpress-ci-marketplace-admin'));
+      expect(names).toEqual([
+        'wordpress-ci-marketplace-admin',
+        `wordpress-ci-marketplace-admin${SESSION_ROUTER_SUFFIX}`,
+        `wordpress-ci-marketplace-admin${APP_DOWN_ROUTER_SUFFIX}`,
+      ]);
+      const copy = routers()[`wordpress-ci-marketplace-admin${SESSION_ROUTER_SUFFIX}`];
+      expect(copy?.rule).toBe(`(${rule}) && (${SESSION_RULE})`);
+      // Then the middlewares the container defines, which every router of it gets.
+      expect(copy?.middlewares?.slice(0, 3)).toEqual([SESSION_NO_EDGE_CACHE_MIDDLEWARE, 'ci-hub@file', 'ci-hub-app-starting@file']);
+    });
+
+    it('ranks a copy by the length of its rule in bytes, as Traefik counts it', async () => {
+      const rule = `${HOST_RULE} && PathPrefix(\`/données/été\`)`;
+      runningContainers({ ...publicWebLabels({ enableAuth: false }), ...route('wordpress-ci-marketplace-files', rule) });
+      await service.generateTraefikConfig();
+
+      expect(routers()[`wordpress-ci-marketplace-files${SESSION_ROUTER_SUFFIX}`]?.priority).toBe(Buffer.byteLength(rule, 'utf8') + 1);
+    });
+
+    it('writes a priority label too large for an integer Traefik reads as the highest one it can', async () => {
+      // Traefik drops the whole file provider over one file it can't read, dynamic.yml with it.
+      runningContainers({
+        ...publicWebLabels({ enableAuth: false }),
+        'traefik.http.routers.wordpress-ci-marketplace-insecure.priority': '99999999999999999999',
+      });
+      await service.generateTraefikConfig();
+
+      expect(routers()[`wordpress-ci-marketplace-insecure${SESSION_ROUTER_SUFFIX}`]?.priority).toBe(Number.MAX_SAFE_INTEGER);
+      expect(written.get(`${DYNAMIC_DIR}/apps.yml`)).toContain(`priority: ${Number.MAX_SAFE_INTEGER}\n`);
+    });
+
+    it('copies the router apps.yml holds when two containers define it', async () => {
+      // A second container of the app with a router of the same name and no Hub sign-in. apps.yml holds
+      // the last container's router; a copy of the other's would skip the sign-in for any request with a cookie.
+      const sidecar = {
+        'com.docker.compose.project': 'wordpress_ci-marketplace',
+        'ci-hub.appurn': 'wordpress:ci-marketplace',
+        ...route('wordpress-ci-marketplace-insecure', HOST_RULE, { middlewares: APP_STARTING_MIDDLEWARE }),
+      };
+      runningContainers(sidecar, publicWebLabels());
+      await service.generateTraefikConfig();
+
+      const own = routers()['wordpress-ci-marketplace-insecure'];
+      const copy = routers()[`wordpress-ci-marketplace-insecure${SESSION_ROUTER_SUFFIX}`];
+
+      expect(own?.middlewares).toContain('ci-hub@file');
+      expect(copy?.middlewares).toEqual([SESSION_NO_EDGE_CACHE_MIDDLEWARE, ...(own?.middlewares ?? [])]);
+    });
+
+    it('gives a route behind the Hub sign-in a copy too, with the sign-in', async () => {
+      runningContainers(publicWebLabels());
+      await service.generateTraefikConfig();
+
+      const copy = routers()[`wordpress-ci-marketplace-insecure${SESSION_ROUTER_SUFFIX}`];
+
+      expect(copy?.middlewares?.[0]).toBe(SESSION_NO_EDGE_CACHE_MIDDLEWARE);
+      expect(copy?.middlewares).toContain('ci-hub@file');
+      expect(copy?.middlewares?.indexOf('ci-hub@file')).toBeLessThan(copy?.middlewares?.indexOf(APP_STARTING_MIDDLEWARE) ?? -1);
+    });
+
+    it('never replaces an app router whose name is taken by a copy', async () => {
+      runningContainers({
+        ...publicWebLabels({ enableAuth: false }),
+        ...route(`wordpress-ci-marketplace-insecure${SESSION_ROUTER_SUFFIX}`, `${HOST_RULE} && PathPrefix(\`/session\`)`),
+      });
+      await service.generateTraefikConfig();
+
+      expect(routers()[`wordpress-ci-marketplace-insecure${SESSION_ROUTER_SUFFIX}`]?.rule).toBe(`${HOST_RULE} && PathPrefix(\`/session\`)`);
+    });
+
+    it('keeps no copy once Stop has taken the containers down', async () => {
+      runningContainers(publicWebLabels({ enableAuth: false }));
+      await service.generateTraefikConfig();
+
+      appsInDb({ appId: 'wordpress', status: 'stopping' });
+      docker.listContainers.mockResolvedValue([] as never);
+      await service.generateTraefikConfig();
+
+      expect(Object.keys(routers()).filter((name) => name.endsWith(SESSION_ROUTER_SUFFIX))).toEqual([]);
+    });
+
+    it('sends them on a port-expose route through the same kind of copy', async () => {
+      await service.syncPortExposeRoutes([
+        { appUrn: 'my-service:_user' as AppUrn, traefikHost: 'my-service-hub1-acme.ci.lan', upstreamPort: 8123, requireLogin: false },
+      ]);
+
+      const portRouters: Record<string, Router> = parsed('port-expose.yml').http.routers;
+      const rule = 'Host(`my-service-hub1-acme.ci.lan`)';
+
+      expect(portRouters[`my-service-_user${SESSION_ROUTER_SUFFIX}`]).toEqual({
+        rule: `(${rule}) && (${SESSION_RULE})`,
+        service: 'my-service-_user',
+        entryPoints: ['web'],
+        middlewares: [SESSION_NO_EDGE_CACHE_MIDDLEWARE, APP_STARTING_MIDDLEWARE],
+        priority: rule.length + 1,
+      });
+      expect(portRouters['my-service-_user']?.middlewares).toEqual([APP_STARTING_MIDDLEWARE]);
+    });
+
+    it('keeps the Hub login on the copy of a port-expose route that has it', async () => {
+      await service.syncPortExposeRoutes([
+        { appUrn: 'my-service:_user' as AppUrn, traefikHost: 'my-service-hub1-acme.ci.lan', upstreamPort: 8123, requireLogin: true },
+      ]);
+
+      const portRouters: Record<string, Router> = parsed('port-expose.yml').http.routers;
+      const request = { host: 'my-service-hub1-acme.ci.lan', path: '/', headers: { Cookie: 'sid=1' } };
+
+      expect(routerFor(portRouters, request)).toBe(`my-service-_user${SESSION_ROUTER_SUFFIX}`);
+      expect(portRouters[`my-service-_user${SESSION_ROUTER_SUFFIX}`]?.middlewares).toEqual([
+        SESSION_NO_EDGE_CACHE_MIDDLEWARE,
+        'ci-hub@file',
+        APP_STARTING_MIDDLEWARE,
+      ]);
+      expect(routerFor(portRouters, { ...request, headers: {} })).toBe('my-service-_user');
+    });
+
+    /*
+     * Every route shape the Hub writes for one app, with the Hub login on: its own routers, the twins
+     * of the paths the operator exempted from the login and routes the listing declares. A copy that
+     * outranked the wrong router would let a request with any cookie skip the login, or put the login
+     * on an exempt path for a signed-in visitor only.
+     */
+    describe('on every route of an app with the Hub login', () => {
+      const API_RULE = `${HOST_RULE} && PathPrefix(\`/api\`)`;
+      const ADMIN_RULE = `${HOST_RULE} && PathPrefix(\`/api/admin\`)`;
+      const FILES_RULE = `${HOST_RULE} && PathPrefix(\`/files\`)`;
+      const appLabels = ({ requireLogin = true }: { requireLogin?: boolean } = {}) => {
+        const hub = new TraefikLabelsBuilder({
+          internalPort: 80,
+          appId: 'wordpress',
+          storeId: 'ci-marketplace',
+          exposureMode: 'cloudflare',
+          enableAuth: requireLogin,
+          // `/api` is also a route of the listing's, under the twin's rank. `/api/admin` is one over it.
+          publicPaths: ['/hook', '/api'],
+          cloudflareOriginHostname: ORIGIN_HOST,
+          cloudflarePublicHostname: ORIGIN_HOST.replace('.localhost', '.ci0.pw'),
+        })
+          .addCloudflareLabels()
+          .addPublicPathRouters()
+          .build();
+        // Labelled the way the compose builder labels the listing's routes.
+        const labels = withAppStartingPage(
+          withHubLoginOnEveryRouter(
+            {
+              ...hub,
+              ...route('wordpress-ci-marketplace-api', API_RULE, { priority: '100' }),
+              ...route('wordpress-ci-marketplace-admin', ADMIN_RULE, { priority: '500' }),
+              ...route('wordpress-ci-marketplace-files', FILES_RULE),
+            },
+            hub,
+            { requireLogin, publicWeb: true },
+          ),
+        );
+        return {
+          ...Object.fromEntries(Object.entries(labels).map(([key, value]) => [key, String(value)])),
+          'com.docker.compose.project': 'wordpress_ci-marketplace',
+          'ci-hub.appurn': 'wordpress:ci-marketplace',
+        };
+      };
+      const COOKIE = { Cookie: 'token=app-session' };
+
+      it.each([
+        ['/', COOKIE, 'insecure-session', true],
+        ['/', {}, 'insecure', true],
+        ['/notes/hook', COOKIE, 'insecure-session', true],
+        ['/hookx', COOKIE, 'insecure-session', true],
+        ['/hook', COOKIE, 'insecure-public-paths-session', false],
+        ['/hook/42', { Authorization: 'Bearer app-token' }, 'insecure-public-paths-session', false],
+        ['/hook/42', {}, 'insecure-public-paths', false],
+        // The twin outranks the listing's `/api` route and `/api/admin` outranks the twin, with a
+        // cookie and without alike.
+        ['/api/v1/runs', COOKIE, 'insecure-public-paths-session', false],
+        ['/api/v1/runs', {}, 'insecure-public-paths', false],
+        ['/api/admin/users', COOKIE, 'admin-session', true],
+        ['/api/admin/users', {}, 'admin@docker', true],
+        ['/files/a.pdf', COOKIE, 'files-session', true],
+        ['/files/a.pdf', {}, 'files', true],
+        ['/sw.js', { ...COOKIE, 'Service-Worker': 'script' }, 'sw-reset-insecure-session', true],
+      ] as const)('sends %s with %j to its %s router, the Hub login %s', async (path, headers, router, login) => {
+        const labels = appLabels();
+        runningContainers(labels);
+        await service.generateTraefikConfig();
+
+        const all = { ...routers(), ...dockerRoutersWithPriority(labels) };
+        const name = routerFor(all, { host: ORIGIN_HOST, path, headers });
+        const chain = all[name ?? '']?.middlewares ?? [];
+
+        expect(name).toBe(`wordpress-ci-marketplace-${router}`);
+        expect(chain.includes('ci-hub@file')).toBe(login);
+        // The copy sends the chain of the router it copies, after the header for Cloudflare.
+        if (name?.endsWith(SESSION_ROUTER_SUFFIX)) {
+          expect(chain).toEqual([SESSION_NO_EDGE_CACHE_MIDDLEWARE, ...(routers()[name.slice(0, -SESSION_ROUTER_SUFFIX.length)]?.middlewares ?? [])]);
+        } else {
+          expect(chain).not.toContain(SESSION_NO_EDGE_CACHE_MIDDLEWARE);
+        }
+      });
+
+      it('puts no Hub login on any copy of an app whose operator switched it off', async () => {
+        runningContainers(appLabels({ requireLogin: false }));
+        await service.generateTraefikConfig();
+
+        const copies = Object.entries(routers()).filter(([name]) => name.endsWith(SESSION_ROUTER_SUFFIX));
+
+        expect(copies.map(([name]) => name).sort()).toEqual(
+          ['admin', 'api', 'files', 'insecure'].map((name) => `wordpress-ci-marketplace-${name}${SESSION_ROUTER_SUFFIX}`),
+        );
+        expect(copies.flatMap(([, copy]) => copy.middlewares ?? [])).not.toContain('ci-hub@file');
+        expect(routerFor(routers(), { host: ORIGIN_HOST, path: '/hook', headers: COOKIE })).toBe(
+          `wordpress-ci-marketplace-insecure${SESSION_ROUTER_SUFFIX}`,
+        );
+      });
+
+      it('keeps the Hub login on the copy of the Private VPN router', async () => {
+        const labels = new TraefikLabelsBuilder({
+          internalPort: 80,
+          appId: 'wordpress',
+          storeId: 'ci-marketplace',
+          exposureMode: 'tailscale',
+          enableAuth: true,
+          publicPaths: ['/hook'],
+        })
+          .addTailscaleLabels()
+          .addPublicPathRouters()
+          .build();
+        runningContainers({
+          ...Object.fromEntries(Object.entries(withAppStartingPage(labels)).map(([key, value]) => [key, String(value)])),
+          'com.docker.compose.project': 'wordpress_ci-marketplace',
+          'ci-hub.appurn': 'wordpress:ci-marketplace',
+        });
+        await service.generateTraefikConfig();
+
+        const request = { host: 'wordpress.ci-marketplace', path: '/', headers: COOKIE };
+        const copy = routerFor(routers(), request);
+
+        expect(copy).toBe(`wordpress-ci-marketplace-tailscale${SESSION_ROUTER_SUFFIX}`);
+        expect(routers()[copy ?? '']?.middlewares).toEqual([SESSION_NO_EDGE_CACHE_MIDDLEWARE, 'ci-hub@file', APP_STARTING_MIDDLEWARE]);
+        expect(routerFor(routers(), { ...request, path: '/hook' })).toBe(`wordpress-ci-marketplace-tailscale-public-paths${SESSION_ROUTER_SUFFIX}`);
+      });
+    });
   });
 
   it('keeps it after the Hub itself restarts, from the apps.yml it wrote', async () => {
