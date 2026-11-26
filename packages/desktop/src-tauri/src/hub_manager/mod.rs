@@ -41,6 +41,7 @@ mod status;
 mod windows_paths;
 mod wsl;
 mod wsl_engine_files;
+mod wsl_engine_tls;
 
 #[cfg(test)]
 mod tests;
@@ -70,6 +71,8 @@ pub(crate) use windows_paths::*;
 pub(crate) use wsl::*;
 #[allow(unused_imports)]
 pub(crate) use wsl_engine_files::*;
+#[allow(unused_imports)]
+pub(crate) use wsl_engine_tls::*;
 
 #[cfg(target_os = "windows")]
 pub(crate) const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -301,9 +304,9 @@ fn base_docker_command() -> Command {
 pub fn docker_command() -> Command {
     let mut cmd = base_docker_command();
     if let Some(docker_host) = preferred_docker_host() {
-        cmd.env("DOCKER_HOST", docker_host);
-        // Sticky CLI contexts must not override the pinned Hub engine.
-        cmd.env_remove("DOCKER_CONTEXT");
+        // Sticky CLI contexts must not override the pinned Hub engine; the WSL engine's client
+        // certificate comes along with its host.
+        crate::docker_engine::apply_docker_host(&mut cmd, &docker_host);
     }
     cmd
 }
@@ -325,11 +328,10 @@ fn command_on_path(binary: &str) -> Option<PathBuf> {
         .ok()
         .filter(|output| output.status.success())
         .and_then(|output| {
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .map(str::trim)
-                .find(|line| !line.is_empty())
-                .map(PathBuf::from)
+            crate::docker_engine::first_program_in_locator_output(
+                &String::from_utf8_lossy(&output.stdout),
+                cfg!(target_os = "windows"),
+            )
         })
 }
 
@@ -547,6 +549,13 @@ pub struct StartupProgress {
     /// The engine the Hub runs on (`wsl-engine`, `desktop`, ...), when known. The startup
     /// screens explain the WSL engine stopping instead of offering Docker Desktop's steps.
     pub docker_engine: Option<String>,
+    /// While Docker doesn't answer: this PC has a Docker engine in WSL set up already
+    /// ([`wsl_engine_set_up`]), so the startup screen offers Start Docker in WSL, not an install.
+    pub wsl_engine_set_up: bool,
+    /// While Docker doesn't answer and the Hub runs on the WSL engine: why that engine can't start
+    /// ([`wsl_engine_cannot_start`]), so the startup screen says so instead of offering Start
+    /// engine and waiting.
+    pub wsl_engine_cannot_start: Option<String>,
 }
 
 /// Get the Hub data directory (platform-specific)

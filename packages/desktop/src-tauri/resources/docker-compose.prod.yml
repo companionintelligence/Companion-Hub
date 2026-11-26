@@ -466,10 +466,11 @@ services:
       - SYS_MODULE
     environment:
       TAILSCALE_AUTHKEY: ${TAILSCALE_AUTHKEY:-${HEADSCALE_PREAUTH_KEY:-}}
-      # During the ci-os-hub → ci-hub transition, an upgraded appliance has
-      # the legacy bridge on 172.18/16 and the canonical bridge on 172.19/16.
-      # Fresh installs create the same two bridges in the opposite order.
-      TS_EXTRA_ARGS: ${HUB_TAILSCALE_EXTRA_ARGS:---login-server=https://controlplane.tailscale.com --accept-routes --advertise-routes=172.18.0.0/16,172.19.0.0/16}
+      # No subnet route by default: an approved route to the Docker bridges
+      # let tailnet devices reach the Hub API and Traefik without Serve.
+      # The Hub's own `tailscale up` (TailscaleService) is what applies these
+      # flags; set HUB_TAILSCALE_EXTRA_ARGS to advertise one.
+      TS_EXTRA_ARGS: ${HUB_TAILSCALE_EXTRA_ARGS:---login-server=https://controlplane.tailscale.com --accept-routes}
       TS_STATE_DIR: /var/lib/tailscale
       TS_USERSPACE: "false"
       TS_SOCKET: /var/run/tailscale/tailscaled.sock

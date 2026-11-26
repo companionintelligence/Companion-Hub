@@ -39,10 +39,11 @@ vi.mock('@/modules/app/components/port-expose-settings-dialog/port-expose-settin
 
 const info = { urn: 'dev-server:_user', name: 'Dev Server', kind: 'port-expose', port: 3000 } as unknown as AppInfo;
 
-const renderView = (exposureMode: 'local' | 'cloudflare' | 'tailscale') =>
+// With the Hub sign-in switched off, as the reminders below are about; it is on by default now.
+const renderView = (exposureMode: 'local' | 'cloudflare' | 'tailscale', enableAuth = false) =>
   render(
     <PortExposeDetailsView
-      app={{ status: 'running', port: 3000, exposureMode, config: { kind: 'port-expose', exposureMode } } as unknown as AppDetails}
+      app={{ status: 'running', port: 3000, exposureMode, enableAuth, config: { kind: 'port-expose', exposureMode } } as unknown as AppDetails}
       info={info}
     />,
   );

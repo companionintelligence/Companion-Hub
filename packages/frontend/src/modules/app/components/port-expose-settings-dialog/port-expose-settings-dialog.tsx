@@ -11,6 +11,9 @@ import { getAppQueryKey, getDomainsOptions, getInstalledAppsQueryKey } from '@/a
 import type { UpdatePortExposeAppDto } from '@/api-client/types.gen';
 import { Button } from '@/components/ui/Button';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
+import { Switch } from '@/components/ui/Switch';
+import { HintMarker } from '@/components/ui/field-hint/field-hint';
+import { requiresHubLogin } from '@ci-hub/common/schemas';
 import { Input } from '@/components/ui/Input/Input';
 import { useAppContext } from '@/context/app-context';
 import { fetchDnsAvailability } from '@/lib/cloudflare-api';
@@ -32,6 +35,8 @@ type FormValues = {
   exposureMode: ExposureMode;
   localSubdomain?: string;
   publicDomain?: string;
+  /** The Hub login in front of the port: on unless switched off (`requiresHubLogin`). */
+  enableAuth: boolean;
 };
 
 const EMPTY_AVAILABLE_DOMAINS: AvailableDomain[] = [];
@@ -84,6 +89,7 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
       localSubdomain: app.localSubdomain ?? info.id,
       // A new name has none until Companion Portal's list gives it one (`publicDomainToUse`).
       publicDomain: keepsPublished ? (app.publicDomain ?? domain) : (app.publicDomain ?? undefined),
+      enableAuth: requiresHubLogin(app),
     },
   });
 
@@ -252,11 +258,13 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
       exposureMode,
       localSubdomain: exposureMode === 'cloudflare' ? sanitizeAppSubdomain(values.localSubdomain || defaultAppSubdomain) : undefined,
       publicDomain: exposureMode === 'cloudflare' ? publicDomain : undefined,
+      enableAuth: values.enableAuth !== false,
     };
 
-    // Asked as on Expose a port, when the port moves onto Public web. A port already there stays where
-    // it is, and its page and tile say it is open.
-    if (exposureMode === 'cloudflare' && app.exposureMode !== 'cloudflare') {
+    // Asked as on Expose a port, when the save leaves the port open to anyone: on Public web with the
+    // Hub login off, where it was not before. A port already that way says so on its page and tile.
+    const openToAnyone = (mode: string | null | undefined, login: boolean) => mode === 'cloudflare' && !login;
+    if (openToAnyone(exposureMode, body.enableAuth !== false) && !openToAnyone(app.exposureMode, requiresHubLogin(app))) {
       setPublicPortBody(body);
       return;
     }
@@ -379,6 +387,24 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
                 t={t}
               />
             ) : null}
+            <Controller
+              control={control}
+              name="enableAuth"
+              render={({ field: { onChange, value, ref, ...props } }) => (
+                <Switch
+                  {...props}
+                  ref={ref}
+                  checked={value !== false}
+                  onCheckedChange={onChange}
+                  label={
+                    <>
+                      {t('APP_INSTALL_FORM_ENABLE_AUTH')}
+                      <HintMarker anchorClass="port-expose-enable-auth-hint" hint={t('PORT_EXPOSE_ENABLE_AUTH_HINT')} />
+                    </>
+                  }
+                />
+              )}
+            />
           </div>
 
           <DialogFooter className="mt-4">

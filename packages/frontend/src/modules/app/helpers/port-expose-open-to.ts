@@ -1,4 +1,4 @@
-import { isPortExposeApp } from '@ci-hub/common/schemas';
+import { isPortExposeApp, requiresHubLogin } from '@ci-hub/common/schemas';
 import type { AppInfo } from '@/types/app.types';
 
 /** Who can open an exposed port without the Hub asking them to sign in. */
@@ -27,17 +27,17 @@ export const PORT_EXPOSE_OPEN_TO_COPY = {
  * Who can open `app` with no Hub sign-in in front of it, or `null` when the Hub's sign-in guards it
  * or the app is not an exposed port.
  *
- * The Hub puts no sign-in in front of an exposed port, so webhooks and APIs behind one keep working.
- * On Public web anyone with the address reaches it through the tunnel. On the Private VPN, Tailscale
- * Serve sends a request straight to the port, so anyone on the tailnet does. This Machine Only stays
- * on this machine. A store app is never one: whether its Public web route asks for the Hub sign-in is
- * its own setting.
+ * An exposed port is behind the Hub sign-in like any app unless the operator switched it off
+ * (`requiresHubLogin`). On Public web with it off, anyone with the address reaches it through the
+ * tunnel. On the Private VPN, Tailscale Serve still sends a request straight to the port, so anyone
+ * on the tailnet does whatever the setting. This Machine Only stays on this machine. A store app is
+ * never one.
  *
  * Asked of `config` and the app's manifest both, as the app page asks: a save through the generic
  * config route rewrites the stored form without `kind`.
  */
 export function portExposeOpenTo(
-  app: { config?: unknown; exposureMode?: string | null } | null | undefined,
+  app: { config?: unknown; exposureMode?: string | null; enableAuth?: boolean | null } | null | undefined,
   info: Pick<AppInfo, 'kind'> | null | undefined,
 ): PortExposeOpenTo | null {
   if (!app) {
@@ -50,7 +50,7 @@ export function portExposeOpenTo(
 
   switch (app.exposureMode) {
     case 'cloudflare':
-      return 'anyone';
+      return requiresHubLogin(app) ? null : 'anyone';
     case 'tailscale':
       return 'tailnet';
     default:

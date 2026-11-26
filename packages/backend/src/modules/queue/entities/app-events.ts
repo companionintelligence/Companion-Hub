@@ -1,7 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { optionalCpuLimitSchema } from '@/common/validation/cpu-limit';
 import { optionalMemoryLimitSchema } from '@/common/validation/memory-limit';
-import { STORED_FORM_OPEN_PORT_DEFAULT, appServiceFailureSchema, hostPortMoveSchema } from '@ci-hub/common/schemas';
+import {
+  MAX_PUBLIC_PATHS,
+  publicPathSchema,
+  STORED_FORM_OPEN_PORT_DEFAULT,
+  appServiceFailureSchema,
+  hostPortMoveSchema,
+} from '@ci-hub/common/schemas';
 import { zodAppUrn } from '@ci-hub/common/types';
 import { z } from 'zod';
 import isFQDN from 'validator/lib/isFQDN';
@@ -15,6 +21,10 @@ const queueAppFormSchema = z
     // The default is shared with the settings dialog (`servedOpenPort`), which shows a stored form
     // with no `openPort` key as this.
     openPort: z.boolean().default(STORED_FORM_OPEN_PORT_DEFAULT),
+    // `publishesHostPortsOnNetwork`: absent publishes every host port on 127.0.0.1 only.
+    portOnNetwork: z.boolean().optional(),
+    /** Paths, and what is under them, served without the Hub login: the operator's choice only (`publicPathSchema`). */
+    publicPaths: z.array(publicPathSchema).max(MAX_PUBLIC_PATHS).optional(),
     domain: z.string().optional(),
     isVisibleOnGuestDashboard: z.boolean().optional(),
     enableAuth: z.boolean().optional(),

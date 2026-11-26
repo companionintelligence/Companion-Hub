@@ -12,13 +12,27 @@ import Dockerode from 'dockerode';
 import * as yaml from 'yaml';
 import { ADDRESS_KEPT_STATUSES } from '../apps/app-starting-page';
 import { AppsRepository } from '../apps/apps.repository';
-import { APP_STARTING_MIDDLEWARE } from './builders/traefik-labels.builder';
+import { APP_STARTING_MIDDLEWARE, FORWARD_AUTH_MIDDLEWARE } from './builders/traefik-labels.builder';
 import { DOCKERODE } from './constants';
 
 export interface PortExposeRoute {
   appUrn: string;
   traefikHost: string;
   upstreamPort: number;
+  /** The Hub login in front of the route: on unless the operator switched it off (`requiresHubLogin`). */
+  requireLogin: boolean;
+}
+
+/** The route of one Private VPN app on its Tailscale Service hostname. */
+export interface TailscaleServiceRoute {
+  appUrn: string;
+  /** `<label>.<tailnet>.ts.net`. */
+  host: string;
+  /** The app's own address, as Serve used to proxy to it directly. */
+  upstreamUrl: string;
+  requireLogin: boolean;
+  /** The operator's login-free paths (`publicPaths`), already validated. */
+  publicPaths: string[];
 }
 
 interface TraefikRouter {
@@ -246,9 +260,10 @@ export class TraefikConfigService {
           rule: `Host(\`${route.traefikHost}\`)`,
           service: routerId,
           entryPoints: ['web'],
-          // An app route like any other: when the person's own service behind the port is down,
-          // Traefik answered the same bare 502 (CI-Hub#1764).
-          middlewares: [APP_STARTING_MIDDLEWARE],
+          // An app route like any other: the Hub login first, as on every app's routes, and when the
+          // person's own service behind the port is down, the "starting" page in place of Traefik's
+          // bare 502 (CI-Hub#1764). These routes once had no login, Public web included.
+          middlewares: route.requireLogin ? [FORWARD_AUTH_MIDDLEWARE, APP_STARTING_MIDDLEWARE] : [APP_STARTING_MIDDLEWARE],
         };
         config.http.routers[routerId] = router;
         // A service behind a port never has the Hub sign-in. One on Public Web may have a login of its own.
@@ -267,6 +282,60 @@ export class TraefikConfigService {
       this.logger.error('Failed to sync port-expose Traefik routes:', error);
       throw error;
     }
+  }
+
+  /**
+   * Write the routes of Private VPN apps on their Tailscale Service hostnames.
+   *
+   * The Hub's Tailscale node serves every Service to Traefik's `web` entry point, so the hostname
+   * picks the app here, and the login answers first, as on every other route of the app. The
+   * operator's login-free paths get a twin router without the login, as the app's own routers do
+   * (`TraefikLabelsBuilder.addPublicPathRouters`). A file, not container labels: the hostname is
+   * known only once the tailnet is, and labels would mean recreating the app to learn it.
+   */
+  public async syncTailscaleServiceRoutes(routes: TailscaleServiceRoute[]): Promise<void> {
+    const { directories } = this.config.getConfig();
+    const configPath = `${directories.dataDir}/state/traefik/dynamic/tailscale-services.yml`;
+
+    if (routes.length === 0) {
+      if (await this.filesystem.pathExists(configPath)) {
+        await this.filesystem.removeFile(configPath);
+        this.logger.info('Removed the Tailscale Service routes: no Private VPN app is on a Service');
+      }
+      return;
+    }
+
+    const config: TraefikConfig = { http: { routers: {}, services: {} } };
+    for (const route of routes) {
+      const id = `${route.appUrn.replace(':', '-')}-tailscale-service`;
+      const hostRule = `Host(\`${route.host}\`)`;
+      const open = [APP_STARTING_MIDDLEWARE];
+      config.http.routers[id] = {
+        rule: hostRule,
+        service: id,
+        entryPoints: ['web'],
+        middlewares: route.requireLogin ? [FORWARD_AUTH_MIDDLEWARE, ...open] : open,
+      };
+      const paths = route.publicPaths.map((path) => path.replace(/\/+$/, '')).filter(Boolean);
+      if (route.requireLogin && paths.length > 0) {
+        const pathRule = paths.map((path) => `Path(\`${path}\`) || PathPrefix(\`${path}/\`)`).join(' || ');
+        config.http.routers[`${id}-public-paths`] = {
+          rule: `(${hostRule}) && (${pathRule})`,
+          service: id,
+          entryPoints: ['web'],
+          middlewares: open,
+        };
+      }
+      config.http.services[id] = { loadBalancer: { servers: [{ url: route.upstreamUrl }] } };
+    }
+
+    const yamlContent = yaml.stringify(config, { indent: 2 });
+    const content = yamlContent.endsWith('\n') ? yamlContent : `${yamlContent}\n`;
+    // Every sync pass lands here; an unchanged file is left alone so Traefik does not reload for nothing.
+    const current = (await this.filesystem.pathExists(configPath)) ? await this.filesystem.readTextFile(configPath).catch(() => null) : null;
+    if (current === content) return;
+    await writeHealableTextFile(configPath, content, 0o644);
+    this.logger.info(`Wrote ${routes.length} Tailscale Service route(s) to ${configPath}`);
   }
 
   /**

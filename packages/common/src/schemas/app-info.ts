@@ -165,6 +165,22 @@ export const RESERVED_APP_LINK_ALIASES: ReadonlySet<string> = new Set([
   'localhost',
 ]);
 
+/** Most paths one app may let through without the Hub login. */
+export const MAX_PUBLIC_PATHS = 16;
+
+/**
+ * A path an operator lets through without the Hub login (`publicPaths`): it and everything under it.
+ *
+ * Segments of letters, digits and `.`, `_`, `~`, `-`, joined by `/`: no `..` segment, no `/` alone
+ * (switch the whole login off instead), and nothing that could close a Traefik rule's quoting, since
+ * each path is written into one (`PathPrefix(\`...\`)`).
+ */
+export const publicPathSchema = z
+  .string()
+  .max(128)
+  .regex(/^(?:\/[A-Za-z0-9._~-]+)+\/?$/, 'A path starts with / and holds letters, digits, and . _ ~ - between slashes')
+  .refine((path) => !path.split('/').some((segment) => segment === '..' || segment === '.'), 'A path cannot hold . or .. segments');
+
 export const hubIntegrationSchema = z
   .object({
     mcp_client: z.boolean().default(false),
@@ -371,24 +387,26 @@ export const hubIntegrationSchema = z
       })
       .optional(),
     /**
-     * Edge-auth posture the app ships with (CI-Engineering#74).
+     * Edge-auth posture the app ships with (CI-Engineering#74): `default: true` says the app has
+     * no login of its own.
      *
-     * `default: true` asks the Hub to default the install/expose "Require Auth" toggle ON for
-     * this app, so a fresh install sits behind the Hub-session forward-auth middleware without
-     * the operator having to remember the toggle. It only supplies the FALLBACK for an
-     * undecided value: an explicit operator choice (form or API) always wins, and the field can
-     * never force auth OFF (`default: false` and absence are equally no-ops — absence already
-     * means "leave the toggle default alone").
+     * The Hub login is on for every app now unless the operator turns it off (`requiresHubLogin`),
+     * so this no longer turns it on. What it still does: such an app's host port is published on
+     * loopback only (`hostPortStaysOnLoopback`). `default: false` and absence say nothing.
      *
      * Deliberately honored from ANY store, unlike the credential provisioning gates: the field
-     * is strictly safety-increasing — the worst a hostile manifest can do is put its own app
-     * behind the Hub login (self-lockout, no privilege gained), while the dangerous direction
-     * is unreachable by construction.
+     * can only narrow where the app answers, never widen it.
      */
     edge_auth: z
       .object({
-        /** Default the "Require Auth" toggle ON at install/expose time. */
+        /** The app has no login of its own: keep its host port on loopback. */
         default: z.boolean().optional(),
+        /**
+         * Paths the app serves to callers that cannot sign in, a webhook receiver say, which the
+         * operator may let through without the Hub login. Only ever a suggestion: the install form
+         * offers each one switched off, and only the operator's `publicPaths` take effect.
+         */
+        suggested_public_paths: z.array(publicPathSchema).max(MAX_PUBLIC_PATHS).optional(),
       })
       .optional(),
     /**
@@ -466,7 +484,7 @@ export function manifestDefaultsEdgeAuthOn(info: { exposable?: boolean; hub_inte
  * Every start, restart and update replays the stored form through the queue's form schema
  * (`queueAppFormSchema`), which defaults a missing `openPort` to this value. An install that sent
  * no `openPort` (an API or MCP install, the onboarding path) is therefore served on an open host
- * port, and with the Hub login in front of its public route (`requiresHubLoginOnPublicRoute`). The
+ * port, and the Hub login is in front of it unless the operator turned it off (`requiresHubLogin`). The
  * queue schema takes its default from here so the settings dialog cannot read the same form
  * differently.
  */
@@ -482,52 +500,53 @@ export function servedOpenPort(form: { openPort?: unknown } | null | undefined):
 }
 
 /**
- * Whether the tunnel route puts the Hub login (`ci-hub@file`) in front of the app.
+ * Whether the Hub login (`ci-hub@file`) is in front of every route to the app: Public web, the Local
+ * network, the Private VPN, and the paths of each a listing routes itself.
  *
- * The form's `enableAuth` when it holds one. When it does not, the manifest's
- * `hub_integration.edge_auth.default` decides, and failing that an open host port turns the login
- * on. Compose once skipped the tunnel route for apps on an open host port (#678's gate), and most
- * of them never chose a login, because the queue sets `openPort` to true for any API or MCP install
- * that left it out. Without this default, the next Hub upgrade (`restartRunningApps`) would put
- * those apps on the internet with no login, CI-OpenClaw among them, whose `/` hands out a gateway
- * token.
+ * On unless the operator turned it off, by saving `enableAuth: false`. A form with no `enableAuth` key
+ * has it, whatever its host port, mode or manifest say. That is the whole rule, on purpose: it used to
+ * be the form's value, else the manifest's `edge_auth.default`, else whether the host port was open,
+ * and every route but the tunnel's had no login at all. Each fallback was a way for an app that never
+ * chose to end up with none (the OpenClaw exposure of 2026-09-28 was one of them).
  *
- * The manifest default is read here, at route-build time, and not only when a form is saved
- * (`app-lifecycle.service.ts` self-heals a stored form there): an install that never decided —
- * `openPort: false`, no `enableAuth` key — is otherwise served with no login until someone re-saves
- * its settings, while the settings dialog showed the toggle as on. That was the live OpenClaw
- * exposure found 2026-09-28. `manifest` is optional because a compose rebuild can run without a
- * resolvable manifest; then only the form and the port decide, as before.
- *
- * Shared by the backend route builder and the install form's edit dialog, so the switch shows what
- * the Hub serves. They disagreed once: the dialog fell back to the manifest default alone, showed OFF
- * for a stored form on an open host port, and a save wrote `enableAuth: false` over a login that was
- * in front of the app.
+ * The stored `enable_auth` column could not say "never decided": it was `NOT NULL DEFAULT false`. The
+ * migration that made this the rule turned it on for every app, so `false` now only ever comes from an
+ * operator who switched it off.
  */
-export function requiresHubLoginOnPublicRoute(
-  form: { enableAuth?: boolean; openPort?: boolean },
-  manifest?: { exposable?: boolean; hub_integration?: HubIntegration },
-): boolean {
-  return form.enableAuth ?? ((manifest !== undefined && manifestDefaultsEdgeAuthOn(manifest)) || Boolean(form.openPort));
+export function requiresHubLogin(form: { enableAuth?: boolean | null } | null | undefined): boolean {
+  return form?.enableAuth !== false;
+}
+
+/**
+ * Whether an app's host ports are published on every interface, the LAN and the tailnet included, with
+ * no Hub login in front of them: only when the operator asked for it (`portOnNetwork: true`), and never
+ * for an app that must stay on loopback ({@link hostPortStaysOnLoopback}). Otherwise every host port,
+ * the app's own and each a listing adds (`addPorts`), is published on 127.0.0.1 only: "This machine
+ * only" means that, and the other modes reach the app through Traefik, behind the login.
+ *
+ * Ports used to be published on every interface by default, so anyone on the LAN reached the app on
+ * its port with no login, whatever its mode.
+ */
+export function publishesHostPortsOnNetwork(form: { portOnNetwork?: boolean | null } | null | undefined, loopbackOnly: boolean): boolean {
+  return form?.portOnNetwork === true && !loopbackOnly;
 }
 
 /** The only interface a {@link hostPortStaysOnLoopback} app's host port is published on. */
 export const LOOPBACK_HOST_PORT_INTERFACE = '127.0.0.1';
 
 /**
- * Whether an app's host port is published on loopback only, instead of on every interface.
+ * Whether an app's host port stays on loopback even when the operator asks to publish its ports on the
+ * network ({@link publishesHostPortsOnNetwork}).
  *
  * A port published with no interface binds 0.0.0.0 and [::], so it answers the LAN and the tailnet
- * with no Hub login in front of it: forward-auth guards the Traefik routers, not the port. Most apps
- * want that "Local network" route. Two kinds must not get it:
+ * with no Hub login in front of it: forward-auth guards the Traefik routers, not the port. Two kinds
+ * of app must never answer there, whoever asks:
  *
  * - `edge_auth.default: true`: the app has no login of its own (OpenCode, Aider, Pi Web).
  * - `mcp_client: true`: the app drives an agent holding a Hub-minted MCP key (CI-OpenClaw,
  *   CI-Hermes). OpenClaw's wrapper also hands its gateway token to any caller of `/`.
  *
- * Reach these apps off-box through Private VPN or Public web; nothing in the Hub dials the host port.
- * The stored `enableAuth` is no opt-out: the column is `NOT NULL DEFAULT false`, so an install that
- * never decided reads like an operator who turned auth off. Honored from any store, like
+ * Reach these apps off-box through Private VPN or Public web. Honored from any store, like
  * `edge_auth.default`, because it can only narrow reach.
  */
 export function hostPortStaysOnLoopback(info: { exposable?: boolean; hub_integration?: HubIntegration }): boolean {

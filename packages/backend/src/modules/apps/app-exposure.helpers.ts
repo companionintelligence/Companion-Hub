@@ -31,15 +31,14 @@ export function servesForcedExposure(form: AppFormHostPortFields & { exposed?: b
  * Gives a `force_expose` form on Public Web what env generation names a public hostname for: `exposedLocal`
  * with a closed host port (`canServeOnCustomDomain`). An API or MCP form can name the mode alone, and the
  * queue serves that on an open port, so the app would keep its LAN address as the name it first started with.
- * Closing the port must not take the Hub login off the route unless the form says so.
+ * The Hub login stays as the form has it: on unless the operator switched it off (`requiresHubLogin`).
  */
-export function publishForcedExposure(form: AppFormHostPortFields & { enableAuth?: boolean }): void {
+export function publishForcedExposure(form: AppFormHostPortFields): void {
   if (!publishesPublicWebRoute(form)) {
     return;
   }
   form.exposedLocal = true;
   if (form.openPort !== false) {
     form.openPort = false;
-    form.enableAuth ??= true;
   }
 }

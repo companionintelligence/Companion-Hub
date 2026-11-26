@@ -67,6 +67,30 @@ exit 0
     )
 }
 
+/// Root script that installs Ollama in the WSL engine's distro with Ollama's own install.sh.
+///
+/// It is downloaded to a file first (checking curl's exit) rather than `curl | sh`: a POSIX `sh`
+/// pipeline reports only `sh`'s status, so a failed or partial download would otherwise count as a
+/// successful install under `set -e`.
+///
+/// zstd comes first because Ollama now ships `.tar.zst`, and install.sh stops without it. It says
+/// why on stdout, not stderr ("This version requires zstd"), and Ubuntu's WSL image doesn't have it:
+/// the install failed on Windows right after ">>> Installing ollama to /usr/local".
+#[cfg(any(test, target_os = "windows"))]
+pub(crate) const OLLAMA_WSL_INSTALL_SCRIPT: &str = r#"set -e
+export DEBIAN_FRONTEND=noninteractive
+missing=""
+command -v curl >/dev/null 2>&1 || missing="$missing curl ca-certificates"
+command -v zstd >/dev/null 2>&1 || missing="$missing zstd"
+if [ -n "$missing" ]; then
+  apt-get update
+  apt-get install -y $missing
+fi
+tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT
+curl -fsSL --connect-timeout 30 --max-time 120 https://ollama.com/install.sh -o "$tmp"
+sh "$tmp""#;
+
 /// Install Ollama inside the WSL2 distro that hosts the native Docker engine, bound to
 /// 0.0.0.0 so the Hub container can reach it over the docker0 bridge. Uses Ollama's
 /// official install script (sets up the systemd service + GPU detection; Ollama picks
@@ -78,24 +102,9 @@ fn install_ollama_in_wsl_distro() -> Result<OllamaInstallResult, String> {
         "No Ubuntu/Debian WSL distro was found to install Ollama into.".to_string()
     })?;
 
-    // Download the installer to a file first (checking curl's exit) rather than
-    // `curl | sh`: a POSIX `sh` pipeline reports only `sh`'s status, so a failed/partial
-    // download would otherwise be treated as a successful install under `set -e`.
-    let installed = run_wsl_root_script(
-        &distro,
-        r#"set -e
-export DEBIAN_FRONTEND=noninteractive
-command -v curl >/dev/null 2>&1 || { apt-get update && apt-get install -y curl ca-certificates; }
-tmp=$(mktemp)
-trap 'rm -f "$tmp"' EXIT
-curl -fsSL --connect-timeout 30 --max-time 120 https://ollama.com/install.sh -o "$tmp"
-sh "$tmp""#,
-    );
-    if !installed {
-        return Err(format!(
-            "Ollama installation inside the WSL2 distro \"{distro}\" failed."
-        ));
-    }
+    run_wsl_root_script_output(&distro, OLLAMA_WSL_INSTALL_SCRIPT).map_err(|why| {
+        format!("Ollama installation inside the WSL2 distro \"{distro}\" failed. {why}")
+    })?;
 
     // Bind to 0.0.0.0 so the Hub container can reach it, and report the ACTUAL result
     // (installing the binary doesn't guarantee a systemd service was set up + bound).

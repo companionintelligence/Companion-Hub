@@ -43,14 +43,15 @@ describe('TraefikConfigService — the app-starting page', () => {
 
   const parsed = (file: string) => YAML.parse(written.get(`${DYNAMIC_DIR}/${file}`) ?? 'null');
 
-  it('ends every port-expose route with it', async () => {
+  // The login first, as on every app route: port-expose routes once had none, Public web included.
+  it('ends every port-expose route with it, after the Hub login unless that was switched off', async () => {
     await service.syncPortExposeRoutes([
-      { appUrn: 'my-service:_user' as AppUrn, traefikHost: 'my-service-hub1-acme.ci.lan', upstreamPort: 8123 },
-      { appUrn: 'other:_user' as AppUrn, traefikHost: 'other-hub1-acme.ci.lan', upstreamPort: 9000 },
+      { appUrn: 'my-service:_user' as AppUrn, traefikHost: 'my-service-hub1-acme.ci.lan', upstreamPort: 8123, requireLogin: true },
+      { appUrn: 'other:_user' as AppUrn, traefikHost: 'other-hub1-acme.ci.lan', upstreamPort: 9000, requireLogin: false },
     ]);
 
     const { routers } = parsed('port-expose.yml').http;
-    expect(routers['my-service-_user'].middlewares).toEqual([APP_STARTING_MIDDLEWARE]);
+    expect(routers['my-service-_user'].middlewares).toEqual(['ci-hub@file', APP_STARTING_MIDDLEWARE]);
     expect(routers['other-_user'].middlewares).toEqual([APP_STARTING_MIDDLEWARE]);
   });
 

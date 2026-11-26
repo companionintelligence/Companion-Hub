@@ -7,6 +7,7 @@ import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
+import { tailscaleServicesStore } from '@/modules/tailscale/tailscale-services.store';
 import { ForwardAuthSecretResolver } from '../forward-auth-secret.resolver';
 
 /**
@@ -324,6 +325,20 @@ describe('ForwardAuthSecretResolver', () => {
     it('vouches for known app hosts and rejects strangers (the mint allowlist)', async () => {
       await expect(resolver.resolveAppUrnForHost('importer-ci-marketplace-dev-org.example.com')).resolves.toBe('importer:ci-marketplace');
       await expect(resolver.resolveAppUrnForHost('evil.attacker.example')).resolves.toBeNull();
+    });
+
+    // A Private VPN app on its Tailscale Service: the login's allowlist and the app session's
+    // binding both need its hostname, and it has no router label to come from.
+    it('knows the Tailscale Service hostname the Hub published for an app', async () => {
+      const spy = vi
+        .spyOn(tailscaleServicesStore, 'appForServiceHost')
+        .mockImplementation((host) => (host === 'importer.tail123.ts.net' ? ('importer:ci-marketplace' as never) : null));
+      try {
+        await expect(resolver.resolveAppUrnForHost('Importer.tail123.ts.net')).resolves.toBe('importer:ci-marketplace');
+        await expect(resolver.resolveAppUrnForHost('other.tail123.ts.net')).resolves.toBeNull();
+      } finally {
+        spy.mockRestore();
+      }
     });
   });
 });
