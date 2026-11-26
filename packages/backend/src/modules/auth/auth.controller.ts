@@ -142,7 +142,7 @@ import {
   parseDesktopChannel,
   type DesktopChannel,
 } from './portal-sso';
-import { applianceAudienceRefusal, extractBearerToken, portalClaimsIdentity, verifyPortalIdToken } from './portal-token';
+import { applianceAudienceFor, applianceAudienceRefusal, extractBearerToken, portalClaimsIdentity, verifyPortalIdToken } from './portal-token';
 import { loadSessionUser, refuseRevokedSessionUser, sessionIdsFromRequest } from './auth.middleware';
 import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate';
 
@@ -1705,7 +1705,8 @@ export class AuthController {
     }
     // Only an id_token Portal addressed to this Hub: one another Hub received would otherwise sign the
     // same person in here.
-    const mobileRefusal = applianceAudienceRefusal(claims, await this.registrationService.getDeviceId());
+    const mobileDeviceId = await this.registrationService.getDeviceId();
+    const mobileRefusal = applianceAudienceRefusal(claims, mobileDeviceId);
     if (mobileRefusal) {
       this.logger.warn(`Portal mobile session refused: the id_token is ${mobileRefusal} (not addressed to this Hub)`);
       throw new UnauthorizedException('Portal sign-in could not be used on this Hub');
@@ -1720,6 +1721,8 @@ export class AuthController {
     const sessionId = await this.sessionManager.createSession(operator.id);
     this.logger.info('Portal mobile session planted from the cloud-connect id_token', {
       portalEmailHash: hashEmailForLog(claims.email),
+      // false: an unstamped token from a Portal older than addressing, taken as before.
+      addressed: (claims.audiences ?? []).includes(applianceAudienceFor(mobileDeviceId)),
     });
     return PortalDesktopExchangeDto.parse({ sessionId: this.issueSessionToken(res, sessionId, req), redirectPath: '/home' }, { reportOnly: true });
   }
@@ -1763,7 +1766,8 @@ export class AuthController {
       throw new UnauthorizedException('Portal sign-in could not be used on this Hub');
     }
     // Addressed to this Hub: the desktop app names it as `resource` (`/portal/desktop-config`'s deviceId).
-    const desktopRefusal = applianceAudienceRefusal(idClaims, await this.registrationService.getDeviceId());
+    const desktopDeviceId = await this.registrationService.getDeviceId();
+    const desktopRefusal = applianceAudienceRefusal(idClaims, desktopDeviceId);
     if (desktopRefusal) {
       this.logger.warn(`Portal desktop session refused: the id_token is ${desktopRefusal} (not addressed to this Hub)`);
       throw new UnauthorizedException('Portal sign-in could not be used on this Hub');
@@ -1778,6 +1782,8 @@ export class AuthController {
     const sessionId = await this.sessionManager.createSession(operator.id);
     this.logger.info("Portal desktop session planted from the app's own sign-in", {
       portalEmailHash: hashEmailForLog(userinfo.email),
+      // false: an unstamped token from a Portal older than addressing, taken as before.
+      addressed: (idClaims.audiences ?? []).includes(applianceAudienceFor(desktopDeviceId)),
     });
     return PortalDesktopExchangeDto.parse({ sessionId: this.issueSessionToken(res, sessionId, req), redirectPath: '/home' }, { reportOnly: true });
   }
