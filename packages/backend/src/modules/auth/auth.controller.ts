@@ -142,7 +142,7 @@ import {
   parseDesktopChannel,
   type DesktopChannel,
 } from './portal-sso';
-import { extractBearerToken, portalClaimsIdentity, verifyPortalIdToken } from './portal-token';
+import { applianceAudienceRefusal, extractBearerToken, portalClaimsIdentity, verifyPortalIdToken } from './portal-token';
 import { loadSessionUser, refuseRevokedSessionUser, sessionIdsFromRequest } from './auth.middleware';
 import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate';
 
@@ -1703,6 +1703,13 @@ export class AuthController {
     if (!claims?.email || claims.emailVerified !== true) {
       throw new UnauthorizedException('Portal sign-in could not be used on this Hub');
     }
+    // Only an id_token Portal addressed to this Hub: one another Hub received would otherwise sign the
+    // same person in here.
+    const mobileRefusal = applianceAudienceRefusal(claims, await this.registrationService.getDeviceId());
+    if (mobileRefusal) {
+      this.logger.warn(`Portal mobile session refused: the id_token is ${mobileRefusal} (not addressed to this Hub)`);
+      throw new UnauthorizedException('Portal sign-in could not be used on this Hub');
+    }
 
     const operator = await this.authService.admitHubPerson({
       issuer: claims.issuer || portalBase,
@@ -1755,6 +1762,12 @@ export class AuthController {
     if (!idClaims || idClaims.sub !== userinfo.subject) {
       throw new UnauthorizedException('Portal sign-in could not be used on this Hub');
     }
+    // Addressed to this Hub: the desktop app names it as `resource` (`/portal/desktop-config`'s deviceId).
+    const desktopRefusal = applianceAudienceRefusal(idClaims, await this.registrationService.getDeviceId());
+    if (desktopRefusal) {
+      this.logger.warn(`Portal desktop session refused: the id_token is ${desktopRefusal} (not addressed to this Hub)`);
+      throw new UnauthorizedException('Portal sign-in could not be used on this Hub');
+    }
 
     const operator = await this.authService.admitHubPerson({
       issuer: userinfo.issuer || portalBase,
@@ -1771,13 +1784,17 @@ export class AuthController {
 
   /**
    * The Portal origin is public, and the desktop app needs it to run its own sign-in against the same Portal
-   * the Hub checks tokens with. Unauthenticated, because nothing in it is secret.
+   * the Hub checks tokens with; the device id is what it names as `resource`, so Portal addresses the
+   * id_token to this Hub. Unauthenticated, because nothing in it is secret: the device id is in every
+   * address Portal registered for this Hub, and naming it addresses a token only for a person who belongs
+   * to the organization the Hub is paired with.
    */
   @Get('/portal/desktop-config')
   @ApiResponse({ type: PortalDesktopConfigDto })
-  portalDesktopConfig() {
+  async portalDesktopConfig() {
     const portalUrl = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '');
-    return PortalDesktopConfigDto.parse({ portalUrl: portalUrl || null }, { reportOnly: true });
+    const deviceId = (await this.registrationService.getDeviceId().catch(() => '')) || null;
+    return PortalDesktopConfigDto.parse({ portalUrl: portalUrl || null, deviceId }, { reportOnly: true });
   }
 
   /**

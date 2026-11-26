@@ -32,18 +32,40 @@ export class DesktopSignInError extends Error {
   }
 }
 
-/** The Portal origin the Hub checks tokens against, as the Hub itself is configured. */
-async function fetchDesktopPortalUrl(): Promise<string> {
+/**
+ * The Portal origin the Hub checks tokens against, as the Hub itself is configured, and the device id
+ * Portal knows the Hub by (null from a Hub too old to say).
+ */
+async function fetchDesktopPortalConfig(): Promise<{ portalUrl: string; deviceId: string | null }> {
   const res = await apiFetch('/api/auth/portal/desktop-config');
   if (!res.ok) {
     throw new DesktopSignInError('This Hub has no Portal to sign in with.', res.status);
   }
-  const body = (await res.json()) as { portalUrl?: string | null };
+  const body = (await res.json()) as { portalUrl?: string | null; deviceId?: string | null };
   const portalUrl = body.portalUrl?.trim();
   if (!portalUrl) {
     throw new DesktopSignInError('This Hub has no Portal to sign in with.');
   }
-  return portalUrl;
+  return { portalUrl, deviceId: body.deviceId?.trim() || null };
+}
+
+/**
+ * `fetch` for the token exchange that names this Hub as `resource` on the code exchange, so Portal
+ * addresses the id_token to it (`urn:ci:device:<id>`, Portal's `applianceAudience.ts`). Every Hub signs
+ * people in as `ci-hub`, so an id_token addressed to no Hub is one any Hub could turn into a session as
+ * this person, and the Hub refuses it. Only the code exchange takes `resource`: Portal refuses it on a
+ * refresh.
+ */
+export function addressingHub(fetch: FetchLike, deviceId: string): FetchLike {
+  return (input, init) => {
+    const body = typeof init?.body === 'string' ? init.body : null;
+    if (body === null || new URLSearchParams(body).get('grant_type') !== 'authorization_code') {
+      return fetch(input, init);
+    }
+    const params = new URLSearchParams(body);
+    params.set('resource', `urn:ci:device:${deviceId}`);
+    return fetch(input, { ...init, body: params.toString() });
+  };
 }
 
 /**
@@ -112,14 +134,15 @@ export async function signInDesktopWithPortal(options: { signal?: AbortSignal } 
     throw new DesktopSignInError('Signing in to the Portal needs the desktop app.');
   }
 
-  const portalUrl = await fetchDesktopPortalUrl();
+  const { portalUrl, deviceId } = await fetchDesktopPortalConfig();
   let idToken: string | null = null;
+  const tokenFetch = nativeTokenFetch(invoke as InvokeFn);
   const session = await runSignIn({
     config: { clientId: DESKTOP_PORTAL_CLIENT_ID, issuer: portalUrl, scopes: DESKTOP_PORTAL_SCOPES },
     driver: createTauriSignInDriver({ invoke: invoke as InvokeFn, openUrl: openAuthInSystemBrowser }),
     store,
     signal: options.signal,
-    fetch: capturingIdToken(nativeTokenFetch(invoke as InvokeFn), (token) => {
+    fetch: capturingIdToken(deviceId ? addressingHub(tokenFetch, deviceId) : tokenFetch, (token) => {
       idToken = token;
     }),
   });

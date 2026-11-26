@@ -104,6 +104,7 @@ describe('AuthController', () => {
   let deviceRegistration: MockProxy<DeviceRegistrationRepository>;
   let forwardAuthIdentities: MockProxy<ForwardAuthIdentityResolver>;
   let memoryApiKeys: MockProxy<MemoryApiKeyCheck>;
+  let registration: MockProxy<RegistrationService>;
 
   beforeEach(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -139,6 +140,7 @@ describe('AuthController', () => {
     userRepository = moduleRef.get(UserRepository);
     sessionManager = moduleRef.get(SessionManager);
     deviceRegistration = moduleRef.get(DeviceRegistrationRepository);
+    registration = moduleRef.get(RegistrationService);
     forwardAuthIdentities = moduleRef.get(ForwardAuthIdentityResolver);
     memoryApiKeys = moduleRef.get(MemoryApiKeyCheck);
     memoryApiKeys.check.mockResolvedValue('valid');
@@ -2251,6 +2253,47 @@ describe('AuthController', () => {
       await expect(authController.establishPortalMobileSession(req, res)).rejects.toBeInstanceOf(UnauthorizedException);
       expect(authService.admitHubPerson).not.toHaveBeenCalled();
     });
+
+    // Every Hub signs people in as `ci-hub`, and a Hub's own browser sign-in receives the person's id_token:
+    // unless Portal addressed it to this Hub, another Hub could turn it into a session here.
+    describe("Portal's address on the id_token", () => {
+      const claimsWith = (audiences: string[], applianceBinding: number | null) => ({
+        sub: 'portal-sub',
+        email: 'demo-1@lifescope.io',
+        name: null,
+        emailVerified: true,
+        issuer: 'https://hub.ci.computer',
+        audiences,
+        applianceBinding,
+      });
+      beforeEach(() => {
+        registration.getDeviceId.mockResolvedValue('this-hub');
+        authService.admitHubPerson.mockResolvedValue({ id: 7 } as never);
+        sessionManager.createSession.mockResolvedValue('sid-mobile' as never);
+      });
+
+      it.each([
+        ['addressed to this Hub', ['ci-hub', 'urn:ci:device:this-hub'], 2],
+        ['from a Portal older than addressing (no stamp)', ['ci-hub'], null],
+      ])('takes one %s', async (_label, audiences, binding) => {
+        vi.mocked(verifyPortalIdToken).mockResolvedValue(claimsWith(audiences, binding));
+        const res = { cookie: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
+
+        await expect(authController.establishPortalMobileSession(req, res)).resolves.toMatchObject({ redirectPath: '/home' });
+      });
+
+      it.each([
+        ['addressed to another Hub', ['ci-hub', 'urn:ci:device:other-hub'], 2, 'addressed-elsewhere'],
+        ['stamped and addressed to no Hub (what a Hub web sign-in receives)', ['ci-hub'], 2, 'unaddressed'],
+      ])('refuses one %s', async (_label, audiences, binding, reason) => {
+        vi.mocked(verifyPortalIdToken).mockResolvedValue(claimsWith(audiences, binding));
+        const res = { cookie: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
+
+        await expect(authController.establishPortalMobileSession(req, res)).rejects.toBeInstanceOf(UnauthorizedException);
+        expect(authService.admitHubPerson).not.toHaveBeenCalled();
+        expect(JSON.stringify(logger.warn.mock.calls)).toContain(reason);
+      });
+    });
   });
 
   describe('establishPortalDesktopSession', () => {
@@ -2330,6 +2373,35 @@ describe('AuthController', () => {
       expect(sessionManager.createSession).not.toHaveBeenCalled();
     });
 
+    it.each([
+      ['addressed to this Hub', ['ci-hub', 'urn:ci:device:this-hub'], 2, true],
+      ['from a Portal older than addressing (no stamp)', ['ci-hub'], null, true],
+      ['addressed to another Hub', ['ci-hub', 'urn:ci:device:other-hub'], 2, false],
+      ['stamped and addressed to no Hub', ['ci-hub'], 2, false],
+    ])('decides on an id_token %s', async (_label, audiences, applianceBinding, admitted) => {
+      userinfoFor('portal-sub');
+      registration.getDeviceId.mockResolvedValue('this-hub');
+      vi.mocked(verifyPortalIdToken).mockResolvedValue({
+        sub: 'portal-sub',
+        email: 'demo-1@lifescope.io',
+        name: null,
+        emailVerified: true,
+        audiences,
+        applianceBinding,
+      });
+      authService.admitHubPerson.mockResolvedValue({ id: 7 } as never);
+      sessionManager.createSession.mockResolvedValue('sid-desktop' as never);
+      const res = { cookie: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
+
+      const outcome = authController.establishPortalDesktopSession(req, res);
+      if (admitted) {
+        await expect(outcome).resolves.toMatchObject({ redirectPath: '/home' });
+      } else {
+        await expect(outcome).rejects.toBeInstanceOf(UnauthorizedException);
+        expect(sessionManager.createSession).not.toHaveBeenCalled();
+      }
+    });
+
     it('refuses a request with no Bearer token, without asking Portal', async () => {
       const res = { cookie: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
       const unsigned = { ...req, headers: {} } as unknown as Request;
@@ -2380,17 +2452,20 @@ describe('AuthController', () => {
   });
 
   describe('portalDesktopConfig', () => {
-    it('returns the configured Portal origin without a trailing slash', () => {
+    it('returns the configured Portal origin without a trailing slash, and the device id the app names as resource', async () => {
       config.get.mockImplementation((key: string) => {
         if (key === 'ciCloudUrl') return 'https://hub.ci.computer/';
         return undefined as never;
       });
+      registration.getDeviceId.mockResolvedValue('dev-123');
 
-      expect(authController.portalDesktopConfig()).toEqual({ portalUrl: 'https://hub.ci.computer' });
+      await expect(authController.portalDesktopConfig()).resolves.toEqual({ portalUrl: 'https://hub.ci.computer', deviceId: 'dev-123' });
     });
 
-    it('returns a null portalUrl when no Portal is configured', () => {
-      expect(authController.portalDesktopConfig()).toEqual({ portalUrl: null });
+    it('returns nulls when no Portal is configured and the device id cannot be read', async () => {
+      registration.getDeviceId.mockRejectedValue(new Error('no id'));
+
+      await expect(authController.portalDesktopConfig()).resolves.toEqual({ portalUrl: null, deviceId: null });
     });
   });
 

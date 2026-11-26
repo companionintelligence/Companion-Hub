@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { extractBearerToken, portalClaimsIdentity, resetPortalJwksCacheForTests, verifyPortalIdToken } from '../portal-token';
+import {
+  applianceAudienceRefusal,
+  extractBearerToken,
+  portalClaimsIdentity,
+  resetPortalJwksCacheForTests,
+  verifyPortalIdToken,
+} from '../portal-token';
 
 afterEach(() => {
   resetPortalJwksCacheForTests();
@@ -41,6 +47,22 @@ describe('portalClaimsIdentity', () => {
 });
 
 describe('verifyPortalIdToken', () => {
+  // Portal's addressing contract: the client id first in `aud`, the appliance after it, and the stamp.
+  it('reads the appliance Portal addressed the token to, and the contract version it was minted under', async () => {
+    const verify = vi.fn().mockResolvedValue({
+      payload: { sub: 'user-1', aud: ['ci-hub', 'urn:ci:device:dev-1'], ci_appliance_binding: 2, email_verified: true },
+    });
+    resetPortalJwksCacheForTests();
+
+    const claims = await verifyPortalIdToken('tok', {
+      publicCiCloudUrl: 'https://hub.ci.computer',
+      verify: verify as never,
+      createJwks: vi.fn().mockReturnValue({}) as never,
+    });
+
+    expect(claims).toMatchObject({ audiences: ['ci-hub', 'urn:ci:device:dev-1'], applianceBinding: 2 });
+  });
+
   it('returns claims when jose verifies the token', async () => {
     const verify = vi.fn().mockResolvedValue({
       payload: { sub: 'user-1', iss: 'https://hub.ci.computer', email: 'op@example.com', email_verified: true, name: 'Op' },
@@ -59,6 +81,8 @@ describe('verifyPortalIdToken', () => {
       name: 'Op',
       emailVerified: true,
       issuer: 'https://hub.ci.computer',
+      audiences: [],
+      applianceBinding: null,
     });
     expect(verify).toHaveBeenCalledWith(
       'tok',
@@ -83,5 +107,31 @@ describe('verifyPortalIdToken', () => {
   it('returns null when CI_CLOUD_URL is empty', async () => {
     const claims = await verifyPortalIdToken('tok', { publicCiCloudUrl: '' });
     expect(claims).toBeNull();
+  });
+});
+
+describe('applianceAudienceRefusal', () => {
+  const claims = (audiences: string[], applianceBinding: number | null = 2) => ({ sub: 's', email: null, name: null, audiences, applianceBinding });
+
+  it('takes a token Portal addressed to this Hub, whatever else it names', () => {
+    expect(applianceAudienceRefusal(claims(['ci-hub', 'urn:ci:device:me']), 'me')).toBeNull();
+    expect(applianceAudienceRefusal(claims(['ci-hub', 'urn:ci:device:other', 'urn:ci:device:me']), 'me')).toBeNull();
+  });
+
+  it('refuses one addressed to another Hub, stamped or not', () => {
+    expect(applianceAudienceRefusal(claims(['ci-hub', 'urn:ci:device:other']), 'me')).toBe('addressed-elsewhere');
+    expect(applianceAudienceRefusal(claims(['ci-hub', 'urn:ci:device:other'], null), 'me')).toBe('addressed-elsewhere');
+  });
+
+  it('refuses a stamped one addressed to no Hub, and takes an unstamped one from an older Portal', () => {
+    expect(applianceAudienceRefusal(claims(['ci-hub'], 2), 'me')).toBe('unaddressed');
+    expect(applianceAudienceRefusal(claims(['ci-hub'], 3), 'me')).toBe('unaddressed');
+    expect(applianceAudienceRefusal(claims(['ci-hub'], 1), 'me')).toBeNull();
+    expect(applianceAudienceRefusal(claims(['ci-hub'], null), 'me')).toBeNull();
+    expect(applianceAudienceRefusal({ sub: 's', email: null, name: null }, 'me')).toBeNull();
+  });
+
+  it('never takes the address of a Hub with no device id', () => {
+    expect(applianceAudienceRefusal(claims(['ci-hub', 'urn:ci:device:']), '')).toBe('addressed-elsewhere');
   });
 });
