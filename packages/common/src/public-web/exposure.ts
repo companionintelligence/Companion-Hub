@@ -129,7 +129,7 @@ export function storedMainPortOnNetwork(app: Parameters<typeof storedHostPortFor
  *
  * An app compose runs is published as {@link storedMainPortOnNetwork} says. A port-expose app's port is a
  * program on the host, which compose doesn't publish, so the switch says nothing about it. The Hub takes
- * such a port only where its container opens it at the host's Docker bridge address, and tells the operator
+ * such a port only where its container opens it at the host's Docker bridge address and tells the operator
  * a program bound to 127.0.0.1 only is not reachable and to listen on every interface. It answers the
  * network then, except on Private VPN, where it gets no LAN link.
  */

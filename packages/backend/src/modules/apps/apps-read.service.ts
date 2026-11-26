@@ -269,7 +269,7 @@ export class AppsReadService {
         publicUrl: hub ? guestPublicUrl(entry.app, entry.info, hub, refused(appUrn)) : null,
         // The guest's record carries no form, so the tile can't tell this from the row: a port on 127.0.0.1 answers no other computer.
         hostPortOnNetwork: portAnswersNetwork(entry.app, entry.info),
-        // Only the first label of `<label>.<tailnet>.ts.net`: this route takes no sign-in, and the tailnet's name is not the guest's to read.
+        // Only the first label of `<label>.<tailnet>.ts.net`: this route takes no sign-in and the tailnet's name is not the guest's to read.
         tailscaleServiceLabel: services.get(appUrn)?.fqdn.split('.')[0] || null,
       };
     });

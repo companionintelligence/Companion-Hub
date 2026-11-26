@@ -138,7 +138,7 @@ export type ConnectBlockedReason =
    */
   | 'memory_loopback_only'
   /**
-   * ci-memory's consent page is its host-port address, and that port answers on 127.0.0.1 only because the
+   * ci-memory's consent page is its host-port address. That port answers on 127.0.0.1 only because the
    * operator didn't open it on the network, so only a browser on the Hub's own computer can open it.
    */
   | 'memory_hub_computer_only'
@@ -215,8 +215,8 @@ export class MemoryConsentUnreachableException extends BadRequestException {
   constructor(hubComputerOnly = false) {
     super(
       hubComputerOnly
-        ? "CI Memory's port is open on this Hub machine only, and this browser is on another computer"
-        : 'CI Memory is only reachable on this Hub machine and its local network, and this browser reached the Hub another way',
+        ? "CI Memory's port is open on this Hub machine only and this browser is on another computer"
+        : 'CI Memory is only reachable on this Hub machine and its local network. This browser reached the Hub another way',
     );
     this.hubComputerOnly = hubComputerOnly;
   }
@@ -1171,7 +1171,8 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
 
   /**
    * A wildcard bind resolves to loopback, which points non-loopback visitors at their own machine.
-   * Therefore, loopback origins are offered only to loopback callers.
+   * Therefore, loopback origins are offered only to callers on the Hub's own computer, a `.localhost`
+   * name included, as in `consentOriginFor`.
    */
   private localOriginReachableBy(localOrigin: string, callerHost: string | undefined): boolean {
     const localHostname = this.hostnameOf(localOrigin);
@@ -1180,7 +1181,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       return true;
     }
 
-    return isLoopbackHostname(this.hostnameOf(callerHost));
+    return namesOwnComputer(this.hostnameOf(callerHost));
   }
 
   /** Whether the Hub writes its own address as loopback: INTERNAL_IP unset, listen-all, or loopback itself. */

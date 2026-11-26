@@ -32,10 +32,10 @@ import { createAppUrn } from '@/common/helpers/app-helpers';
 /**
  * Verdict of an app-availability probe.
  *
- * `appUrl` is the app's PRIMARY route — the public tunnel address for an exposed
- * app, its host-port address for a locally-exposed one (127.0.0.1 unless the port is
- * open on the network) — and is what `available` describes. `localUrl` is the app's
- * direct LAN address when another computer can reach it there, and is
+ * `appUrl` is the app's PRIMARY route and is what `available` describes: the public
+ * tunnel address for an exposed app, its host-port address for a locally-exposed one
+ * (127.0.0.1 unless the port is open on the network). `localUrl` is the app's
+ * direct LAN address when another computer can reach it there. It is
  * deliberately independent of the verdict: it is present on failures too, because
  * a broken tunnel says nothing about whether the app answers on the local network.
  * Consumers use it as the fallback route when the primary one is unreachable.
@@ -402,7 +402,7 @@ function buildTailscalePortUrl(nodeFqdn?: string | null, port?: number | null, s
 
 /**
  * Host for an app's direct `host:port` address. Compose publishes the port on 127.0.0.1 unless the
- * operator opened it on the network, and always for an app whose host port stays on loopback
+ * operator opened it on the network. It always does for an app whose host port stays on loopback
  * (`portAnswersNetwork`). Its LAN address then refuses the connection, from the
  * Hub's own computer too.
  */
@@ -540,7 +540,7 @@ export class AppsService {
    * host port (`portAnswersNetwork`): on every interface only when the operator
    * opened it on the network ("Open this app's port on your network"), on 127.0.0.1
    * otherwise. A Private VPN app's port is on 127.0.0.1 at most, because Tailscale Serve
-   * holds it at the tailnet address, and so is the port of an app that must stay on
+   * holds it at the tailnet address. So is the port of an app that must stay on
    * loopback. A record with no stored form is published on 127.0.0.1 at most too.
    *
    * Offering an address that isn't served would reproduce the exact bug this
@@ -551,7 +551,7 @@ export class AppsService {
       return undefined;
     }
 
-    // On 127.0.0.1 the LAN address refuses the connection, and the loopback one is rejected below for
+    // On 127.0.0.1 the LAN address refuses the connection. The loopback one is rejected below for
     // pointing a remote browser at its own machine.
     if (!portAnswersNetwork(app, info)) {
       return undefined;

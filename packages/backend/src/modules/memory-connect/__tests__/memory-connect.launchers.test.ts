@@ -471,7 +471,7 @@ describe('launcher selection — ci-memory addressed as loopback (listen-all Hub
  * opens in a browser on the Hub's own computer and nowhere else: a LAN or tailnet host stood in for its address
  * names a port nothing listens on.
  */
-describe("launcher selection — ci-memory's port on 127.0.0.1 only", () => {
+describe("launcher selection: ci-memory's port on 127.0.0.1 only", () => {
   const hubComputerOnly = { providerLocalOnly: true, providerOnHostPort: true, providerPortOnLoopback: true };
 
   it.each([
@@ -510,6 +510,8 @@ describe("launcher selection — ci-memory's port on 127.0.0.1 only", () => {
 
     expect(status.connectable).toBe(true);
     expect(status.reason).toBeNull();
+    // The Hub's loopback origin opens there as well, as it does for 127.0.0.1.
+    expect(status.connectUrlLocal).toBe('http://127.0.0.1/api/memory-connect/start?app=ci-openclaw%3Aci-marketplace');
   });
 
   it('still says provider_local_only to a confirmed remote caller', async () => {

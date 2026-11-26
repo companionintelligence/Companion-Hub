@@ -15,7 +15,7 @@ export interface GuestTileAddress {
  *
  * `127.0.0.1` is the guest's own computer, so it is right only for a browser on the Hub. From a LAN
  * or tailnet address, the name the browser used to reach this page is one it can reach, but only for
- * a port the operator opened on the network: any other is published on 127.0.0.1, and a Private VPN
+ * a port the operator opened on the network: any other is published on 127.0.0.1 and a Private VPN
  * app's always is (`portAnswersNetwork`, which the Hub answers as `hostPortOnNetwork`). From the
  * public hostname nothing is: the tunnel carries 443 only.
  */
@@ -57,7 +57,7 @@ export function guestTileAddresses(input: {
   const directPort = app.port ?? info.port ?? null;
 
   // On the node's own name Tailscale Serve holds a Private VPN app's port, over HTTPS and whether or not the host port is open.
-  // An app on its own Tailscale Service answers on 443 of `<label>.<tailnet>.ts.net` instead, and nothing listens on that port.
+  // An app on its own Tailscale Service answers on 443 of `<label>.<tailnet>.ts.net` instead. Nothing listens on that port.
   const viewer = input.viewerHostname.toLowerCase().replace(/\.+$/, '');
   if (app.exposureMode === 'tailscale' && viewer.endsWith(TAILNET_HOST_SUFFIX)) {
     // `<node>.<tailnet>.ts.net`: the Service is on the same tailnet as the name this page was opened on.

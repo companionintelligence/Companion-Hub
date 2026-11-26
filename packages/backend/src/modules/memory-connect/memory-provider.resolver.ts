@@ -255,7 +255,7 @@ export class MemoryProviderResolver {
     const exposureMode = row.exposureMode || 'local';
     const localOnly = exposureMode !== 'cloudflare';
     const onHostPort = exposureMode === 'local';
-    // DB-only, so without the manifest: ci-memory's listing doesn't keep its port on loopback, and `start`
+    // DB-only, so without the manifest: ci-memory's listing doesn't keep its port on loopback and `start`
     // asks again with the manifest (`findProvider`).
     const loopback = onHostPort && !storedMainPortOnNetwork(row, false) ? { hostPortOnLoopback: true } : {};
 
