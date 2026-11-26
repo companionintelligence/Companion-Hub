@@ -9,7 +9,12 @@ import { omlxAppApiKey } from './backends/omlx.backend';
 import { CloudFallbackService, isCloudFallbackAllowed } from './cloud-fallback.service';
 import { InferenceEndpointService } from './inference-endpoint.service';
 import { handoutIdForCatalogModel, isCatalogModelInstalled, isServedModelForCatalog, trackedPullCounts } from './model-availability.util';
-import { appInferenceRequirements, checkModelRequirements, type AppInferenceRequirements } from './app-inference-requirements';
+import {
+  appInferenceRequirements,
+  checkModelRequirements,
+  hasInferenceRequirements,
+  type AppInferenceRequirements,
+} from './app-inference-requirements';
 import {
   capHandoutAtServedWindow,
   describeContextHandout,
@@ -21,8 +26,8 @@ import { handoutCeilingMb, MemoryManagerService, modelMemoryCeilingMb } from './
 import { appBearerFor } from './engine-credential-scope';
 import { catalogEmbedsOn, embedderEngineId, embeddingBackendFor, pickEmbeddingModel } from './embedder-handout';
 import { pickUtilityModel } from './utility-handout';
-import { installedDefaultChatModel } from './default-chat-model-handout';
-import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
+import { installedDefaultChatModel, onboardingTier } from './default-chat-model-handout';
+import { type CuratedModel, type InferenceBackendType, smallestDownload } from '@ci-hub/common/types';
 
 /**
  * Standardized AI environment variables injected into an app's `app.env` when
@@ -480,9 +485,15 @@ export class InferenceEnvResolver {
        * `llmCandidates` is read at `profile.tier` while the wizard reads the onboarding tier: for a card
        * the container runtime cannot reach yet, those differ. A Hub restored after pairing skips the
        * wizard, so its apps run on what the wizard would have marked (`installedDefaultChatModel`).
+       * For an app with requirements it also leads when the chosen model is missing or the app cannot run
+       * it, as on the bootstrap.env path (`AppCredentialsService`), so a model ticked under Other Models
+       * counts here too (#2538). Every other app keeps waiting for the chosen model, as before.
        */
-      const wizardDefault = preferredId ? undefined : this.wizardDefault(backendType, modelsLoaded, listedBy, profile, suitable);
-      if (wizardDefault) {
+      const wizardDefault =
+        preferredId && !hasInferenceRequirements(requirements)
+          ? undefined
+          : this.wizardDefault(backendType, modelsLoaded, listedBy, profile, suitable);
+      if (wizardDefault && !preferredId) {
         this.logger.info(
           `[InferenceEnvResolver] ${appLabel}: no chat model chosen yet; handing out the setup wizard's default ${wizardDefault.backendModelId}`,
         );
@@ -490,7 +501,22 @@ export class InferenceEnvResolver {
       chatCurated = wizardDefault ?? llmCandidates.find((m) => this.isInstalled(m, modelsLoaded, listedBy) && suitable(m));
     }
     if (!chatCurated) {
-      chatCurated = [backendPreferredCurated, ...llmCandidates].find((m) => suitable(m));
+      // An app with requirements gets the model the bootstrap.env pre-pull fetches for it, which is the
+      // one the setup wizard names: the smallest suitable recommendation, read at the wizard's tier (#2538).
+      // Naming the top one left Hermes on MiniMax M2 230B, which nothing downloads.
+      const wizardTier = onboardingTier(profile, (gpu, ram) => this.hardwareInspector.computeTier(gpu, ram));
+      const smallestSuitable = () =>
+        smallestDownload(
+          (this.modelRegistry.getRecommendedModelsForHardware(wizardTier, profile) ?? []).filter(
+            (m) => m.modality === 'llm' && m.backend === backendType && suitable(m),
+          ),
+        );
+      chatCurated =
+        backendPreferredCurated && suitable(backendPreferredCurated)
+          ? backendPreferredCurated
+          : hasInferenceRequirements(requirements)
+            ? smallestSuitable()
+            : llmCandidates.find((m) => suitable(m));
       if (chatCurated) {
         this.logger.warn(
           `[InferenceEnvResolver] no recommended ${backendType} chat model is pulled yet; ` +

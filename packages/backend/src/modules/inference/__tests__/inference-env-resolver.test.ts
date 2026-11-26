@@ -1404,6 +1404,63 @@ describe('InferenceEnvResolver', () => {
       expect(env.CI_CHAT_MODEL).toBe('qwen3:8b');
     });
 
+    // #2538: the agents' listings map CI_CHAT_MODEL into their app.env, which stands until bootstrap.env names a
+    // model. The bootstrap.env pre-pull fetches the smallest suitable recommendation,
+    // so naming the top one here pointed Hermes at MiniMax M2 230B, which nothing downloads.
+    describe('when the chosen model is missing or does not suit the app', () => {
+      const sized = (model: CuratedModel, diskMb: number) => ({ ...model, requirements: { ...model.requirements, diskMb } }) as CuratedModel;
+      const minimax = sized(
+        makeCapableLlm('minimax-m2-community-230b', 'gabegoodhart/minimax-m2:230b', { tools: true, contextWindow: 196608 }),
+        53759,
+      );
+      const gemma12b = sized(makeCapableLlm('gemma4-12b', 'gemma4:12b', { tools: true, contextWindow: 256000 }), 7650);
+      const gemma270m = sized(makeCapableLlm('gemma3-270m', 'gemma3:270m', { tools: false, contextWindow: 32768 }), 292);
+      // Off the recommended list, so the setup wizard shows it under Other Models.
+      const coder = sized(makeCapableLlm('qwen3-coder-30b', 'qwen3-coder:30b', { tools: true, contextWindow: 262144 }), 18556);
+
+      beforeEach(() => {
+        config.getInferencePreferences.mockReturnValue({
+          preferredBackend: 'ollama',
+          preferredModel: 'gemma3-270m',
+          preferredEmbeddingModel: null,
+          preferredVisionModel: null,
+        } as never);
+        modelRegistry.getRecommendedModelsForHardware.mockReturnValue([minimax, gemma12b, gemma270m]);
+        modelRegistry.getModelsForHardware.mockReturnValue([gemma270m, gemma12b, coder, minimax]);
+        modelRegistry.getCuratedModel.mockImplementation((id) => [minimax, gemma12b, gemma270m, coder].find((model) => model.id === id));
+      });
+
+      it('names the smallest suitable recommendation while the engine has nothing the app can use', async () => {
+        ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma3:270m'] });
+
+        const env = await service.resolve({ appSlug: 'ci-hermes', minContextLength: 64_000 });
+
+        expect(env.CI_CHAT_MODEL).toBe('gemma4:12b');
+      });
+
+      it('hands out a model ticked under Other Models that the engine has', async () => {
+        ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma3:270m', 'qwen3-coder:30b'] });
+
+        const env = await service.resolve({ appSlug: 'ci-hermes', minContextLength: 64_000 });
+
+        expect(env.CI_CHAT_MODEL).toBe('qwen3-coder:30b');
+      });
+
+      // Only the agents changed. An app with no requirements still waits for the model that was chosen.
+      it('hands an agent an installed Other Models model while the chosen one downloads but no other app', async () => {
+        config.getInferencePreferences.mockReturnValue({
+          preferredBackend: 'ollama',
+          preferredModel: 'gemma4-12b',
+          preferredEmbeddingModel: null,
+          preferredVisionModel: null,
+        } as never);
+        ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['qwen3-coder:30b'] });
+
+        expect((await service.resolve({ appSlug: 'ci-hermes', minContextLength: 64_000 })).CI_CHAT_MODEL).toBe('qwen3-coder:30b');
+        expect((await service.resolve({ appSlug: 'ci-memory' })).CI_CHAT_MODEL).toBe('gemma4:12b');
+      });
+    });
+
     it('keeps handing an app with no requirements the top installed model, whatever its capabilities', async () => {
       const gemma1b = makeCapableLlm('gemma3-1b', 'gemma3:1b', { tools: false, contextWindow: 32768 });
       ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma3:1b'] });

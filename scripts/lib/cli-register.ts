@@ -194,6 +194,29 @@ export async function resolvePairingCode(env: HubEnv, code: string | undefined, 
 }
 
 /**
+ * How long `register` waits for a Hub that has just started to read its registration back. Its first
+ * status answer says `starting` even when the tunnel token is there. A Hub whose token file is
+ * missing restarts the tunnel before it reads the registration, which takes seconds (#2590).
+ */
+export const HUB_STARTING_WAIT_MS = 60_000;
+const HUB_STARTING_POLL_MS = 1_000;
+
+/** The registration status once the Hub has read it back, or `starting` when it still hasn't after the wait. */
+async function fetchSettledRegistrationStatus(apiBase: string): Promise<RegistrationStatusResponse> {
+  const deadline = Date.now() + HUB_STARTING_WAIT_MS;
+  let status = await fetchRegistrationStatus(apiBase);
+  while (status.phase === 'starting' && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, HUB_STARTING_POLL_MS));
+    try {
+      status = await fetchRegistrationStatus(apiBase);
+    } catch {
+      // A Hub that is still starting can miss an answer. Ask again until the wait is over.
+    }
+  }
+  return status;
+}
+
+/**
  * Every failure here exits non-zero.
  *
  * It used to print a red box and `return`, so `cihub register` exited 0 whether it had registered a
@@ -230,9 +253,22 @@ export async function registerHub(env: HubEnv, options: RegisterHubOptions = {})
 
   let status: RegistrationStatusResponse;
   try {
-    status = await fetchRegistrationStatus(apiBase);
+    status = await fetchSettledRegistrationStatus(apiBase);
   } catch (error) {
     printMessageBox('Registration check failed', [error instanceof Error ? error.message : String(error)], 'red');
+    process.exit(1);
+  }
+
+  // A Hub that can't say whether it is paired must not be paired again, or cleared for a fresh setup.
+  if (status.phase === 'starting') {
+    printMessageBox(
+      'Hub still starting',
+      [
+        `The Hub has not read its registration back after ${HUB_STARTING_WAIT_MS / 1000} seconds, so it can't say whether it is paired.`,
+        `Check ${BASE_COMMAND} logs ${env}, then run ${BASE_COMMAND} register again.`,
+      ],
+      'red',
+    );
     process.exit(1);
   }
 

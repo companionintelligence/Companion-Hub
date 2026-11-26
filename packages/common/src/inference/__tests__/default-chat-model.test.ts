@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CuratedModel } from '../../types/inference.js';
-import { defaultChatModelId } from '../default-chat-model.js';
+import { defaultChatModelId, modelDownloadMb, smallestDownload } from '../default-chat-model.js';
 
 const row = (id: string, modality: CuratedModel['modality'] = 'llm', backend: CuratedModel['backend'] = 'ollama') => ({ id, modality, backend });
 
@@ -79,5 +79,30 @@ describe('defaultChatModelId', () => {
     expect(pick(['nomic-embed-text'], { candidatesOnly: true })).toBeUndefined();
     expect(pick([], { candidatesOnly: true })).toBeUndefined();
     expect(pick(['gemma4-e2b', 'gemma4-12b'], { candidatesOnly: true })).toBe('gemma4-12b');
+  });
+});
+
+describe('smallestDownload', () => {
+  const sized = (id: string, diskMb: number, memoryFootprintMb = diskMb + 800) => ({
+    id,
+    requirements: { diskMb } as CuratedModel['requirements'],
+    runtime: { memoryFootprintMb } as CuratedModel['runtime'],
+  });
+
+  it('takes the smallest download, not the best model, on a 128 GB unified-memory machine', () => {
+    const recommended = [
+      sized('minimax-m2-community-230b', 53759),
+      sized('qwen3-6-35b', 21573),
+      sized('gemma4-26b', 17863),
+      sized('gemma4-12b', 7650),
+    ];
+    expect(smallestDownload(recommended)?.id).toBe('gemma4-12b');
+  });
+
+  it('keeps the first of equals and reads the footprint of a row with no download size', () => {
+    expect(smallestDownload([sized('a', 4000), sized('b', 4000)])?.id).toBe('a');
+    expect(modelDownloadMb(sized('c', 0, 3000))).toBe(3000);
+    expect(smallestDownload([sized('a', 4000), sized('c', 0, 3000)])?.id).toBe('c');
+    expect(smallestDownload([])).toBeUndefined();
   });
 });

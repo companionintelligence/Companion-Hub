@@ -20,6 +20,8 @@ const mocks = vi.hoisted(() => ({
     prepareFresh: { success: true, message: 'cleared' },
     prepareFreshFails: false,
     status: { phase: 'unregistered', registered: false } as { phase: string; registered: boolean; degradedReasons?: string[] },
+    /** Answers given before `status`, one per read. An `Error` is thrown instead of answered. */
+    statusQueue: [] as ({ phase: string; registered: boolean } | Error)[],
     driftDetected: false,
     prepareFreshCalls: 0,
   },
@@ -61,7 +63,11 @@ vi.mock('../lib/register-hub.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/register-hub.js')>()),
   resolveRegisterApiBase: () => 'http://localhost:3001',
   waitForHubApi: async () => true,
-  fetchRegistrationStatus: async () => mocks.hub.status,
+  fetchRegistrationStatus: async () => {
+    const next = mocks.hub.statusQueue.shift() ?? mocks.hub.status;
+    if (next instanceof Error) throw next;
+    return next;
+  },
   fetchStateDrift: async () => ({ detected: mocks.hub.driftDetected }),
   prepareFreshSetup: async () => {
     mocks.hub.prepareFreshCalls++;
@@ -76,7 +82,7 @@ vi.mock('../lib/register-hub.js', async (importOriginal) => ({
   pollRegistrationComplete: async () => ({ phase: 'publicly_ready', registered: true }),
 }));
 
-import { registerHub, resolvePairingCode, showDeviceId } from '../lib/cli-register.js';
+import { HUB_STARTING_WAIT_MS, registerHub, resolvePairingCode, showDeviceId } from '../lib/cli-register.js';
 
 let exitSpy: ReturnType<typeof vi.spyOn>;
 let logSpy: ReturnType<typeof vi.spyOn>;
@@ -90,6 +96,7 @@ beforeEach(() => {
   mocks.hub.prepareFresh = { success: true, message: 'cleared' };
   mocks.hub.prepareFreshFails = false;
   mocks.hub.status = { phase: 'unregistered', registered: false };
+  mocks.hub.statusQueue = [];
   mocks.hub.driftDetected = false;
   mocks.hub.prepareFreshCalls = 0;
   mocks.deviceKey = undefined;
@@ -147,6 +154,70 @@ describe('cihub register without a terminal', () => {
   it('names the env it was invoked for so the suggested command is copy-pasteable', async () => {
     await expect(resolvePairingCode('prod', undefined, false)).rejects.toThrow('exit 2');
     expect(output()).toContain('register prod --code <code>');
+  });
+});
+
+// #2590: a Hub says `starting` until it has read its registration back. Taken for "not registered",
+// that sent a paired Hub on to pairing or to a fresh setup.
+describe('cihub register on a Hub that is still starting', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('waits for the Hub to read its registration back and leaves a paired Hub alone', async () => {
+    vi.useFakeTimers();
+    mocks.hub.statusQueue = [
+      { phase: 'starting', registered: false },
+      { phase: 'starting', registered: false },
+    ];
+    mocks.hub.status = { phase: 'publicly_ready', registered: true };
+    mocks.hub.driftDetected = true;
+
+    const run = registerHub('local', { code: 'AB12CD' });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await expect(run).resolves.toBeUndefined();
+
+    expect(output()).toContain('Already registered');
+    expect(mocks.hub.prepareFreshCalls).toBe(0);
+    expect(mocks.submitPairingCode).not.toHaveBeenCalled();
+  });
+
+  it('stops without pairing or clearing anything when the Hub is still starting after the wait', async () => {
+    vi.useFakeTimers();
+    mocks.hub.status = { phase: 'starting', registered: false };
+    mocks.hub.driftDetected = true;
+
+    const run = expect(registerHub('local', { code: 'AB12CD', fresh: true })).rejects.toThrow('exit 1');
+    await vi.advanceTimersByTimeAsync(HUB_STARTING_WAIT_MS + 5_000);
+    await run;
+
+    expect(output()).toContain('Hub still starting');
+    expect(mocks.hub.prepareFreshCalls).toBe(0);
+    expect(mocks.submitPairingCode).not.toHaveBeenCalled();
+  });
+
+  it('keeps waiting through a status read that fails while the Hub is starting', async () => {
+    vi.useFakeTimers();
+    mocks.hub.statusQueue = [{ phase: 'starting', registered: false }, new Error('Registration status failed (502)')];
+    mocks.hub.status = { phase: 'publicly_ready', registered: true };
+
+    const run = registerHub('local', { code: 'AB12CD' });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await expect(run).resolves.toBeUndefined();
+
+    expect(output()).toContain('Already registered');
+    expect(mocks.submitPairingCode).not.toHaveBeenCalled();
+  });
+
+  it('pairs an unpaired Hub once it has finished starting', async () => {
+    vi.useFakeTimers();
+    mocks.hub.statusQueue = [{ phase: 'starting', registered: false }];
+
+    const run = registerHub('local', { code: 'AB12CD' });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await expect(run).resolves.toBeUndefined();
+
+    expect(mocks.submitPairingCode).toHaveBeenCalledWith('http://localhost:3001', 'AB12CD', undefined, { confirmMove: false });
   });
 });
 

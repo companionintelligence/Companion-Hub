@@ -231,6 +231,73 @@ describe('DeviceRegistrationPage', () => {
     ).not.toBeInTheDocument();
   });
 
+  // #2590: a Hub that has just started says `starting` until it has read its registration back. The
+  // page shows neither the form nor a finished pairing until the Hub knows.
+  it('waits on a Hub that is still starting and shows the form once it says it is unregistered', async () => {
+    vi.useFakeTimers();
+    fetchRegistrationStatusResult.mockResolvedValueOnce(statusOk('starting')).mockResolvedValue(statusOk('unregistered'));
+
+    render(<DeviceRegistrationPage />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(screen.getByRole('heading', { name: 'Checking registration status...' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('Enter pairing code:')).not.toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000);
+    });
+
+    expect(screen.getByRole('heading', { name: 'Step 2: Connect this device' })).toBeInTheDocument();
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('goes on to sign-in once a starting Hub reads back that it is paired', async () => {
+    vi.useFakeTimers();
+    fetchRegistrationStatusResult.mockResolvedValueOnce(statusOk('starting')).mockResolvedValue(statusOk('publicly_ready', true));
+
+    render(<DeviceRegistrationPage />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(navigate).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(navigate).toHaveBeenCalledWith('/login', { replace: true });
+  });
+
+  // A database that never answers keeps the Hub `starting`. The page keeps asking and says so rather
+  // than spin with no word.
+  it('says the Hub is taking long when it stays starting and keeps asking', async () => {
+    vi.useFakeTimers();
+    fetchRegistrationStatusResult.mockResolvedValue(statusOk('starting'));
+
+    render(<DeviceRegistrationPage />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(29_000);
+    });
+    expect(screen.queryByText(/taking longer than usual to start/)).not.toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+
+    expect(screen.getByRole('heading', { name: 'Checking registration status...' })).toBeInTheDocument();
+    expect(screen.getByText(/taking longer than usual to start/)).toBeInTheDocument();
+    expect(screen.queryByLabelText('Enter pairing code:')).not.toBeInTheDocument();
+    expect(fetchRegistrationStatusResult.mock.calls.length).toBeGreaterThanOrEqual(10);
+  });
+
   it('shows a retryable temporary-unavailable state instead of the pairing form when status lookup fails', async () => {
     fetchRegistrationStatusResult.mockResolvedValue({ ok: false, status: 503, data: undefined });
 

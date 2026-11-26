@@ -387,18 +387,21 @@ describe('the Portal device key after a registration reset', () => {
     expect(answers).toEqual([401]);
   });
 
-  it('refuses the device key while Start fresh resets a Hub whose phase is not restored yet', async () => {
+  it('refuses the device key while a reset runs on a Hub whose phase is not restored yet', async () => {
     await pairedHub();
-    // A new process before boot restores the phase, on a Hub whose tunnel token file is gone: Start fresh
-    // goes ahead. The reset has no phase change to write to the row before it deletes it.
+    // A new process before boot restores the phase, on a Hub whose tunnel token file is gone. Start fresh
+    // waits until the Hub has read its registration back (#2590). A registration reset still goes ahead,
+    // and it has no phase change to write to the row before it deletes it.
     await fs.promises.unlink(TOKEN_PATH);
     const restarted = boot();
+    await expect(restarted.registration.prepareFreshSetup()).resolves.toMatchObject({ success: false });
+    expect(disk.deviceRegistrations).toHaveLength(1);
     const answers: number[] = [];
     hooks.beforeDeleteAll = async () => {
       answers.push(await restarted.answer(OLD_DEVICE_KEY));
     };
 
-    await expect(restarted.registration.prepareFreshSetup()).resolves.toMatchObject({ success: true });
+    await restarted.registration.resetRegistration();
 
     expect(answers).toEqual([401]);
   });
