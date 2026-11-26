@@ -48,6 +48,13 @@ describe('portalStanding and the cell', () => {
     expect(portalStanding(undefined)).toBe('none');
   });
 
+  it('does not call a Hub that is still starting unregistered', () => {
+    const starting = { phase: 'starting', registered: false, checkIn: null };
+
+    expect(portalStanding(starting)).toBe('pending');
+    expect(renderPortalCell(starting)).toEqual({ text: 'starting, no check-in yet', tone: 'dim' });
+  });
+
   it('renders each one so the table reads at a glance', () => {
     expect(renderPortalCell(ok)).toEqual({ text: 'ok 200', tone: 'green' });
     expect(renderPortalCell(rejected)).toEqual({ text: '401 rejected', tone: 'yellow' });

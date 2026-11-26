@@ -189,12 +189,17 @@ covers Chocolatey and WinGet. The `.msi` has no such box and runs the script wit
 `uninstall-cleanup.ps1 -DeleteAppData` from this repository; the installed copy goes with the
 program.
 
-**On Linux the uninstall is a full purge, not a `remove`.** Cleanup deletes Hub-related state
-in user config/cache/data directories **and the Hub Docker data volumes** (`ci_hub_pgdata`,
-`ci_hub_app_data`, `hub_tailscale_state`), that is the database and all app data. This is
-intentional ([#566](https://github.com/companionintelligence/Companion-Hub/issues/566)); there is
-no `remove`-vs-`purge` distinction and no confirmation prompt. Users must back up before
-uninstalling.
+**On Linux every uninstall deletes the Hub's data, a plain `apt remove` included.** Cleanup
+deletes Hub-related state in user config/cache/data directories **and the Hub Docker data volumes**
+(`ci_hub_pgdata`, `ci_hub_app_data`, `hub_tailscale_state`, bare or with a Hub project's name in
+front such as `ci-hub_ci_hub_pgdata`, plus every volume of the pre-rename `ci-os-hub` compose
+project), that is the database and all app data. This is intentional
+([#566](https://github.com/companionintelligence/Companion-Hub/issues/566)). There is no
+confirmation prompt. Users must back up before uninstalling. The volumes are matched by their whole
+names or their compose label: one whose name only contains a Hub volume's, such as a backup kept as
+`ci_hub_pgdata_backup` or another stack's `ci-os-hub-staging_ci_hub_pgdata`, stays. `apt purge`
+also removes the other volumes compose labelled for the `ci-hub` project, such as one declared in
+`user-config/hub-compose.yml`. `apt remove` and the rpm, AUR and snap uninstallers keep those.
 
 On Windows, `uninstall-cleanup.ps1` also removes every network labelled with the Hub's compose
 project (`ci-hub_edge` and `ci-hub_internal` included), and every app network once the `ci-hub`

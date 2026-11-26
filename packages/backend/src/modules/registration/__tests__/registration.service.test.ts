@@ -229,11 +229,94 @@ describe('RegistrationService', () => {
   });
 
   describe('getRegistrationStatus', () => {
-    it('returns unregistered phase by default', () => {
+    it('says the Hub is starting until it has read its registration back', () => {
       const status = service.getRegistrationStatus();
-      expect(status.phase).toBe('unregistered');
+      expect(status.phase).toBe('starting');
       expect(status.registered).toBe(false);
       expect(status.degradedReasons).toEqual([]);
+      expect(service.getRegistrationPhaseReport().phase).toBe('starting');
+    });
+
+    // #2590: a paired Hub whose tunnel token file is missing can't restore its phase from a status
+    // read. Boot writes the token back and restarts `cloudflared` twice before it reads the phase.
+    // The status said `unregistered` all that time and an open page signed out and went to pairing.
+    it('keeps saying starting, not unregistered, while a paired Hub waits for boot to put its token back', async () => {
+      const row = { id: 'org-1', provisioningPhase: 'publicly_ready', degradedReasons: '[]' } as any;
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(true);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(row);
+      const hasToken = vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(false);
+
+      expect((await service.getLiveRegistrationStatus()).phase).toBe('starting');
+      await (service as any).phaseRefreshInFlight;
+      expect((await service.getLiveRegistrationStatus()).phase).toBe('starting');
+      expect(service.getRegistrationPhaseReport().phase).toBe('starting');
+
+      // Boot has written the token back and reads the phase.
+      hasToken.mockReturnValue(true);
+      await (service as any).syncPhaseFromDb();
+
+      expect(service.getRegistrationStatus()).toEqual({ phase: 'publicly_ready', degradedReasons: [], registered: true });
+    });
+
+    it('says unregistered as soon as a read finds no registration', async () => {
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(false);
+
+      await service.getLiveRegistrationStatus();
+      await (service as any).phaseRefreshInFlight;
+
+      expect(service.getRegistrationStatus()).toEqual({ phase: 'unregistered', degradedReasons: [], registered: false });
+    });
+
+    it('says unregistered once boot has read the database and found no registration', async () => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(undefined);
+
+      await (service as any).syncPhaseFromDb();
+
+      expect(service.getRegistrationStatus().phase).toBe('unregistered');
+    });
+
+    it('keeps saying starting when boot could not read the database, until a read gets through', async () => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockRejectedValue(new Error('db unavailable'));
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockRejectedValue(new Error('db unavailable'));
+      cloudflareClientService.stopTunnel.mockResolvedValue(true);
+
+      await (service as any).runDeferredBootstrap();
+      expect(service.getRegistrationStatus().phase).toBe('starting');
+
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(true);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({
+        id: 'org-1',
+        provisioningPhase: 'locally_ready',
+        degradedReasons: '[]',
+      } as any);
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      await service.getLiveRegistrationStatus();
+      await (service as any).phaseRefreshInFlight;
+
+      expect(service.getRegistrationStatus().phase).toBe('locally_ready');
+    });
+
+    // A status read can't restore the phase while the token file is missing, so only the registration
+    // loop is left to read it once the database answers.
+    it('reads the stored phase in the registration loop once the database answers after a failed boot', async () => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockRejectedValue(new Error('db unavailable'));
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockRejectedValue(new Error('db unavailable'));
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(false);
+
+      await (service as any).runDeferredBootstrap();
+      expect(service.getRegistrationStatus().phase).toBe('starting');
+
+      // A row with no tunnel credentials: nothing can write the token back.
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(true);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({
+        id: 'org-1',
+        provisioningPhase: 'publicly_ready',
+        degradedReasons: '[]',
+      } as any);
+      deviceRegistrationRepository.updateProvisioningState.mockResolvedValue({} as any);
+      await (service as any).pollRegistration();
+
+      expect(service.getRegistrationStatus()).toEqual({ phase: 'degraded', degradedReasons: ['tunnel_token_missing'], registered: true });
     });
 
     it('returns correct status after setPhase', async () => {
@@ -282,7 +365,7 @@ describe('RegistrationService', () => {
       const refreshSpy = vi.spyOn(service as any, 'refreshPhaseFromSources').mockResolvedValue(undefined);
 
       const status = await service.getLiveRegistrationStatus();
-      expect(status.phase).toBe('unregistered');
+      expect(status.phase).toBe('starting');
       expect(refreshSpy).toHaveBeenCalledOnce();
 
       refreshSpy.mockClear();
@@ -335,9 +418,9 @@ describe('RegistrationService', () => {
     });
 
     it('ignores illegal transitions', async () => {
-      // unregistered → publicly_ready is illegal
+      // unregistered to publicly_ready is illegal. The phase didn't move, so the Hub still says it is starting.
       await service.setPhase('publicly_ready');
-      expect(service.getRegistrationStatus().phase).toBe('unregistered');
+      expect(service.getRegistrationStatus().phase).toBe('starting');
     });
 
     it('allows idempotent no-op transitions', async () => {
@@ -3035,6 +3118,18 @@ describe('RegistrationService', () => {
       // Stopped on the retry, so later checks leave the connector alone.
       await (service as any).pollRegistration();
       expect(cloudflareClientService.stopTunnel).toHaveBeenCalledTimes(2);
+    });
+
+    it('refuses Start fresh on a paired Hub that has not read its registration back yet', async () => {
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(true);
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(false);
+      const reset = vi.spyOn(service, 'resetRegistration');
+
+      const result = await service.prepareFreshSetup();
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain('still starting');
+      expect(reset).not.toHaveBeenCalled();
     });
 
     it('removes leftover.json on Start fresh', async () => {

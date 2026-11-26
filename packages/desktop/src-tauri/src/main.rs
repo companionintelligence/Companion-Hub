@@ -21,6 +21,8 @@ pub mod hub_manager;
 mod hub_names;
 mod inference_runners;
 mod installer_signature;
+#[cfg(target_os = "linux")]
+mod linux_process_setup;
 mod login_autostart;
 mod login_start_unit;
 pub mod port_manager;
@@ -1919,6 +1921,9 @@ fn graphical_session_available() -> bool {
 }
 
 fn main() {
+    // Before GTK starts or any thread exists: see linux_process_setup.
+    #[cfg(target_os = "linux")]
+    linux_process_setup::prepare();
     // Before anything can replace it: see app_binary.
     app_binary::remember_launch_binary();
     let args: Vec<String> = std::env::args().skip(1).collect();
