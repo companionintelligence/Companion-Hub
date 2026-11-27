@@ -87,6 +87,12 @@ export class UpdateAppMetadataDto extends createZodDto(updateAppMetadataDto) {}
  */
 const customAppAccessSchema = z.object({
   actions: z.array(z.enum(HUB_ACTIONS)),
+  /**
+   * The organization role the Hub stored for this person at sign-in, so the UI can say why an action
+   * it withholds is withheld ("As a Member, …"). Null when none is stored (no linked Portal identity,
+   * or a principal that is not a person). Only for wording: `actions` is what the UI offers.
+   */
+  role: z.enum(['owner', 'admin', 'member']).nullable(),
 });
 
 export class CustomAppAccessDto extends createZodDto(customAppAccessSchema) {}

@@ -160,7 +160,7 @@ let manageHub = true;
 function setupQueries(stores = [STORE_A, STORE_B]) {
   mockUseQuery.mockImplementation((opts: { queryKey: readonly unknown[] }) => {
     if (opts.queryKey[0] === 'custom-app-access') {
-      return { data: customAppActions, isLoading: false } as ReturnType<typeof useQuery>;
+      return { data: { actions: customAppActions, role: null }, isLoading: false } as ReturnType<typeof useQuery>;
     }
     if (opts.queryKey[0] === 'hub-access') {
       return { data: manageHub, isLoading: false, isPending: false } as ReturnType<typeof useQuery>;

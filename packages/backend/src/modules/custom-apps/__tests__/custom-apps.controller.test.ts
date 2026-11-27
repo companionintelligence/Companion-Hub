@@ -85,8 +85,24 @@ describe('CustomAppController: creating a custom app, and what the session may d
   it('answers the access question from the stored role, which the grant service reads without the Portal', async () => {
     whois.customAppActionsHint.mockResolvedValue(['view']);
 
-    await expect(controller.getCustomAppAccess(req)).resolves.toEqual({ actions: ['view'] });
+    await expect(controller.getCustomAppAccess(req)).resolves.toEqual({ actions: ['view'], role: null });
     expect(whois.customAppActionsHint).toHaveBeenCalledWith(req);
     expect(whois.customAppActions).not.toHaveBeenCalled();
+  });
+
+  // Only for wording: the page says "As a Member, …" beside an action it withholds.
+  it.each([
+    ['member', 'member'],
+    ['admin', 'admin'],
+    ['owner', 'owner'],
+    ['something-else', null],
+    [undefined, null],
+  ])('says the stored organization role %s as %s', async (orgRole, role) => {
+    whois.customAppActionsHint.mockResolvedValue(['view']);
+
+    await expect(controller.getCustomAppAccess({ ...req, user: { ...(req as { user?: object }).user, orgRole } } as never)).resolves.toEqual({
+      actions: ['view'],
+      role,
+    });
   });
 });

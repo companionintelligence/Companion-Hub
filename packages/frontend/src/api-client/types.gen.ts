@@ -1899,6 +1899,7 @@ export type CreateCustomAppResponseDto = {
 
 export type CustomAppAccessDto = {
     actions: Array<'view' | 'start' | 'stop' | 'restart' | 'install' | 'update' | 'uninstall' | 'reset' | 'backup' | 'restore' | 'configure'>;
+    role: 'owner' | 'admin' | 'member';
 };
 
 export type CreateCustomAppDto = {
