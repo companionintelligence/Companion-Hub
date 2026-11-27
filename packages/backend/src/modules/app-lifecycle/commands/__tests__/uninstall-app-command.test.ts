@@ -459,7 +459,7 @@ describe('UninstallAppCommand', () => {
       expect(result).toMatchObject({ warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT', warningDetail: '/srv/user-config/store/test-app' });
     });
 
-    it('is named with the data when both are left, and the page gets both paths, one per line', async () => {
+    it('is named with the data when both are left and the page gets both paths, one per line', async () => {
       appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: false, permissionDenied: false });
       appFilesManager.deleteUserConfigDirDetailed.mockResolvedValue({ removed: false, permissionDenied: false });
 

@@ -1600,7 +1600,7 @@ describe('DockerService', () => {
     });
 
     // Docker follows a link in a mount's source on the host, so root would empty the link's target.
-    it('refuses a user config folder, or a store folder, that is a link, and runs nothing', async () => {
+    it('refuses a user config folder or a store folder that is a link and runs nothing', async () => {
       appFilesManager.isUserConfigDirPlainFolder.mockResolvedValue(false);
 
       await expect(service.removeUserConfigDirAsRoot('my-compose:_user' as any)).resolves.toBe(false);
