@@ -299,8 +299,8 @@ export class AppService implements OnApplicationShutdown {
       } catch {
         this.versionCache = { value: local, at: Date.now() };
         // The page stops waiting, the lookup doesn't (RegistryService ends it). On a slow link it lands
-        // later, and its release then replaces this answer: Settings reads it again after Check for
-        // updates, and would otherwise be told there is no release for the next 30 s.
+        // later and its release then replaces this answer. Settings reads it again after Check for
+        // updates and would otherwise be told there is no release for the next 30 s.
         void lookup
           .then(({ tags, error }) => {
             if (error === null && this.versionCache?.value === local) {

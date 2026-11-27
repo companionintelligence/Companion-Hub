@@ -60,9 +60,9 @@ Release images published before this change, 0.2.71 included, carry `org.opencon
 
 ### How the updater finds the newest release
 
-`RegistryService.getTagsSinceWithHubFallback` (`packages/backend/src/utils/registry/`) asks two places at once: the Portal registry's tag list for the Hub stack, and the public feed `https://dl.ci.computer/latest.json`. A newer release in the tag list wins. The feed answers when the list has none, as when the registry holds only digests and floating tags.
+`RegistryService.getTagsSinceWithHubFallback` (`packages/backend/src/utils/registry/`) asks two places at once: the Portal registry's tag list for the Hub stack and the public feed `https://dl.ci.computer/latest.json`. A newer release in the tag list wins. The feed answers when the list has none, as when the registry holds only digests and floating tags.
 
-Each read gets 10 s, 5 s for each address to accept the connection, and one more try after a failure with no answer or a server error. The whole lookup ends after 20 s, so **Check for updates** in Settings never waits longer than that for it. A failed read is kept for a minute before the next caller asks again. When the lookup fails, `GET /api/system/update/check` answers `latest: "unknown"` with the reason in `latestLookupError`, Settings says "Could not check for updates.", the daily check logs `Auto-update skipped: could not get the latest version.` and an update with no target version is refused.
+Each read gets 10 s and one more try after a failure with no answer or a server error. Each of a host's addresses gets 5 s to accept the connection. The whole lookup ends after 20 s, so **Check for updates** in Settings never waits longer than that for it. A failed read is kept for a minute before the next caller asks again. The Hub log warns about the first failure and logs the repeats at debug until a read works. When the lookup fails, `GET /api/system/update/check` answers `latest: "unknown"` with the reason in `latestLookupError`, Settings says "Could not check for updates.", the daily check logs `Auto-update skipped: could not get the latest version.` and an update with no target version is refused.
 
 ## How the updater recreates the Hub
 

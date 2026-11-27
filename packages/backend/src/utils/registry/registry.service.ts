@@ -1,3 +1,4 @@
+import http from 'node:http';
 import https from 'node:https';
 import { HttpService } from '@nestjs/axios';
 import { Injectable } from '@nestjs/common';
@@ -21,8 +22,8 @@ const FAILURE_RETRY_AFTER_MS = 60 * 1000;
 const HUB_RELEASE_FEED_URL = 'https://dl.ci.computer/latest.json';
 /**
  * One attempt at one read: name lookup, connect, TLS and the body. With 1.6 s added to every packet
- * the release feed took 6.7 s to read. 1.5 s, the limit this replaced, failed from 0.4 s per packet,
- * and on some links failed about half the reads with no delay added at all.
+ * the release feed took 6.7 s to read. 1.5 s, the limit this replaced, failed from 0.4 s per packet.
+ * On some links it failed about half the reads with no delay added at all.
  */
 export const REGISTRY_HTTP_TIMEOUT_MS = 10_000;
 /**
@@ -34,7 +35,7 @@ export const RELEASE_LOOKUP_BUDGET_MS = 20_000;
 /**
  * How long each of a host's addresses gets to accept the connection on these reads. The Hub's own
  * default is 2 s (`CONNECT_ATTEMPT_TIMEOUT_MS`). With 1.6 s added to every packet, one resent SYN
- * (Linux resends after 1 s) outlasts that, and the feed read failed with ETIMEDOUT on every address
+ * (Linux resends after 1 s) outlasts that, so the feed read failed with ETIMEDOUT on every address
  * in about 4 s. Only these reads, which have 10 s each, wait longer; nothing else in the Hub changes.
  */
 export const RELEASE_CONNECT_ATTEMPT_TIMEOUT_MS = 5_000;
@@ -43,8 +44,8 @@ const MIN_ATTEMPT_MS = 2_000;
 const RETRY_DELAY_MS = 500;
 
 /**
- * Releases newer than the running one. `error` says why they could not be looked up, and the empty
- * list then means "unknown", not "up to date".
+ * Releases newer than the running one. `error` says why they could not be looked up. The empty list
+ * then means "unknown", not "up to date".
  */
 export type ReleaseLookup = { tags: string[]; error: string | null };
 
@@ -73,8 +74,29 @@ export class RegistryService {
   private latestHubVersionCache: (FeedRead & { expiresAt: number }) | null = null;
   /** The feed read under way, so a page load and Check for updates that overlap share one read. */
   private feedInFlight: Promise<FeedRead> | null = null;
+  /** Tag-list reads under way, by registry and repository. Overlapping lookups share one, token included. */
+  private readonly tagsInFlight = new Map<string, Promise<TagsRead>>();
+  /**
+   * The sources (the feed, each tag list) whose last read failed. An outage is logged at warn once and
+   * then at debug until a read works again: a Hub with no internet asks once a minute while a page is open.
+   */
+  private readonly failingSources = new Set<string>();
   private registryTokenCache: CachedRegistryToken | null = null;
-  private readonly httpsAgent = new https.Agent({ keepAlive: true, autoSelectFamilyAttemptTimeout: RELEASE_CONNECT_ATTEMPT_TIMEOUT_MS });
+  /**
+   * `timeout` closes a pooled socket after 5 s idle, as Node's global agent does. Without it a socket
+   * would sit in the pool until the next read, 10 minutes on, long after a NAT may have dropped it.
+   * The http agent is for a Portal at an http:// address, as on a local stack.
+   */
+  private readonly httpsAgent = new https.Agent({
+    keepAlive: true,
+    timeout: 5_000,
+    autoSelectFamilyAttemptTimeout: RELEASE_CONNECT_ATTEMPT_TIMEOUT_MS,
+  });
+  private readonly httpAgent = new http.Agent({
+    keepAlive: true,
+    timeout: 5_000,
+    autoSelectFamilyAttemptTimeout: RELEASE_CONNECT_ATTEMPT_TIMEOUT_MS,
+  });
 
   constructor(
     private readonly httpService: HttpService,
@@ -100,9 +122,9 @@ export class RegistryService {
    * Resolve newer tags and fall back to the public release feed for the Hub stack.
    * This keeps update checks working when OCI tags are digest-only (latest/dev/sha256).
    *
-   * A newer release in the tag list still wins, and the feed answers only when the list has none. The
-   * feed is read at the same time as the list rather than after it: on a slow link the Portal's two
-   * reads (token, then list) would otherwise use up the time the feed needs.
+   * A newer release in the tag list still wins. The feed answers only when the list has none. It is
+   * read at the same time as the list rather than after it: on a slow link the Portal's two reads
+   * (token, then list) would otherwise use up the time the feed needs.
    */
   public async getTagsSinceWithHubFallback(repository: string, currentVersion: string): Promise<ReleaseLookup> {
     if (!semver.valid(currentVersion)) {
@@ -150,36 +172,47 @@ export class RegistryService {
     try {
       const { data } = await this.withOneRetry((attempt) => this.httpService.get(HUB_RELEASE_FEED_URL, attempt), deadline);
       const payload = data as LatestHubReleaseFeed;
-      const cleaned = semver.clean(payload?.version ?? '') ?? null;
+      const cleaned = typeof payload?.version === 'string' ? semver.clean(payload.version) : null;
 
       if (!cleaned) {
         const read: FeedRead = { version: null, error: 'The Hub release feed named no version' };
         this.latestHubVersionCache = { ...read, expiresAt: Date.now() + FAILURE_RETRY_AFTER_MS };
-        this.logger.warn(`${read.error} at ${HUB_RELEASE_FEED_URL}`);
+        this.logReadFailure(HUB_RELEASE_FEED_URL, `${read.error} at ${HUB_RELEASE_FEED_URL}`);
         return read;
       }
 
       this.latestHubVersionCache = { version: cleaned, error: null, expiresAt: Date.now() + TAGS_CACHE_TTL_MS };
+      this.failingSources.delete(HUB_RELEASE_FEED_URL);
       return { version: cleaned, error: null };
     } catch (error) {
       const read: FeedRead = { version: null, error: `Could not read the Hub release feed: ${describeNetworkError(error)}` };
       this.latestHubVersionCache = { ...read, expiresAt: Date.now() + FAILURE_RETRY_AFTER_MS };
-      this.logger.warn(`${read.error} (${HUB_RELEASE_FEED_URL})`);
+      this.logReadFailure(HUB_RELEASE_FEED_URL, `${read.error} (${HUB_RELEASE_FEED_URL})`);
       return read;
     }
   }
 
+  /** Warn about the first failed read of `source` since it last worked. The repeats are only debug-logged. */
+  private logReadFailure(source: string, message: string) {
+    if (this.failingSources.has(source)) {
+      this.logger.debug(message);
+      return;
+    }
+    this.failingSources.add(source);
+    this.logger.warn(message);
+  }
+
   /**
    * One read, tried a second time when it got no answer (no connection, no reply in time) or a server
-   * error. Each attempt gets {@link REGISTRY_HTTP_TIMEOUT_MS}, cut short at the lookup's deadline, and
-   * one that would have less than {@link MIN_ATTEMPT_MS} isn't started. A 4xx answer isn't retried.
-   * Every attempt connects through the agent with {@link RELEASE_CONNECT_ATTEMPT_TIMEOUT_MS}.
+   * error. Each attempt gets {@link REGISTRY_HTTP_TIMEOUT_MS}, cut short at the lookup's deadline. One
+   * that would have less than {@link MIN_ATTEMPT_MS} isn't started. A 4xx answer isn't retried.
+   * Every attempt connects through the agents with {@link RELEASE_CONNECT_ATTEMPT_TIMEOUT_MS}.
    *
    * axios's `timeout` in Node is reset by every packet, so a body that trickles in outlives it. The
    * signal ends the attempt at its limit however the bytes arrive.
    */
   private async withOneRetry<T>(
-    send: (attempt: { timeout: number; signal: AbortSignal; httpsAgent: https.Agent }) => Observable<AxiosResponse<T>>,
+    send: (attempt: { timeout: number; signal: AbortSignal; httpsAgent: https.Agent; httpAgent: http.Agent }) => Observable<AxiosResponse<T>>,
     deadline: number,
   ): Promise<AxiosResponse<T>> {
     const tryOnce = async () => {
@@ -190,7 +223,7 @@ export class RegistryService {
       const limit = new AbortController();
       const timer = setTimeout(() => limit.abort(), timeout);
       try {
-        return await firstValueFrom(send({ timeout, signal: limit.signal, httpsAgent: this.httpsAgent }));
+        return await firstValueFrom(send({ timeout, signal: limit.signal, httpsAgent: this.httpsAgent, httpAgent: this.httpAgent }));
       } catch (error) {
         if (limit.signal.aborted && axios.isCancel(error)) {
           throw new Error(`no complete answer within ${timeout} ms`);
@@ -201,15 +234,23 @@ export class RegistryService {
       }
     };
 
+    let firstError: unknown;
     try {
       return await tryOnce();
     } catch (error) {
       if (!worthRetrying(error) || deadline - Date.now() - RETRY_DELAY_MS < MIN_ATTEMPT_MS) {
         throw error;
       }
+      firstError = error;
     }
     await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
-    return tryOnce();
+    try {
+      return await tryOnce();
+    } catch (error) {
+      // A delay that ran late can leave the second attempt no time to start. The first error then
+      // still says why the read failed.
+      throw error instanceof OutOfTimeError ? firstError : error;
+    }
   }
 
   private jwtExpiryMs(token: string): number | null {
@@ -293,6 +334,19 @@ export class RegistryService {
       return { tags: cached.tags, error: cached.error };
     }
 
+    // A page load and Check for updates overlap on a slow link. Two reads meant two tokens and two
+    // lists. The slower one's failure could then replace the other's answer in the cache.
+    let read = this.tagsInFlight.get(cacheKey);
+    if (!read) {
+      read = this.readTags(base, repository, cacheKey, deadline).finally(() => {
+        this.tagsInFlight.delete(cacheKey);
+      });
+      this.tagsInFlight.set(cacheKey, read);
+    }
+    return read;
+  }
+
+  private async readTags(base: string, repository: string, cacheKey: string, deadline: number): Promise<TagsRead> {
     const headers: Record<string, string> = {};
     if (repository === HUB_STACK_REGISTRY_REPO) {
       const { token, error } = await this.getDeviceRegistryToken(base, deadline);
@@ -318,6 +372,7 @@ export class RegistryService {
       const validTags = tags.filter((tag) => semver.valid(tag));
       const sorted = validTags.sort((a, b) => semver.rcompare(a, b));
       this.tagsCache.set(cacheKey, { tags: sorted, error: null, expiresAt: Date.now() + TAGS_CACHE_TTL_MS });
+      this.failingSources.delete(cacheKey);
       return { tags: sorted, error: null };
     } catch (error) {
       if (axios.isAxiosError(error) && error.response?.status === 401) {
@@ -327,17 +382,13 @@ export class RegistryService {
       const read: TagsRead = { tags: [], error: `Could not read the tag list of ${repository}: ${reason}` };
       this.tagsCache.set(cacheKey, { ...read, expiresAt: Date.now() + FAILURE_RETRY_AFTER_MS });
 
-      if (axios.isAxiosError(error)) {
-        const status = error.response?.status;
-        if (status === 401 || status === 403 || status === 404) {
-          this.logger.debug(
-            `OCI tags list not available for ${repository} at CI Cloud (HTTP ${status}). Hub updates may not show latest image until registry access works.`,
-          );
-        } else {
-          this.logger.warn(`Failed to get OCI tags for ${repository}: ${reason}${status ? ` (HTTP ${status})` : ''}`);
-        }
+      const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+      if (status === 401 || status === 403 || status === 404) {
+        this.logger.debug(
+          `OCI tags list not available for ${repository} at CI Cloud (HTTP ${status}). Hub updates may not show latest image until registry access works.`,
+        );
       } else {
-        this.logger.warn(`Failed to get OCI tags for ${repository}: ${reason}`);
+        this.logReadFailure(cacheKey, `Failed to get OCI tags for ${repository}: ${reason}${status ? ` (HTTP ${status})` : ''}`);
       }
       return read;
     }

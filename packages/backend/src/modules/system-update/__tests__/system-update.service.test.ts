@@ -772,7 +772,7 @@ describe('SystemUpdateService', () => {
       expect(perform).toHaveBeenCalledWith('0.2.71', { includeDesktopApp: false });
     });
 
-    it('does nothing when the newest release could not be looked up, and says so', async () => {
+    it('does nothing and says so when the newest release could not be looked up', async () => {
       insideHubContainer(PINNED_ENV);
       await installDocker(core6Appliance(RELEASE_PIN));
       mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue({

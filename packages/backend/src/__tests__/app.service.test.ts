@@ -105,6 +105,11 @@ describe('AppService', () => {
   });
 
   describe('getVersion', () => {
+    // The tests below end on vi.useRealTimers(), which a failed expectation skips.
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
     it('should return current version when no newer tags exist', async () => {
       const version = faker.system.semver();
       configurationService.getConfig.mockReturnValueOnce(fromPartial({ version }));

@@ -538,8 +538,8 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
 
   /**
    * The newest release above the running one, or the running release itself when none is newer.
-   * Refuses when the lookup failed: the running release is then no answer, and reinstalling it
-   * would report an update that changed nothing.
+   * Refuses when the lookup failed: the running release is then no answer. Reinstalling it would
+   * report an update that changed nothing.
    */
   private async latestReleaseFor(build: RunningHubBuild): Promise<string> {
     if (!build.version) {
