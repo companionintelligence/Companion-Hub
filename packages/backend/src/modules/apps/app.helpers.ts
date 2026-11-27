@@ -496,6 +496,7 @@ export class AppHelpers {
         privateVpn: getEffectiveExposureMode(form) === 'tailscale',
         appName,
         appStoreId,
+        operatorNames: form.gatewayHostNames,
       });
     } catch (error) {
       this.logger.warn(`[AppHelpers] Could not work out the Host names ${appUrn}'s gateway answers to; leaving them unset`, error);

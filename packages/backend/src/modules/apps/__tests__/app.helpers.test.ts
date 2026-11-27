@@ -929,7 +929,7 @@ describe('AppHelpers', () => {
       }
     });
 
-    it('passes the Host names the gateway may answer to as HUB_GATEWAY_ALLOWED_HOSTS, and removes them when the port is open on the network', async () => {
+    it('passes the Host names the gateway may answer to as HUB_GATEWAY_ALLOWED_HOSTS, with the LAN suffixes when the port is open on the network', async () => {
       registrationService.getDeviceRegistrationInfo.mockResolvedValue({ hubSubdomain: 'hub-kyle', slug: 'kyle' } as never);
       const publicWeb = new Map<string, string>([['LOCAL_DOMAIN', 'ci.computer']]);
       envUtils.envStringToMap.mockReturnValue(publicWeb);
@@ -943,11 +943,19 @@ describe('AppHelpers', () => {
       await appHelpers.generateEnvFile(testAppUrn, { exposureMode: 'tailscale' });
       expect(privateVpn.get('HUB_GATEWAY_ALLOWED_HOSTS')).toBe('test-app.test-store,host.docker.internal,.ts.net');
 
-      // Opened on the network: a browser elsewhere may use any name the LAN gives this computer.
+      // Opened on the network: the LAN suffixes, for the names a router or mDNS gives this computer, and
+      // the operator's own names, which replace a stale value.
       const onNetwork = new Map<string, string>([['HUB_GATEWAY_ALLOWED_HOSTS', 'stale.example']]);
       envUtils.envStringToMap.mockReturnValue(onNetwork);
-      await appHelpers.generateEnvFile(testAppUrn, { exposureMode: 'local', openPort: true, portOnNetwork: true });
-      expect(onNetwork.has('HUB_GATEWAY_ALLOWED_HOSTS')).toBe(false);
+      await appHelpers.generateEnvFile(testAppUrn, {
+        exposureMode: 'local',
+        openPort: true,
+        portOnNetwork: true,
+        gatewayHostNames: ['kyle-pc.fritz.box'],
+      });
+      expect(onNetwork.get('HUB_GATEWAY_ALLOWED_HOSTS')).toBe(
+        'host.docker.internal,.ts.net,.local,.lan,.home,.home.arpa,.internal,kyle-pc.fritz.box',
+      );
     });
 
     it('omits HUB_TRUSTED_PROXY_CIDRS when the trust service is unavailable, without failing generation', async () => {

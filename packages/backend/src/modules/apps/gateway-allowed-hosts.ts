@@ -1,3 +1,6 @@
+import { gatewayHostNameSchema, LAN_HOST_SUFFIXES } from '@ci-hub/common/schemas';
+import psl from 'psl';
+
 /**
  * The Host names an app's gateway may answer to, passed as `HUB_GATEWAY_ALLOWED_HOSTS`. First-party
  * Companion Memory maps it to its gateway's `GATEWAY_ALLOWED_HOSTS`, which answers any other name
@@ -19,11 +22,13 @@
  *   `ts.net` name at an address of their choosing.
  * - The Private VPN router's own name (`<app>.<store>`, `TraefikLabelsBuilder.addTailscaleLabels`).
  * - `host.docker.internal`, what a container on this computer may use for the app's host port.
- *
- * Null, so the gateway answers every Host, when the operator opened the app's port on the network:
- * a browser elsewhere then reaches it under whatever name the LAN gives this computer, which the Hub
- * cannot know. A list missing one of those names would lock that browser out, which is worse than no
- * list. On 127.0.0.1 only (the default) a browser on this computer uses 127.0.0.1 or localhost.
+ * - When the operator opened the app's port on the network, every name under the LAN suffixes
+ *   ({@link LAN_HOST_SUFFIXES}): a browser elsewhere uses whatever name the LAN gives this computer,
+ *   and a router's or mDNS name ends in one of those, or has no dot at all, which always passes. A
+ *   page on another site still can't name one. On 127.0.0.1 only (the default) a browser on this
+ *   computer uses 127.0.0.1 or localhost.
+ * - The operator's own names (`gatewayHostNames`, "More names Memory answers to"), in every mode: a
+ *   router that names this computer `kyle-pc.fritz.box`, a DNS name of the operator's own.
  */
 export const GATEWAY_ALLOWED_HOSTS_ENV_KEY = 'HUB_GATEWAY_ALLOWED_HOSTS';
 
@@ -36,6 +41,8 @@ export const DOCKER_HOST_ALIAS = 'host.docker.internal';
 export interface GatewayAllowedHostsInput {
   /** Whether compose publishes the app's main port on every interface (`publishesMainPortOnNetwork`). */
   portOnNetwork: boolean;
+  /** The stored form's `gatewayHostNames`; anything {@link gatewayHostNameRefusal} refuses is left out. */
+  operatorNames?: unknown;
   /** The tunnel's Host for the app, when it has a Public web route. */
   originHostname?: string;
   /** Whether the app is on Private VPN, whose Traefik router answers `<app>.<store>`. */
@@ -44,17 +51,54 @@ export interface GatewayAllowedHostsInput {
   appStoreId: string;
 }
 
-/** The value of {@link GATEWAY_ALLOWED_HOSTS_ENV_KEY}, or null when it must be left unset. */
-export function gatewayAllowedHosts(input: GatewayAllowedHostsInput): string[] | null {
-  if (input.portOnNetwork) {
+/**
+ * Why an operator's name can't be added ({@link gatewayAllowedHosts}), or null when it can: `invalid`,
+ * not a host name or a suffix; `too-wide`, a suffix that covers names anyone can register.
+ */
+export type GatewayHostNameRefusal = 'invalid' | 'too-wide';
+
+/**
+ * Whether `name` may be one of the operator's names: what `gatewayHostNameSchema` takes, and, for a
+ * suffix, not a whole top-level domain nor any other public suffix (`.com`, `.co.uk`, `.github.io`).
+ * The LAN suffixes and `.ts.net` are on the list already and always taken.
+ */
+export function gatewayHostNameRefusal(name: string): GatewayHostNameRefusal | null {
+  const value = name.trim().toLowerCase();
+  if (value === TAILNET_HOST_SUFFIX || LAN_HOST_SUFFIXES.includes(value)) {
     return null;
   }
+  if (/^\.[a-z0-9-]+$/.test(value)) {
+    return 'too-wide';
+  }
+  if (!gatewayHostNameSchema.safeParse(value).success) {
+    return 'invalid';
+  }
+  if (!value.startsWith('.')) {
+    return null;
+  }
+  const suffix = psl.parse(value.slice(1));
+  return 'error' in suffix || (suffix.listed && suffix.domain === null) ? 'too-wide' : null;
+}
 
+/** The operator's names the gateway may take, lower case, once each; anything else is left out. */
+function operatorHostNames(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter((name): name is string => typeof name === 'string' && gatewayHostNameRefusal(name) === null)
+    .map((name) => name.trim().toLowerCase());
+}
+
+/** The value of {@link GATEWAY_ALLOWED_HOSTS_ENV_KEY}. */
+export function gatewayAllowedHosts(input: GatewayAllowedHostsInput): string[] {
   const hosts = [
     input.originHostname?.trim().toLowerCase(),
     input.privateVpn ? `${input.appName}.${input.appStoreId}`.toLowerCase() : undefined,
     DOCKER_HOST_ALIAS,
     TAILNET_HOST_SUFFIX,
+    ...(input.portOnNetwork ? LAN_HOST_SUFFIXES : []),
+    ...operatorHostNames(input.operatorNames),
   ].filter((host): host is string => Boolean(host));
 
   return [...new Set(hosts)];

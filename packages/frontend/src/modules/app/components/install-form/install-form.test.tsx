@@ -2218,6 +2218,86 @@ describe('InstallForm', () => {
     });
   });
 
+  describe('more names Memory answers to', () => {
+    const namesField = () => screen.queryByPlaceholderText('kyle-pc.fritz.box, .example.lan');
+    const memoryInfo = () => ({ ...(exposableInfo() as object), urn: 'ci-memory:ci-marketplace' }) as unknown as AppInfo;
+    const renderWith = (info: AppInfo, onSubmit = vi.fn(), initialValues?: Record<string, unknown>) =>
+      render(
+        <MemoryRouter>
+          <InstallForm
+            info={info}
+            onSubmit={onSubmit}
+            formId="test-form"
+            formFields={[]}
+            initialValues={initialValues as never}
+            isEdit={Boolean(initialValues)}
+          />
+        </MemoryRouter>,
+      );
+    const submit = async (container: HTMLElement) => {
+      await act(async () => {
+        fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+      });
+    };
+
+    it("shows only on first-party Memory's form, even in simple mode", async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext({ user: { advancedMode: false } }));
+      renderWith(memoryInfo());
+      await waitFor(() => expect(namesField()).toBeInTheDocument());
+    });
+
+    it('is not on any other app, nor on a ci-memory from another store', async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext());
+      renderWith(exposableInfo());
+      renderWith({ ...(exposableInfo() as object), urn: 'ci-memory:my-store' } as unknown as AppInfo);
+      await waitFor(() => expect(screen.queryAllByPlaceholderText('/webhook, /api/events').length).toBeGreaterThan(0));
+      expect(namesField()).not.toBeInTheDocument();
+    });
+
+    it('saves the typed names as a lower-case list, once each, and shows the saved ones', async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext());
+      const onSubmit = vi.fn();
+      const { container } = renderWith(memoryInfo(), onSubmit, { exposureMode: 'local', gatewayHostNames: ['kyle-pc.fritz.box'] });
+
+      await waitFor(() => expect(namesField()).toHaveValue('kyle-pc.fritz.box'));
+      fireEvent.change(namesField() as HTMLElement, { target: { value: 'Kyle-PC.fritz.box, .lan  kyle-pc.fritz.box' } });
+      await submit(container);
+
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+      expect(onSubmit.mock.calls[0]?.[0].gatewayHostNames).toEqual(['kyle-pc.fritz.box', '.lan']);
+    });
+
+    it.each([
+      ['http://memory.lan', 'APP_INSTALL_FORM_GATEWAY_HOST_NAMES_INVALID'],
+      ['memory.lan:8642', 'APP_INSTALL_FORM_GATEWAY_HOST_NAMES_INVALID'],
+      ['.com', 'APP_INSTALL_FORM_GATEWAY_HOST_NAMES_TOO_WIDE'],
+    ])('refuses %s and saves nothing', async (value, message) => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext());
+      const onSubmit = vi.fn();
+      const { container } = renderWith(memoryInfo(), onSubmit);
+
+      await waitFor(() => expect(namesField()).toBeInTheDocument());
+      fireEvent.change(namesField() as HTMLElement, { target: { value } });
+      await submit(container);
+
+      await waitFor(() => expect(screen.getByText(message)).toBeInTheDocument());
+      expect(onSubmit).not.toHaveBeenCalled();
+    });
+
+    it('refuses more than the most names', async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext());
+      const onSubmit = vi.fn();
+      const { container } = renderWith(memoryInfo(), onSubmit);
+
+      await waitFor(() => expect(namesField()).toBeInTheDocument());
+      fireEvent.change(namesField() as HTMLElement, { target: { value: Array.from({ length: 21 }, (_, i) => `h${i}.lan`).join(', ') } });
+      await submit(container);
+
+      await waitFor(() => expect(screen.getByText('APP_INSTALL_FORM_GATEWAY_HOST_NAMES_TOO_MANY')).toBeInTheDocument());
+      expect(onSubmit).not.toHaveBeenCalled();
+    });
+  });
+
   describe('paths without the Hub login', () => {
     const pathsField = () => screen.queryByPlaceholderText('/webhook, /api/events');
     const suggestion = () => screen.queryByRole('switch', { name: /APP_INSTALL_FORM_PUBLIC_PATH_SUGGESTED/ });
