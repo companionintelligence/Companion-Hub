@@ -113,6 +113,14 @@ describe('CustomAppTools', () => {
       expect(customAppService.createCustomApp).not.toHaveBeenCalled();
     });
 
+    it('refuses a create that turns Traefik on for a service with no router, and never reaches the service', async () => {
+      const config = configWith({ extraLabels: { 'traefik.enable': true } });
+      await expect(asGrantedOperator(() => tools.createCustomApp({ name: 'myapp', config }))).rejects.toThrow(
+        'CUSTOM_APP_ERROR_TRAEFIK_ENABLE_WITHOUT_ROUTER',
+      );
+      expect(customAppService.createCustomApp).not.toHaveBeenCalled();
+    });
+
     it('refuses a create whose name the form refuses', async () => {
       await expect(asGrantedOperator(() => tools.createCustomApp({ name: '', config: validConfig }))).rejects.toThrow('name:');
       expect(customAppService.createCustomApp).not.toHaveBeenCalled();
