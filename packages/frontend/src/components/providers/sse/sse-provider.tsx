@@ -132,16 +132,18 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
     toast.error(t(i18nKey, { id: appName, reason: appServiceFailureText(t, failure) }), { duration: 10000 });
   };
 
-  // What an uninstall or a cancelled install could not remove. With the host path of the files, gives the command to delete them.
-  const showRemnantWarning = (keys: { plain: string; manual: string }, appName: string, hostPath: string | undefined) => {
-    if (!hostPath) {
+  // What an uninstall or a cancelled install could not remove. With the host paths of the files, one per line (an
+  // uninstall can leave both the data and the user config), gives the command to delete them.
+  const showRemnantWarning = (keys: { plain: string; manual: string }, appName: string, hostPaths: string | undefined) => {
+    const paths = (hostPaths ?? '').split('\n').filter(Boolean);
+    if (paths.length === 0) {
       toast.warning(t(keys.plain, { id: appName }), { duration: 8000 });
       return;
     }
-    // Single-quote the path (escaping any embedded quote) and add `--`: an operator-configured root
+    // Single-quote each path (escaping any embedded quote) and add `--`: an operator-configured root
     // can contain spaces or shell metacharacters, so an unquoted path could be mis-split or read as
     // an option on paste.
-    const command = `sudo rm -rf -- '${hostPath.replace(/'/g, "'\\''")}'`;
+    const command = `sudo rm -rf -- ${paths.map((hostPath) => `'${hostPath.replace(/'/g, "'\\''")}'`).join(' ')}`;
     toast.warning(
       <Trans i18nKey={keys.manual} values={{ id: appName, command }} components={{ cmd: <code className="font-mono text-xs break-all" /> }} />,
       { duration: 20000 },

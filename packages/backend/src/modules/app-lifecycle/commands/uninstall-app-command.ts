@@ -172,8 +172,8 @@ export class UninstallAppCommand extends AppLifecycleCommand {
           `App ${appUrn} uninstalled, but its ${leftover} could not be fully removed; a disk remnant may remain${remnantPaths.length > 0 ? ` at ${remnantPaths.join(' and ')}` : ''} (see the filesystem error above — often a container-created root-owned path).`,
         );
 
-        // The page builds one `rm` command, so it gets the data's path when both are left. The log above names both.
-        const warningDetail = dataRemnantHostPath ?? userConfigRemnantHostPath;
+        // One path per line: the page puts each one in its `rm` command.
+        const warningDetail = remnantPaths.join('\n');
         return {
           success: true,
           message: `App ${appUrn} uninstalled, but its ${leftover} could not be fully removed and may leave a remnant on disk.`,

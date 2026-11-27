@@ -119,7 +119,9 @@ them — `down --volumes` on uninstall-with-data and reset, preserved on stop/re
 
 Uninstall with Delete all data also removes the app's user config, `<dataDir>/user-config/<store>/<app>/` with its own
 `docker-compose.yml` and `app.env`. A file there the Hub may not delete goes to the same root helper as the data folder.
-A folder even root leaves behind is reported like a data remnant (`APP_UNINSTALL_PARTIAL_REMNANT`). The user config
+The helper only gets the folder when it and its store's folder are real folders: Docker follows a link in a mount's source
+on the host, so root would empty the link's target. A folder even root leaves behind is reported like a data remnant
+(`APP_UNINSTALL_PARTIAL_REMNANT`), with both host paths on their own lines when the data is left too. The user config
 of an app with no row yet reads as switched on, so one left behind applied to the next app of the same name: a new
 custom app or a reinstall of the store app. With Delete all data off it stays, for a reinstall. A cancelled install
 leaves it alone, since an install never writes it. Backups hold it, so a restore brings it back.

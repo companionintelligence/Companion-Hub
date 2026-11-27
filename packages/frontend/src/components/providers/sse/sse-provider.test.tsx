@@ -591,6 +591,25 @@ describe('SSEProvider', () => {
     expect(screen.getByText("sudo rm -rf -- '/srv/app-data/community/excalidraw'")).toBeInTheDocument();
   });
 
+  it('puts both folders in the command when an uninstall leaves the data and the user config (#2628)', () => {
+    const getOnEvent = renderProvider();
+
+    act(() => {
+      getOnEvent()?.({
+        event: 'uninstall_success',
+        appUrn: 'excalidraw:community',
+        warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+        warningDetail: "/srv/app-data/community/excalidraw\n/srv/it's here/user-config/community/excalidraw",
+      });
+    });
+
+    const [message] = mockToastWarning.mock.calls[0] as [ReactNode];
+    render(<MemoryRouter>{message}</MemoryRouter>);
+    expect(
+      screen.getByText("sudo rm -rf -- '/srv/app-data/community/excalidraw' '/srv/it'\\''s here/user-config/community/excalidraw'"),
+    ).toBeInTheDocument();
+  });
+
   describe('public_dns_error', () => {
     const firePublicDnsError = (errorCode?: string) => {
       const getOnEvent = renderProvider();

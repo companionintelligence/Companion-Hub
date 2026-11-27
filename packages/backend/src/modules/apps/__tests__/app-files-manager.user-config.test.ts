@@ -90,6 +90,52 @@ describe("AppFilesManager: an app's user config folder", () => {
     await expect(manager.deleteUserConfigDirDetailed(appUrn)).resolves.toEqual({ removed: false, permissionDenied: true });
   });
 
+  describe('is a real folder, for the root helper', () => {
+    const outside = () => path.join(scratch, 'outside');
+
+    beforeEach(async () => {
+      await fs.promises.mkdir(outside(), { recursive: true });
+      await fs.promises.writeFile(path.join(outside(), 'keep.txt'), 'x');
+    });
+
+    it('when it and its store folder are folders', async () => {
+      await write('_user/notes/app.env');
+
+      await expect(manager.isUserConfigDirPlainFolder(appUrn)).resolves.toBe(true);
+    });
+
+    it('not when the app folder is a link to somewhere else', async () => {
+      await fs.promises.mkdir(path.join(userConfigRoot, '_user'), { recursive: true });
+      await fs.promises.symlink(outside(), path.join(userConfigRoot, '_user', 'notes'));
+
+      await expect(manager.isUserConfigDirPlainFolder(appUrn)).resolves.toBe(false);
+    });
+
+    it('not when the store folder is a link', async () => {
+      await fs.promises.mkdir(path.join(outside(), 'notes'), { recursive: true });
+      await fs.promises.mkdir(userConfigRoot, { recursive: true });
+      await fs.promises.symlink(outside(), path.join(userConfigRoot, '_user'));
+
+      await expect(manager.isUserConfigDirPlainFolder(appUrn)).resolves.toBe(false);
+    });
+
+    it('not when it is missing or a file', async () => {
+      await expect(manager.isUserConfigDirPlainFolder(appUrn)).resolves.toBe(false);
+
+      await write('_user/notes', 'not a folder');
+      await expect(manager.isUserConfigDirPlainFolder(appUrn)).resolves.toBe(false);
+    });
+
+    it("and the Hub's own delete removes a link without touching what it points to", async () => {
+      await fs.promises.mkdir(path.join(userConfigRoot, '_user'), { recursive: true });
+      await fs.promises.symlink(outside(), path.join(userConfigRoot, '_user', 'notes'));
+
+      await expect(manager.deleteUserConfigDirDetailed(appUrn)).resolves.toEqual({ removed: true, permissionDenied: false });
+      expect(exists('_user/notes')).toBe(false);
+      expect(fs.existsSync(path.join(outside(), 'keep.txt'))).toBe(true);
+    });
+  });
+
   it("is under the Hub's root folder on the host for a manual rm", () => {
     expect(manager.getUserConfigHostDir(appUrn)).toBe('/host/root/user-config/_user/notes');
 

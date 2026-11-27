@@ -439,7 +439,7 @@ describe('UninstallAppCommand', () => {
       expect(result).toMatchObject({ warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT', warningDetail: '/srv/user-config/store/test-app' });
     });
 
-    it("is named with the data when both are left, and the page gets the data's path", async () => {
+    it('is named with the data when both are left, and the page gets both paths, one per line', async () => {
       appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: false, permissionDenied: false });
       appFilesManager.deleteUserConfigDirDetailed.mockResolvedValue({ removed: false, permissionDenied: false });
 
@@ -449,7 +449,7 @@ describe('UninstallAppCommand', () => {
         success: true,
         message: `App ${appUrn} uninstalled, but its app data and user config could not be fully removed and may leave a remnant on disk.`,
         warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
-        warningDetail: '/srv/app-data/store/test-app',
+        warningDetail: '/srv/app-data/store/test-app\n/srv/user-config/store/test-app',
       });
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('at /srv/app-data/store/test-app and /srv/user-config/store/test-app'));
     });

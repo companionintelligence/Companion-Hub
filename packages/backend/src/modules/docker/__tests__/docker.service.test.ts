@@ -1545,6 +1545,7 @@ describe('DockerService', () => {
   describe('removeUserConfigDirAsRoot (privileged cleanup of a user config folder on uninstall)', () => {
     beforeEach(() => {
       configService.getConfig.mockReturnValue({ userSettings: {}, rootFolderHost: '/host/root' } as any);
+      appFilesManager.isUserConfigDirPlainFolder.mockResolvedValue(true);
       delete process.env.CI_HUB_CLEANUP_IMAGE;
     });
 
@@ -1589,6 +1590,15 @@ describe('DockerService', () => {
       ['a store with a leading underscore other than _user', 'my-compose:_other'],
     ])('refuses %s and runs nothing', async (_case, urn) => {
       await expect(service.removeUserConfigDirAsRoot(urn as any)).resolves.toBe(false);
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+
+    // Docker follows a link in a mount's source on the host, so root would empty the link's target.
+    it('refuses a user config folder, or a store folder, that is a link, and runs nothing', async () => {
+      appFilesManager.isUserConfigDirPlainFolder.mockResolvedValue(false);
+
+      await expect(service.removeUserConfigDirAsRoot('my-compose:_user' as any)).resolves.toBe(false);
+      expect(appFilesManager.isUserConfigDirPlainFolder).toHaveBeenCalledWith('my-compose:_user');
       expect(child_process.spawn).not.toHaveBeenCalled();
     });
 

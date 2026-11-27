@@ -389,6 +389,22 @@ export class AppFilesManager {
   }
 
   /**
+   * Whether the app's user config folder and its store's folder are both real folders, not links. Docker follows a
+   * link in a bind mount's source on the host, so a root helper given a link here would empty whatever it points to.
+   */
+  public async isUserConfigDirPlainFolder(appUrn: AppUrn): Promise<boolean> {
+    const appDir = this.getUserConfigDir(appUrn);
+
+    for (const dir of [path.dirname(appDir), appDir]) {
+      const stat = await fs.promises.lstat(dir).catch(() => null);
+      if (!stat?.isDirectory()) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
    * Where the app's user config folder is on the host (`{ROOT_FOLDER_HOST}/user-config/{store}/{app}`, which the Hub
    * mounts as `/data/user-config`), for a manual `rm`. Nothing when the Hub's root folder on the host is not an absolute path.
    */

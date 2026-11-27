@@ -673,6 +673,15 @@ export class DockerService {
       return false;
     }
 
+    // The Hub's own delete removes a link itself, but the helper's mount would follow one on the host and root
+    // would empty its target. So root only ever gets a real folder.
+    if (!(await this.appFilesManager.isUserConfigDirPlainFolder(appUrn))) {
+      this.logger.error(
+        `[user-config-cleanup] refusing privileged delete for ${appUrn}: its user config folder or its store's is a link or not a folder`,
+      );
+      return false;
+    }
+
     const hostUserConfigDir = p.join(rootFolderHost, 'user-config', appStoreId, appName);
     return this.runPrivilegedSnapshotHelper(
       [`${hostUserConfigDir}:/target:rw`],
