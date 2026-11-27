@@ -58,6 +58,12 @@ The updater reads the running container through the Docker socket. It never uses
 
 Release images published before this change, 0.2.71 included, carry `org.opencontainers.image.version=latest`, so on those the version tag is the only source.
 
+### How the updater finds the newest release
+
+`RegistryService.getTagsSinceWithHubFallback` (`packages/backend/src/utils/registry/`) asks two places at once: the Portal registry's tag list for the Hub stack, and the public feed `https://dl.ci.computer/latest.json`. A newer release in the tag list wins. The feed answers when the list has none, as when the registry holds only digests and floating tags.
+
+Each read gets 10 s and one more try after a failure with no answer or a server error, and the whole lookup ends after 15 s, so **Check for updates** in Settings never waits longer than that for it. A failed read is kept for a minute before the next caller asks again. When the lookup fails, `GET /api/system/update/check` answers `latest: "unknown"` with the reason in `latestLookupError`, Settings says "Could not check for updates.", the daily check logs `Auto-update skipped: could not get the latest version.` and an update with no target version is refused.
+
 ## How the updater recreates the Hub
 
 The updater recreates the Hub the way compose created it, not the way a standard install would lay it out.

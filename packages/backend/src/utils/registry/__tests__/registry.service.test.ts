@@ -1,18 +1,28 @@
-import { RegistryService, REGISTRY_HTTP_TIMEOUT_MS } from '@/utils/registry/registry.service';
+import { RegistryService, REGISTRY_HTTP_TIMEOUT_MS, RELEASE_LOOKUP_BUDGET_MS } from '@/utils/registry/registry.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { HttpService } from '@nestjs/axios';
 import { Test } from '@nestjs/testing';
-import { of, throwError } from 'rxjs';
+import { AxiosError, type AxiosResponse } from 'axios';
+import { of, Subject, throwError } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 
 const PORTAL = 'https://portal.ci.computer';
+const FEED = 'https://dl.ci.computer/latest.json';
 const DEVICE_KEY = 'device-api-key';
 const PULL_TOKEN = `e30.${Buffer.from(JSON.stringify({ exp: 4_000_000_000 })).toString('base64url')}.sig`;
 
 const ok = (data: unknown) => of({ data, status: 200, statusText: 'OK', headers: {}, config: {} } as any);
+const answer = (data: unknown) => ({ data, status: 200, statusText: 'OK', headers: {}, config: {} }) as AxiosResponse;
+/** What axios throws when an attempt got nothing back in time. */
+const timedOut = (ms = REGISTRY_HTTP_TIMEOUT_MS) => throwError(() => new AxiosError(`timeout of ${ms}ms exceeded`, 'ECONNABORTED'));
+const httpStatus = (status: number) =>
+  throwError(() => new AxiosError(`Request failed with status code ${status}`, 'ERR_BAD_REQUEST', undefined, undefined, { status } as AxiosResponse));
+/** The timeout each request to `url` was sent with, in order. */
+const timeoutsFor = (calls: unknown[][], url: string) =>
+  calls.filter(([called]) => called === url).map((call) => (call.at(-1) as { timeout: number }).timeout);
 
 describe('RegistryService', () => {
   let registryService: RegistryService;
@@ -202,7 +212,7 @@ describe('RegistryService', () => {
 
       const result = await registryService.getTagsSinceWithHubFallback('ci-hub', '1.0.0');
 
-      expect(result).toEqual(['1.2.0']);
+      expect(result).toEqual({ tags: ['1.2.0'], error: null });
       expect(httpService.get).not.toHaveBeenCalledWith(`${PORTAL}/v2/ci-hub/tags/list`, expect.anything());
       expect(httpService.get).toHaveBeenCalledWith('https://dl.ci.computer/latest.json', { timeout: REGISTRY_HTTP_TIMEOUT_MS });
     });
@@ -214,13 +224,13 @@ describe('RegistryService', () => {
 
       const result = await registryService.getTagsSinceWithHubFallback('custom-repo', '1.0.0');
 
-      expect(result).toEqual([]);
+      expect(result).toEqual({ tags: [], error: null });
       expect(httpService.get).toHaveBeenCalledTimes(1);
       expect(httpService.get).toHaveBeenCalledWith(`${PORTAL}/v2/custom-repo/tags/list`, { timeout: REGISTRY_HTTP_TIMEOUT_MS });
       expect(httpService.get.mock.calls.some(([url]) => url === 'https://dl.ci.computer/latest.json')).toBe(false);
     });
 
-    it('returns [] when feed version is invalid', async () => {
+    it('reports a feed with an invalid version as unknown', async () => {
       mockConfig({ ciHubApiKey: null });
       httpService.get.mockImplementation((url: string) => {
         if (url === 'https://dl.ci.computer/latest.json') {
@@ -231,10 +241,10 @@ describe('RegistryService', () => {
 
       const result = await registryService.getTagsSinceWithHubFallback('ci-hub', '1.0.0');
 
-      expect(result).toEqual([]);
+      expect(result).toEqual({ tags: [], error: 'The Hub release feed named no version' });
     });
 
-    it('returns [] when feed version is missing', async () => {
+    it('reports a feed with no version as unknown', async () => {
       mockConfig({ ciHubApiKey: null });
       httpService.get.mockImplementation((url: string) => {
         if (url === 'https://dl.ci.computer/latest.json') {
@@ -245,7 +255,170 @@ describe('RegistryService', () => {
 
       const result = await registryService.getTagsSinceWithHubFallback('ci-hub', '1.0.0');
 
-      expect(result).toEqual([]);
+      expect(result).toEqual({ tags: [], error: 'The Hub release feed named no version' });
+    });
+  });
+
+  // A Hub on 0.3.14 said it was on the latest version while 0.3.16 was out: its release feed read had
+  // 1.5 s for the name lookup, connect, TLS and body, and a failed read was cached as "no release" for
+  // five minutes (#2622).
+  describe('release lookup on a slow or flaky link', () => {
+    const feedOnly = (...answers: Array<ReturnType<typeof ok>>) => {
+      mockConfig({ ciHubApiKey: null });
+      let call = 0;
+      httpService.get.mockImplementation((url: string) => {
+        if (url !== FEED) throw new Error(`unexpected url: ${url}`);
+        const next = answers[Math.min(call, answers.length - 1)];
+        call += 1;
+        return next as never;
+      });
+    };
+
+    it('gives each read long enough for a link that adds 1.6 s to every packet', async () => {
+      feedOnly(ok({ version: 'v0.3.16' }));
+
+      await expect(registryService.getTagsSinceWithHubFallback('ci-hub', '0.3.14')).resolves.toEqual({ tags: ['0.3.16'], error: null });
+
+      // The whole read took 6.7 s with curl at that delay.
+      expect(timeoutsFor(httpService.get.mock.calls, FEED)).toEqual([REGISTRY_HTTP_TIMEOUT_MS]);
+      expect(REGISTRY_HTTP_TIMEOUT_MS).toBeGreaterThanOrEqual(7_000);
+    });
+
+    it('reads the feed once more after a read that got no answer', async () => {
+      vi.useFakeTimers();
+      feedOnly(timedOut(), ok({ version: 'v0.3.16' }));
+
+      const pending = registryService.getTagsSinceWithHubFallback('ci-hub', '0.3.14');
+      await vi.advanceTimersByTimeAsync(500);
+
+      await expect(pending).resolves.toEqual({ tags: ['0.3.16'], error: null });
+      expect(timeoutsFor(httpService.get.mock.calls, FEED)).toHaveLength(2);
+    });
+
+    it('does not read again after an answer that refused it', async () => {
+      feedOnly(httpStatus(404), ok({ version: 'v0.3.16' }));
+
+      const result = await registryService.getTagsSinceWithHubFallback('ci-hub', '0.3.14');
+
+      expect(result).toEqual({ tags: [], error: 'Could not read the Hub release feed: Request failed with status code 404 (ERR_BAD_REQUEST)' });
+      expect(timeoutsFor(httpService.get.mock.calls, FEED)).toHaveLength(1);
+    });
+
+    it('reports a feed it could not read as unknown, not as no newer release', async () => {
+      vi.useFakeTimers();
+      feedOnly(timedOut());
+
+      const pending = registryService.getTagsSinceWithHubFallback('ci-hub', '0.3.14');
+      await vi.advanceTimersByTimeAsync(500);
+
+      await expect(pending).resolves.toEqual({
+        tags: [],
+        error: `Could not read the Hub release feed: timeout of ${REGISTRY_HTTP_TIMEOUT_MS}ms exceeded (ECONNABORTED)`,
+      });
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Could not read the Hub release feed'));
+    });
+
+    it('reads the feed again a minute after a failed read', async () => {
+      vi.useFakeTimers();
+      feedOnly(timedOut(), timedOut(), ok({ version: 'v0.3.16' }));
+
+      const first = registryService.getTagsSinceWithHubFallback('ci-hub', '0.3.14');
+      await vi.advanceTimersByTimeAsync(500);
+      expect((await first).error).not.toBeNull();
+
+      // Still the failed read: no new request within the minute.
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect((await registryService.getTagsSinceWithHubFallback('ci-hub', '0.3.14')).error).not.toBeNull();
+      expect(timeoutsFor(httpService.get.mock.calls, FEED)).toHaveLength(2);
+
+      await vi.advanceTimersByTimeAsync(31_000);
+      await expect(registryService.getTagsSinceWithHubFallback('ci-hub', '0.3.14')).resolves.toEqual({ tags: ['0.3.16'], error: null });
+    });
+
+    it('gives the second attempt only the time the lookup has left', async () => {
+      vi.useFakeTimers();
+      mockConfig({ ciHubApiKey: null });
+      httpService.get
+        .mockImplementationOnce(() => {
+          // An attempt that ran 9 s before it failed.
+          vi.setSystemTime(Date.now() + 9_000);
+          return throwError(() => new AxiosError('socket hang up', 'ECONNRESET'));
+        })
+        .mockImplementationOnce(() => ok({ version: 'v0.3.16' }));
+
+      const pending = registryService.getTagsSinceWithHubFallback('ci-hub', '0.3.14');
+      await vi.advanceTimersByTimeAsync(500);
+
+      await expect(pending).resolves.toEqual({ tags: ['0.3.16'], error: null });
+      expect(timeoutsFor(httpService.get.mock.calls, FEED)).toEqual([REGISTRY_HTTP_TIMEOUT_MS, RELEASE_LOOKUP_BUDGET_MS - 9_000 - 500]);
+    });
+
+    it('starts no second attempt it could not finish before the lookup ends', async () => {
+      vi.useFakeTimers();
+      mockConfig({ ciHubApiKey: null });
+      httpService.get.mockImplementation(() => {
+        vi.setSystemTime(Date.now() + 13_000);
+        return throwError(() => new AxiosError('socket hang up', 'ECONNRESET'));
+      });
+
+      const result = await registryService.getTagsSinceWithHubFallback('ci-hub', '0.3.14');
+
+      expect(result.error).toBe('Could not read the Hub release feed: socket hang up (ECONNRESET)');
+      expect(httpService.get).toHaveBeenCalledTimes(1);
+    });
+
+    it('reads the feed while the Portal is still answering for the tag list', async () => {
+      mockConfig({ ciHubApiKey: DEVICE_KEY });
+      const token = new Subject<AxiosResponse>();
+      httpService.post.mockReturnValue(token as never);
+      httpService.get.mockImplementation((url: string) => (url === FEED ? ok({ version: 'v0.3.16' }) : ok({ tags: ['sha256-abc', 'latest'] })));
+
+      const pending = registryService.getTagsSinceWithHubFallback('ci-hub', '0.3.14');
+      await vi.waitFor(() => expect(httpService.get).toHaveBeenCalledWith(FEED, expect.anything()));
+      expect(httpService.get).not.toHaveBeenCalledWith(`${PORTAL}/v2/ci-hub/tags/list`, expect.anything());
+
+      token.next(answer({ token: PULL_TOKEN }));
+      token.complete();
+
+      await expect(pending).resolves.toEqual({ tags: ['0.3.16'], error: null });
+      expect(httpService.get).toHaveBeenCalledWith(`${PORTAL}/v2/ci-hub/tags/list`, expect.anything());
+    });
+
+    it('still takes a newer release from the tag list over the feed', async () => {
+      mockPairedHub();
+      httpService.get.mockImplementation((url: string) => (url === FEED ? ok({ version: 'v0.3.16' }) : ok({ tags: ['0.3.17', '0.3.16', '0.3.14'] })));
+
+      await expect(registryService.getTagsSinceWithHubFallback('ci-hub', '0.3.14')).resolves.toEqual({ tags: ['0.3.17', '0.3.16'], error: null });
+    });
+
+    it('finds the release in the feed when the Portal could not be reached', async () => {
+      vi.useFakeTimers();
+      mockConfig({ ciHubApiKey: DEVICE_KEY });
+      httpService.post.mockReturnValue(throwError(() => new AxiosError('connect ECONNREFUSED', 'ECONNREFUSED')));
+      httpService.get.mockImplementation((url: string) => (url === FEED ? ok({ version: 'v0.3.16' }) : timedOut()));
+
+      const pending = registryService.getTagsSinceWithHubFallback('ci-hub', '0.3.14');
+      await vi.advanceTimersByTimeAsync(500);
+
+      await expect(pending).resolves.toEqual({ tags: ['0.3.16'], error: null });
+    });
+
+    it('shares one feed read between lookups that overlap', async () => {
+      mockConfig({ ciHubApiKey: null });
+      const feed = new Subject<AxiosResponse>();
+      httpService.get.mockReturnValue(feed as never);
+
+      const pageLoad = registryService.getTagsSinceWithHubFallback('ci-hub', '0.3.14');
+      const checkForUpdates = registryService.getTagsSinceWithHubFallback('ci-hub', '0.3.14');
+      await vi.waitFor(() => expect(httpService.get).toHaveBeenCalled());
+      feed.next(answer({ version: 'v0.3.16' }));
+      feed.complete();
+
+      await expect(Promise.all([pageLoad, checkForUpdates])).resolves.toEqual([
+        { tags: ['0.3.16'], error: null },
+        { tags: ['0.3.16'], error: null },
+      ]);
+      expect(httpService.get).toHaveBeenCalledTimes(1);
     });
   });
 });

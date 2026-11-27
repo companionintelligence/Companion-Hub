@@ -12,6 +12,7 @@ import {
   OnApplicationBootstrap,
   type OnApplicationShutdown,
   Optional,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import {
   DATA_DIR,
@@ -24,7 +25,7 @@ import {
 } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { RegistryService } from '@/utils/registry/registry.service';
+import { type ReleaseLookup, RegistryService } from '@/utils/registry/registry.service';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 import {
   channelUpdateRefusal,
@@ -179,9 +180,15 @@ type RunningHub = { container: DockerContainerInspect; image: DockerImageInspect
  */
 export type UpdateCheckResult = UpdateBlocks & {
   current: string;
+  /** `unknown` when the running release or the newest one could not be read. */
   latest: string;
   releases: { version: string; body: string }[];
   updateAvailable: boolean;
+  /**
+   * Why the newest release could not be looked up, or null when it was. When set, `latest` is
+   * `unknown` and no update is offered: the Hub can't tell, which is not the same as being up to date.
+   */
+  latestLookupError: string | null;
   /** The image, release and commit this Hub is running, read from Docker. Null when it could not be read. */
   build: { reference: string; version: string | null; revision: string | null; channel: RunningHubBuild['channel']['kind'] } | null;
 };
@@ -234,13 +241,24 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
       running = await this.inspectRunningHub();
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      return { current: 'unknown', latest: 'unknown', releases: [], updateAvailable: false, build: null, ...blockedEverywhere(reason) };
+      return {
+        current: 'unknown',
+        latest: 'unknown',
+        releases: [],
+        updateAvailable: false,
+        latestLookupError: null,
+        build: null,
+        ...blockedEverywhere(reason),
+      };
     }
 
     const { build } = running;
     const current = describeRunningBuild(build);
     const blocks = await this.resolveUpdateBlocks(running, includeDesktopApp);
-    const tags = build.version ? await this.registryService.getTagsSinceWithHubFallback(HUB_STACK_REGISTRY_REPO, build.version) : [];
+    const lookup: ReleaseLookup = build.version
+      ? await this.registryService.getTagsSinceWithHubFallback(HUB_STACK_REGISTRY_REPO, build.version)
+      : { tags: [], error: null };
+    const { tags } = lookup;
     const releases = tags.map((tag) => ({ version: tag, body: `Release ${tag}` }));
     const target = build.version ? selectReleaseTarget(build.version, tags) : null;
     const updateAvailable = target !== null && blocks.updateBlockedReason === null;
@@ -266,9 +284,10 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
 
     return {
       current,
-      latest: target ?? current,
+      latest: lookup.error === null ? (target ?? current) : 'unknown',
       releases,
       updateAvailable,
+      latestLookupError: lookup.error,
       build: { reference: build.reference, version: build.version, revision: build.revision, channel: build.channel.kind },
       ...blocks,
     };
@@ -517,13 +536,20 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     };
   }
 
-  /** The newest release above the running one, or the running release itself when none is newer. */
+  /**
+   * The newest release above the running one, or the running release itself when none is newer.
+   * Refuses when the lookup failed: the running release is then no answer, and reinstalling it
+   * would report an update that changed nothing.
+   */
   private async latestReleaseFor(build: RunningHubBuild): Promise<string> {
     if (!build.version) {
       // channelUpdateRefusal already refused every build without a version pin; this is the type guard.
       throw new ConflictException('The running Hub release is unknown, so there is no release to update from.');
     }
-    const tags = await this.registryService.getTagsSinceWithHubFallback(HUB_STACK_REGISTRY_REPO, build.version);
+    const { tags, error } = await this.registryService.getTagsSinceWithHubFallback(HUB_STACK_REGISTRY_REPO, build.version);
+    if (error !== null) {
+      throw new ServiceUnavailableException(`Could not get the latest Hub release, so the Hub was not updated. ${error}`);
+    }
     return selectReleaseTarget(build.version, tags) ?? build.version;
   }
 
@@ -710,11 +736,15 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     // nobody there to type it the install fails. Settings offers the desktop app update to a person.
     const hubImageOnly: UpdateOptions = { includeDesktopApp: false };
     try {
-      const { updateAvailable, latest, current, updateBlockedReason } = await this.checkForUpdates(hubImageOnly);
+      const { updateAvailable, latest, current, updateBlockedReason, latestLookupError } = await this.checkForUpdates(hubImageOnly);
       this.logger.info(`Auto-update check: current=${current}, latest=${latest}, updateAvailable=${updateAvailable}`);
 
       if (updateBlockedReason) {
         this.logger.info(`Auto-update skipped: ${updateBlockedReason}`);
+        return;
+      }
+      if (latestLookupError) {
+        this.logger.warn(`Auto-update skipped: could not get the latest version. ${latestLookupError}`);
         return;
       }
       if (!updateAvailable) {

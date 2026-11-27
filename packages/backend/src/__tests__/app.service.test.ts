@@ -108,7 +108,7 @@ describe('AppService', () => {
     it('should return current version when no newer tags exist', async () => {
       const version = faker.system.semver();
       configurationService.getConfig.mockReturnValueOnce(fromPartial({ version }));
-      registryService.getTagsSinceWithHubFallback.mockResolvedValueOnce([]);
+      registryService.getTagsSinceWithHubFallback.mockResolvedValueOnce({ tags: [], error: null });
 
       const result = await appService.getVersion();
 
@@ -122,7 +122,7 @@ describe('AppService', () => {
       const version = '1.0.0';
       const newerTags = ['1.2.0', '1.1.0'];
       configurationService.getConfig.mockReturnValue(fromPartial({ version }));
-      registryService.getTagsSinceWithHubFallback.mockResolvedValueOnce(newerTags);
+      registryService.getTagsSinceWithHubFallback.mockResolvedValueOnce({ tags: newerTags, error: null });
 
       const result = await appService.getVersion();
 
@@ -147,13 +147,55 @@ describe('AppService', () => {
     it('returns the local version when the registry lookup times out', async () => {
       vi.useFakeTimers();
       configurationService.getConfig.mockReturnValue(fromPartial({ version: '1.0.0' }));
-      registryService.getTagsSinceWithHubFallback.mockReturnValue(new Promise(() => undefined) as Promise<string[]>);
+      registryService.getTagsSinceWithHubFallback.mockReturnValue(new Promise(() => undefined));
 
       const pending = appService.getVersion();
       await vi.advanceTimersByTimeAsync(2_500);
       const result = await pending;
 
       expect(result).toEqual({ current: '1.0.0', latest: '1.0.0', body: '', releases: [] });
+      vi.useRealTimers();
+    });
+
+    // On a slow link the page stops waiting after 2.5 s, but the lookup goes on. Settings asks again
+    // right after Check for updates and must then see the release, not the 30 s old "no release".
+    it('takes the release a timed-out lookup finds later, before the 30 s cache runs out', async () => {
+      vi.useFakeTimers();
+      configurationService.getConfig.mockReturnValue(fromPartial({ version: '0.3.14' }));
+      let land: (lookup: { tags: string[]; error: string | null }) => void = () => undefined;
+      registryService.getTagsSinceWithHubFallback.mockReturnValueOnce(
+        new Promise((resolve) => {
+          land = resolve;
+        }),
+      );
+
+      const pending = appService.getVersion();
+      await vi.advanceTimersByTimeAsync(2_500);
+      expect((await pending).latest).toBe('0.3.14');
+
+      await vi.advanceTimersByTimeAsync(4_000);
+      land({ tags: ['0.3.16'], error: null });
+      await vi.advanceTimersByTimeAsync(0);
+
+      const again = await appService.getVersion();
+      expect(again).toMatchObject({ current: '0.3.14', latest: '0.3.16', releases: [{ version: '0.3.16', body: 'Release 0.3.16' }] });
+      expect(registryService.getTagsSinceWithHubFallback).toHaveBeenCalledTimes(1);
+      vi.useRealTimers();
+    });
+
+    it('keeps a release it found before when a later lookup fails', async () => {
+      vi.useFakeTimers();
+      configurationService.getConfig.mockReturnValue(fromPartial({ version: '0.3.14' }));
+      registryService.getTagsSinceWithHubFallback
+        .mockResolvedValueOnce({ tags: ['0.3.16'], error: null })
+        .mockResolvedValueOnce({ tags: [], error: 'Could not read the Hub release feed: timeout of 10000ms exceeded' });
+
+      expect((await appService.getVersion()).latest).toBe('0.3.16');
+      await vi.advanceTimersByTimeAsync(31_000);
+      const result = await appService.getVersion();
+
+      expect(result).toMatchObject({ current: '0.3.14', latest: '0.3.16' });
+      expect(registryService.getTagsSinceWithHubFallback).toHaveBeenCalledTimes(2);
       vi.useRealTimers();
     });
   });

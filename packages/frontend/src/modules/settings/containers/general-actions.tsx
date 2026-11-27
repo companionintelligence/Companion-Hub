@@ -70,7 +70,12 @@ type HubUpdateBlocks = {
   desktopAppUpdatesHub?: boolean;
 };
 
-type HubUpdateCheck = HubUpdateBlocks & { updateAvailable?: boolean; latest?: string };
+type HubUpdateCheck = HubUpdateBlocks & {
+  updateAvailable?: boolean;
+  latest?: string;
+  /** Set when the Hub could not look up the newest release, so it can't say whether this one is the latest. */
+  latestLookupError?: string | null;
+};
 
 /** The one-click desktop app update, in the desktop window. */
 type ShellInstallState =
@@ -430,6 +435,8 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
       await refreshHostListenerStatus();
       if (data.updateAvailable) {
         toast.success(t('SETTINGS_ACTIONS_UPDATE_AVAILABLE', { version: data.latest ?? version.latest }));
+      } else if (data.latestLookupError) {
+        toast.error(t('SETTINGS_ACTIONS_CHECK_UPDATE_FAILED'));
       } else {
         toast.success(t('SETTINGS_ACTIONS_ON_LATEST_VERSION'));
       }

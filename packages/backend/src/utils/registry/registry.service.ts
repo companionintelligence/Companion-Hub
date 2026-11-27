@@ -1,7 +1,7 @@
 import { HttpService } from '@nestjs/axios';
 import { Injectable } from '@nestjs/common';
-import axios from 'axios';
-import { firstValueFrom } from 'rxjs';
+import axios, { type AxiosResponse } from 'axios';
+import { firstValueFrom, type Observable } from 'rxjs';
 import { HUB_STACK_REGISTRY_REPO } from '@/common/constants';
 import { describeNetworkError } from '@/common/helpers/network-error';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -11,11 +11,43 @@ import * as semver from 'semver';
 
 /** How long successful tag lists are reused (avoids hammering Companion Portal on every UI version check). */
 const TAGS_CACHE_TTL_MS = 10 * 60 * 1000;
-/** After a failed fetch, wait before retrying (reduces log + network noise when the registry rejects unauthenticated clients). */
-const TAGS_FAILURE_COOLDOWN_MS = 5 * 60 * 1000;
+/**
+ * How long a failed read is kept before the next caller asks again. Short, because until a read works
+ * the Hub can't say whether an update exists. Long enough that page loads don't ask a registry that
+ * turns this Hub away every time.
+ */
+const FAILURE_RETRY_AFTER_MS = 60 * 1000;
 const HUB_RELEASE_FEED_URL = 'https://dl.ci.computer/latest.json';
-/** Bound OCI + release-feed lookups so Settings cannot hang when Companion Portal is slow. */
-export const REGISTRY_HTTP_TIMEOUT_MS = 1_500;
+/**
+ * One attempt at one read: name lookup, connect, TLS and the body. With 1.6 s added to every packet
+ * the release feed took 6.7 s to read. 1.5 s, the limit this replaced, failed from 0.4 s per packet,
+ * and on some links failed about half the reads with no delay added at all.
+ */
+export const REGISTRY_HTTP_TIMEOUT_MS = 10_000;
+/**
+ * A whole release lookup, retries included. Check for updates in Settings waits for it, so it ends:
+ * the tag list and the feed are read at the same time and every attempt stops at this deadline.
+ */
+export const RELEASE_LOOKUP_BUDGET_MS = 15_000;
+/** Time an attempt needs left before it is started. Less than this can't finish on a link that needs the longer limit. */
+const MIN_ATTEMPT_MS = 2_000;
+const RETRY_DELAY_MS = 500;
+
+/**
+ * Releases newer than the running one. `error` says why they could not be looked up, and the empty
+ * list then means "unknown", not "up to date".
+ */
+export type ReleaseLookup = { tags: string[]; error: string | null };
+
+type TagsRead = { tags: string[]; error: string | null };
+type FeedRead = { version: string | null; error: string | null };
+
+/** An attempt that wasn't started, because the lookup's deadline was too close. Not retried. */
+class OutOfTimeError extends Error {
+  constructor() {
+    super('the release lookup ran out of time');
+  }
+}
 
 type LatestHubReleaseFeed = {
   version?: string;
@@ -28,8 +60,10 @@ type CachedRegistryToken = {
 
 @Injectable()
 export class RegistryService {
-  private readonly tagsCache = new Map<string, { tags: string[]; expiresAt: number }>();
-  private latestHubVersionCache: { version: string | null; expiresAt: number } | null = null;
+  private readonly tagsCache = new Map<string, TagsRead & { expiresAt: number }>();
+  private latestHubVersionCache: (FeedRead & { expiresAt: number }) | null = null;
+  /** The feed read under way, so a page load and Check for updates that overlap share one read. */
+  private feedInFlight: Promise<FeedRead> | null = null;
   private registryTokenCache: CachedRegistryToken | null = null;
 
   constructor(
@@ -40,7 +74,7 @@ export class RegistryService {
   ) {}
 
   public async getLatestVersion(repository: string) {
-    const tags = await this.getTags(repository);
+    const { tags } = await this.getTags(repository, Date.now() + RELEASE_LOOKUP_BUDGET_MS);
     return tags[0] || '0.0.0';
   }
 
@@ -48,59 +82,103 @@ export class RegistryService {
     if (!semver.valid(currentVersion)) {
       return [];
     }
-    const tags = await this.getTags(repository);
+    const { tags } = await this.getTags(repository, Date.now() + RELEASE_LOOKUP_BUDGET_MS);
     return tags.filter((tag) => semver.gt(tag, currentVersion));
   }
 
   /**
    * Resolve newer tags and fall back to the public release feed for the Hub stack.
    * This keeps update checks working when OCI tags are digest-only (latest/dev/sha256).
+   *
+   * A newer release in the tag list still wins, and the feed answers only when the list has none. The
+   * feed is read at the same time as the list rather than after it: on a slow link the Portal's two
+   * reads (token, then list) would otherwise use up the time the feed needs.
    */
-  public async getTagsSinceWithHubFallback(repository: string, currentVersion: string): Promise<string[]> {
+  public async getTagsSinceWithHubFallback(repository: string, currentVersion: string): Promise<ReleaseLookup> {
     if (!semver.valid(currentVersion)) {
-      return [];
+      return { tags: [], error: null };
     }
 
-    const tagsSince = await this.getTagsSince(repository, currentVersion);
+    const deadline = Date.now() + RELEASE_LOOKUP_BUDGET_MS;
+    const feed = repository === HUB_STACK_REGISTRY_REPO ? this.getLatestHubVersionFromFeed(deadline) : null;
+    const listed = await this.getTags(repository, deadline);
+    const tagsSince = listed.tags.filter((tag) => semver.gt(tag, currentVersion));
     if (tagsSince.length > 0) {
-      return tagsSince;
+      return { tags: tagsSince, error: null };
     }
 
-    if (repository !== HUB_STACK_REGISTRY_REPO) {
-      return [];
+    if (feed === null) {
+      return { tags: [], error: listed.error };
     }
 
-    const latestFromFeed = await this.getLatestHubVersionFromFeed();
-    if (latestFromFeed && semver.gt(latestFromFeed, currentVersion)) {
-      return [latestFromFeed];
+    const latestFromFeed = await feed;
+    if (latestFromFeed.version === null) {
+      return { tags: [], error: latestFromFeed.error ?? 'The Hub release feed named no version' };
     }
-
-    return [];
+    return { tags: semver.gt(latestFromFeed.version, currentVersion) ? [latestFromFeed.version] : [], error: null };
   }
 
-  private async getLatestHubVersionFromFeed(): Promise<string | null> {
-    const now = Date.now();
-    if (this.latestHubVersionCache && this.latestHubVersionCache.expiresAt > now) {
-      return this.latestHubVersionCache.version;
+  private getLatestHubVersionFromFeed(deadline: number): Promise<FeedRead> {
+    if (this.latestHubVersionCache && this.latestHubVersionCache.expiresAt > Date.now()) {
+      const { version, error } = this.latestHubVersionCache;
+      return Promise.resolve({ version, error });
+    }
+    if (this.feedInFlight) {
+      return this.feedInFlight;
     }
 
+    this.feedInFlight = this.readHubReleaseFeed(deadline).finally(() => {
+      this.feedInFlight = null;
+    });
+    return this.feedInFlight;
+  }
+
+  private async readHubReleaseFeed(deadline: number): Promise<FeedRead> {
     try {
-      const { data } = await firstValueFrom(this.httpService.get(HUB_RELEASE_FEED_URL, { timeout: REGISTRY_HTTP_TIMEOUT_MS }));
+      const { data } = await this.withOneRetry((timeout) => this.httpService.get(HUB_RELEASE_FEED_URL, { timeout }), deadline);
       const payload = data as LatestHubReleaseFeed;
-      const cleaned = semver.clean(payload.version ?? '') ?? null;
+      const cleaned = semver.clean(payload?.version ?? '') ?? null;
 
       if (!cleaned) {
-        this.latestHubVersionCache = { version: null, expiresAt: now + TAGS_FAILURE_COOLDOWN_MS };
-        return null;
+        const read: FeedRead = { version: null, error: 'The Hub release feed named no version' };
+        this.latestHubVersionCache = { ...read, expiresAt: Date.now() + FAILURE_RETRY_AFTER_MS };
+        this.logger.warn(`${read.error} at ${HUB_RELEASE_FEED_URL}`);
+        return read;
       }
 
-      this.latestHubVersionCache = { version: cleaned, expiresAt: now + TAGS_CACHE_TTL_MS };
-      return cleaned;
+      this.latestHubVersionCache = { version: cleaned, error: null, expiresAt: Date.now() + TAGS_CACHE_TTL_MS };
+      return { version: cleaned, error: null };
     } catch (error) {
-      this.latestHubVersionCache = { version: null, expiresAt: now + TAGS_FAILURE_COOLDOWN_MS };
-      this.logger.debug(`Hub release feed unavailable at ${HUB_RELEASE_FEED_URL}: ${error instanceof Error ? error.message : String(error)}`);
-      return null;
+      const read: FeedRead = { version: null, error: `Could not read the Hub release feed: ${describeNetworkError(error)}` };
+      this.latestHubVersionCache = { ...read, expiresAt: Date.now() + FAILURE_RETRY_AFTER_MS };
+      this.logger.warn(`${read.error} (${HUB_RELEASE_FEED_URL})`);
+      return read;
     }
+  }
+
+  /**
+   * One read, tried a second time when it got no answer (no connection, no reply in time) or a server
+   * error. Each attempt gets {@link REGISTRY_HTTP_TIMEOUT_MS}, cut short at the lookup's deadline, and
+   * one that would have less than {@link MIN_ATTEMPT_MS} isn't started. A 4xx answer isn't retried.
+   */
+  private async withOneRetry<T>(send: (timeout: number) => Observable<AxiosResponse<T>>, deadline: number): Promise<AxiosResponse<T>> {
+    const attempt = () => {
+      const timeout = Math.min(REGISTRY_HTTP_TIMEOUT_MS, deadline - Date.now());
+      if (timeout < MIN_ATTEMPT_MS) {
+        throw new OutOfTimeError();
+      }
+      return firstValueFrom(send(timeout));
+    };
+
+    try {
+      return await attempt();
+    } catch (error) {
+      if (!worthRetrying(error) || deadline - Date.now() - RETRY_DELAY_MS < MIN_ATTEMPT_MS) {
+        throw error;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+    return attempt();
   }
 
   private jwtExpiryMs(token: string): number | null {
@@ -130,29 +208,31 @@ export class RegistryService {
    * which names the device and no organization. So the cache isn't keyed on organization: the same
    * token holds in any of them. A caller that asks for an app's token one day needs its own key.
    */
-  private async getDeviceRegistryToken(base: string): Promise<string | null> {
+  private async getDeviceRegistryToken(base: string, deadline: number): Promise<{ token: string | null; error: string | null }> {
     const deviceKey = this.configuration.get('ciHubApiKey');
     if (!deviceKey) {
-      return null;
+      return { token: null, error: null };
     }
 
     const now = Date.now();
     if (this.registryTokenCache && this.registryTokenCache.expiresAt > now) {
-      return this.registryTokenCache.token;
+      return { token: this.registryTokenCache.token, error: null };
     }
 
     const organizationId = await this.whois.deviceOrganizationId();
 
     try {
-      const { data } = await firstValueFrom(
-        this.httpService.post(`${base}/api/devices/registry-token`, organizationId ? { organizationId } : {}, {
-          timeout: REGISTRY_HTTP_TIMEOUT_MS,
-          headers: { 'x-device-key': deviceKey, 'Content-Type': 'application/json' },
-        }),
+      const { data } = await this.withOneRetry(
+        (timeout) =>
+          this.httpService.post(`${base}/api/devices/registry-token`, organizationId ? { organizationId } : {}, {
+            timeout,
+            headers: { 'x-device-key': deviceKey, 'Content-Type': 'application/json' },
+          }),
+        deadline,
       );
       const token = typeof (data as { token?: unknown })?.token === 'string' ? (data as { token: string }).token : null;
       if (!token) {
-        return null;
+        return { token: null, error: 'Companion Portal sent no registry token' };
       }
 
       const expiry = this.jwtExpiryMs(token);
@@ -160,15 +240,16 @@ export class RegistryService {
         token,
         expiresAt: expiry ? expiry - 60_000 : now + TAGS_CACHE_TTL_MS,
       };
-      return token;
+      return { token, error: null };
     } catch (error) {
       this.registryTokenCache = null;
-      this.logger.debug(`Failed to mint Portal registry token: ${describeNetworkError(error)}`);
-      return null;
+      const reason = describeNetworkError(error);
+      this.logger.debug(`Failed to mint Portal registry token: ${reason}`);
+      return { token: null, error: `Could not get a registry token from Companion Portal: ${reason}` };
     }
   }
 
-  private async getTags(repository: string): Promise<string[]> {
+  private async getTags(repository: string, deadline: number): Promise<TagsRead> {
     const registryUrl = this.configuration.get('ciCloudUrl');
     if (!registryUrl) {
       throw new Error('ciCloudUrl is not configured');
@@ -176,41 +257,44 @@ export class RegistryService {
 
     const base = registryUrl.trim().replace(/\/$/, '');
     const cacheKey = `${base}::${repository}`;
-    const now = Date.now();
     const cached = this.tagsCache.get(cacheKey);
-    if (cached && cached.expiresAt > now) {
-      return cached.tags;
+    if (cached && cached.expiresAt > Date.now()) {
+      return { tags: cached.tags, error: cached.error };
     }
 
     const headers: Record<string, string> = {};
     if (repository === HUB_STACK_REGISTRY_REPO) {
-      const token = await this.getDeviceRegistryToken(base);
+      const { token, error } = await this.getDeviceRegistryToken(base, deadline);
       if (!token) {
-        this.tagsCache.set(cacheKey, { tags: [], expiresAt: now + TAGS_FAILURE_COOLDOWN_MS });
-        return [];
+        this.tagsCache.set(cacheKey, { tags: [], error, expiresAt: Date.now() + FAILURE_RETRY_AFTER_MS });
+        return { tags: [], error };
       }
       headers.Authorization = `Bearer ${token}`;
     }
 
     try {
-      const { data } = await firstValueFrom(
-        this.httpService.get(`${base}/v2/${repository}/tags/list`, {
-          timeout: REGISTRY_HTTP_TIMEOUT_MS,
-          ...(Object.keys(headers).length > 0 ? { headers } : {}),
-        }),
+      const { data } = await this.withOneRetry(
+        (timeout) =>
+          this.httpService.get(`${base}/v2/${repository}/tags/list`, {
+            timeout,
+            ...(Object.keys(headers).length > 0 ? { headers } : {}),
+          }),
+        deadline,
       );
 
       const tags = (data.tags || []) as string[];
 
       const validTags = tags.filter((tag) => semver.valid(tag));
       const sorted = validTags.sort((a, b) => semver.rcompare(a, b));
-      this.tagsCache.set(cacheKey, { tags: sorted, expiresAt: now + TAGS_CACHE_TTL_MS });
-      return sorted;
+      this.tagsCache.set(cacheKey, { tags: sorted, error: null, expiresAt: Date.now() + TAGS_CACHE_TTL_MS });
+      return { tags: sorted, error: null };
     } catch (error) {
       if (axios.isAxiosError(error) && error.response?.status === 401) {
         this.registryTokenCache = null;
       }
-      this.tagsCache.set(cacheKey, { tags: [], expiresAt: now + TAGS_FAILURE_COOLDOWN_MS });
+      const reason = describeNetworkError(error);
+      const read: TagsRead = { tags: [], error: `Could not read the tag list of ${repository}: ${reason}` };
+      this.tagsCache.set(cacheKey, { ...read, expiresAt: Date.now() + FAILURE_RETRY_AFTER_MS });
 
       if (axios.isAxiosError(error)) {
         const status = error.response?.status;
@@ -219,12 +303,21 @@ export class RegistryService {
             `OCI tags list not available for ${repository} at CI Cloud (HTTP ${status}). Hub updates may not show latest image until registry access works.`,
           );
         } else {
-          this.logger.warn(`Failed to get OCI tags for ${repository}: ${error.message}${status ? ` (HTTP ${status})` : ''}`);
+          this.logger.warn(`Failed to get OCI tags for ${repository}: ${reason}${status ? ` (HTTP ${status})` : ''}`);
         }
       } else {
-        this.logger.warn(`Failed to get OCI tags for ${repository}: ${error instanceof Error ? error.message : String(error)}`);
+        this.logger.warn(`Failed to get OCI tags for ${repository}: ${reason}`);
       }
-      return [];
+      return read;
     }
   }
+}
+
+/** No answer at all (no connection, nothing back in time) or a server that failed: worth one more try. */
+function worthRetrying(error: unknown): boolean {
+  if (!axios.isAxiosError(error)) {
+    return !(error instanceof OutOfTimeError);
+  }
+  const status = error.response?.status;
+  return status === undefined || status >= 500 || status === 429;
 }

@@ -287,29 +287,27 @@ export class AppService implements OnApplicationShutdown {
 
     this.versionInFlight = (async () => {
       const local = this.peekLocalVersion();
+      const lookup = this.registryService.getTagsSinceWithHubFallback(HUB_STACK_REGISTRY_REPO, local.current);
       try {
-        const releasesSince = await withTimeout(
-          this.registryService.getTagsSinceWithHubFallback(HUB_STACK_REGISTRY_REPO, local.current),
-          AppService.VERSION_LOOKUP_TIMEOUT_MS,
-          'version lookup timed out',
-        );
-
-        const releases = releasesSince.map((tag) => ({
-          version: tag,
-          body: `Release ${tag}`,
-        }));
-
-        const latest = releases[0]?.version ?? local.current;
-        const value = {
-          current: local.current,
-          latest,
-          body: '',
-          releases,
-        };
-        this.versionCache = { value, at: Date.now() };
-        return value;
+        const { tags, error } = await withTimeout(lookup, AppService.VERSION_LOOKUP_TIMEOUT_MS, 'version lookup timed out');
+        if (error !== null) {
+          // Unknown is not "no release": a release found earlier stays.
+          this.versionCache = { value: local, at: Date.now() };
+          return local;
+        }
+        return this.keepVersion(local.current, tags);
       } catch {
         this.versionCache = { value: local, at: Date.now() };
+        // The page stops waiting, the lookup doesn't (RegistryService ends it). On a slow link it lands
+        // later, and its release then replaces this answer: Settings reads it again after Check for
+        // updates, and would otherwise be told there is no release for the next 30 s.
+        void lookup
+          .then(({ tags, error }) => {
+            if (error === null && this.versionCache?.value === local) {
+              this.keepVersion(local.current, tags);
+            }
+          })
+          .catch(() => undefined);
         return local;
       }
     })().finally(() => {
@@ -317,6 +315,21 @@ export class AppService implements OnApplicationShutdown {
     });
 
     return this.versionInFlight;
+  }
+
+  private keepVersion(current: string, tags: string[]) {
+    const releases = tags.map((tag) => ({
+      version: tag,
+      body: `Release ${tag}`,
+    }));
+    const value = {
+      current,
+      latest: releases[0]?.version ?? current,
+      body: '',
+      releases,
+    };
+    this.versionCache = { value, at: Date.now() };
+    return value;
   }
 
   public async copyAssets() {
