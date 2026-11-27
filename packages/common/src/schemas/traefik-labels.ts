@@ -156,10 +156,9 @@ const TRAEFIK_ENABLE_OFF = new Set(['0', 'f', 'F', 'false', 'FALSE', 'False']);
  * The `traefik.enable` labels in `labels` that turn Traefik on for a container that declares no HTTP
  * router.
  *
- * Traefik makes a router of its own for such a container, on a host it makes up from the container's
- * name, on every entry point and with no middlewares. The Hub puts its login on the routers a service
- * declares (`withHubLoginOnEveryRouter`), so none was in front of that one. Any value but a false one
- * counts: a compose expansion could turn it on after this check.
+ * Traefik makes a router of its own for such a container, with no middlewares. The Hub puts its login
+ * on the routers a service declares (`withHubLoginOnEveryRouter`), so none was in front of that one.
+ * Any value but a false one counts: a compose expansion could turn it on after this check.
  *
  * The Hub's own routers on the main service are not in an app's labels, so a main service that says
  * `traefik.enable` with no router of its own counts too: on This machine only the Hub declares none.
