@@ -285,19 +285,16 @@ export class DockerReadFacade {
   }
 
   /**
-   * The address of the app's web service on its own network: where the Private VPN sends the app's
-   * visitors, past Traefik.
-   *
-   * The service is the one the Hub routes the app's address to, on its main container
-   * (`TraefikLabelsBuilder`). A listing can define services of its own on that container and on
-   * others the Hub lets Traefik read, and Docker lists a container's labels in alphabetical order:
-   * Koodo Reader's `<app>-api` service, its library server, comes before the app's own. An app
-   * without that label (a compose from before it) gets the first service port found, as before.
+   * The address of the app's web service on its own network, where the Private VPN sends the app's
+   * visitors past Traefik: the service the Hub routes the app's address to (`TraefikLabelsBuilder`).
+   * Picked by name, since a listing can define services of its own (Koodo Reader's library server
+   * sorts first). None while no running container has it, even when another service of the app runs:
+   * a restart's `down` removes the main container first and stops the others after it.
    */
   public async getAppNetworkTarget(appUrn: AppUrn): Promise<AppNetworkTarget | null> {
     const containers = await listContainersMatchingAnyLabelSets(this.docker, appUrnLabelSets(appUrn, ['traefik.enable=true']), false);
     const { appName, appStoreId } = extractAppUrn(appUrn);
-    const hubServicePortLabel = `traefik.http.services.${appName}-${appStoreId}.loadbalancer.server.port`;
+    const service = `traefik.http.services.${appName}-${appStoreId}.loadbalancer.server`;
 
     const limit = pLimit(5);
     const targets = await Promise.all(
@@ -306,46 +303,19 @@ export class DockerReadFacade {
           const inspect = await this.docker.getContainer(containerInfo.Id).inspect();
           const labels = inspect.Config?.Labels || {};
           const containerIP = ipOnAppNetwork(appUrn, inspect.NetworkSettings?.Networks);
+          const internalPort = Number.parseInt(String(labels[`${service}.port`]), 10);
 
-          if (!containerIP) {
+          if (!containerIP || Number.isNaN(internalPort)) {
             return null;
           }
 
-          const portEntry =
-            Object.entries(labels).find(([key]) => key === hubServicePortLabel) ??
-            Object.entries(labels).find(([key]) => key.startsWith('traefik.http.services.') && key.endsWith('.loadbalancer.server.port'));
-
-          if (!portEntry) {
-            return null;
-          }
-
-          const serviceName = portEntry[0].replace('traefik.http.services.', '').replace('.loadbalancer.server.port', '');
-          const internalPort = Number.parseInt(String(portEntry[1]), 10);
-
-          if (Number.isNaN(internalPort)) {
-            return null;
-          }
-
-          const backendScheme = labels[`traefik.http.services.${serviceName}.loadbalancer.server.scheme`];
-          const scheme = backendScheme === 'https' ? 'https+insecure' : 'http';
-
-          return {
-            target: { url: `${scheme}://${containerIP}:${internalPort}`, internalPort } satisfies AppNetworkTarget,
-            hubService: portEntry[0] === hubServicePortLabel,
-          };
+          const scheme = labels[`${service}.scheme`] === 'https' ? 'https+insecure' : 'http';
+          return { url: `${scheme}://${containerIP}:${internalPort}`, internalPort } satisfies AppNetworkTarget;
         }),
       ),
     );
 
-    const found = targets.filter((target) => target !== null);
-    const hubTarget = found.find(({ hubService }) => hubService);
-    if (hubTarget || found.length === 0) {
-      return hubTarget?.target ?? null;
-    }
-    // The main container is down (stopped, or not started yet) while another service of the app runs:
-    // no target until it is back, rather than send the app's visitors to that service.
-    const stopped = await listContainersMatchingAnyLabelSets(this.docker, appUrnLabelSets(appUrn, ['traefik.enable=true']), true);
-    return stopped.some((container) => container.Labels?.[hubServicePortLabel] !== undefined) ? null : (found[0]?.target ?? null);
+    return targets.find((target) => target !== null) ?? null;
   }
 
   /**

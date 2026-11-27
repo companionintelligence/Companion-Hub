@@ -279,14 +279,14 @@ export function withAppStartingPage(labels: Record<string, string | boolean>): R
 }
 
 /**
- * A `Host()` matcher on the app's public address. Compose fills in the host, so this is the text a
- * manifest wrote. Without regard to case and with `HostHeader()`, the v2 rule syntax's other name,
- * as Traefik and the label check read them. Only the backtick and the quoted spellings of one host.
+ * Every `Host()` or `HostHeader()` matcher in a rule, whatever hosts it names. `HostHeader()` and
+ * several hosts in one matcher are the v2 rule syntax, which a router may still ask for.
  */
-const PUBLIC_ADDRESS_HOST_MATCHER = /\bHost(?:Header)?\(\s*(?:`\$\{(?:APP_DOMAIN|APP_BASE_HOST)\}`|"\$\{(?:APP_DOMAIN|APP_BASE_HOST)\}")\s*\)/gi;
-
-/** Every `Host()` or `HostHeader()` matcher in a rule, whatever hosts it names. */
 const ANY_HOST_MATCHER = /\bHost(?:Header)?\(\s*(?:`[^`]*`|"(?:[^"\\]|\\.)*")(?:\s*,\s*(?:`[^`]*`|"(?:[^"\\]|\\.)*"))*\s*\)/gi;
+/** The app's public address as a matcher's argument, in the text a manifest wrote: compose fills it in later. */
+const PUBLIC_ADDRESS_HOST = /^(?:`\$\{(?:APP_DOMAIN|APP_BASE_HOST)\}`|"\$\{(?:APP_DOMAIN|APP_BASE_HOST)\}")$/i;
+/** The hosts of a matcher {@link ANY_HOST_MATCHER} found. */
+const MATCHER_HOST = /`[^`]*`|"(?:[^"\\]|\\.)*"/g;
 /** `PathPrefix(`/`)`, which every path has. */
 const ROOT_PATH_PREFIX = /\bPathPrefix\(\s*(?:`\/`|"\/")\s*\)/gi;
 
@@ -310,27 +310,15 @@ function hubRouterNames(appId: string): Set<string> {
 }
 
 /**
- * On Public web, has a manifest's router that names the app's public address answer the tunnel too.
+ * On Public web, has a manifest's router on the app's public address (`${APP_DOMAIN}` or
+ * `${APP_BASE_HOST}`) answer the tunnel too, which sends the origin host the Hub's own routers match.
+ * Each such `Host()` becomes `(Host(...) || Host(<origin host>))`, so the rest of the rule binds as
+ * before. The router also gets `<app id>-public-host` first in its own chain (`publicHost`).
  *
- * Listings route paths of their own on `${APP_DOMAIN}` (Koodo Reader's library server, Public Pool's
- * API). On Public web that is the public address, and the Cloudflare tunnel never sends it: it sends
- * the app's origin host, the one the Hub's own routers match. So those routes matched nothing that
- * came through the tunnel, and the app's web page answered their paths. Each such `Host()` becomes
- * `(Host(<public address>) || Host(<origin host>))`, in parentheses so the rest of the rule binds as
- * before. `${APP_BASE_HOST}` holds the public address there too and gets the same.
- *
- * Such a router answers the public address now, so it gets what the Hub's own router has for it:
- * `<app id>-public-host`, which tells the service the address the visitor asked for
- * (`publicHost`, when the builder made that middleware). First in the manifest's own chain, so
- * {@link withHubLoginOnEveryRouter} puts it right after the login.
- *
- * The routers the builder made keep their rules, whatever a manifest set there: Kimai and IPFS put
- * `${APP_LOCAL_DOMAIN}` in theirs, and a longer rule would outrank the service-worker reset routers.
- * So does a rule that names only hosts ({@link namesOnlyHosts}). Widened, it would take the app's
- * whole address from the Hub's own route and, with the public address in it, outrank the reset
- * router for a signed-out browser's fetch of `/sw.js` too (#2324). It stays as written: the Hub's
- * route serves the address, as it always did on Public web.
- * Runs after interpolation, so the app's own routers carry its id.
+ * Left as written: the Hub's own routers (a longer rule there would outrank the reset routers) and a
+ * rule that names only hosts ({@link namesOnlyHosts}). Widened, that one would take the app's whole
+ * address from the Hub's route and outrank the reset router for a signed-out fetch of `/sw.js`
+ * (#2324). Runs after interpolation.
  */
 export function withTunnelHostOnPublicAddressRules(
   labels: Record<string, string | boolean>,
@@ -350,7 +338,9 @@ export function withTunnelHostOnPublicAddressRules(
     ) {
       continue;
     }
-    const rule = value.replace(PUBLIC_ADDRESS_HOST_MATCHER, (matcher) => `(${matcher} || Host(\`${originHost}\`))`);
+    const rule = value.replace(ANY_HOST_MATCHER, (matcher) =>
+      (matcher.match(MATCHER_HOST) ?? []).some((host) => PUBLIC_ADDRESS_HOST.test(host)) ? `(${matcher} || Host(\`${originHost}\`))` : matcher,
+    );
     if (rule !== value) {
       result[key] = rule;
       rewritten.set(router.toLowerCase(), router);
@@ -372,23 +362,13 @@ export function withTunnelHostOnPublicAddressRules(
 }
 
 /**
- * Turns Traefik on for a service of the app that declares routers of its own.
+ * Turns Traefik on for a service of the app that declares routers of its own, so a listing's routes on
+ * its other services (Public Pool's API, Skyvern's backend) are loaded. The caller does it on Public
+ * web only. The routers already carry the login.
  *
- * The Hub's Traefik reads no container that doesn't ask (`exposedByDefault: false`), and the builder
- * turns it on only for the main service. A listing's routes on its other services (Public Pool's API,
- * Skyvern's backend, Rybbit's and the S3 stores of Beatsync, Cap and Snapify) were never loaded, and
- * their paths got Traefik's own 404 or the web page.
- *
- * Only for a service whose every router has a rule, and only on Public web, where the tunnel brings
- * the app's visitors to these routes (the caller's part). Traefik gives a container with no router a
- * router of its own, and a router with no rule a rule on the container's name, which aren't the
- * app's routes. A service that says `traefik.enable` either way keeps what it says. The routers'
- * chains were put together before this: the login and the edge header strip head each of them as on
- * the main service.
- *
- * Nor for a service with a router of one of the Hub's own names (Kimai's shape on another service).
- * Traefik drops a router that two containers define differently, so it would take the Hub's route of
- * the app down with it.
+ * Not for a service with a router that has no rule (Traefik would make one up from the container's
+ * name), one that sets `traefik.enable` itself, or one with a router of a Hub name: Traefik drops a
+ * router two containers define differently and takes the Hub's route of the app with it.
  */
 export function withTraefikOnRoutingService(
   labels: Record<string, string | boolean>,
@@ -410,6 +390,32 @@ export function withTraefikOnRoutingService(
     }
   }
   return hasRule.size > 0 && [...hasRule.values()].every(Boolean) ? { ...labels, 'traefik.enable': true } : labels;
+}
+
+/**
+ * Gives a service whose routers name `<app id>-public-host@docker` the main service's definition of it.
+ *
+ * Only the main container defined it. Traefik drops a router whose middleware is missing, so a
+ * listing's routes on its other services went down while the main container restarted. Traefik keeps
+ * a middleware that several containers define alike, so the main service's labels are copied as they
+ * are (Donetick and Firefly III set their own value there). A service that defines it itself keeps its own.
+ */
+export function withPublicHostMiddlewareOfMain(
+  labels: Record<string, string | boolean>,
+  mainLabels: Record<string, string | boolean>,
+  { appId }: { appId: string },
+): Record<string, string | boolean> {
+  const middleware = `${appId}${PUBLIC_HOST_MIDDLEWARE_SUFFIX}`.toLowerCase();
+  const definesIt = (key: string) => key.toLowerCase().startsWith(`traefik.http.middlewares.${middleware}.`);
+  const namesIt = Object.entries(labels).some(
+    ([key, value]) =>
+      HTTP_ROUTER_LABEL.exec(key)?.[2]?.toLowerCase() === 'middlewares' &&
+      middlewareChain(value).some((name) => name.toLowerCase() === `${middleware}@docker`),
+  );
+  if (!namesIt || Object.keys(labels).some(definesIt)) {
+    return labels;
+  }
+  return { ...labels, ...Object.fromEntries(Object.entries(mainLabels).filter(([key]) => definesIt(key))) };
 }
 
 /** The app id placeholders `ServiceBuilder.interpolateVariables` writes the app id into. */

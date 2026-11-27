@@ -2200,4 +2200,60 @@ describe('DockerComposeBuilder: a listing’s own routes', () => {
       `(HostHeader(\`\${APP_DOMAIN}\`) || Host(\`${ORIGIN}\`)) && PathPrefix(\`/v2\`)`,
     );
   });
+
+  // The v2 rule syntax a router may ask for takes several hosts in one matcher.
+  it('gives a matcher with several hosts, one of them the public address, the same', async () => {
+    const services = await labelsFor({ exposureMode: 'cloudflare' }, [
+      mainService,
+      {
+        ...api,
+        extraLabels: {
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-api.rule': 'Host(`${APP_DOMAIN}`, `${APP_LOCAL_DOMAIN}`) && PathPrefix(`/api`)',
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-api.rulesyntax': 'v2',
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-lan.rule': 'Host(`${APP_LOCAL_DOMAIN}`, `${APP_LOCAL_DOMAIN}`) && PathPrefix(`/lan`)',
+        },
+      },
+    ]);
+
+    expect(services.api?.labels['traefik.http.routers.nginx-store-id-api.rule']).toBe(
+      `(Host(\`\${APP_DOMAIN}\`, \`\${APP_LOCAL_DOMAIN}\`) || Host(\`${ORIGIN}\`)) && PathPrefix(\`/api\`)`,
+    );
+    expect(services.api?.labels['traefik.http.routers.nginx-store-id-lan.rule']).toBe(
+      'Host(`${APP_LOCAL_DOMAIN}`, `${APP_LOCAL_DOMAIN}`) && PathPrefix(`/lan`)',
+    );
+  });
+
+  // Traefik drops a router whose middleware is gone: Public Pool's API went down while its UI restarted.
+  it('defines the public-host middleware on a service whose routes name it, as the main service has it', async () => {
+    const services = await labelsFor({ exposureMode: 'cloudflare', enableAuth: true });
+    const definition = (labels: Record<string, string | boolean> = {}) =>
+      Object.fromEntries(Object.entries(labels).filter(([key]) => key.startsWith('traefik.http.middlewares.nginx-store-id-public-host.')));
+
+    expect(Object.keys(definition(services.nginx?.labels))).toHaveLength(3);
+    expect(definition(services.api?.labels)).toEqual(definition(services.nginx?.labels));
+    // Nothing for a service whose routes don't name it.
+    expect(definition(services.db?.labels)).toEqual({});
+  });
+
+  // Traefik keeps a middleware two containers define alike and drops one they define differently.
+  it('copies a listing’s own value for the public-host middleware from the main service', async () => {
+    const ownHost = {
+      'traefik.http.middlewares.{{CI_HUB_APP_ID}}-public-host.headers.customrequestheaders.X-Forwarded-Host': '${APP_BASE_HOST}',
+    };
+    const services = await labelsFor({ exposureMode: 'cloudflare', enableAuth: true }, [
+      { ...web, extraLabels: { ...web.extraLabels, ...ownHost } },
+      api,
+      {
+        ...api,
+        name: 'own',
+        extraLabels: { ...api.extraLabels, 'traefik.http.middlewares.{{CI_HUB_APP_ID}}-public-host.headers.customrequestheaders.X-Own': 'yes' },
+      },
+    ]);
+    const key = 'traefik.http.middlewares.nginx-store-id-public-host.headers.customrequestheaders.X-Forwarded-Host';
+
+    expect(services.nginx?.labels[key]).toBe('${APP_BASE_HOST}');
+    expect(services.api?.labels[key]).toBe('${APP_BASE_HOST}');
+    // A service that defines it itself keeps what it has.
+    expect(services.own?.labels).not.toHaveProperty([key]);
+  });
 });
