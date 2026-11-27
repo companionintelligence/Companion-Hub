@@ -375,6 +375,23 @@ describe('DockerService', () => {
 
       expect(child_process.spawn).toHaveBeenCalledWith('docker', expect.arrayContaining(['up', '--detach']), expect.anything());
     });
+
+    // Compose merges the override's labels onto the app's compose, whose routers count for it.
+    it('judges an override’s traefik.enable with the routers in the app’s compose', async () => {
+      const enable = 'services:\n  web:\n    labels:\n      traefik.enable: "true"\n';
+      useUserConfig(enable);
+
+      await expect(service.composeApp(appUrn, 'up --detach')).rejects.toThrow(/CUSTOM_APP_ERROR_TRAEFIK_ENABLE_WITHOUT_ROUTER/);
+      expect(child_process.spawn).not.toHaveBeenCalled();
+
+      appFilesManager.getDockerComposeYaml.mockResolvedValue({
+        path: '/apps/test-app/docker-compose.yml',
+        content: 'services:\n  web:\n    labels:\n      traefik.http.routers.test-app-_user-api.rule: Host(`${APP_DOMAIN}`) && PathPrefix(`/api`)\n',
+      });
+      composeRuns();
+      await service.composeApp(appUrn, 'up --detach');
+      expect(child_process.spawn).toHaveBeenCalledWith('docker', expect.arrayContaining(['up', '--detach']), expect.anything());
+    });
   });
 
   describe('composeApp', () => {

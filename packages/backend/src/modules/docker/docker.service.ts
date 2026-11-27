@@ -31,7 +31,7 @@ import type Dockerode from 'dockerode';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AppsRepository } from '../apps/apps.repository';
 import { appIdOf } from '../apps/app-id.helpers';
-import { collectComposeOverrideViolations, describeComposeOverrideViolations } from '../apps/compose-override-sandbox';
+import { collectComposeOverrideViolations, composeServiceLabels, describeComposeOverrideViolations } from '../apps/compose-override-sandbox';
 import { APPLE_CONTAINER_ENGINE_NOTICE, isSocktainerVersion } from './container-engine';
 import { DOCKERODE } from './constants';
 import { DockerReadFacade, type ManagedAppContainerVerification } from './docker-read.facade';
@@ -1138,6 +1138,7 @@ export class DockerService {
     const violations = collectComposeOverrideViolations(userCompose.content ?? '', userEnv.content ?? '', {
       appUrn,
       knownAppIds: installedApps.map((installed) => appIdOf(installed.appName, installed.appStoreSlug)),
+      hubServiceLabels: composeServiceLabels((await this.appFilesManager.getDockerComposeYaml(appUrn)).content),
     });
     if (violations.length > 0) {
       throw new Error(

@@ -171,11 +171,12 @@ export function traefikEnableLabelsWithoutRouter(labels: Record<string, unknown>
       enables.push(label);
     }
   }
-  if (enables.length === 0) {
-    return [];
-  }
-  const declaresRouter = Object.keys(labels).some((label) => HTTP_OBJECT_LABEL.exec(label)?.[1]?.toLowerCase() === 'routers');
-  return declaresRouter ? [] : enables;
+  return enables.length > 0 && !declaresTraefikRouter(labels) ? enables : [];
+}
+
+/** Whether `labels` declare an HTTP router. */
+export function declaresTraefikRouter(labels: Record<string, unknown>): boolean {
+  return Object.keys(labels).some((label) => HTTP_OBJECT_LABEL.exec(label)?.[1]?.toLowerCase() === 'routers');
 }
 
 /**

@@ -15,6 +15,7 @@ import {
 import { parseComposeJson, parseInstalledComposeJson } from './utils/convert-legacy-schema.js';
 import {
   collectTraefikLabelIssues,
+  declaresTraefikRouter,
   HUB_FORWARD_AUTH_MIDDLEWARES,
   HUB_INFRASTRUCTURE_NETWORK_NAMES,
   HUB_TRAEFIK_NAMES,
@@ -137,6 +138,7 @@ export {
   type NestedBindMount,
   isReservedHubLabel,
   collectTraefikLabelIssues,
+  declaresTraefikRouter,
   traefikEnableLabelsWithoutRouter,
   HUB_INFRASTRUCTURE_NETWORK_NAMES,
   HUB_FORWARD_AUTH_MIDDLEWARES,

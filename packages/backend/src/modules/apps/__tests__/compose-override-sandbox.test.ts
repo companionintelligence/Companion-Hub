@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { collectComposeOverrideViolations, describeComposeOverrideViolations } from '../compose-override-sandbox';
+import { collectComposeOverrideViolations, composeServiceLabels, describeComposeOverrideViolations } from '../compose-override-sandbox';
 import { appNetworkName } from '@/common/helpers/app-helpers';
 
 const CUSTOM_APP = 'plain-app:_user' as never;
@@ -313,6 +313,42 @@ describe('collectComposeOverrideViolations', () => {
     for (const network of ['ci-hub_network', 'ci-os-hub_network', 'other']) {
       expect(rules(service(`labels:\n  traefik.docker.network: ${network}`))).toEqual(['CUSTOM_APP_ERROR_TRAEFIK_NETWORK_NOT_HUB']);
     }
+  });
+
+  // Traefik would give the service a router of its own, with none of the Hub's middlewares on it.
+  describe('traefik.enable on a service with no router of its own', () => {
+    const enable = service('labels:\n  traefik.enable: "true"');
+    const withHubCompose = (hubCompose: string) =>
+      collectComposeOverrideViolations(enable, '', {
+        appUrn: CUSTOM_APP,
+        hubEnvironment: [],
+        hubServiceLabels: composeServiceLabels(hubCompose),
+      }).map((violation) => [violation.path, violation.rule]);
+
+    it('refuses it when the Hub’s compose gives the service no router either', () => {
+      expect(withHubCompose('services:\n  web:\n    image: nginx\n    labels:\n      ci-hub.managed: "true"\n')).toEqual([
+        ['services.web.labels.traefik.enable', 'CUSTOM_APP_ERROR_TRAEFIK_ENABLE_WITHOUT_ROUTER'],
+      ]);
+      expect(rules(enable)).toEqual(['CUSTOM_APP_ERROR_TRAEFIK_ENABLE_WITHOUT_ROUTER']);
+      expect(rules(service('labels:\n  - traefik.enable=true'))).toEqual(['CUSTOM_APP_ERROR_TRAEFIK_ENABLE_WITHOUT_ROUTER']);
+    });
+
+    it('keeps it for a service the Hub’s compose gives a router, which compose merges it onto', () => {
+      const hubCompose =
+        'services:\n  web:\n    labels:\n      traefik.http.routers.plain-app-_user-api.rule: Host(`${APP_DOMAIN}`) && PathPrefix(`/api`)\n';
+      expect(withHubCompose(hubCompose)).toEqual([]);
+    });
+
+    it('keeps it for a router the override declares', () => {
+      expect(check(service('labels:\n  traefik.enable: "true"\n  traefik.http.routers.{{CI_HUB_APP_ID}}-api.rule: Host(`${APP_DOMAIN}`)'))).toEqual(
+        [],
+      );
+    });
+
+    it('reads nothing from a compose file that is missing or can’t be read', () => {
+      expect(composeServiceLabels(null)).toEqual({});
+      expect(composeServiceLabels('services: [')).toEqual({});
+    });
   });
 
   it.each(['ci-hub_network', 'ci-os-hub_network', 'ci-hub_edge', 'ci-hub_internal'])('refuses joining the Hub network %s', (network) => {
