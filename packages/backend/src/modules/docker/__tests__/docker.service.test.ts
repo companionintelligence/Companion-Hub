@@ -1584,6 +1584,12 @@ describe('DockerService', () => {
       await expect(service.removeUserConfigDirAsRoot('ci-memory:ci-marketplace' as any)).resolves.toBe(false);
     });
 
+    // It runs after the data's helper in one uninstall, so it gets what is left of that command's time.
+    it('starts no helper once the uninstall has used up its time', async () => {
+      await expect(service.removeUserConfigDirAsRoot('my-compose:_user' as any, AppCommandDeadline.after(0))).resolves.toBe(false);
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+
     it.each([
       ['a traversal in the app name', '..:ci-marketplace'],
       ['a traversal in the store', 'my-compose:..'],

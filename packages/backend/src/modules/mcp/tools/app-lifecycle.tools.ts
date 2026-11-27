@@ -103,7 +103,7 @@ export class AppLifecycleTools implements OnModuleInit {
           deleteAllData: {
             type: 'boolean',
             description:
-              "Delete Docker volumes, app data AND the app's stored backups (default true). With this set, a successful uninstall leaves nothing to restore from — pass false to keep the data and its backups.",
+              "Delete Docker volumes, app data, the app's user config AND its stored backups (default true). With this set, a successful uninstall leaves nothing to restore from. Pass false to keep the data, its user config and its backups.",
           },
           force: {
             type: 'boolean',

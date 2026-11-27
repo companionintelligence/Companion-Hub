@@ -8075,6 +8075,69 @@ describe('AppLifecycleService', () => {
       expect(backupManager.deleteAppBackupsByUrn).not.toHaveBeenCalled();
     });
 
+    // The data went, so the backups holding it go too. The remnant is the app's own overrides (#2628).
+    it('discards backups when the user config is the only remnant', async () => {
+      appEventsQueue.publish.mockResolvedValueOnce({
+        success: true,
+        message: 'partial',
+        warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+        warningDetail: '/srv/user-config/store/app',
+        appDataLeft: false,
+      } as any);
+
+      await service.uninstallApp({ actor: TEST_ACTOR, appUrn, deleteAllData: true });
+      await flushMicrotasks();
+
+      expect(backupManager.deleteAppBackupsByUrn).toHaveBeenCalledWith(appUrn);
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({
+          event: 'uninstall_success',
+          warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+          warningDetail: '/srv/user-config/store/app',
+        }),
+      );
+    });
+
+    it('keeps backups when the command says the data was left', async () => {
+      appEventsQueue.publish.mockResolvedValueOnce({
+        success: true,
+        message: 'partial',
+        warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+        warningDetail: '/srv/app-data/store/app\n/srv/user-config/store/app',
+        appDataLeft: true,
+      } as any);
+
+      await service.uninstallApp({ actor: TEST_ACTOR, appUrn, deleteAllData: true });
+      await flushMicrotasks();
+
+      expect(backupManager.deleteAppBackupsByUrn).not.toHaveBeenCalled();
+    });
+
+    it('names both the user config and the backups when neither could be removed', async () => {
+      appEventsQueue.publish.mockResolvedValueOnce({
+        success: true,
+        message: 'partial',
+        warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+        warningDetail: '/srv/user-config/store/app',
+        appDataLeft: false,
+      } as any);
+      backupManager.deleteAppBackupsByUrn.mockRejectedValueOnce(new Error('EACCES'));
+      backupManager.getAppBackupsHostDir.mockReturnValueOnce('/srv/hub/backups/store/app');
+
+      await service.uninstallApp({ actor: TEST_ACTOR, appUrn, deleteAllData: true });
+      await flushMicrotasks();
+
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({
+          event: 'uninstall_success',
+          warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+          warningDetail: '/srv/user-config/store/app\n/srv/hub/backups/store/app',
+        }),
+      );
+    });
+
     it('discards backups on a clean delete-all-data uninstall (#908)', async () => {
       await service.uninstallApp({ actor: TEST_ACTOR, appUrn, deleteAllData: true });
       await flushMicrotasks();

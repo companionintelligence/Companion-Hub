@@ -2939,6 +2939,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           // cleanup command. The infra-failure arm of the publish result has neither.
           let warningCode = 'warningCode' in result ? result.warningCode : undefined;
           let warningDetail = 'warningDetail' in result ? result.warningDetail : undefined;
+          // A remnant keeps the backups only when the app folder or its data is in it. Without the flag, any
+          // remnant does. A user config left on its own doesn't: the data the backups hold is gone (#2628).
+          const appDataLeft =
+            'appDataLeft' in result && typeof result.appDataLeft === 'boolean' ? result.appDataLeft : warningCode === 'APP_UNINSTALL_PARTIAL_REMNANT';
 
           // Backups follow the user's data choice, and are discarded only now that the
           // app is definitively gone. THREE conditions must hold: the user asked for the
@@ -2947,7 +2951,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           // means of recovery even when the uninstall then failed (#908) — and discarding
           // them when the wipe demonstrably left data behind would be the same inversion
           // at the other end: the app's data survives on disk while its backups do not.
-          if (deleteAllData && warningCode !== 'APP_UNINSTALL_PARTIAL_REMNANT') {
+          if (deleteAllData && !appDataLeft) {
             try {
               await this.backupManager.deleteAppBackupsByUrn(appUrn);
             } catch (err) {
@@ -2958,10 +2962,11 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
               this.logger.warn(`Failed to delete backups for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
               warningCode = 'APP_UNINSTALL_PARTIAL_REMNANT';
               // Point the manual-cleanup command at the BACKUP directory, not the app-data
-              // one: this arm fires only when the data wipe already succeeded, so the sole
-              // leftover is the archives. Without a detail the client falls back to a generic
-              // "some files remain" toast with no path, which is the one thing the user needs.
-              warningDetail = this.backupManager.getAppBackupsHostDir(appUrn);
+              // one: this arm fires only when the data wipe already succeeded. A user config
+              // the uninstall left keeps its own line, one path per line. Without a detail the
+              // client falls back to a generic "some files remain" toast with no path, which is
+              // the one thing the user needs.
+              warningDetail = [warningDetail, this.backupManager.getAppBackupsHostDir(appUrn)].filter(Boolean).join('\n') || undefined;
             }
           }
 

@@ -655,7 +655,7 @@ export class DockerService {
    *
    * @returns Whether the helper succeeded.
    */
-  public async removeUserConfigDirAsRoot(appUrn: AppUrn): Promise<boolean> {
+  public async removeUserConfigDirAsRoot(appUrn: AppUrn, deadline?: AppCommandDeadline): Promise<boolean> {
     const { rootFolderHost } = this.config.getConfig();
     const { appName, appStoreId } = extractAppUrn(appUrn);
     const p = path.posix;
@@ -677,7 +677,7 @@ export class DockerService {
     // would empty its target. So root only ever gets a real folder.
     if (!(await this.appFilesManager.isUserConfigDirPlainFolder(appUrn))) {
       this.logger.error(
-        `[user-config-cleanup] refusing privileged delete for ${appUrn}: its user config folder or its store's is a link or not a folder`,
+        `[user-config-cleanup] refusing privileged delete for ${appUrn}: its user config folder or its store's is a link, is not a folder or could not be checked`,
       );
       return false;
     }
@@ -689,6 +689,7 @@ export class DockerService {
       PRIVILEGED_DATA_TIMEOUT_MS,
       `emptying root-owned remnant in ${hostUserConfigDir}`,
       '[user-config-cleanup]',
+      deadline,
     );
   }
 

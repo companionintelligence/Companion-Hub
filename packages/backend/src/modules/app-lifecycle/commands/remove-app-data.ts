@@ -61,12 +61,13 @@ export async function removeUserConfigWithPrivilegedFallback(
   dockerService: DockerService,
   logger: LoggerService,
   appUrn: AppUrn,
+  deadline?: AppCommandDeadline,
 ): Promise<{ removed: boolean; hostPath?: string }> {
   return removeWithPrivilegedFallback(logger, appUrn, {
     what: 'user config',
     remove: () => appFilesManager.deleteUserConfigDirDetailed(appUrn),
     hostPath: () => appFilesManager.getUserConfigHostDir(appUrn),
-    emptyAsRoot: () => dockerService.removeUserConfigDirAsRoot(appUrn),
+    emptyAsRoot: () => dockerService.removeUserConfigDirAsRoot(appUrn, deadline),
     removeEmptied: () => appFilesManager.deleteUserConfigDir(appUrn),
   });
 }
