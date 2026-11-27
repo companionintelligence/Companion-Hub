@@ -284,6 +284,25 @@ export function withAppStartingPage(labels: Record<string, string | boolean>): R
  */
 const PUBLIC_ADDRESS_HOST_MATCHER = /\bHost\(\s*(?:`\$\{(?:APP_DOMAIN|APP_BASE_HOST)\}`|"\$\{(?:APP_DOMAIN|APP_BASE_HOST)\}")\s*\)/g;
 
+/** Every `Host()` or `HostHeader()` matcher in a rule, whatever hosts it names. */
+const ANY_HOST_MATCHER = /\bHost(?:Header)?\(\s*(?:`[^`]*`|"(?:[^"\\]|\\.)*")(?:\s*,\s*(?:`[^`]*`|"(?:[^"\\]|\\.)*"))*\s*\)/gi;
+/** `PathPrefix(`/`)`, which every path has. */
+const ROOT_PATH_PREFIX = /\bPathPrefix\(\s*(?:`\/`|"\/")\s*\)/gi;
+
+/**
+ * Whether a rule asks for hosts and nothing more: `Host(`${APP_DOMAIN}`)`, the shape most Traefik
+ * labels copied from elsewhere have. Such a router claims the app's whole address, and Traefik ranks
+ * it by the length of its rule.
+ */
+function namesOnlyHosts(rule: string): boolean {
+  return (
+    rule
+      .replace(ANY_HOST_MATCHER, '')
+      .replace(ROOT_PATH_PREFIX, '')
+      .replace(/[\s()|&]/g, '') === ''
+  );
+}
+
 /** The names of the routers the builder makes for an app, in lower case. */
 function hubRouterNames(appId: string): Set<string> {
   return new Set([appId, ...HUB_ROUTE_NAME_SUFFIXES.map((suffix) => `${appId}${suffix}`)].map((name) => name.toLowerCase()));
@@ -306,6 +325,10 @@ function hubRouterNames(appId: string): Set<string> {
  *
  * The routers the builder made keep their rules, whatever a manifest set there: Kimai and IPFS put
  * `${APP_LOCAL_DOMAIN}` in theirs, and a longer rule would outrank the service-worker reset routers.
+ * So does a rule that names only hosts ({@link namesOnlyHosts}). Widened, it would take the app's
+ * whole address from the Hub's own route and, with the public address in it, outrank the reset
+ * router for a signed-out browser's fetch of `/sw.js` too (#2324). It stays as written: the Hub's
+ * route serves the address, as it always did on Public web.
  * Runs after interpolation, so the app's own routers carry its id.
  */
 export function withTunnelHostOnPublicAddressRules(
@@ -317,7 +340,13 @@ export function withTunnelHostOnPublicAddressRules(
   const rewritten = new Map<string, string>();
   for (const [key, value] of Object.entries(labels)) {
     const [, router, option] = HTTP_ROUTER_LABEL.exec(key) ?? [];
-    if (!router || option?.toLowerCase().split('.').pop() !== 'rule' || hubRouters.has(router.toLowerCase()) || typeof value !== 'string') {
+    if (
+      !router ||
+      option?.toLowerCase().split('.').pop() !== 'rule' ||
+      hubRouters.has(router.toLowerCase()) ||
+      typeof value !== 'string' ||
+      namesOnlyHosts(value)
+    ) {
       continue;
     }
     const rule = value.replace(PUBLIC_ADDRESS_HOST_MATCHER, (matcher) => `(${matcher} || Host(\`${originHost}\`))`);
@@ -349,8 +378,8 @@ export function withTunnelHostOnPublicAddressRules(
  * Skyvern's backend, Rybbit's and the S3 stores of Beatsync, Cap and Snapify) were never loaded, and
  * their paths got Traefik's own 404 or the web page.
  *
- * Only for a service whose every router has a rule, and only where the app goes through Traefik at
- * all (the caller's part). Traefik gives a container with no router a router of its own, and a router
+ * Only for a service whose every router has a rule, and only on Public web, where the tunnel brings
+ * the app's visitors to these routes (the caller's part). Traefik gives a container with no router a router of its own, and a router
  * with no rule a rule on the container's name, which aren't the app's routes. A service that says
  * `traefik.enable` either way keeps what it says. The routers' chains were put together before this:
  * the login and the edge header strip head each of them as on the main service.
