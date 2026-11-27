@@ -22,7 +22,10 @@ import {
   publicPathsLabels,
   withHubLoginOnEveryRouter,
   withHubMiddlewaresFirst,
+  withPublicHostMiddlewareCopy,
   withSignInUnderFileProvider,
+  withTraefikOnRoutingService,
+  withTunnelHostOnPublicAddressRules,
 } from './traefik-labels.builder';
 import { publishesHostPort } from '@/modules/apps/app-exposure.helpers';
 import { requiresHubLogin } from '@/modules/apps/app-public-routing.helpers';
@@ -205,6 +208,8 @@ export class DockerComposeBuilder {
   private localDomain: string;
   private cloudflareOriginHostname?: string;
   private cloudflarePublicHostname?: string;
+  /** Whether the Hub builds its own route for the app: a main service with an internal port. Set for each `getDockerCompose`. */
+  private hubRoutesMainService = false;
   private readonly posixPermissionsSupported: boolean;
   private networkIsolationOptions?: NetworkIsolationOptions;
   private securityOptions?: string[];
@@ -639,6 +644,9 @@ export class DockerComposeBuilder {
       console.warn(`! App "${appName}" service "${params.name}": label ${label} was left out [${rule}]`);
     }
     const extraLabels = Object.fromEntries(Object.entries(params.extraLabels ?? {}).filter(([key]) => !leftOutLabels.has(key)));
+    // The host the tunnel sends, where the Hub builds the app's own route: Public web with a main internal
+    // port. The only mode whose visitors reach a listing's own routes (the Private VPN goes past Traefik).
+    const publicWebOrigin = effectiveExposureMode === 'cloudflare' && this.hubRoutesMainService ? this.cloudflareOriginHostname : undefined;
     // The operator's login-free paths, for the twins apps.yml gives the app's routers (`publicPathsLabels`).
     const pathLabels =
       effectiveExposureMode === 'local' ? {} : publicPathsLabels({ enableAuth: requiresHubLogin(form), publicPaths: form.publicPaths });
@@ -650,13 +658,26 @@ export class DockerComposeBuilder {
       // First a listing's `ci-hub@docker` becomes `ci-hub@file` where it stood (CI-Engineering#510);
       // then the login goes to the head of every router's chain, and onto routers that had none.
       .transformLabels(withSignInUnderFileProvider)
+      // The Host the tunnel sends is the origin host the Hub's own router matches, not the public address.
+      .transformLabels((labels) =>
+        publicWebOrigin
+          ? withTunnelHostOnPublicAddressRules(labels, {
+              appId,
+              originHost: publicWebOrigin,
+              publicHost: Boolean(this.cloudflarePublicHostname),
+              sideService: !params.isMain,
+            })
+          : labels,
+      )
       .transformLabels((labels) =>
         withHubLoginOnEveryRouter(labels, traefikLabels, {
           requireLogin: requiresHubLogin(form),
           publicWeb: effectiveExposureMode === 'cloudflare',
         }),
       )
-      .transformLabels(withAppStartingPage);
+      .transformLabels(withAppStartingPage)
+      // A listing's routes on its other services, on Public web only: on the Private VPN they would answer nothing.
+      .transformLabels((labels) => (publicWebOrigin ? withTraefikOnRoutingService(labels, { appId }) : labels));
 
     return service.build();
   };
@@ -686,6 +707,7 @@ export class DockerComposeBuilder {
     this.localDomain = localDomain || process.env.LOCAL_DOMAIN || DEFAULT_LOCAL_DOMAIN;
     this.cloudflareOriginHostname = cloudflareOriginHostname;
     this.cloudflarePublicHostname = cloudflarePublicHostname;
+    this.hubRoutesMainService = services.some((service) => service.isMain && Boolean(service.internalPort));
 
     const serviceHealthcheckMap = new Map<string, boolean>();
     for (const service of services) {
@@ -721,7 +743,16 @@ export class DockerComposeBuilder {
       throw nestedRefusal;
     }
 
-    const myServices = fixedServices.map((service) => this.buildService(service, form, appUrn, envFile, options));
+    const builtServices = fixedServices.map((service) => this.buildService(service, form, appUrn, envFile, options));
+    // The other services' routes name a copy of the main service's `<app id>-public-host`; each defines it.
+    const mainLabels = builtServices.find((_, index) => fixedServices[index]?.isMain)?.labels ?? {};
+    const { appName, appStoreId } = extractAppUrn(appUrn);
+    const appId = `${appName}-${appStoreId}`;
+    const myServices = builtServices.map((service, index) =>
+      fixedServices[index]?.isMain || !service.labels
+        ? service
+        : { ...service, labels: withPublicHostMiddlewareCopy(service.labels, mainLabels, { appId }) },
+    );
 
     const dockerCompose = this.addServices(myServices);
     const isolation = this.networkIsolationOptions;

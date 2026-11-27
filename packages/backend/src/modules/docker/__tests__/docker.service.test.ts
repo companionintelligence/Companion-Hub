@@ -1130,6 +1130,106 @@ describe('DockerService', () => {
         },
       });
     });
+
+    // Docker lists a container's labels in alphabetical order, so a listing's `<app>-api` service comes
+    // before the app's own. Koodo Reader's would have sent the Private VPN to its library server.
+    it("takes the app's own service over another one a listing defines on the main container", async () => {
+      dockerode.listContainers.mockResolvedValue([{ Id: 'main' }] as any);
+      dockerode.getContainer.mockReturnValue({
+        inspect: vi.fn().mockResolvedValue({
+          Config: {
+            Labels: {
+              'traefik.enable': 'true',
+              'traefik.http.services.koodo-reader-ci-marketplace-api.loadbalancer.server.port': '8080',
+              'traefik.http.services.koodo-reader-ci-marketplace.loadbalancer.server.port': '80',
+            },
+          },
+          NetworkSettings: { Networks: { 'koodo-reader_ci-marketplace_network': { IPAddress: '10.128.3.2' } } },
+        }),
+      } as any);
+
+      await expect(service.getAppNetworkTarget('koodo-reader:ci-marketplace' as any)).resolves.toEqual({
+        url: 'http://10.128.3.2:80',
+        internalPort: 80,
+      });
+    });
+
+    // Public Pool's API is a service of its own, which Traefik now reads too.
+    it("takes the main container over another of the app's whichever Docker lists first", async () => {
+      const containers: Record<string, Record<string, string>> = {
+        api: {
+          'traefik.enable': 'true',
+          'traefik.http.services.public-pool-ci-marketplace-api.loadbalancer.server.port': '3334',
+        },
+        ui: {
+          'traefik.enable': 'true',
+          'traefik.http.services.public-pool-ci-marketplace.loadbalancer.server.port': '80',
+        },
+      };
+      dockerode.listContainers.mockResolvedValue([{ Id: 'api' }, { Id: 'ui' }] as any);
+      dockerode.getContainer.mockImplementation(
+        (id: string) =>
+          ({
+            inspect: vi.fn().mockResolvedValue({
+              Config: { Labels: containers[id] },
+              NetworkSettings: { Networks: { 'public-pool_ci-marketplace_network': { IPAddress: id === 'ui' ? '10.128.4.3' : '10.128.4.2' } } },
+            }),
+          }) as any,
+      );
+
+      await expect(service.getAppNetworkTarget('public-pool:ci-marketplace' as any)).resolves.toEqual({
+        url: 'http://10.128.4.3:80',
+        internalPort: 80,
+      });
+    });
+    // While the main container is down, the Private VPN waits for it rather than send visitors to the API.
+    it("finds no target while the app's main container is down and another of its services runs", async () => {
+      const api = { Id: 'api', Labels: { 'traefik.enable': 'true' } };
+      const ui = { Id: 'ui', State: 'exited', Labels: { 'traefik.http.services.public-pool-ci-marketplace.loadbalancer.server.port': '80' } };
+      dockerode.listContainers.mockImplementation((async (options: { all?: boolean }) => (options.all ? [api, ui] : [api])) as any);
+      dockerode.getContainer.mockReturnValue({
+        inspect: vi.fn().mockResolvedValue({
+          Config: { Labels: { 'traefik.enable': 'true', 'traefik.http.services.public-pool-ci-marketplace-api.loadbalancer.server.port': '3334' } },
+          NetworkSettings: { Networks: { 'public-pool_ci-marketplace_network': { IPAddress: '10.128.4.2' } } },
+        }),
+      } as any);
+
+      await expect(service.getAppNetworkTarget('public-pool:ci-marketplace' as any)).resolves.toBeNull();
+    });
+
+    // A restart's `down` removes the main container, then stops the others: one can still run with the main one gone.
+    it("finds no target while the app's main container is gone and another of its services runs", async () => {
+      dockerode.listContainers.mockResolvedValue([{ Id: 'api', Labels: { 'traefik.enable': 'true' } }] as any);
+      dockerode.getContainer.mockReturnValue({
+        inspect: vi.fn().mockResolvedValue({
+          Config: { Labels: { 'traefik.enable': 'true', 'traefik.http.services.public-pool-ci-marketplace-api.loadbalancer.server.port': '3334' } },
+          NetworkSettings: { Networks: { 'public-pool_ci-marketplace_network': { IPAddress: '10.128.4.2' } } },
+        }),
+      } as any);
+
+      await expect(service.getAppNetworkTarget('public-pool:ci-marketplace' as any)).resolves.toBeNull();
+    });
+
+    it('takes the https scheme the main service asks for', async () => {
+      dockerode.listContainers.mockResolvedValue([{ Id: 'main' }] as any);
+      dockerode.getContainer.mockReturnValue({
+        inspect: vi.fn().mockResolvedValue({
+          Config: {
+            Labels: {
+              'traefik.enable': 'true',
+              'traefik.http.services.kasm-ci-marketplace.loadbalancer.server.port': '6901',
+              'traefik.http.services.kasm-ci-marketplace.loadbalancer.server.scheme': 'https',
+            },
+          },
+          NetworkSettings: { Networks: { 'kasm_ci-marketplace_network': { IPAddress: '10.128.5.2' } } },
+        }),
+      } as any);
+
+      await expect(service.getAppNetworkTarget('kasm:ci-marketplace' as any)).resolves.toEqual({
+        url: 'https+insecure://10.128.5.2:6901',
+        internalPort: 6901,
+      });
+    });
   });
 
   describe('composeUpService (bounded up)', () => {

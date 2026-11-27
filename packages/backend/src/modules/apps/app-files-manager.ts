@@ -502,9 +502,9 @@ export class AppFilesManager {
    * (`data/nginx/nginx.conf`). A path outside the app's data folder is ignored, and a `private: true`
    * one starts at 700 (see {@link setAppDataDirPermissions}).
    *
-   * Nothing is made at or below the app's own `app.env`. Start, restart, reset and update reach this
-   * through prepareAppComposeDir before generateEnvFile writes that file, so a folder in its place
-   * would fail every compose up of an app that mounts it.
+   * Nothing is made at or below the app's own `app.env`. Restart, reset and update reach this through
+   * prepareAppComposeDir before generateEnvFile writes that file (a start writes it first), so a folder
+   * in its place would fail every compose up of an app that mounts it.
    */
   public async createVolumeHostDirs(appUrn: AppUrn): Promise<void> {
     const { appDataDir } = this.getAppPaths(appUrn);
