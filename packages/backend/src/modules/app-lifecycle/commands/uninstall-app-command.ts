@@ -11,7 +11,7 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { isPortExposeApp } from '@ci-hub/common/schemas';
 import { AppLifecycleCommand } from './command';
 import { handOverKeptImages, sortImagesByOtherApps } from './pull-app-images';
-import { describeLeftovers, removeAppDataWithPrivilegedFallback } from './remove-app-data';
+import { describeLeftovers, removeAppDataWithPrivilegedFallback, removeUserConfigWithPrivilegedFallback } from './remove-app-data';
 import { AppLinkService } from '@/modules/app-links/app-link.service';
 
 export class UninstallAppCommand extends AppLifecycleCommand {
@@ -139,19 +139,28 @@ export class UninstallAppCommand extends AppLifecycleCommand {
       // process can't remove (e.g. MinIO's `.minio.sys`). Try to self-heal via a
       // privileged (root) cleanup; only if that ALSO fails do we surface a remnant.
       let dataRemoved = true;
+      let userConfigRemoved = true;
       let dataRemnantHostPath: string | undefined;
       if (this.deleteAllData) {
         const outcome = await removeAppDataWithPrivilegedFallback(appFilesManager, dockerService, logger, appUrn);
         dataRemoved = outcome.removed;
         dataRemnantHostPath = outcome.hostPath;
+
+        // The app's own overrides go with its data. Left behind, a later app with the same name, a reinstall of
+        // this one or a new custom app, starts with them switched on (#2628). With the data kept they stay too, so
+        // a reinstall picks up where the app was. The page shows one path to remove by hand: the data's, when
+        // both are left.
+        const userConfig = await removeUserConfigWithPrivilegedFallback(appFilesManager, dockerService, logger, appUrn);
+        userConfigRemoved = userConfig.removed;
+        dataRemnantHostPath ??= userConfig.hostPath;
       }
 
       // The app IS uninstalled — containers, images and networks are gone and the DB
       // record will be dropped — but if a wipe is still only partial (even root
       // couldn't remove it), report success WITHOUT claiming a clean removal and carry
       // the host path so the user can be shown a manual cleanup command (#907).
-      if (!folderRemoved || !dataRemoved) {
-        const leftover = describeLeftovers(folderRemoved, dataRemoved);
+      if (!folderRemoved || !dataRemoved || !userConfigRemoved) {
+        const leftover = describeLeftovers({ folderRemoved, dataRemoved, userConfigRemoved });
 
         logger.warn(
           `App ${appUrn} uninstalled, but its ${leftover} could not be fully removed; a disk remnant may remain${dataRemnantHostPath ? ` at ${dataRemnantHostPath}` : ''} (see the filesystem error above — often a container-created root-owned path).`,

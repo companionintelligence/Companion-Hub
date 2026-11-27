@@ -5,7 +5,7 @@
 > **Key paths:** `packages/backend/src/modules/`, `packages/backend/src/database/`, `packages/backend/src/queue/`
 > **Commands:** `cd packages/backend && pnpm test`, `pnpm run test:integration` (root)
 > **Owner persona:** maintainability + security (see REVIEW_PERSONAS.md)
-> **Last updated:** 2026-11-18 (the Hub downloads oMLX models through oMLX's admin API with a saved oMLX key; earlier: a Private VPN app the Hub is refused at reads as available when the target Serve forwards to answers; earlier: oMLX models match by the names oMLX lists; sign in with a DID, off unless `CI_HUB_DID_AUTH=true`; uninstall removes only the images an app pulled; reset and uninstall reach the `_user` store; backup archives are owner-only)
+> **Last updated:** 2026-11-27 (uninstall with Delete all data removes the app's user config; earlier: the Hub downloads oMLX models through oMLX's admin API with a saved oMLX key; earlier: a Private VPN app the Hub is refused at reads as available when the target Serve forwards to answers; earlier: oMLX models match by the names oMLX lists; sign in with a DID, off unless `CI_HUB_DID_AUTH=true`; uninstall removes only the images an app pulled; reset and uninstall reach the `_user` store; backup archives are owner-only)
 > **Related:** docs/system/e2e.md, docs/ARCHITECTURE.md
 
 ---
@@ -116,6 +116,13 @@ uninstalling an app forgets its approvals and takes its links down.
 docker-managed named volume (`volumeName`), never both. Compose scopes named volumes to the app's
 project, so `db` becomes `<app>_<store>_db`, and the existing lifecycle commands already reclaim
 them — `down --volumes` on uninstall-with-data and reset, preserved on stop/restart/update.
+
+Uninstall with Delete all data also removes the app's user config, `<dataDir>/user-config/<store>/<app>/` with its own
+`docker-compose.yml` and `app.env`. A file there the Hub may not delete goes to the same root helper as the data folder,
+and a folder even root leaves behind is reported like a data remnant (`APP_UNINSTALL_PARTIAL_REMNANT`). The user config
+of an app with no row yet reads as switched on, so one left behind applied to the next app of the same name: a new
+custom app or a reinstall of the store app. With Delete all data off it stays, for a reinstall. A cancelled install
+leaves it alone, since an install never writes it. Backups hold it, so a restore brings it back.
 
 Uninstall removes only the images the Hub pulled for the app. An install, an update, a start or a restart records the IDs of the images it brought onto the computer in `<dataDir>/state/pulled-images/<store>/<app>.json`, with the tags they arrived with. A start and a restart count for the same reason: `compose up` pulls whatever isn't here. That is where a custom app gets its images. The record sits in `state/` because a packaged Hub mounts only the folders under `/data`, so it can be written there and a Hub update keeps it. An image that was already there, under any name, is never recorded: when a reference names nothing or a pull is forced, the Hub also lists the image IDs here before the pull, so an ordinary start doesn't pay for that. Only a new image gets its tags recorded. Two apps can share an image and the second one to start doesn't record it until the first one goes.
 

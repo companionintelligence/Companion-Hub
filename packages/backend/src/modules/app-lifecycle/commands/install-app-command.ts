@@ -710,7 +710,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
     const keyNote = keyRevoked ? '' : '; its managed key could not be revoked and may stay valid';
 
     if (!folderRemoved || !data.removed || teardownFailed) {
-      const leftover = describeLeftovers(folderRemoved, data.removed, teardownFailed);
+      const leftover = describeLeftovers({ folderRemoved, dataRemoved: data.removed, teardownFailed });
       logger.warn(
         `[install-cancel] the ${leftover} of ${appUrn} could not be fully removed; a remnant may remain${data.hostPath ? ` at ${data.hostPath}` : ''}`,
       );
