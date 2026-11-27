@@ -6,10 +6,11 @@ import YAML from 'yaml';
 const { readFileSync } = await vi.importActual<typeof import('node:fs')>('node:fs');
 
 /**
- * Traefik's `writeTimeout` is the whole time one response may take to send, not a gap between
- * writes. At 300s every answer longer than five minutes was cut where it stood: a Memory export of
- * 11 GB ended at 300.0 s and the browser threw the download away. Every app behind the Hub, on every
- * entry point, shares this file, so it must stay unlimited on each.
+ * Traefik's `writeTimeout` and `readTimeout` are the whole time one response may take to send and one
+ * request (body included) to arrive, not gaps between writes or reads. At 300s every answer and every
+ * upload longer than five minutes was cut where it stood: a Memory export of 11 GB ended at 300.0 s
+ * and the browser threw the download away, and an import of it could never have arrived. Every app
+ * behind the Hub, on every entry point, shares this file, so both stay unlimited on each.
  */
 const REPO_ROOT = path.join(__dirname, '../../../..');
 const STATIC_YML = 'packages/backend/assets/traefik/traefik.yml';
@@ -36,10 +37,11 @@ describe('traefik entry point responding timeouts', () => {
     expect(seconds(timeouts?.writeTimeout)).toBe(0);
   });
 
-  it.each(['web', 'websecure'])('keeps the read and idle limits on %s', (name) => {
-    const timeouts = entryPoints[name]?.transport?.respondingTimeouts;
+  it.each(['web', 'websecure'])('sets no limit on how long a request may take to arrive on %s', (name) => {
+    expect(seconds(entryPoints[name]?.transport?.respondingTimeouts?.readTimeout)).toBe(0);
+  });
 
-    expect(seconds(timeouts?.readTimeout)).toBeGreaterThan(0);
-    expect(seconds(timeouts?.idleTimeout)).toBeGreaterThan(0);
+  it.each(['web', 'websecure'])('keeps the idle limit between requests on %s', (name) => {
+    expect(seconds(entryPoints[name]?.transport?.respondingTimeouts?.idleTimeout)).toBeGreaterThan(0);
   });
 });
