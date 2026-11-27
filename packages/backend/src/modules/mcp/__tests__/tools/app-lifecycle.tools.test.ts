@@ -7,6 +7,7 @@ import { mcpAdminCallContext, mcpCallContext } from '../../mcp-call-context';
 import { McpToolRegistry } from '../../mcp-tool-registry.service';
 import { AppLifecycleTools } from '../../tools/app-lifecycle.tools';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
+import { appFormSchema } from '@/modules/app-lifecycle/dto/app-lifecycle.dto';
 
 /** An operator-created key: the lifecycle tools act only for a named caller, and this is the plainest one. */
 const OPERATOR_KEY: ApiKeyContext = { id: 1, name: 'Laptop CLI', capability: 'write', ownerAppUrn: null, createdByUserId: null };
@@ -15,6 +16,7 @@ const asKey = <T>(fn: () => Promise<T>, key: ApiKeyContext = OPERATOR_KEY) => mc
 describe('AppLifecycleTools', () => {
   let tools: AppLifecycleTools;
   let lifecycleService: MockProxy<AppLifecycleService>;
+  let registry: MockProxy<McpToolRegistry>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -26,6 +28,7 @@ describe('AppLifecycleTools', () => {
     }).compile();
     tools = module.get<AppLifecycleTools>(AppLifecycleTools);
     lifecycleService = module.get(AppLifecycleService);
+    registry = module.get(McpToolRegistry);
   });
 
   it('should be defined', () => {
@@ -133,6 +136,22 @@ describe('AppLifecycleTools', () => {
   });
 
   describe('hub_update_app_config', () => {
+    // An agent keeps a setting it was never told about only by luck (#2621).
+    it.each(['hub_update_app_config', 'hub_install_app'])('names the common form fields in the %s schema and leaves it open', (name) => {
+      tools.onModuleInit();
+      const tool = registry.register.mock.calls.map(([entry]) => entry).find((entry) => entry.name === name);
+      if (!tool) throw new Error(`${name} is not registered`);
+      const { form } = tool.inputSchema.properties as Record<string, { properties?: Record<string, unknown>; additionalProperties?: unknown }>;
+
+      expect(Object.keys(form.properties ?? {})).toEqual(
+        expect.arrayContaining(['port', 'exposureMode', 'openPort', 'enableAuth', 'isVisibleOnGuestDashboard', 'customDomain']),
+      );
+      expect(form.properties?.isVisibleOnGuestDashboard).toMatchObject({ type: 'boolean' });
+      // Only fields the form really takes.
+      expect(Object.keys(appFormSchema.shape)).toEqual(expect.arrayContaining(Object.keys(form.properties ?? {})));
+      expect(form.additionalProperties).toBe(true);
+    });
+
     it('should enqueue config update and return requestId', async () => {
       lifecycleService.updateAppConfig.mockResolvedValue({ requestId: 'uuid-8' });
       const result = await asKey(() => tools.updateAppConfig({ appUrn: 'ci-store:test', form: { port: 9090 } }));

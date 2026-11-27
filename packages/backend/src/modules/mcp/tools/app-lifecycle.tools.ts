@@ -7,6 +7,41 @@ import { McpToolRegistry } from '../mcp-tool-registry.service';
 const urnProp = { type: 'string', description: 'App identifier in appName:storeSlug format' } as const;
 
 /**
+ * The Hub's own fields of an app's install and settings form (`appFormSchema`), named so an agent can
+ * see them. The app's own settings are keyed by the `env_variable` of its form fields, so the schema
+ * stays open for them.
+ */
+const appFormProperties = {
+  port: { type: 'integer', minimum: 1024, maximum: 65535, description: 'Host port the app is published on' },
+  exposureMode: {
+    type: 'string',
+    enum: ['local', 'cloudflare', 'tailscale'],
+    description: 'Where the app is reachable: local is This machine only, cloudflare is Public web, tailscale is the Private VPN',
+  },
+  openPort: { type: 'boolean', description: 'Also publish the host port (always on for local)' },
+  portOnNetwork: { type: 'boolean', description: 'Publish the host ports on every network interface, not only 127.0.0.1' },
+  enableAuth: { type: 'boolean', description: 'Put the Hub login in front of the app (on unless turned off)' },
+  publicPaths: { type: 'array', items: { type: 'string' }, description: 'Paths served without the Hub login' },
+  localSubdomain: { type: 'string', description: 'Subdomain the app is served under' },
+  publicDomain: { type: 'string', description: 'Domain the app is served under on Public web' },
+  isVisibleOnGuestDashboard: { type: 'boolean', description: 'Show the app on the guest dashboard' },
+  maxBackups: { type: 'integer', minimum: 0, maximum: 100, description: 'Backups to keep for this app' },
+  cpuLimit: { type: 'string', description: 'CPU limit, such as "1.5"' },
+  memoryLimit: { type: 'string', description: 'Memory limit, such as "2g"' },
+  autoRestartOnDomainChange: { type: 'boolean', description: 'Restart the app when its custom domain connects' },
+  customDomain: {
+    type: 'string',
+    description: "One of the organization's custom domains to serve the app on, or an empty string for the platform address",
+  },
+  customDomainTakeover: { type: 'boolean', description: 'Take the custom domain off whatever app serves it now' },
+} as const;
+
+/** Why a form naming a custom domain needs more than a 'write' key. */
+const customDomainRule =
+  "Naming a customDomain or customDomainTakeover makes the call destructive and requires a 'full'-capability key; " +
+  'changing which custom domain the app uses also takes an organization owner or admin, so an agent key is refused for that.';
+
+/**
  * R2-HUBHOSTESCAPE-6: whether this call reaches for one of the organization's custom domains.
  *
  * `customDomain` retargets a customer-facing hostname at this app — including one a sibling Hub in
@@ -55,10 +90,9 @@ export class AppLifecycleTools implements OnModuleInit {
           appUrn: urnProp,
           form: {
             type: 'object',
-            description:
-              'Optional install config: port, exposed, domain, and app-specific form fields. Naming a customDomain or ' +
-              "customDomainTakeover makes the call destructive and requires a 'full'-capability key; changing which custom " +
-              'domain the app uses also takes an organization owner or admin, so an agent key is refused for that.',
+            description: `Optional install config: the fields below and the app's own form fields, keyed by env_variable. ${customDomainRule}`,
+            properties: appFormProperties,
+            additionalProperties: true,
           },
         },
         required: ['appUrn'],
@@ -162,8 +196,11 @@ export class AppLifecycleTools implements OnModuleInit {
           form: {
             type: 'object',
             description:
-              "Config fields to update. Naming a customDomain or customDomainTakeover makes the call destructive and requires a 'full'-capability key; " +
-              'changing which custom domain the app uses also takes an organization owner or admin, so an agent key is refused for that.',
+              "The app's settings: the fields below and the app's own form fields, keyed by env_variable. The form replaces the saved one, " +
+              'so send the current values (hub_get_app returns them in app.config) with your changes. Left out, the port, exposure, login, ' +
+              `guest dashboard and custom domain settings keep what the app has. ${customDomainRule}`,
+            properties: appFormProperties,
+            additionalProperties: true,
           },
         },
         required: ['appUrn', 'form'],

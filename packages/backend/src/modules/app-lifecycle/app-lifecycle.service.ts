@@ -378,6 +378,22 @@ function keepStoredExposure(parsedForm: ParsedAppForm, submitted: ParsedAppForm,
 }
 
 /**
+ * Keep the app on or off the guest dashboard when a save or a reinstall leaves the choice out.
+ *
+ * The form replaces the stored one whole, so a form without `isVisibleOnGuestDashboard` (an MCP or API
+ * call changing one setting) took the app off the guest dashboard. Only a form that names it decides,
+ * `false` included. The row is what the guest dashboard shows. A stored form that never had the key
+ * and an app that is hidden stay that way, so a save that changes nothing still compares as no change.
+ */
+function keepGuestVisibility(parsedForm: ParsedAppForm, app: { isVisibleOnGuestDashboard: boolean; config: unknown }): void {
+  if (parsedForm.isVisibleOnGuestDashboard !== undefined) return;
+  const stored = app.config && typeof app.config === 'object' ? (app.config as Record<string, unknown>) : {};
+  if (app.isVisibleOnGuestDashboard || 'isVisibleOnGuestDashboard' in stored) {
+    parsedForm.isVisibleOnGuestDashboard = app.isVisibleOnGuestDashboard;
+  }
+}
+
+/**
  * The row patch a re-install writes, from a parsed install form.
  *
  * `customDomain` must not reach the row under that name. `appFormSchema` is
@@ -2140,6 +2156,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     if (existingApp && !retrying) {
+      // From the row as it is now, so a guest dashboard switch flipped during the checks above is kept.
+      keepGuestVisibility(parsedForm, current ?? existingApp);
       await this.recordMainPort(appUrn, parsedForm.port);
       await this.appRepository.updateAppById(existingApp.id, {
         ...buildInstallRowPatch(parsedForm, current?.config),
@@ -2219,6 +2237,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         if (raced.status !== 'install_failed' && raced.status !== 'installing') {
           // A reinstall after all, which nothing can cancel (see `reinstall` above).
           this.operationRegistry.endPreparingInstall(appUrn, preparing);
+          keepGuestVisibility(parsedForm, raced);
           await this.recordMainPort(appUrn, parsedForm.port);
           await this.appRepository.updateAppById(raced.id, {
             ...buildInstallRowPatch(parsedForm, raced.config),
@@ -3164,6 +3183,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     if (parsedForm.publicPaths === undefined) {
       parsedForm.publicPaths = (app.config as { publicPaths?: string[] } | null | undefined)?.publicPaths;
     }
+    // And for the guest dashboard, before the comparison below.
+    keepGuestVisibility(parsedForm, app);
 
     // Before the comparison below, so a choice this app can never be served on
     // does not read as a change and restart it for nothing.
@@ -3357,6 +3378,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
        */
       ...customDomainColumns(parsedForm),
       config: toStoredConfig(parsedForm),
+      // A form that leaves it out keeps the app's (`keepGuestVisibility` above).
       isVisibleOnGuestDashboard: parsedForm.isVisibleOnGuestDashboard ?? false,
       enableAuth: requiresHubLogin(parsedForm),
       maxBackups: parsedForm.maxBackups ?? null,
