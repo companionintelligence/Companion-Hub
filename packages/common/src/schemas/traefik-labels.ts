@@ -559,3 +559,34 @@ function restrictsToOwnHost(node: RuleNode): boolean {
       return node.operands.every(restrictsToOwnHost);
   }
 }
+
+/**
+ * Whether a router rule matches only paths it names, none of them `/`: a `Path()`, or a
+ * `PathPrefix()` other than `/`, in every branch of an OR. A rule that doesn't, such as
+ * `Host(`${APP_DOMAIN}`)`, `Host(...) && !PathPrefix(`/health`)` or `Host(a) || Host(b) && PathPrefix(`/api`)`,
+ * also matches `/sw.js` and the rest of the app's address. A rule that can't be parsed doesn't.
+ */
+export function ruleNeedsPath(rule: string): boolean {
+  const tokens = tokenizeRule(rule);
+  if (!tokens) {
+    return false;
+  }
+  const parser = { tokens, position: 0 };
+  const node = parseOr(parser, 0);
+  return node !== undefined && parser.position === tokens.length && needsPath(node);
+}
+
+function needsPath(node: RuleNode): boolean {
+  switch (node.kind) {
+    case 'matcher': {
+      const name = node.name.toLowerCase();
+      return (name === 'path' || name === 'pathprefix') && node.args.length > 0 && node.args.every((path) => path !== '' && path !== '/');
+    }
+    case 'not':
+      return false;
+    case 'and':
+      return node.operands.some(needsPath);
+    default:
+      return node.operands.every(needsPath);
+  }
+}
