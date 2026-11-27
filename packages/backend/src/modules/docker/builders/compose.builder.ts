@@ -11,6 +11,7 @@ import {
   isReservedHubLabel,
   LOOPBACK_HOST_PORT_INTERFACE,
   publishesHostPortsOnNetwork,
+  traefikEnableLabelsWithoutRouter,
 } from '@ci-hub/common/schemas';
 import { type AppUrn, publishesMainPortOnNetwork } from '@ci-hub/common/types';
 import * as yaml from 'yaml';
@@ -642,10 +643,16 @@ export class DockerComposeBuilder {
         leftOutLabels.set(label, `${leftOutLabels.get(chainLabel)} on ${chainLabel}`);
       }
     }
+    // A service that turns Traefik on and whose routers all went above would get Traefik's own router,
+    // with no Hub login in front of it. So would one saved before a save refused that.
+    const keptLabels = Object.fromEntries(Object.entries(params.extraLabels ?? {}).filter(([key]) => !leftOutLabels.has(key)));
+    for (const label of traefikEnableLabelsWithoutRouter(keptLabels)) {
+      leftOutLabels.set(label, 'CUSTOM_APP_ERROR_TRAEFIK_ENABLE_WITHOUT_ROUTER');
+    }
     for (const [label, rule] of leftOutLabels) {
       console.warn(`! App "${appName}" service "${params.name}": label ${label} was left out [${rule}]`);
     }
-    const extraLabels = Object.fromEntries(Object.entries(params.extraLabels ?? {}).filter(([key]) => !leftOutLabels.has(key)));
+    const extraLabels = Object.fromEntries(Object.entries(keptLabels).filter(([key]) => !leftOutLabels.has(key)));
     // Where the Hub builds the app's own route on the host the tunnel sends: Public web with the origin
     // host. The only mode whose visitors reach a listing's own routes. Private VPN visitors go past
     // Traefik to the main container (`getAppNetworkTarget`), and This machine only has no route.

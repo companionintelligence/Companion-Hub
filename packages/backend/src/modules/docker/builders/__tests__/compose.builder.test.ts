@@ -2201,3 +2201,127 @@ describe('DockerComposeBuilder: a listing’s own routes', () => {
     );
   });
 });
+
+// Traefik makes a router of its own for a container it reads that declares none, and none of the
+// Hub's middlewares is on it. An app saved before a save refused that reaches the builder with it.
+describe('DockerComposeBuilder: Traefik on for a service with no router of its own', () => {
+  const customUrn = createAppUrn('probe', '_user');
+  const ORIGIN = 'probe-hub1-acme.ci.lan';
+  const PORT = 'traefik.http.services.{{CI_HUB_APP_ID}}-extra.loadbalancer.server.port';
+  const web: ServiceInput = { name: 'web', image: 'nginx:alpine', isMain: true, internalPort: 80 };
+  const extra = (extraLabels: Record<string, string | boolean>): ServiceInput => ({ name: 'extra', image: 'nginx:alpine', extraLabels });
+
+  const build = async (form: Record<string, unknown>, services: ServiceInput[]) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const result = await new DockerComposeBuilder('ci.computer', 'ci.lan').getDockerCompose(
+        services,
+        form,
+        customUrn,
+        subnet,
+        'ci.computer',
+        'ci.lan',
+        undefined,
+        form.exposureMode === 'cloudflare' ? ORIGIN : undefined,
+        form.exposureMode === 'cloudflare' ? 'probe-hub1-acme.ci.computer' : undefined,
+      );
+      const labels = yaml.parse(result).services as Record<string, { labels: Record<string, string | boolean> }>;
+      return { labels, logged: warn.mock.calls.map(([line]) => String(line)) };
+    } finally {
+      warn.mockRestore();
+    }
+  };
+
+  const leftOut = (service: string, label: string) =>
+    expect.stringMatching(
+      new RegExp(`service "${service}": label ${label.replace(/\./g, '\\.')} was left out \\[CUSTOM_APP_ERROR_TRAEFIK_ENABLE_WITHOUT_ROUTER\\]`),
+    );
+
+  it.each([['cloudflare'], ['tailscale'], ['local']])('leaves it off Traefik on %s and says so in the log', async (exposureMode) => {
+    const { labels, logged } = await build({ exposureMode, enableAuth: true }, [web, extra({ 'traefik.enable': true, [PORT]: '80' })]);
+
+    expect(labels.extra?.labels).not.toHaveProperty(['traefik.enable']);
+    expect(labels.extra?.labels['traefik.http.services.probe-_user-extra.loadbalancer.server.port']).toBe('80');
+    expect(logged).toEqual(expect.arrayContaining([leftOut('extra', 'traefik.enable')]));
+  });
+
+  it('keeps the main service’s own routes behind the login', async () => {
+    const { labels } = await build({ exposureMode: 'cloudflare', enableAuth: true }, [web, extra({ 'traefik.enable': true, [PORT]: '80' })]);
+
+    expect(labels.web?.labels['traefik.enable']).toBe(true);
+    expect(labels.web?.labels['traefik.http.routers.probe-_user-insecure.middlewares']).toBe(
+      'ci-hub-edge-headers@file,ci-hub@file,probe-_user-public-host@docker,ci-hub-app-starting@file',
+    );
+  });
+
+  // On This machine only the Hub declares no router for the main service either.
+  it('leaves the main service off Traefik on This machine only', async () => {
+    const { labels, logged } = await build({ exposureMode: 'local', enableAuth: true }, [{ ...web, extraLabels: { 'traefik.enable': 'true' } }]);
+
+    expect(labels.web?.labels).not.toHaveProperty(['traefik.enable']);
+    expect(logged).toEqual(expect.arrayContaining([leftOut('web', 'traefik.enable')]));
+  });
+
+  it('keeps the Hub’s own switch on the main service on Public web', async () => {
+    const { labels } = await build({ exposureMode: 'cloudflare', enableAuth: true }, [{ ...web, extraLabels: { 'traefik.enable': true } }]);
+
+    expect(labels.web?.labels['traefik.enable']).toBe(true);
+    expect(labels.web?.labels['traefik.http.routers.probe-_user.rule']).toBe(`Host(\`${ORIGIN}\`)`);
+  });
+
+  it('leaves it off when every router the service declares is left out', async () => {
+    const { labels, logged } = await build({ exposureMode: 'cloudflare', enableAuth: true }, [
+      web,
+      extra({ 'traefik.enable': true, 'traefik.http.routers.extra.rule': 'Host(`${APP_DOMAIN}`)', [PORT]: '80' }),
+    ]);
+
+    expect(labels.extra?.labels).not.toHaveProperty(['traefik.enable']);
+    expect(logged).toEqual(expect.arrayContaining([leftOut('extra', 'traefik.enable')]));
+  });
+
+  // The whole router goes with a chain that is left out, which the label check alone can't see.
+  it('leaves it off when the service’s only router loses its chain', async () => {
+    const { labels, logged } = await build({ exposureMode: 'cloudflare', enableAuth: true }, [
+      web,
+      extra({
+        'traefik.enable': true,
+        'traefik.http.routers.{{CI_HUB_APP_ID}}-extra.rule': 'Host(`${APP_DOMAIN}`) && PathPrefix(`/x`)',
+        'traefik.http.routers.{{CI_HUB_APP_ID}}-extra.middlewares': 'n8n-ci-marketplace-auth@docker',
+        [PORT]: '80',
+      }),
+    ]);
+
+    expect(Object.keys(labels.extra?.labels ?? {}).filter((key) => key.includes('routers.'))).toEqual([]);
+    expect(labels.extra?.labels).not.toHaveProperty(['traefik.enable']);
+    expect(logged).toEqual(expect.arrayContaining([leftOut('extra', 'traefik.enable')]));
+  });
+
+  it('keeps it for a service with a route of its own, behind the login', async () => {
+    const { labels } = await build({ exposureMode: 'cloudflare', enableAuth: true }, [
+      web,
+      extra({
+        'traefik.enable': true,
+        'traefik.http.routers.{{CI_HUB_APP_ID}}-extra.rule': 'Host(`${APP_DOMAIN}`) && PathPrefix(`/x`)',
+        [PORT]: '80',
+      }),
+    ]);
+
+    expect(labels.extra?.labels['traefik.enable']).toBe(true);
+    expect(labels.extra?.labels['traefik.http.routers.probe-_user-extra.middlewares']).toBe(
+      'ci-hub-edge-headers@file,ci-hub@file,probe-_user-public-host@docker,ci-hub-app-starting@file',
+    );
+  });
+
+  // Traefik gives it its default rule. The router keeps the chain, the Hub login first.
+  it('keeps it for a router with no rule, which still gets the login', async () => {
+    const { labels } = await build({ exposureMode: 'cloudflare', enableAuth: true }, [
+      web,
+      extra({ 'traefik.enable': true, 'traefik.http.routers.{{CI_HUB_APP_ID}}-extra.entrypoints': 'web', [PORT]: '80' }),
+    ]);
+
+    expect(labels.extra?.labels['traefik.enable']).toBe(true);
+    expect(labels.extra?.labels['traefik.http.routers.probe-_user-extra.middlewares']).toBe(
+      'ci-hub-edge-headers@file,ci-hub@file,ci-hub-app-starting@file',
+    );
+  });
+});

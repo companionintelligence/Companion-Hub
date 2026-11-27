@@ -27,6 +27,8 @@ const refusals = (run: () => unknown): string[] => {
 describe('BUILDER_ENFORCED_LABEL_REFUSALS', () => {
   it('names every refusal the Traefik label check gives', () => {
     const issues = collectTraefikLabelIssues({
+      // Every router below is refused, so none is left for it.
+      'traefik.enable': true,
       'traefik.tcp.routers.{{CI_HUB_APP_ID}}.rule': 'HostSNI(`*`)',
       'traefik.docker.network': 'another-app_network',
       'traefik.http.routers.web.rule': 'Host(`${APP_DOMAIN}`)',

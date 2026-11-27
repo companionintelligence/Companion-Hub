@@ -1787,6 +1787,46 @@ describe('customAppComposeSchema (what saving a custom app accepts)', () => {
     expect(dynamicComposeSchemaZod.safeParse(compose(extra)).success).toBe(true);
     expect(() => parseInstalledComposeJson(compose(extra))).not.toThrow();
   });
+
+  // Traefik would give that service a router of its own, with none of the Hub's middlewares on it.
+  describe('a second service that turns Traefik on with no router of its own', () => {
+    const port = 'traefik.http.services.{{CI_HUB_APP_ID}}-extra.loadbalancer.server.port';
+    const twoServices = (extraLabels: Record<string, string | boolean>) => ({
+      ...compose({}),
+      services: [...compose({}).services, { name: 'extra', image: 'nginx:alpine', extraLabels }],
+    });
+
+    it('is refused on save, on the label that turns it on', () => {
+      const { success, error } = customAppComposeSchema.safeParse(twoServices({ 'traefik.enable': true, [port]: '80' }));
+      expect(success).toBe(false);
+      expect(error?.issues).toEqual([
+        expect.objectContaining({
+          message: 'CUSTOM_APP_ERROR_TRAEFIK_ENABLE_WITHOUT_ROUTER',
+          path: ['services', 1, 'extraLabels', 'traefik.enable'],
+          params: { label: 'traefik.enable' },
+        }),
+      ]);
+    });
+
+    it('is refused in the custom app editor too', () => {
+      const { schemaVersion: _version, ...form } = twoServices({ 'traefik.enable': true, [port]: '80' });
+      expect(customAppComposeFormSchema.safeParse(form).error?.issues[0]?.message).toBe('CUSTOM_APP_ERROR_TRAEFIK_ENABLE_WITHOUT_ROUTER');
+    });
+
+    it('is saved with a router of its own', () => {
+      const labels = {
+        'traefik.enable': true,
+        [port]: '80',
+        'traefik.http.routers.{{CI_HUB_APP_ID}}-extra.rule': 'Host(`${APP_DOMAIN}`) && PathPrefix(`/x`)',
+      };
+      expect(customAppComposeSchema.safeParse(twoServices(labels)).success).toBe(true);
+    });
+
+    it('still reads when saved earlier, with the label as stored, for the builder to leave out', () => {
+      const parsed = parseInstalledComposeJson(twoServices({ 'traefik.enable': true, [port]: '80' }));
+      expect(parsed.services[1]?.extraLabels).toEqual({ 'traefik.enable': true, [port]: '80' });
+    });
+  });
 });
 
 describe('an environment variable with no value', () => {

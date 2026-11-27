@@ -2239,6 +2239,7 @@
   "CUSTOM_APP_ERROR_TRAEFIK_SERVICE_NOT_OWN": "{{label}} sends traffic to {{target}}, which isn't one of this app's services. Use a service whose name starts with {{placeholder}}.",
   "CUSTOM_APP_ERROR_TRAEFIK_MIDDLEWARE_NOT_OWN": "{{label}} uses {{target}}, which isn't one of this app's middlewares or the Hub's. Use a middleware whose name starts with {{placeholder}}.",
   "CUSTOM_APP_ERROR_TRAEFIK_RULE_NOT_OWN_HOST": "A router's rule must name this app's own address with Host(`${APP_DOMAIN}`), Host(`${APP_LOCAL_DOMAIN}`) or Host(`${APP_BASE_HOST}`) and no other host. Change {{label}}.",
+  "CUSTOM_APP_ERROR_TRAEFIK_ENABLE_WITHOUT_ROUTER": "{{label}} turns Traefik on for a service with no router of its own. Remove {{label}}, or give the service a router whose rule names this app's address.",
   "CUSTOM_APP_ERROR_PRIVILEGED_NOT_ALLOWED": "A custom app can't run a privileged container. Remove \"privileged\": true.",
   "CUSTOM_APP_ERROR_HOST_PATH_DENIED": "A custom app can't mount Docker's socket or a system folder such as /etc, /proc, /run or /var/lib/docker. Mount a folder in the app's data instead.",
   "CUSTOM_APP_ERROR_HOST_PATH_NESTED": "This folder is inside another folder the app can write to. Code in the app could swap it for a link to anywhere on this computer, so mount it from its own folder beside the other one.",
