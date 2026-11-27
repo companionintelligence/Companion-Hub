@@ -620,6 +620,16 @@ describe('StartAppCommand — pull policy', () => {
       expect(result).toMatchObject({ success: false, errorCode: 'rocm_kfd_missing', rolledBack: true });
       expect(helperOf<ReturnType<typeof mock<AppHelpers>>>(AppHelpers).generateEnvFile).not.toHaveBeenCalled();
     });
+
+    // Before any container is touched, so an app that was up keeps the status it had.
+    it('refuses a start whose env cannot be written, before the compose file', async () => {
+      helperOf<ReturnType<typeof mock<AppHelpers>>>(AppHelpers).generateEnvFile.mockRejectedValueOnce(new Error('Variable License key is required'));
+
+      const result = await command.execute(customUrn, {});
+
+      expect(result).toMatchObject({ success: false, rolledBack: true });
+      expect(appFilesManager.writeDockerComposeYml).not.toHaveBeenCalled();
+    });
   });
 
   describe('the record of the images the start pulled', () => {

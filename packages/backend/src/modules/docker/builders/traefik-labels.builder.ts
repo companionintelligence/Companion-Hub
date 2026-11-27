@@ -280,9 +280,10 @@ export function withAppStartingPage(labels: Record<string, string | boolean>): R
 
 /**
  * A `Host()` matcher on the app's public address. Compose fills in the host, so this is the text a
- * manifest wrote. Only the backtick and the quoted spellings: no listing writes another.
+ * manifest wrote. Without regard to case and with `HostHeader()`, the v2 rule syntax's other name,
+ * as Traefik and the label check read them. Only the backtick and the quoted spellings of one host.
  */
-const PUBLIC_ADDRESS_HOST_MATCHER = /\bHost\(\s*(?:`\$\{(?:APP_DOMAIN|APP_BASE_HOST)\}`|"\$\{(?:APP_DOMAIN|APP_BASE_HOST)\}")\s*\)/g;
+const PUBLIC_ADDRESS_HOST_MATCHER = /\bHost(?:Header)?\(\s*(?:`\$\{(?:APP_DOMAIN|APP_BASE_HOST)\}`|"\$\{(?:APP_DOMAIN|APP_BASE_HOST)\}")\s*\)/gi;
 
 /** Every `Host()` or `HostHeader()` matcher in a rule, whatever hosts it names. */
 const ANY_HOST_MATCHER = /\bHost(?:Header)?\(\s*(?:`[^`]*`|"(?:[^"\\]|\\.)*")(?:\s*,\s*(?:`[^`]*`|"(?:[^"\\]|\\.)*"))*\s*\)/gi;
@@ -379,12 +380,21 @@ export function withTunnelHostOnPublicAddressRules(
  * their paths got Traefik's own 404 or the web page.
  *
  * Only for a service whose every router has a rule, and only on Public web, where the tunnel brings
- * the app's visitors to these routes (the caller's part). Traefik gives a container with no router a router of its own, and a router
- * with no rule a rule on the container's name, which aren't the app's routes. A service that says
- * `traefik.enable` either way keeps what it says. The routers' chains were put together before this:
- * the login and the edge header strip head each of them as on the main service.
+ * the app's visitors to these routes (the caller's part). Traefik gives a container with no router a
+ * router of its own, and a router with no rule a rule on the container's name, which aren't the
+ * app's routes. A service that says `traefik.enable` either way keeps what it says. The routers'
+ * chains were put together before this: the login and the edge header strip head each of them as on
+ * the main service.
+ *
+ * Nor for a service with a router of one of the Hub's own names (Kimai's shape on another service).
+ * Traefik drops a router that two containers define differently, so it would take the Hub's route of
+ * the app down with it.
  */
-export function withTraefikOnRoutingService(labels: Record<string, string | boolean>): Record<string, string | boolean> {
+export function withTraefikOnRoutingService(
+  labels: Record<string, string | boolean>,
+  { appId }: { appId: string },
+): Record<string, string | boolean> {
+  const hubRouters = hubRouterNames(appId);
   const hasRule = new Map<string, boolean>();
   for (const key of Object.keys(labels)) {
     if (key.toLowerCase() === 'traefik.enable') {
@@ -393,6 +403,9 @@ export function withTraefikOnRoutingService(labels: Record<string, string | bool
     const [, router, option] = HTTP_ROUTER_LABEL.exec(key) ?? [];
     if (router && option) {
       const name = router.toLowerCase();
+      if (hubRouters.has(name)) {
+        return labels;
+      }
       hasRule.set(name, hasRule.get(name) === true || option.toLowerCase().split('.').pop() === 'rule');
     }
   }

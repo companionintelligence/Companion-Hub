@@ -1941,7 +1941,7 @@ describe('DockerComposeBuilder: a name that starts with this app’s id can be a
  * those paths. The ones on a service other than the main one weren't even loaded: Traefik reads no
  * container that doesn't ask for it.
  */
-describe('DockerComposeBuilder — a listing’s own routes', () => {
+describe('DockerComposeBuilder: a listing’s own routes', () => {
   const ORIGIN = 'nginx-hub1-acme.ci.lan';
   const LIBRARY_RULE = 'Host(`${APP_DOMAIN}`) && (PathPrefix(`/upload`) || PathPrefix(`/opds`))';
   const API_RULE = 'Host(`${APP_DOMAIN}`) && PathPrefix(`/api`)';
@@ -2158,5 +2158,46 @@ describe('DockerComposeBuilder — a listing’s own routes', () => {
 
     expect(services.ruleless?.labels).not.toHaveProperty(['traefik.enable']);
     expect(services.off?.labels['traefik.enable']).toBe(false);
+  });
+
+  // Traefik drops a router two containers define differently, and this one is the Hub's route of the app.
+  it('turns nothing on for a service with a router of one of the Hub’s own names', async () => {
+    const services = await labelsFor({ exposureMode: 'cloudflare', enableAuth: true }, [
+      mainService,
+      { ...api, extraLabels: { 'traefik.http.routers.{{CI_HUB_APP_ID}}-insecure.rule': 'Host(`${APP_LOCAL_DOMAIN}`) || Host(`${APP_BASE_HOST}`)' } },
+    ]);
+
+    expect(services.api?.labels).not.toHaveProperty(['traefik.enable']);
+  });
+
+  // No route of the Hub's on the main service, so no `-public-host` middleware for a router to name.
+  it('changes nothing on Public web when the main service has no port for the Hub to route', async () => {
+    const services = await labelsFor({ exposureMode: 'cloudflare', enableAuth: true }, [{ ...web, internalPort: undefined }, api]);
+
+    expect(services.nginx?.labels['traefik.http.routers.nginx-store-id-library.rule']).toBe(LIBRARY_RULE);
+    expect(services.nginx?.labels).not.toHaveProperty(['traefik.enable']);
+    expect(services.api?.labels).not.toHaveProperty(['traefik.enable']);
+    expect(JSON.stringify(services)).not.toContain('public-host');
+  });
+
+  // Traefik reads matcher names without regard to case, and the label check lets both through.
+  it('gives a lower-case host() and the v2 HostHeader() the same', async () => {
+    const services = await labelsFor({ exposureMode: 'cloudflare' }, [
+      mainService,
+      {
+        ...api,
+        extraLabels: {
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-api.rule': 'host(`${APP_DOMAIN}`) && PathPrefix(`/api`)',
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-v2.rule': 'HostHeader(`${APP_DOMAIN}`) && PathPrefix(`/v2`)',
+        },
+      },
+    ]);
+
+    expect(services.api?.labels['traefik.http.routers.nginx-store-id-api.rule']).toBe(
+      `(host(\`\${APP_DOMAIN}\`) || Host(\`${ORIGIN}\`)) && PathPrefix(\`/api\`)`,
+    );
+    expect(services.api?.labels['traefik.http.routers.nginx-store-id-v2.rule']).toBe(
+      `(HostHeader(\`\${APP_DOMAIN}\`) || Host(\`${ORIGIN}\`)) && PathPrefix(\`/v2\`)`,
+    );
   });
 });

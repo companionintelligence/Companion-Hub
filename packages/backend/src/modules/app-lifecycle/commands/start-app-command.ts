@@ -104,12 +104,14 @@ export class StartAppCommand extends AppLifecycleCommand {
       // Before the compose file, which is built from it: a router rule may name only the hosts this env
       // sets (`hostVariables` in `prepareAppComposeDir`). Built from the env of the start before, a
       // custom app's first start, which has none yet, lost every such rule. Install writes it first too.
-      if (!form.skipEnv) {
-        logger.info(`Regenerating app.env file for app ${appUrn}`);
-        await appHelpers.generateEnvFile(appUrn, form);
-      }
-
+      // An env that can't be written (a required field with no value) refuses the start like a compose
+      // that can't be built: no container was touched yet, so an app that was up keeps its status.
       try {
+        if (!form.skipEnv) {
+          logger.info(`Regenerating app.env file for app ${appUrn}`);
+          await appHelpers.generateEnvFile(appUrn, form);
+        }
+
         await this.ensureAppDir(appUrn, form);
       } catch (err) {
         return refused(err);

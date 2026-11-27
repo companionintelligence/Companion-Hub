@@ -207,6 +207,11 @@ export class DockerComposeBuilder {
   private localDomain: string;
   private cloudflareOriginHostname?: string;
   private cloudflarePublicHostname?: string;
+  /**
+   * Whether the app has a main service with an internal port, the only service the Hub builds its own
+   * route on (and its `<app id>-public-host` middleware). Set for each `getDockerCompose`.
+   */
+  private hubRoutesMainService = false;
   private readonly posixPermissionsSupported: boolean;
   private networkIsolationOptions?: NetworkIsolationOptions;
   private securityOptions?: string[];
@@ -644,7 +649,9 @@ export class DockerComposeBuilder {
     // Where the Hub builds the app's own route on the host the tunnel sends: Public web with the origin
     // host. The only mode whose visitors reach a listing's own routes. Private VPN visitors go past
     // Traefik to the main container (`getAppNetworkTarget`), and This machine only has no route.
-    const publicWebOrigin = effectiveExposureMode === 'cloudflare' ? this.cloudflareOriginHostname : undefined;
+    // Only when the Hub builds that route: a main service without an internal port gets none, and no
+    // `<app id>-public-host` middleware for the manifest's routers to name.
+    const publicWebOrigin = effectiveExposureMode === 'cloudflare' && this.hubRoutesMainService ? this.cloudflareOriginHostname : undefined;
     // The operator's login-free paths, for the twins apps.yml gives the app's routers (`publicPathsLabels`).
     const pathLabels =
       effectiveExposureMode === 'local' ? {} : publicPathsLabels({ enableAuth: requiresHubLogin(form), publicPaths: form.publicPaths });
@@ -672,7 +679,7 @@ export class DockerComposeBuilder {
       // A listing's routes on its other services, on Public web only. On the Private VPN they would
       // answer nothing, and a service of the app's Traefik reads could stand in for the main container
       // as the VPN's target while that one is being recreated.
-      .transformLabels((labels) => (publicWebOrigin ? withTraefikOnRoutingService(labels) : labels));
+      .transformLabels((labels) => (publicWebOrigin ? withTraefikOnRoutingService(labels, { appId }) : labels));
 
     return service.build();
   };
@@ -702,6 +709,7 @@ export class DockerComposeBuilder {
     this.localDomain = localDomain || process.env.LOCAL_DOMAIN || DEFAULT_LOCAL_DOMAIN;
     this.cloudflareOriginHostname = cloudflareOriginHostname;
     this.cloudflarePublicHostname = cloudflarePublicHostname;
+    this.hubRoutesMainService = services.some((service) => service.isMain && Boolean(service.internalPort));
 
     const serviceHealthcheckMap = new Map<string, boolean>();
     for (const service of services) {
