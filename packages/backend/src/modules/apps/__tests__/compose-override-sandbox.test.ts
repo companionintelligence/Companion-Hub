@@ -345,6 +345,13 @@ describe('collectComposeOverrideViolations', () => {
       );
     });
 
+    // YAML reads these as a number and a boolean; compose writes them as `0` and `false`, which Traefik reads as off.
+    it('keeps it switched off, whatever YAML reads the value as', () => {
+      expect(rules(service('labels:\n  traefik.enable: 0'))).toEqual([]);
+      expect(rules(service('labels:\n  traefik.enable: false'))).toEqual([]);
+      expect(rules(service('labels:\n  traefik.enable: 1'))).toEqual(['CUSTOM_APP_ERROR_TRAEFIK_ENABLE_WITHOUT_ROUTER']);
+    });
+
     it('reads nothing from a compose file that is missing or can’t be read', () => {
       expect(composeServiceLabels(null)).toEqual({});
       expect(composeServiceLabels('services: [')).toEqual({});

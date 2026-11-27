@@ -167,7 +167,9 @@ const TRAEFIK_ENABLE_OFF = new Set(['0', 'f', 'F', 'false', 'FALSE', 'False']);
 export function traefikEnableLabelsWithoutRouter(labels: Record<string, unknown>): string[] {
   const enables: string[] = [];
   for (const [label, value] of Object.entries(labels)) {
-    if (label.toLowerCase() === 'traefik.enable' && value !== false && !(typeof value === 'string' && TRAEFIK_ENABLE_OFF.has(value))) {
+    // Compose writes a YAML number as its digits, so `0` is off too.
+    const text = typeof value === 'string' || typeof value === 'number' ? String(value) : undefined;
+    if (label.toLowerCase() === 'traefik.enable' && value !== false && !(text !== undefined && TRAEFIK_ENABLE_OFF.has(text))) {
       enables.push(label);
     }
   }

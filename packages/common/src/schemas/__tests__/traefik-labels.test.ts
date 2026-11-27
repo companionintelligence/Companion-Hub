@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { collectTraefikLabelIssues } from '../traefik-labels.js';
 
-const messages = (labels: Record<string, string | boolean>, appId?: string, appNetworks?: readonly string[]) =>
+const messages = (labels: Record<string, unknown>, appId?: string, appNetworks?: readonly string[]) =>
   collectTraefikLabelIssues(labels, appId, { appNetworks }).map(({ label, message }) => [label, message]);
 
 describe('collectTraefikLabelIssues', () => {
@@ -78,6 +78,7 @@ describe('collectTraefikLabelIssues', () => {
       ['as a string', { 'traefik.enable': 'true', ...port }],
       ['as another spelling Go reads as true', { 'traefik.enable': 'True', ...port }],
       ['as 1', { 'traefik.enable': '1' }],
+      ['as the YAML number 1 of a user config', { 'traefik.enable': 1 }],
       ['as a compose expansion, which could turn it on', { 'traefik.enable': '${EXTRA_ENABLED}' }],
       ['with a middleware of its own', { 'traefik.enable': true, 'traefik.http.middlewares.{{CI_HUB_APP_ID}}-gz.compress': 'true' }],
     ])('refuses it %s', (_how, labels) => {
@@ -90,7 +91,7 @@ describe('collectTraefikLabelIssues', () => {
       expect(messages({ 'Traefik.Enable': true, ...port })).toEqual([['Traefik.Enable', 'CUSTOM_APP_ERROR_TRAEFIK_ENABLE_WITHOUT_ROUTER']]);
     });
 
-    it.each([[false], ['false'], ['False'], ['0']])('keeps traefik.enable set to %s, which leaves the service off Traefik', (value) => {
+    it.each([[false], ['false'], ['False'], ['0'], [0]])('keeps traefik.enable set to %s, which leaves the service off Traefik', (value) => {
       expect(messages({ 'traefik.enable': value, ...port })).toEqual([]);
     });
 
