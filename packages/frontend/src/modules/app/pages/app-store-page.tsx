@@ -247,12 +247,16 @@ export default () => {
         return;
       }
 
-      setStoreId(slug);
+      // The address only; the `?store=` sync above then sets the store. Setting it here as well made the
+      // store-to-address effect write the address again in the same render, and React Router does not
+      // chain `setSearchParams` updaters: each starts from the address as rendered, which still named
+      // the old store, and the last write wins. With a store already in the address, every chip click
+      // went straight back to it.
       setSearchParams((prev) => applyStoreBrowseParams(prev, { q: search.trim() ? search : undefined, category, store: slug }), {
         replace: true,
       });
     },
-    [ownsAddress, setStoreId, setSearchParams, search, category],
+    [ownsAddress, setSearchParams, search, category],
   );
 
   const onSearch = useCallback(
