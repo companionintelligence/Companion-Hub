@@ -1,5 +1,5 @@
 import type { FormField } from '../schemas/app-info.js';
-import { isHubHostLabel } from '../public-web/identity.js';
+import { isHubHostLabel, isHubReservedSubdomain } from '../public-web/identity.js';
 import validator from 'validator';
 
 export type FormFieldValidationError = {
@@ -250,7 +250,9 @@ const validateLocalSubdomain = (subdomain?: unknown): FormFieldValidationError |
     };
   }
   // The Hub's own hostname starts so, and the desktop app would open the app as the Hub (`isHubHostLabel`).
-  if (isHubHostLabel(subdomain)) {
+  // Exactly `hub` is left to the lifecycle's own check (`isHubReservedSubdomain`), which runs wherever the
+  // subdomain becomes an address and says it is the Hub's own; this one would only name the field.
+  if (isHubHostLabel(subdomain) && !isHubReservedSubdomain(subdomain)) {
     return {
       env_variable: 'localSubdomain',
       label: 'localSubdomain',

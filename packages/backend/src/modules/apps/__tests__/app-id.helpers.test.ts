@@ -1,7 +1,7 @@
 import { createAppUrn } from '@/common/helpers/app-helpers';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { describe, expect, it } from 'vitest';
-import { assertAppIdFree } from '../app-id.helpers';
+import { assertAppIdFree, assertAppNameNotHubHost } from '../app-id.helpers';
 
 const installed = (...urns: Array<[string, string]>) => urns.map(([appName, appStoreSlug]) => ({ appName, appStoreSlug }));
 
@@ -49,11 +49,11 @@ describe('assertAppIdFree', () => {
     ['HUB-x', 'some-store'],
     ['hub', '_user'],
   ])('refuses %s from store %s, named like the Hub’s own host, from any store', (appName, store) => {
-    expect(() => assertAppIdFree(createAppUrn(appName, store), installed())).toThrow('APP_ERROR_APP_NAME_HUB_HOST');
+    expect(() => assertAppNameNotHubHost(createAppUrn(appName, store))).toThrow('APP_ERROR_APP_NAME_HUB_HOST');
   });
 
   it.each([['hubitat'], ['github-hub'], ['my-hub']])('installs %s, which only looks like the Hub', (appName) => {
-    expect(() => assertAppIdFree(createAppUrn(appName, 'ci-marketplace'), installed())).not.toThrow();
+    expect(() => assertAppNameNotHubHost(createAppUrn(appName, 'ci-marketplace'))).not.toThrow();
   });
 
   // The Hub names an app's other routers `<id>-insecure`, `<id>-tailscale`, `<id>-sw-reset` and

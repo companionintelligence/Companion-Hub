@@ -10,9 +10,10 @@ import type { AppUrn } from '@ci-hub/common/types';
 import {
   buildOriginServerName,
   deriveAppSlug,
+  isHubHostLabel,
   isHubReservedSubdomain,
-  isReservedAppName,
   PORT_EXPOSE_DEFAULT_SHORT_DESC,
+  RESERVED_APP_NAMES,
   sanitizeAppSubdomain,
 } from '@ci-hub/common/types';
 import { isPortExposeApp, PORT_EXPOSE_KIND, requiresHubLogin, type AppInfo } from '@ci-hub/common/schemas';
@@ -61,7 +62,8 @@ export class PortExposeService {
     if (!slug) {
       throw new TranslatableError('CUSTOM_APP_NAME_NO_SLUG', undefined, HttpStatus.BAD_REQUEST);
     }
-    if (isReservedAppName(slug)) {
+    // Only the UI routes here: whether a name is the Hub's is decided on the address it gets, below.
+    if (RESERVED_APP_NAMES.includes(slug)) {
       throw new TranslatableError('CUSTOM_APP_NAME_RESERVED', undefined, HttpStatus.BAD_REQUEST);
     }
 
@@ -71,7 +73,9 @@ export class PortExposeService {
 
     // Every mode: This Machine Only and Private VPN reach Companion Portal through the registry under this name too.
     // Checked as stored: a subdomain that sanitizes to nothing ("-") leaves the row on the name.
-    assertNotHubSubdomain(sanitizeAppSubdomain(localSubdomain?.trim() || slug) || slug);
+    const hostLabel = sanitizeAppSubdomain(localSubdomain?.trim() || slug) || slug;
+    assertNotHubSubdomain(hostLabel);
+    assertNotHubHostLabel(hostLabel);
 
     await assertHubCanReachPort(port);
 
@@ -179,6 +183,8 @@ export class PortExposeService {
     // A subdomain that sanitizes to nothing ("-") leaves the row on the name as well.
     const requestedSubdomain = sanitizeAppSubdomain(localSubdomain?.trim() ?? '');
     assertNotHubSubdomain(requestedSubdomain || extractAppUrn(appUrn).appName, requestedSubdomain ? 'subdomain' : 'existing-name');
+    // A new subdomain only: a `hub-…` name made before this check still saves, rather than being stuck.
+    if (requestedSubdomain) assertNotHubHostLabel(requestedSubdomain);
 
     const appsWithSamePort = await this.appsRepository.getAppsByPort(port, app.id);
     if (appsWithSamePort.length > 0) {
@@ -613,6 +619,16 @@ function assertNotHubSubdomain(subdomain: string, from: 'subdomain' | 'existing-
       { subdomain: sanitizeAppSubdomain(subdomain) },
       HttpStatus.BAD_REQUEST,
     );
+  }
+}
+
+/**
+ * Refuses a `hub-…` address as well as `hub` ({@link assertNotHubSubdomain}): the desktop app opens any `hub`
+ * or `hub-…` host under the Hub's domains in its own window, with its IPC, as the Hub (`isHubHostLabel`).
+ */
+function assertNotHubHostLabel(label: string): void {
+  if (isHubHostLabel(label)) {
+    throw new TranslatableError('APP_INSTALL_FORM_ERROR_LOCAL_SUBDOMAIN_HUB', undefined, HttpStatus.BAD_REQUEST);
   }
 }
 
