@@ -202,7 +202,7 @@ describe('MarketplaceWhoIsService', () => {
       expect(cacheRows).toEqual([]);
     });
 
-    it("gets none of the grants of the catalog app it is named like, and only the view for a member", async () => {
+    it('gets none of the grants of the catalog app it is named like, and only the view for a member', async () => {
       // A member granted every verb on the catalog's immich.
       portal.whoisApps.mockResolvedValue(roleAnswer('member', [{ appId: 'immich', can: [...HUB_ACTIONS] }]));
 

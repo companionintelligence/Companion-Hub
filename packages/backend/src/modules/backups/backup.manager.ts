@@ -416,7 +416,13 @@ export class BackupManager implements OnApplicationShutdown {
         throw this.outOfTime('Restoring', appUrn, deadline, 'Nothing was changed.');
       }
 
-      await this.replaceAppFiles(appUrn, restoreDir, dataMember && staging ? { stagingId: staging.id, member: dataMember } : null, deadline, appFiles);
+      await this.replaceAppFiles(
+        appUrn,
+        restoreDir,
+        dataMember && staging ? { stagingId: staging.id, member: dataMember } : null,
+        deadline,
+        appFiles,
+      );
 
       for (const volume of volumes) {
         this.logger.info(`Restoring Docker volume ${volume.name}...`);

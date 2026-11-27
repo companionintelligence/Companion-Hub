@@ -1342,14 +1342,11 @@ describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
     '/dev/bus/usb',
     '/dev/bus/usb/001/004',
     '/dev/bus',
-  ])(
-    'flags %s, which reaches a disk or the person at the host',
-    (device) => {
-      expect(collectServiceSecurityViolations({ devices: [`${device}:${device}`] }).map((v) => v.message)).toContain(
-        'CUSTOM_APP_ERROR_DEVICE_NOT_ALLOWED',
-      );
-    },
-  );
+  ])('flags %s, which reaches a disk or the person at the host', (device) => {
+    expect(collectServiceSecurityViolations({ devices: [`${device}:${device}`] }).map((v) => v.message)).toContain(
+      'CUSTOM_APP_ERROR_DEVICE_NOT_ALLOWED',
+    );
+  });
 
   it("leaves devices that only start like those alone, and Sunshine's granted /dev/uinput", () => {
     expect(
