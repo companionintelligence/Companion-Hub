@@ -278,6 +278,98 @@ export function withAppStartingPage(labels: Record<string, string | boolean>): R
   return result;
 }
 
+/**
+ * A `Host()` matcher on the app's public address. Compose fills in the host, so this is the text a
+ * manifest wrote. Only the backtick and the quoted spellings: no listing writes another.
+ */
+const PUBLIC_ADDRESS_HOST_MATCHER = /\bHost\(\s*(?:`\$\{(?:APP_DOMAIN|APP_BASE_HOST)\}`|"\$\{(?:APP_DOMAIN|APP_BASE_HOST)\}")\s*\)/g;
+
+/** The names of the routers the builder makes for an app, in lower case. */
+function hubRouterNames(appId: string): Set<string> {
+  return new Set([appId, ...HUB_ROUTE_NAME_SUFFIXES.map((suffix) => `${appId}${suffix}`)].map((name) => name.toLowerCase()));
+}
+
+/**
+ * On Public web, has a manifest's router that names the app's public address answer the tunnel too.
+ *
+ * Listings route paths of their own on `${APP_DOMAIN}` (Koodo Reader's library server, Public Pool's
+ * API). On Public web that is the public address, and the Cloudflare tunnel never sends it: it sends
+ * the app's origin host, the one the Hub's own routers match. So those routes matched nothing that
+ * came through the tunnel, and the app's web page answered their paths. Each such `Host()` becomes
+ * `(Host(<public address>) || Host(<origin host>))`, in parentheses so the rest of the rule binds as
+ * before. `${APP_BASE_HOST}` holds the public address there too and gets the same.
+ *
+ * Such a router answers the public address now, so it gets what the Hub's own router has for it:
+ * `<app id>-public-host`, which tells the service the address the visitor asked for
+ * (`publicHost`, when the builder made that middleware). First in the manifest's own chain, so
+ * {@link withHubLoginOnEveryRouter} puts it right after the login.
+ *
+ * The routers the builder made keep their rules, whatever a manifest set there: Kimai and IPFS put
+ * `${APP_LOCAL_DOMAIN}` in theirs, and a longer rule would outrank the service-worker reset routers.
+ * Runs after interpolation, so the app's own routers carry its id.
+ */
+export function withTunnelHostOnPublicAddressRules(
+  labels: Record<string, string | boolean>,
+  { appId, originHost, publicHost }: { appId: string; originHost: string; publicHost: boolean },
+): Record<string, string | boolean> {
+  const hubRouters = hubRouterNames(appId);
+  const result = { ...labels };
+  const rewritten = new Map<string, string>();
+  for (const [key, value] of Object.entries(labels)) {
+    const [, router, option] = HTTP_ROUTER_LABEL.exec(key) ?? [];
+    if (!router || option?.toLowerCase().split('.').pop() !== 'rule' || hubRouters.has(router.toLowerCase()) || typeof value !== 'string') {
+      continue;
+    }
+    const rule = value.replace(PUBLIC_ADDRESS_HOST_MATCHER, (matcher) => `(${matcher} || Host(\`${originHost}\`))`);
+    if (rule !== value) {
+      result[key] = rule;
+      rewritten.set(router.toLowerCase(), router);
+    }
+  }
+  if (!publicHost) {
+    return result;
+  }
+  const middleware = `${appId}${PUBLIC_HOST_MIDDLEWARE_SUFFIX}@docker`;
+  for (const [lower, router] of rewritten) {
+    const chainKey =
+      Object.keys(result).find((key) => {
+        const [, name, option] = HTTP_ROUTER_LABEL.exec(key) ?? [];
+        return name?.toLowerCase() === lower && option?.toLowerCase() === 'middlewares';
+      }) ?? `traefik.http.routers.${router}.middlewares`;
+    result[chainKey] = [middleware, ...middlewareChain(result[chainKey])].join(',');
+  }
+  return result;
+}
+
+/**
+ * Turns Traefik on for a service of the app that declares routers of its own.
+ *
+ * The Hub's Traefik reads no container that doesn't ask (`exposedByDefault: false`), and the builder
+ * turns it on only for the main service. A listing's routes on its other services (Public Pool's API,
+ * Skyvern's backend, Rybbit's and the S3 stores of Beatsync, Cap and Snapify) were never loaded, and
+ * their paths got Traefik's own 404 or the web page.
+ *
+ * Only for a service whose every router has a rule, and only where the app goes through Traefik at
+ * all (the caller's part). Traefik gives a container with no router a router of its own, and a router
+ * with no rule a rule on the container's name, which aren't the app's routes. A service that says
+ * `traefik.enable` either way keeps what it says. The routers' chains were put together before this:
+ * the login and the edge header strip head each of them as on the main service.
+ */
+export function withTraefikOnRoutingService(labels: Record<string, string | boolean>): Record<string, string | boolean> {
+  const hasRule = new Map<string, boolean>();
+  for (const key of Object.keys(labels)) {
+    if (key.toLowerCase() === 'traefik.enable') {
+      return labels;
+    }
+    const [, router, option] = HTTP_ROUTER_LABEL.exec(key) ?? [];
+    if (router && option) {
+      const name = router.toLowerCase();
+      hasRule.set(name, hasRule.get(name) === true || option.toLowerCase().split('.').pop() === 'rule');
+    }
+  }
+  return hasRule.size > 0 && [...hasRule.values()].every(Boolean) ? { ...labels, 'traefik.enable': true } : labels;
+}
+
 /** The app id placeholders `ServiceBuilder.interpolateVariables` writes the app id into. */
 const APP_ID_PLACEHOLDER = /\{\{\s*(?:CI_HUB_APP_ID|RUNTIPI_APP_ID|RUNCIHUB_APP_ID)\s*\}\}/g;
 

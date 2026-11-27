@@ -538,6 +538,90 @@ describe('StartAppCommand — pull policy', () => {
     });
   });
 
+  /*
+   * #2623: a custom app is created stopped with no app.env, and its install only starts it. The compose
+   * was built before the start wrote the env, and a router rule may name only the hosts that env sets,
+   * so the first start left out every such rule and its route went to the main service.
+   */
+  describe('the env the compose is built from', () => {
+    const customUrn = 'probe:_user' as AppUrn;
+    const rule = 'Host(`${APP_LOCAL_DOMAIN}`) && PathPrefix(`/api`)';
+    const helperOf = <T>(token: unknown) => (command as unknown as { moduleRef: { get: (t: unknown) => T } }).moduleRef.get(token);
+    let envOnDisk: string;
+
+    beforeEach(() => {
+      vi.mocked(parseComposeJson).mockReturnValue({
+        services: [
+          { name: 'web', image: 'traefik/whoami:v1.11', isMain: true, internalPort: 80 },
+          {
+            name: 'api',
+            image: 'traefik/whoami:v1.11',
+            extraLabels: {
+              'traefik.http.routers.{{CI_HUB_APP_ID}}-api.rule': rule,
+              'traefik.http.routers.{{CI_HUB_APP_ID}}-api.entrypoints': 'web',
+              'traefik.http.services.{{CI_HUB_APP_ID}}-api.loadbalancer.server.port': '80',
+            },
+          },
+        ],
+        overrides: [],
+      } as any);
+      // Created and not started yet: no env on disk until the start writes one.
+      envOnDisk = '';
+      appFilesManager.getAppEnv.mockImplementation(async () => ({ content: envOnDisk, path: '/tmp/app.env' }));
+      helperOf<ReturnType<typeof mock<AppHelpers>>>(AppHelpers).generateEnvFile.mockImplementation(async () => {
+        envOnDisk = 'APP_DOMAIN=localhost:10001\nAPP_LOCAL_DOMAIN=probe-hub1-acme.localhost\nAPP_BASE_HOST=localhost:10001\n';
+      });
+    });
+
+    const writtenCompose = () => {
+      const [, content] = appFilesManager.writeDockerComposeYml.mock.calls.at(-1) ?? [];
+      return String(content);
+    };
+
+    it("keeps a custom app's own-host routes on its first start", async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        const result = await command.execute(customUrn, { exposureMode: 'cloudflare', exposedLocal: true, openPort: false });
+
+        expect(result.success).toBe(true);
+        expect(writtenCompose()).toContain(`traefik.http.routers.probe-_user-api.rule: ${rule}`);
+        expect(warn.mock.calls.map(([line]) => String(line)).filter((line) => line.includes('left out'))).toEqual([]);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('writes the env before the compose file, and not at all when the start skips it', async () => {
+      const order: string[] = [];
+      helperOf<ReturnType<typeof mock<AppHelpers>>>(AppHelpers).generateEnvFile.mockImplementation(async () => {
+        order.push('env');
+      });
+      appFilesManager.writeDockerComposeYml.mockImplementation(async () => {
+        order.push('compose');
+      });
+
+      await command.execute(customUrn, {});
+      expect(order).toEqual(['env', 'compose']);
+
+      order.length = 0;
+      await command.execute(customUrn, { skipEnv: true });
+      expect(order).toEqual(['compose']);
+    });
+
+    it('leaves the env alone for a start the host-device check refuses', async () => {
+      vi.mocked(parseComposeJson).mockReturnValue({
+        services: [{ name: 'comfyui', image: 'docker.io/example/comfyui:latest', devices: ['/dev/kfd:/dev/kfd'] }],
+        overrides: [],
+      } as any);
+      vi.mocked(isRocmKfdPassthroughAvailable).mockResolvedValueOnce(false);
+
+      const result = await command.execute(customUrn, {});
+
+      expect(result).toMatchObject({ success: false, errorCode: 'rocm_kfd_missing', rolledBack: true });
+      expect(helperOf<ReturnType<typeof mock<AppHelpers>>>(AppHelpers).generateEnvFile).not.toHaveBeenCalled();
+    });
+  });
+
   describe('the record of the images the start pulled', () => {
     const whoami = 'traefik/whoami:v1.10.2';
     let onComputer: Map<string, string>;

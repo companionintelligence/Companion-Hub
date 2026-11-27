@@ -23,6 +23,8 @@ import {
   withHubLoginOnEveryRouter,
   withHubMiddlewaresFirst,
   withSignInUnderFileProvider,
+  withTraefikOnRoutingService,
+  withTunnelHostOnPublicAddressRules,
 } from './traefik-labels.builder';
 import { publishesHostPort } from '@/modules/apps/app-exposure.helpers';
 import { requiresHubLogin } from '@/modules/apps/app-public-routing.helpers';
@@ -639,6 +641,10 @@ export class DockerComposeBuilder {
       console.warn(`! App "${appName}" service "${params.name}": label ${label} was left out [${rule}]`);
     }
     const extraLabels = Object.fromEntries(Object.entries(params.extraLabels ?? {}).filter(([key]) => !leftOutLabels.has(key)));
+    // Where the Hub builds the app's own route (the builder above, for the main service), so the app
+    // goes through Traefik: on Public web with the origin host the tunnel sends, and on the Private VPN.
+    const publicWebOrigin = effectiveExposureMode === 'cloudflare' ? this.cloudflareOriginHostname : undefined;
+    const routedThroughTraefik = effectiveExposureMode === 'tailscale' || Boolean(publicWebOrigin);
     // The operator's login-free paths, for the twins apps.yml gives the app's routers (`publicPathsLabels`).
     const pathLabels =
       effectiveExposureMode === 'local' ? {} : publicPathsLabels({ enableAuth: requiresHubLogin(form), publicPaths: form.publicPaths });
@@ -650,13 +656,21 @@ export class DockerComposeBuilder {
       // First a listing's `ci-hub@docker` becomes `ci-hub@file` where it stood (CI-Engineering#510);
       // then the login goes to the head of every router's chain, and onto routers that had none.
       .transformLabels(withSignInUnderFileProvider)
+      // The Host the tunnel sends is the origin host the Hub's own router matches, not the public address.
+      .transformLabels((labels) =>
+        publicWebOrigin
+          ? withTunnelHostOnPublicAddressRules(labels, { appId, originHost: publicWebOrigin, publicHost: Boolean(this.cloudflarePublicHostname) })
+          : labels,
+      )
       .transformLabels((labels) =>
         withHubLoginOnEveryRouter(labels, traefikLabels, {
           requireLogin: requiresHubLogin(form),
           publicWeb: effectiveExposureMode === 'cloudflare',
         }),
       )
-      .transformLabels(withAppStartingPage);
+      .transformLabels(withAppStartingPage)
+      // A listing's routes on its other services, where the Hub routes the app: not on This machine only.
+      .transformLabels((labels) => (routedThroughTraefik ? withTraefikOnRoutingService(labels) : labels));
 
     return service.build();
   };
