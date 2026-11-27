@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { HUB_APPURN_LABEL, LEGACY_HUB_APPURN_LABEL } from '@/common/constants';
-import { ipOnAppNetwork } from '@/common/helpers/app-helpers';
+import { extractAppUrn, ipOnAppNetwork } from '@/common/helpers/app-helpers';
 import { appUrnLabelSets, listContainersMatchingAnyLabelSets, managedAppLabelSets } from './hub-container-query';
 import { pLimit } from '@/common/helpers/file-helpers';
 import { withTimeout } from '@/common/helpers/with-timeout';
@@ -269,15 +269,32 @@ export class DockerReadFacade {
       DOCKER_INSPECT_TIMEOUT_MS,
       `Docker container listing timed out for ${appUrn}`,
     );
-    const routed = containers.filter((container) => container.Labels?.['traefik.enable'] === 'true' && !(downOnly && container.State === 'running'));
+    // The main container, which carries the app's own service. A listing's other services that Traefik
+    // reads for routes of their own don't carry the app's web route, so a repair leaves them running.
+    const { appName, appStoreId } = extractAppUrn(appUrn);
+    const hubServicePortLabel = `traefik.http.services.${appName}-${appStoreId}.loadbalancer.server.port`;
+    const enabled = containers.filter((container) => container.Labels?.['traefik.enable'] === 'true');
+    const carryingRoute = enabled.some((container) => container.Labels?.[hubServicePortLabel] !== undefined)
+      ? enabled.filter((container) => container.Labels?.[hubServicePortLabel] !== undefined)
+      : enabled;
+    const routed = carryingRoute.filter((container) => !(downOnly && container.State === 'running'));
     const sharing = containers.filter(
       (container) => !routed.includes(container) && routed.some((owner) => container.HostConfig?.NetworkMode === `container:${owner.Id}`),
     );
     return [...routed, ...sharing].flatMap((container) => container.Names?.[0]?.replace(/^\//, '') || []);
   }
 
+  /**
+   * The address of the app's web service on its own network, where the Private VPN sends the app's
+   * visitors past Traefik: the service the Hub routes the app's address to (`TraefikLabelsBuilder`).
+   * Picked by name, since a listing can define services of its own (Koodo Reader's library server
+   * sorts first). None while no running container has it, even when another service of the app runs:
+   * a restart's `down` removes the main container first and stops the others after it.
+   */
   public async getAppNetworkTarget(appUrn: AppUrn): Promise<AppNetworkTarget | null> {
     const containers = await listContainersMatchingAnyLabelSets(this.docker, appUrnLabelSets(appUrn, ['traefik.enable=true']), false);
+    const { appName, appStoreId } = extractAppUrn(appUrn);
+    const service = `traefik.http.services.${appName}-${appStoreId}.loadbalancer.server`;
 
     const limit = pLimit(5);
     const targets = await Promise.all(
@@ -286,38 +303,19 @@ export class DockerReadFacade {
           const inspect = await this.docker.getContainer(containerInfo.Id).inspect();
           const labels = inspect.Config?.Labels || {};
           const containerIP = ipOnAppNetwork(appUrn, inspect.NetworkSettings?.Networks);
+          const internalPort = Number.parseInt(String(labels[`${service}.port`]), 10);
 
-          if (!containerIP) {
+          if (!containerIP || Number.isNaN(internalPort)) {
             return null;
           }
 
-          const portEntry = Object.entries(labels).find(
-            ([key]) => key.startsWith('traefik.http.services.') && key.endsWith('.loadbalancer.server.port'),
-          );
-
-          if (!portEntry) {
-            return null;
-          }
-
-          const serviceName = portEntry[0].replace('traefik.http.services.', '').replace('.loadbalancer.server.port', '');
-          const internalPort = Number.parseInt(String(portEntry[1]), 10);
-
-          if (Number.isNaN(internalPort)) {
-            return null;
-          }
-
-          const backendScheme = labels[`traefik.http.services.${serviceName}.loadbalancer.server.scheme`];
-          const scheme = backendScheme === 'https' ? 'https+insecure' : 'http';
-
-          return {
-            url: `${scheme}://${containerIP}:${internalPort}`,
-            internalPort,
-          } satisfies AppNetworkTarget;
+          const scheme = labels[`${service}.scheme`] === 'https' ? 'https+insecure' : 'http';
+          return { url: `${scheme}://${containerIP}:${internalPort}`, internalPort } satisfies AppNetworkTarget;
         }),
       ),
     );
 
-    return targets.find((target): target is AppNetworkTarget => target !== null) ?? null;
+    return targets.find((target) => target !== null) ?? null;
   }
 
   /**

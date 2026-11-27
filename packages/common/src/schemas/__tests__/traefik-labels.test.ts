@@ -1,8 +1,8 @@
 /** biome-ignore-all lint/suspicious/noTemplateCurlyInString: compose expansions, written as a manifest writes them */
 import { describe, expect, it } from 'vitest';
-import { collectTraefikLabelIssues } from '../traefik-labels.js';
+import { collectTraefikLabelIssues, ruleNeedsPath } from '../traefik-labels.js';
 
-const messages = (labels: Record<string, string | boolean>, appId?: string, appNetworks?: readonly string[]) =>
+const messages = (labels: Record<string, unknown>, appId?: string, appNetworks?: readonly string[]) =>
   collectTraefikLabelIssues(labels, appId, { appNetworks }).map(({ label, message }) => [label, message]);
 
 describe('collectTraefikLabelIssues', () => {
@@ -53,9 +53,60 @@ describe('collectTraefikLabelIssues', () => {
         'traefik.http.routers.{{CI_HUB_APP_ID}}-local.middlewares': '{{CI_HUB_APP_ID}}-root-redirect@docker,ci-hub@docker',
       },
     ],
-    ['traefik.enable and labels outside Traefik', { 'traefik.enable': true, 'com.example.team': 'web' }],
+    [
+      'traefik.enable on a service with a router of its own, and labels outside Traefik',
+      {
+        'traefik.enable': true,
+        'traefik.http.routers.{{CI_HUB_APP_ID}}-api.rule': 'Host(`${APP_DOMAIN}`) && PathPrefix(`/api`)',
+        'traefik.http.services.{{CI_HUB_APP_ID}}-api.loadbalancer.server.port': '8080',
+        'com.example.team': 'web',
+      },
+    ],
+    ['traefik.enable switched off', { 'traefik.enable': false, 'com.example.team': 'web' }],
   ])('accepts %s', (_shape, labels) => {
     expect(collectTraefikLabelIssues(labels)).toEqual([]);
+  });
+
+  // Traefik makes a router of its own for a container it reads with none, and none of the Hub's
+  // middlewares is on that router.
+  describe('traefik.enable on a service with no router of its own', () => {
+    const port = { 'traefik.http.services.{{CI_HUB_APP_ID}}-extra.loadbalancer.server.port': '80' };
+
+    it.each([
+      ['alone', { 'traefik.enable': true }],
+      ['with a load balancer port', { 'traefik.enable': true, ...port }],
+      ['as a string', { 'traefik.enable': 'true', ...port }],
+      ['as another spelling Go reads as true', { 'traefik.enable': 'True', ...port }],
+      ['as 1', { 'traefik.enable': '1' }],
+      ['as the YAML number 1 of a user config', { 'traefik.enable': 1 }],
+      ['as a compose expansion, which could turn it on', { 'traefik.enable': '${EXTRA_ENABLED}' }],
+      ['with a middleware of its own', { 'traefik.enable': true, 'traefik.http.middlewares.{{CI_HUB_APP_ID}}-gz.compress': 'true' }],
+    ])('refuses it %s', (_how, labels) => {
+      expect(collectTraefikLabelIssues(labels)).toEqual([
+        { label: 'traefik.enable', message: 'CUSTOM_APP_ERROR_TRAEFIK_ENABLE_WITHOUT_ROUTER', params: { label: 'traefik.enable' } },
+      ]);
+    });
+
+    it('refuses it under another spelling of the key', () => {
+      expect(messages({ 'Traefik.Enable': true, ...port })).toEqual([['Traefik.Enable', 'CUSTOM_APP_ERROR_TRAEFIK_ENABLE_WITHOUT_ROUTER']]);
+    });
+
+    it.each([[false], ['false'], ['False'], ['0'], [0]])('keeps traefik.enable set to %s, which leaves the service off Traefik', (value) => {
+      expect(messages({ 'traefik.enable': value, ...port })).toEqual([]);
+    });
+
+    it('refuses it when the only router it declares is refused, which the Hub leaves out', () => {
+      expect(messages({ 'traefik.enable': true, 'traefik.http.routers.web.rule': 'Host(`${APP_DOMAIN}`)', ...port })).toEqual([
+        ['traefik.http.routers.web.rule', 'CUSTOM_APP_ERROR_TRAEFIK_NAME_NOT_OWN'],
+        ['traefik.enable', 'CUSTOM_APP_ERROR_TRAEFIK_ENABLE_WITHOUT_ROUTER'],
+      ]);
+    });
+
+    // Traefik gives a router with no rule its default one, and the router keeps the chain the builder
+    // gives every router it declares, the Hub login first.
+    it('keeps it for a router that declares no rule', () => {
+      expect(messages({ 'traefik.enable': true, 'traefik.http.routers.{{CI_HUB_APP_ID}}-extra.entrypoints': 'web', ...port })).toEqual([]);
+    });
   });
 
   it('names the rule, the label and the name for a router that is not the app’s', () => {
@@ -510,5 +561,29 @@ describe('collectTraefikLabelIssues', () => {
         }),
       ).toEqual([]);
     });
+  });
+});
+
+// Only such a rule leaves the rest of the app's address, `/sw.js` with it, to the Hub's own route.
+describe('ruleNeedsPath', () => {
+  it.each([
+    'Host(`${APP_DOMAIN}`) && PathPrefix(`/api`)',
+    'Host(`${APP_DOMAIN}`) && (PathPrefix(`/upload`) || PathPrefix(`/opds`))',
+    'Host("${APP_BASE_HOST}") && Path("/feed") && !PathPrefix(`/feed/health`)',
+    'PathPrefix(`/a`, `/b`) && Host(`${APP_DOMAIN}`)',
+  ])('holds for %s', (rule) => {
+    expect(ruleNeedsPath(rule)).toBe(true);
+  });
+
+  it.each([
+    'Host(`${APP_DOMAIN}`)',
+    'Host(`${APP_DOMAIN}`) && PathPrefix(`/`)',
+    'Host(`${APP_DOMAIN}`) && !PathPrefix(`/health`)',
+    'Host(`${APP_DOMAIN}`) || Host(`${APP_LOCAL_DOMAIN}`) && PathPrefix(`/api`)',
+    'Host(`${APP_DOMAIN}`) && Method(`GET`)',
+    'Host(`${APP_DOMAIN}`) && PathRegexp(`.*`)',
+    'Host(`${APP_DOMAIN}`) && PathPrefix(`/api`',
+  ])('does not hold for %s', (rule) => {
+    expect(ruleNeedsPath(rule)).toBe(false);
   });
 });

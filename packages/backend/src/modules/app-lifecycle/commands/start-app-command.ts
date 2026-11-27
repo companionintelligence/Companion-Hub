@@ -83,27 +83,36 @@ export class StartAppCommand extends AppLifecycleCommand {
         await this.assignCustomAppHostPort(appUrn, form, config.port, logger);
       }
 
+      // Refused before any container was touched: an app that was up stays up, so it keeps the status it had.
+      // A custom app's new host port is already on its row, so the move is reported as on any failure.
+      const refused = async (err: unknown) => ({
+        ...(await this.handleAppError(err, appUrn, 'start')),
+        rolledBack: true,
+        movedHostPort: hostPortMoveOf(form, refusedHostPorts, portOnStart),
+      });
+
       // Host-device preflight — a device present at install time (e.g. /dev/kfd for ROCm)
       // can be gone by the time the app is started again (driver not loaded yet at boot,
       // host reconfigured). Catch that here with friendly guidance instead of letting
       // Docker's raw device-attach error reach the user unclassified.
       try {
         await this.assertRequiredHostDevices(appUrn);
+      } catch (err) {
+        return refused(err);
+      }
+
+      // Before the compose file: a router rule may name only the hosts this env sets (`hostVariables`), so a
+      // custom app's first start, with no env yet, lost every such rule. An env that can't be written
+      // refuses the start like a compose that can't be built, before any container is touched.
+      try {
+        if (!form.skipEnv) {
+          logger.info(`Regenerating app.env file for app ${appUrn}`);
+          await appHelpers.generateEnvFile(appUrn, form);
+        }
 
         await this.ensureAppDir(appUrn, form);
       } catch (err) {
-        // Refused before any container was touched: an app that was up stays up, so it keeps the status it had.
-        // A custom app's new host port is already on its row, so the move is reported as on any failure.
-        return {
-          ...(await this.handleAppError(err, appUrn, 'start')),
-          rolledBack: true,
-          movedHostPort: hostPortMoveOf(form, refusedHostPorts, portOnStart),
-        };
-      }
-
-      if (!form.skipEnv) {
-        logger.info(`Regenerating app.env file for app ${appUrn}`);
-        await appHelpers.generateEnvFile(appUrn, form);
+        return refused(err);
       }
 
       if (form.onlyRecreateChanged) {

@@ -6,9 +6,10 @@
  * router, send a router of its own to another app's service or claim another app's host. Its route
  * then reached that app's backend with no Hub login, showed in place of that app or took it offline.
  *
- * An app's Traefik labels may set `traefik.enable`, `traefik.docker.network` to a Hub network the app's
- * container is on, and its own HTTP routers, middlewares and load-balanced services, under names that
- * start with the app's id and that no other app's longer id covers:
+ * An app's Traefik labels may set `traefik.enable` on a service that declares an HTTP router of its own,
+ * `traefik.docker.network` to a Hub network the app's container is on, and its own HTTP routers,
+ * middlewares and load-balanced services, under names that start with the app's id and that no other
+ * app's longer id covers:
  * - a router's `service`, and an `errors` middleware's, is one of the app's own services;
  * - a `middlewares` list names the app's own middlewares or the Hub's shared ones;
  * - a router's `rule` keeps it to the app's own hosts;
@@ -69,6 +70,7 @@ export const TRAEFIK_LABEL_REFUSALS: ReadonlySet<string> = new Set([
   'CUSTOM_APP_ERROR_TRAEFIK_SERVICE_NOT_OWN',
   'CUSTOM_APP_ERROR_TRAEFIK_MIDDLEWARE_NOT_OWN',
   'CUSTOM_APP_ERROR_TRAEFIK_RULE_NOT_OWN_HOST',
+  'CUSTOM_APP_ERROR_TRAEFIK_ENABLE_WITHOUT_ROUTER',
 ]);
 
 /**
@@ -138,7 +140,44 @@ export function collectTraefikLabelIssues(
       issues.push(issue);
     }
   }
+  // Judged on the labels that pass, since a router refused above is one the builder leaves out.
+  const refused = new Set(issues.map((issue) => issue.label));
+  const kept = Object.fromEntries(entries.filter(([label]) => !refused.has(label)));
+  for (const label of traefikEnableLabelsWithoutRouter(kept)) {
+    issues.push({ label, message: 'CUSTOM_APP_ERROR_TRAEFIK_ENABLE_WITHOUT_ROUTER', params: { label } });
+  }
   return issues;
+}
+
+/** What Go's `strconv.ParseBool` reads as false, and so leaves a container off Traefik. */
+const TRAEFIK_ENABLE_OFF = new Set(['0', 'f', 'F', 'false', 'FALSE', 'False']);
+
+/**
+ * The `traefik.enable` labels in `labels` that turn Traefik on for a container that declares no HTTP
+ * router.
+ *
+ * Traefik makes a router of its own for such a container, with no middlewares. The Hub puts its login
+ * on the routers a service declares (`withHubLoginOnEveryRouter`), so none was in front of that one.
+ * Any value but a false one counts: a compose expansion could turn it on after this check.
+ *
+ * The Hub's own routers on the main service are not in an app's labels, so a main service that says
+ * `traefik.enable` with no router of its own counts too: on This machine only the Hub declares none.
+ */
+export function traefikEnableLabelsWithoutRouter(labels: Record<string, unknown>): string[] {
+  const enables: string[] = [];
+  for (const [label, value] of Object.entries(labels)) {
+    // Compose writes a YAML number as its digits, so `0` is off too.
+    const text = typeof value === 'string' || typeof value === 'number' ? String(value) : undefined;
+    if (label.toLowerCase() === 'traefik.enable' && value !== false && !(text !== undefined && TRAEFIK_ENABLE_OFF.has(text))) {
+      enables.push(label);
+    }
+  }
+  return enables.length > 0 && !declaresTraefikRouter(labels) ? enables : [];
+}
+
+/** Whether `labels` declare an HTTP router. */
+export function declaresTraefikRouter(labels: Record<string, unknown>): boolean {
+  return Object.keys(labels).some((label) => HTTP_OBJECT_LABEL.exec(label)?.[1]?.toLowerCase() === 'routers');
 }
 
 /**
@@ -557,5 +596,36 @@ function restrictsToOwnHost(node: RuleNode): boolean {
       return node.operands.some(restrictsToOwnHost);
     default:
       return node.operands.every(restrictsToOwnHost);
+  }
+}
+
+/**
+ * Whether a router rule matches only paths it names, none of them `/`: a `Path()`, or a
+ * `PathPrefix()` other than `/`, in every branch of an OR. A rule that doesn't, such as
+ * `Host(`${APP_DOMAIN}`)`, `Host(...) && !PathPrefix(`/health`)` or `Host(a) || Host(b) && PathPrefix(`/api`)`,
+ * also matches `/sw.js` and the rest of the app's address. A rule that can't be parsed doesn't.
+ */
+export function ruleNeedsPath(rule: string): boolean {
+  const tokens = tokenizeRule(rule);
+  if (!tokens) {
+    return false;
+  }
+  const parser = { tokens, position: 0 };
+  const node = parseOr(parser, 0);
+  return node !== undefined && parser.position === tokens.length && needsPath(node);
+}
+
+function needsPath(node: RuleNode): boolean {
+  switch (node.kind) {
+    case 'matcher': {
+      const name = node.name.toLowerCase();
+      return (name === 'path' || name === 'pathprefix') && node.args.length > 0 && node.args.every((path) => path !== '' && path !== '/');
+    }
+    case 'not':
+      return false;
+    case 'and':
+      return node.operands.some(needsPath);
+    default:
+      return node.operands.every(needsPath);
   }
 }

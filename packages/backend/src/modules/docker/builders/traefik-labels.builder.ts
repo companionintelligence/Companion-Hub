@@ -1,5 +1,5 @@
 import { appNetworkName, createAppUrn } from '@/common/helpers/app-helpers';
-import { HUB_FORWARD_AUTH_MIDDLEWARES } from '@ci-hub/common/schemas';
+import { HUB_FORWARD_AUTH_MIDDLEWARES, ruleNeedsPath } from '@ci-hub/common/schemas';
 
 export type ExposureMode = 'local' | 'cloudflare' | 'tailscale';
 
@@ -22,6 +22,8 @@ const INSECURE_ROUTER_SUFFIX = '-insecure';
 const TAILSCALE_ROUTER_SUFFIX = '-tailscale';
 /** The app's middleware that sets the forwarded public host: `<app id>-public-host`. */
 const PUBLIC_HOST_MIDDLEWARE_SUFFIX = '-public-host';
+/** Its copy on the app's other services, for their own routes: `<app id>-public-host-side` ({@link withPublicHostMiddlewareCopy}). */
+const SIDE_PUBLIC_HOST_MIDDLEWARE_SUFFIX = '-public-host-side';
 /** The app's routers for a browser's fetch of its `/sw.js` (#2324): `<app id>-sw-reset` and `<app id>-sw-reset-insecure`. */
 const SW_RESET_ROUTER_SUFFIX = '-sw-reset';
 
@@ -34,6 +36,7 @@ export const HUB_ROUTE_NAME_SUFFIXES: readonly string[] = [
   INSECURE_ROUTER_SUFFIX,
   TAILSCALE_ROUTER_SUFFIX,
   PUBLIC_HOST_MIDDLEWARE_SUFFIX,
+  SIDE_PUBLIC_HOST_MIDDLEWARE_SUFFIX,
   SW_RESET_ROUTER_SUFFIX,
   `${SW_RESET_ROUTER_SUFFIX}${INSECURE_ROUTER_SUFFIX}`,
 ];
@@ -62,6 +65,8 @@ export const APP_STARTING_MIDDLEWARE = 'ci-hub-app-starting@file';
 
 /** `traefik.http.routers.<router>.<option>`. Traefik reads option names without regard to case. */
 const HTTP_ROUTER_LABEL = /^traefik\.http\.routers\.([^.]+)\.(.+)$/i;
+/** `traefik.http.<routers|services|middlewares>.<name>.<option>`. */
+const HTTP_OBJECT_LABEL = /^traefik\.http\.(routers|services|middlewares)\.([^.]+)\./i;
 
 function middlewareChain(value: string | boolean | undefined): string[] {
   return typeof value === 'string'
@@ -276,6 +281,142 @@ export function withAppStartingPage(labels: Record<string, string | boolean>): R
     result[key] = chain.join(',');
   }
   return result;
+}
+
+/**
+ * Every `Host()` or `HostHeader()` matcher in a rule, whatever hosts it names. `HostHeader()` and
+ * several hosts in one matcher are the v2 rule syntax, which a router may still ask for.
+ */
+const ANY_HOST_MATCHER = /\bHost(?:Header)?\(\s*(?:`[^`]*`|"(?:[^"\\]|\\.)*")(?:\s*,\s*(?:`[^`]*`|"(?:[^"\\]|\\.)*"))*\s*\)/gi;
+/** The app's public address as a matcher's argument, in the text a manifest wrote: compose fills it in later. */
+const PUBLIC_ADDRESS_HOST = /^(?:`\$\{(?:APP_DOMAIN|APP_BASE_HOST)\}`|"\$\{(?:APP_DOMAIN|APP_BASE_HOST)\}")$/i;
+/** The hosts of a matcher {@link ANY_HOST_MATCHER} found. */
+const MATCHER_HOST = /`[^`]*`|"(?:[^"\\]|\\.)*"/g;
+/** The names of the routers the builder makes for an app, in lower case. */
+function hubRouterNames(appId: string): Set<string> {
+  return new Set([appId, ...HUB_ROUTE_NAME_SUFFIXES.map((suffix) => `${appId}${suffix}`)].map((name) => name.toLowerCase()));
+}
+
+/**
+ * On Public web, has a manifest's router on the app's public address (`${APP_DOMAIN}` or
+ * `${APP_BASE_HOST}`) answer the tunnel too, which sends the origin host the Hub's own routers match.
+ * Each such `Host()` becomes `(Host(...) || Host(<origin host>))`, so the rest of the rule binds as
+ * before. The router also gets the app's public-host middleware first in its own chain (`publicHost`):
+ * `<app id>-public-host` on the main service and its copy on the others (`sideService`).
+ *
+ * Left as written: the Hub's own routers (a longer rule there would outrank the reset routers) and a
+ * rule that doesn't keep to paths of its own (`ruleNeedsPath`), such as `Host(`${APP_DOMAIN}`)` or
+ * one with a host-only branch. Widened, that one would take the app's whole address from the Hub's
+ * route and outrank the reset router for a signed-out fetch of `/sw.js` (#2324). Runs after
+ * interpolation.
+ */
+export function withTunnelHostOnPublicAddressRules(
+  labels: Record<string, string | boolean>,
+  { appId, originHost, publicHost, sideService = false }: { appId: string; originHost: string; publicHost: boolean; sideService?: boolean },
+): Record<string, string | boolean> {
+  const hubRouters = hubRouterNames(appId);
+  const result = { ...labels };
+  const rewritten = new Map<string, string>();
+  for (const [key, value] of Object.entries(labels)) {
+    const [, router, option] = HTTP_ROUTER_LABEL.exec(key) ?? [];
+    if (
+      !router ||
+      option?.toLowerCase().split('.').pop() !== 'rule' ||
+      hubRouters.has(router.toLowerCase()) ||
+      typeof value !== 'string' ||
+      !ruleNeedsPath(value)
+    ) {
+      continue;
+    }
+    const rule = value.replace(ANY_HOST_MATCHER, (matcher) =>
+      (matcher.match(MATCHER_HOST) ?? []).some((host) => PUBLIC_ADDRESS_HOST.test(host)) ? `(${matcher} || Host(\`${originHost}\`))` : matcher,
+    );
+    if (rule !== value) {
+      result[key] = rule;
+      rewritten.set(router.toLowerCase(), router);
+    }
+  }
+  if (!publicHost) {
+    return result;
+  }
+  const middleware = `${appId}${sideService ? SIDE_PUBLIC_HOST_MIDDLEWARE_SUFFIX : PUBLIC_HOST_MIDDLEWARE_SUFFIX}@docker`;
+  for (const [lower, router] of rewritten) {
+    const chainKey =
+      Object.keys(result).find((key) => {
+        const [, name, option] = HTTP_ROUTER_LABEL.exec(key) ?? [];
+        return name?.toLowerCase() === lower && option?.toLowerCase() === 'middlewares';
+      }) ?? `traefik.http.routers.${router}.middlewares`;
+    result[chainKey] = [middleware, ...middlewareChain(result[chainKey])].join(',');
+  }
+  return result;
+}
+
+/**
+ * Turns Traefik on for a service of the app that declares routers of its own, so a listing's routes on
+ * its other services (Public Pool's API, Skyvern's backend) are loaded. The caller does it on Public
+ * web only. The routers already carry the login.
+ *
+ * Not for a service with a router that has no rule (Traefik would make one up from the container's
+ * name), one that sets `traefik.enable` itself, or one that defines a router, service or middleware
+ * of a Hub name. Traefik drops a router or middleware two containers define differently and puts both
+ * containers behind a service they both define. Either way the Hub's route of the app breaks.
+ */
+export function withTraefikOnRoutingService(
+  labels: Record<string, string | boolean>,
+  { appId }: { appId: string },
+): Record<string, string | boolean> {
+  const hubRouters = hubRouterNames(appId);
+  const hasRule = new Map<string, boolean>();
+  for (const key of Object.keys(labels)) {
+    if (key.toLowerCase() === 'traefik.enable') {
+      return labels;
+    }
+    const [, kind, name] = HTTP_OBJECT_LABEL.exec(key) ?? [];
+    if (kind && name && kind.toLowerCase() !== 'routers' && hubRouters.has(name.toLowerCase())) {
+      return labels;
+    }
+    const [, router, option] = HTTP_ROUTER_LABEL.exec(key) ?? [];
+    if (router && option) {
+      const name = router.toLowerCase();
+      if (hubRouters.has(name)) {
+        return labels;
+      }
+      hasRule.set(name, hasRule.get(name) === true || option.toLowerCase().split('.').pop() === 'rule');
+    }
+  }
+  return hasRule.size > 0 && [...hasRule.values()].every(Boolean) ? { ...labels, 'traefik.enable': true } : labels;
+}
+
+/**
+ * Defines `<app id>-public-host-side` on a service whose routers name it: the main service's
+ * `<app id>-public-host` under that name, with the values the main service has (Donetick and Firefly
+ * III set their own there).
+ *
+ * The middleware has to be on the container whose routers use it. Traefik drops a router whose
+ * middleware is missing, so a listing's routes on its other services went down while the main
+ * container restarted. It is a name of its own because Traefik also drops a middleware two
+ * containers define differently, which a user config on the main service could do. A service that
+ * defines it itself keeps its own.
+ */
+export function withPublicHostMiddlewareCopy(
+  labels: Record<string, string | boolean>,
+  mainLabels: Record<string, string | boolean>,
+  { appId }: { appId: string },
+): Record<string, string | boolean> {
+  const side = `${appId}${SIDE_PUBLIC_HOST_MIDDLEWARE_SUFFIX}`.toLowerCase();
+  const mainPrefix = `traefik.http.middlewares.${appId}${PUBLIC_HOST_MIDDLEWARE_SUFFIX}.`.toLowerCase();
+  const namesIt = Object.entries(labels).some(
+    ([key, value]) =>
+      HTTP_ROUTER_LABEL.exec(key)?.[2]?.toLowerCase() === 'middlewares' &&
+      middlewareChain(value).some((name) => name.toLowerCase() === `${side}@docker`),
+  );
+  if (!namesIt || Object.keys(labels).some((key) => key.toLowerCase().startsWith(`traefik.http.middlewares.${side}.`))) {
+    return labels;
+  }
+  const copy = Object.entries(mainLabels)
+    .filter(([key]) => key.toLowerCase().startsWith(mainPrefix))
+    .map(([key, value]) => [`traefik.http.middlewares.${appId}${SIDE_PUBLIC_HOST_MIDDLEWARE_SUFFIX}.${key.slice(mainPrefix.length)}`, value]);
+  return { ...labels, ...Object.fromEntries(copy) };
 }
 
 /** The app id placeholders `ServiceBuilder.interpolateVariables` writes the app id into. */

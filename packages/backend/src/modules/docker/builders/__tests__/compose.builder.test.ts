@@ -1243,10 +1243,14 @@ describe('DockerComposeBuilder — the app-starting page on every app router', (
       },
     ]);
 
-    expect(services.admin?.labels['traefik.http.routers.nginx-store-id-admin.rule']).toBe('Host(`${APP_DOMAIN}`) && PathPrefix(`/admin`)');
+    // With the host the tunnel sends, which the public address never is.
+    expect(services.admin?.labels['traefik.http.routers.nginx-store-id-admin.rule']).toBe(
+      `(Host(\`\${APP_DOMAIN}\`) || Host(\`${ORIGIN}\`)) && PathPrefix(\`/admin\`)`,
+    );
     // Behind the edge strip and the Hub login like the app's own route: it once served /admin with neither.
+    // It answers the public address, so it says so to the service as the app's own route does.
     expect(services.admin?.labels['traefik.http.routers.nginx-store-id-admin.middlewares']).toBe(
-      'ci-hub-edge-headers@file,ci-hub@file,ci-hub-app-starting@file',
+      'ci-hub-edge-headers@file,ci-hub@file,nginx-store-id-public-host-side@docker,ci-hub-app-starting@file',
     );
   });
 
@@ -1599,7 +1603,7 @@ describe('DockerComposeBuilder — an app’s Traefik labels stay inside the app
     );
 
     expect(labels).toMatchObject({
-      'traefik.http.routers.my-app-_user-side.rule': 'Host(`${APP_DOMAIN}`) && PathPrefix(`/side`)',
+      'traefik.http.routers.my-app-_user-side.rule': `(Host(\`\${APP_DOMAIN}\`) || Host(\`${ORIGIN}\`)) && PathPrefix(\`/side\`)`,
       'traefik.http.routers.my-app-_user-shadow.priority': '9999',
       'traefik.http.routers.my-app-_user.rule': `Host(\`${ORIGIN}\`)`,
       'traefik.http.routers.my-app-_user.service': 'my-app-_user',
@@ -1833,7 +1837,7 @@ describe('DockerComposeBuilder: a name that starts with this app’s id can be a
       const labels = await build(createAppUrn('app', 'home'), ['app-home', 'app-home-lab'], reachingLabels);
 
       expect(labels).toMatchObject({
-        'traefik.http.routers.app-home-side.rule': 'Host(`${APP_DOMAIN}`) && PathPrefix(`/side`)',
+        'traefik.http.routers.app-home-side.rule': `(Host(\`\${APP_DOMAIN}\`) || Host(\`${ORIGIN}\`)) && PathPrefix(\`/side\`)`,
         'traefik.http.routers.app-home-web.service': 'app-home-web',
         'traefik.http.services.app-home-web.loadbalancer.server.port': '8080',
         // The Hub's own route for the app is untouched.
@@ -1869,6 +1873,7 @@ describe('DockerComposeBuilder: a name that starts with this app’s id can be a
     });
 
     expect(labels).toMatchObject({
+      // A rule on the address alone is left as written: the Hub's own route serves the address.
       'traefik.http.routers.app-home-lab-web.rule': 'Host(`${APP_DOMAIN}`)',
       'traefik.http.routers.app-home-lab-web.service': 'app-home-lab',
       'traefik.http.routers.app-home-lab.service': 'app-home-lab',
@@ -1906,7 +1911,7 @@ describe('DockerComposeBuilder: a name that starts with this app’s id can be a
 
       // The Hub's own rule stays on its router.
       expect(labels['traefik.http.routers.app-home.rule']).toBe(`Host(\`${ORIGIN}\`)`);
-      expect(labels['traefik.http.routers.app-home-api.rule']).toBe('Host(`${APP_DOMAIN}`) && PathPrefix(`/api`)');
+      expect(labels['traefik.http.routers.app-home-api.rule']).toBe(`(Host(\`\${APP_DOMAIN}\`) || Host(\`${ORIGIN}\`)) && PathPrefix(\`/api\`)`);
       expect(warn.mock.calls.map(([line]) => String(line))).toEqual(
         expect.arrayContaining([
           expect.stringMatching(
@@ -1927,5 +1932,490 @@ describe('DockerComposeBuilder: a name that starts with this app’s id can be a
     });
 
     expect(Object.keys(labels).filter((key) => key.includes('marketplace'))).toEqual([]);
+  });
+});
+
+/*
+ * #2623: a listing's routes for paths of its own (Koodo Reader's library server, Public Pool's API)
+ * named the public address, which the Cloudflare tunnel never sends, so the app's web page answered
+ * those paths. The ones on a service other than the main one weren't even loaded: Traefik reads no
+ * container that doesn't ask for it.
+ */
+describe('DockerComposeBuilder: a listing’s own routes', () => {
+  const ORIGIN = 'nginx-hub1-acme.ci.lan';
+  const LIBRARY_RULE = 'Host(`${APP_DOMAIN}`) && (PathPrefix(`/upload`) || PathPrefix(`/opds`))';
+  const API_RULE = 'Host(`${APP_DOMAIN}`) && PathPrefix(`/api`)';
+
+  // Koodo Reader's shape: a second Traefik service on the main container, for its library server.
+  const web: ServiceInput = {
+    ...mainService,
+    extraLabels: {
+      'traefik.http.routers.{{CI_HUB_APP_ID}}-library.rule': LIBRARY_RULE,
+      'traefik.http.routers.{{CI_HUB_APP_ID}}-library.entrypoints': 'web',
+      'traefik.http.routers.{{CI_HUB_APP_ID}}-library.service': '{{CI_HUB_APP_ID}}-library',
+      'traefik.http.services.{{CI_HUB_APP_ID}}-library.loadbalancer.server.port': '8080',
+    },
+  };
+  // Public Pool's shape: its API is a service of its own.
+  const api: ServiceInput = {
+    name: 'api',
+    image: 'api:latest',
+    internalPort: 3334,
+    extraLabels: {
+      'traefik.http.routers.{{CI_HUB_APP_ID}}-api-insecure.rule': API_RULE,
+      'traefik.http.routers.{{CI_HUB_APP_ID}}-api-insecure.entrypoints': 'web',
+      'traefik.http.routers.{{CI_HUB_APP_ID}}-api-insecure.priority': '100',
+      'traefik.http.routers.{{CI_HUB_APP_ID}}-api-insecure.middlewares': 'ci-hub@docker',
+      'traefik.http.routers.{{CI_HUB_APP_ID}}-api-insecure.service': '{{CI_HUB_APP_ID}}-api',
+      'traefik.http.services.{{CI_HUB_APP_ID}}-api.loadbalancer.server.port': '3334',
+    },
+  };
+  const db: ServiceInput = { name: 'db', image: 'postgres:16' };
+
+  const labelsFor = async (form: Record<string, unknown>, services: ServiceInput[] = [web, api, db]) => {
+    const result = await new DockerComposeBuilder('ci.computer', 'ci.lan').getDockerCompose(
+      services,
+      form,
+      urn,
+      subnet,
+      'ci.computer',
+      'ci.lan',
+      undefined,
+      form.exposureMode === 'cloudflare' ? ORIGIN : undefined,
+      form.exposureMode === 'cloudflare' ? 'nginx-hub1-acme.ci.computer' : undefined,
+    );
+    return yaml.parse(result).services as Record<string, { labels: Record<string, string | boolean> }>;
+  };
+
+  it('answers the host the tunnel sends on Public web as well as the public address', async () => {
+    const services = await labelsFor({ exposureMode: 'cloudflare', enableAuth: true });
+
+    // In parentheses, so the paths still bind to both hosts.
+    expect(services.nginx?.labels['traefik.http.routers.nginx-store-id-library.rule']).toBe(
+      `(Host(\`\${APP_DOMAIN}\`) || Host(\`${ORIGIN}\`)) && (PathPrefix(\`/upload\`) || PathPrefix(\`/opds\`))`,
+    );
+    expect(services.api?.labels['traefik.http.routers.nginx-store-id-api-insecure.rule']).toBe(
+      `(Host(\`\${APP_DOMAIN}\`) || Host(\`${ORIGIN}\`)) && PathPrefix(\`/api\`)`,
+    );
+    // The Hub's own routes are as they were.
+    expect(services.nginx?.labels['traefik.http.routers.nginx-store-id-insecure.rule']).toBe(`Host(\`${ORIGIN}\`)`);
+    expect(services.nginx?.labels['traefik.http.routers.nginx-store-id-sw-reset-insecure.rule']).toBe(
+      `Host(\`${ORIGIN}\`) && Path(\`/sw.js\`) && Header(\`Service-Worker\`, \`script\`)`,
+    );
+  });
+
+  it('gives a rule on the base URL’s host and the quoted spelling the same', async () => {
+    const services = await labelsFor({ exposureMode: 'cloudflare' }, [
+      mainService,
+      {
+        ...api,
+        extraLabels: {
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-api.rule': 'Host("${APP_BASE_HOST}") && PathPrefix("/api") && !PathPrefix(`/api/health`)',
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-lan.rule': 'Host(`${APP_LOCAL_DOMAIN}`) && PathPrefix(`/lan`)',
+        },
+      },
+    ]);
+
+    expect(services.api?.labels['traefik.http.routers.nginx-store-id-api.rule']).toBe(
+      `(Host("\${APP_BASE_HOST}") || Host(\`${ORIGIN}\`)) && PathPrefix("/api") && !PathPrefix(\`/api/health\`)`,
+    );
+    // Already the host the tunnel sends.
+    expect(services.api?.labels['traefik.http.routers.nginx-store-id-lan.rule']).toBe('Host(`${APP_LOCAL_DOMAIN}`) && PathPrefix(`/lan`)');
+  });
+
+  // Widened, each would answer every path of the address the Hub's own route serves, `/sw.js` too.
+  it.each([
+    ['all but a path', 'Host(`${APP_DOMAIN}`) && !PathPrefix(`/health`)'],
+    ['a host-only branch', 'Host(`${APP_DOMAIN}`) || Host(`${APP_LOCAL_DOMAIN}`) && PathPrefix(`/api`)'],
+    ['no path at all', 'Host(`${APP_DOMAIN}`) && Method(`GET`)'],
+  ])('leaves a rule that keeps to no path of its own as written (%s)', async (_shape, rule) => {
+    const services = await labelsFor({ exposureMode: 'cloudflare' }, [
+      mainService,
+      { ...api, extraLabels: { 'traefik.http.routers.{{CI_HUB_APP_ID}}-api.rule': rule } },
+    ]);
+
+    expect(services.api?.labels['traefik.http.routers.nginx-store-id-api.rule']).toBe(rule);
+  });
+
+  // Traefik would put both containers behind the app's own service, or drop it.
+  it('keeps a service that defines one of the Hub’s names off Traefik', async () => {
+    const services = await labelsFor({ exposureMode: 'cloudflare', enableAuth: true }, [
+      mainService,
+      {
+        ...api,
+        extraLabels: {
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-api.rule': API_RULE,
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-api.service': '{{CI_HUB_APP_ID}}',
+          'traefik.http.services.{{CI_HUB_APP_ID}}.loadbalancer.server.port': '3334',
+        },
+      },
+    ]);
+
+    expect(services.api?.labels).not.toHaveProperty(['traefik.enable']);
+  });
+
+  // Kimai's and IPFS's shape. A longer rule there would outrank the service-worker reset routers.
+  it('leaves a rule a manifest set on the Hub’s own routers as it is', async () => {
+    const rule = 'Host(`${APP_LOCAL_DOMAIN}`) || Host(`${APP_BASE_HOST}`)';
+    const services = await labelsFor({ exposureMode: 'cloudflare' }, [
+      {
+        ...mainService,
+        extraLabels: { 'traefik.http.routers.{{CI_HUB_APP_ID}}.rule': rule, 'traefik.http.routers.{{CI_HUB_APP_ID}}-insecure.rule': rule },
+      },
+    ]);
+
+    expect(services.nginx?.labels['traefik.http.routers.nginx-store-id.rule']).toBe(rule);
+    expect(services.nginx?.labels['traefik.http.routers.nginx-store-id-insecure.rule']).toBe(rule);
+  });
+
+  it('lets Traefik read a service with routes of its own, behind the same login as the app', async () => {
+    const services = await labelsFor({ exposureMode: 'cloudflare', enableAuth: true });
+
+    expect(services.api?.labels['traefik.enable']).toBe(true);
+    expect(services.api?.labels['traefik.http.routers.nginx-store-id-api-insecure.middlewares']).toBe(
+      'ci-hub-edge-headers@file,ci-hub@file,nginx-store-id-public-host-side@docker,ci-hub-app-starting@file',
+    );
+    // A service with no route of its own stays out of Traefik: it would get a router on its name.
+    expect(services.db?.labels).not.toHaveProperty(['traefik.enable']);
+    expect(services.nginx?.labels['traefik.enable']).toBe(true);
+  });
+
+  // Its visitors go past Traefik to the main container, which the Private VPN finds by `traefik.enable`.
+  it('turns nothing more on for the Private VPN, whose visitors never come through these routes', async () => {
+    const services = await labelsFor({ exposureMode: 'tailscale', enableAuth: true });
+
+    expect(services.api?.labels).not.toHaveProperty(['traefik.enable']);
+    expect(services.db?.labels).not.toHaveProperty(['traefik.enable']);
+    expect(services.nginx?.labels['traefik.enable']).toBe(true);
+    // Still behind the login, should something turn Traefik on for it.
+    expect(services.api?.labels['traefik.http.routers.nginx-store-id-api-insecure.middlewares']).toBe('ci-hub@file,ci-hub-app-starting@file');
+  });
+
+  // Most Traefik labels copied from elsewhere route a host and nothing else. Widened, such a router
+  // would take the whole address from the Hub's route and outrank its service-worker reset (#2324).
+  it('leaves a rule that names only the address as written', async () => {
+    const hostOnly = {
+      'traefik.http.routers.{{CI_HUB_APP_ID}}-web.rule': 'Host(`${APP_DOMAIN}`)',
+      'traefik.http.routers.{{CI_HUB_APP_ID}}-both.rule': 'Host(`${APP_DOMAIN}`) || Host(`${APP_LOCAL_DOMAIN}`)',
+      'traefik.http.routers.{{CI_HUB_APP_ID}}-root.rule': '(Host("${APP_BASE_HOST}") && PathPrefix(`/`))',
+      'traefik.http.routers.{{CI_HUB_APP_ID}}-path.rule': 'Host(`${APP_DOMAIN}`) && PathPrefix(`/s`)',
+    };
+    const services = await labelsFor({ exposureMode: 'cloudflare', enableAuth: true }, [
+      mainService,
+      { ...api, extraLabels: { ...api.extraLabels, ...hostOnly } },
+    ]);
+    const labels = services.api?.labels ?? {};
+
+    expect(labels['traefik.http.routers.nginx-store-id-web.rule']).toBe('Host(`${APP_DOMAIN}`)');
+    expect(labels['traefik.http.routers.nginx-store-id-both.rule']).toBe('Host(`${APP_DOMAIN}`) || Host(`${APP_LOCAL_DOMAIN}`)');
+    expect(labels['traefik.http.routers.nginx-store-id-root.rule']).toBe('(Host("${APP_BASE_HOST}") && PathPrefix(`/`))');
+    // They answer no address of their own, so they don't say it, and keep the login all the same.
+    expect(labels['traefik.http.routers.nginx-store-id-web.middlewares']).toBe('ci-hub-edge-headers@file,ci-hub@file,ci-hub-app-starting@file');
+    // A path of its own is still a route of the app's.
+    expect(labels['traefik.http.routers.nginx-store-id-path.rule']).toBe(`(Host(\`\${APP_DOMAIN}\`) || Host(\`${ORIGIN}\`)) && PathPrefix(\`/s\`)`);
+    expect(labels['traefik.http.routers.nginx-store-id-path.middlewares']).toBe(
+      'ci-hub-edge-headers@file,ci-hub@file,nginx-store-id-public-host-side@docker,ci-hub-app-starting@file',
+    );
+  });
+
+  it('leaves the rules as written on the Private VPN, whose visitors never come through them', async () => {
+    const services = await labelsFor({ exposureMode: 'tailscale', enableAuth: true });
+
+    expect(services.nginx?.labels['traefik.http.routers.nginx-store-id-library.rule']).toBe(LIBRARY_RULE);
+    expect(services.api?.labels['traefik.http.routers.nginx-store-id-api-insecure.rule']).toBe(API_RULE);
+  });
+
+  it('turns nothing on for an app on This machine only, which Traefik has no route of', async () => {
+    const services = await labelsFor({ exposureMode: 'local' });
+
+    expect(services.api?.labels).not.toHaveProperty(['traefik.enable']);
+    expect(services.nginx?.labels).not.toHaveProperty(['traefik.enable']);
+    expect(services.api?.labels['traefik.http.routers.nginx-store-id-api-insecure.rule']).toBe(API_RULE);
+  });
+
+  it('tells the service the public address only where the Hub has that middleware, and keeps its own chain after the login', async () => {
+    const withChain: ServiceInput = {
+      ...api,
+      extraLabels: {
+        ...api.extraLabels,
+        'traefik.http.routers.{{CI_HUB_APP_ID}}-api-insecure.middlewares': '{{CI_HUB_APP_ID}}-strip@docker,ci-hub@docker',
+        'traefik.http.middlewares.{{CI_HUB_APP_ID}}-strip.stripprefix.prefixes': '/api',
+      },
+    };
+    const services = await labelsFor({ exposureMode: 'cloudflare', enableAuth: true }, [mainService, withChain]);
+    expect(services.api?.labels['traefik.http.routers.nginx-store-id-api-insecure.middlewares']).toBe(
+      'ci-hub-edge-headers@file,ci-hub@file,nginx-store-id-public-host-side@docker,nginx-store-id-strip@docker,ci-hub-app-starting@file',
+    );
+
+    // No public hostname, no `-public-host` middleware on the main container to name.
+    const result = await new DockerComposeBuilder('ci.computer', 'ci.lan').getDockerCompose(
+      [mainService, api],
+      { exposureMode: 'cloudflare', enableAuth: true },
+      urn,
+      subnet,
+      'ci.computer',
+      'ci.lan',
+      undefined,
+      ORIGIN,
+    );
+    const labels = yaml.parse(result).services.api.labels as Record<string, string>;
+    expect(labels['traefik.http.routers.nginx-store-id-api-insecure.rule']).toBe(
+      `(Host(\`\${APP_DOMAIN}\`) || Host(\`${ORIGIN}\`)) && PathPrefix(\`/api\`)`,
+    );
+    expect(labels['traefik.http.routers.nginx-store-id-api-insecure.middlewares']).toBe(
+      'ci-hub-edge-headers@file,ci-hub@file,ci-hub-app-starting@file',
+    );
+  });
+
+  it('turns nothing on for Public web when the Hub built no route of the app', async () => {
+    const result = await new DockerComposeBuilder('ci.computer', 'ci.lan').getDockerCompose(
+      [mainService, api],
+      { exposureMode: 'cloudflare' },
+      urn,
+      subnet,
+    );
+    const services = yaml.parse(result).services as Record<string, { labels: Record<string, string | boolean> }>;
+
+    expect(services.nginx?.labels['traefik.enable']).toBe(false);
+    expect(services.api?.labels).not.toHaveProperty(['traefik.enable']);
+  });
+
+  it('turns nothing on for a router with no rule, or for a service that says itself', async () => {
+    const services = await labelsFor({ exposureMode: 'cloudflare' }, [
+      mainService,
+      { ...api, name: 'ruleless', extraLabels: { ...api.extraLabels, 'traefik.http.routers.{{CI_HUB_APP_ID}}-local.middlewares': 'ci-hub@file' } },
+      { ...api, name: 'off', extraLabels: { ...api.extraLabels, 'traefik.enable': false } },
+    ]);
+
+    expect(services.ruleless?.labels).not.toHaveProperty(['traefik.enable']);
+    expect(services.off?.labels['traefik.enable']).toBe(false);
+  });
+
+  // Traefik drops a router two containers define differently, and this one is the Hub's route of the app.
+  it('turns nothing on for a service with a router of one of the Hub’s own names', async () => {
+    const services = await labelsFor({ exposureMode: 'cloudflare', enableAuth: true }, [
+      mainService,
+      { ...api, extraLabels: { 'traefik.http.routers.{{CI_HUB_APP_ID}}-insecure.rule': 'Host(`${APP_LOCAL_DOMAIN}`) || Host(`${APP_BASE_HOST}`)' } },
+    ]);
+
+    expect(services.api?.labels).not.toHaveProperty(['traefik.enable']);
+  });
+
+  // No route of the Hub's on the main service, so no `-public-host` middleware for a router to name.
+  it('changes nothing on Public web when the main service has no port for the Hub to route', async () => {
+    const services = await labelsFor({ exposureMode: 'cloudflare', enableAuth: true }, [{ ...web, internalPort: undefined }, api]);
+
+    expect(services.nginx?.labels['traefik.http.routers.nginx-store-id-library.rule']).toBe(LIBRARY_RULE);
+    expect(services.nginx?.labels).not.toHaveProperty(['traefik.enable']);
+    expect(services.api?.labels).not.toHaveProperty(['traefik.enable']);
+    expect(JSON.stringify(services)).not.toContain('public-host');
+  });
+
+  // Traefik reads matcher names without regard to case, and the label check lets both through.
+  it('gives a lower-case host() and the v2 HostHeader() the same', async () => {
+    const services = await labelsFor({ exposureMode: 'cloudflare' }, [
+      mainService,
+      {
+        ...api,
+        extraLabels: {
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-api.rule': 'host(`${APP_DOMAIN}`) && PathPrefix(`/api`)',
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-v2.rule': 'HostHeader(`${APP_DOMAIN}`) && PathPrefix(`/v2`)',
+        },
+      },
+    ]);
+
+    expect(services.api?.labels['traefik.http.routers.nginx-store-id-api.rule']).toBe(
+      `(host(\`\${APP_DOMAIN}\`) || Host(\`${ORIGIN}\`)) && PathPrefix(\`/api\`)`,
+    );
+    expect(services.api?.labels['traefik.http.routers.nginx-store-id-v2.rule']).toBe(
+      `(HostHeader(\`\${APP_DOMAIN}\`) || Host(\`${ORIGIN}\`)) && PathPrefix(\`/v2\`)`,
+    );
+  });
+
+  // The v2 rule syntax a router may ask for takes several hosts in one matcher.
+  it('gives a matcher with several hosts, one of them the public address, the same', async () => {
+    const services = await labelsFor({ exposureMode: 'cloudflare' }, [
+      mainService,
+      {
+        ...api,
+        extraLabels: {
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-api.rule': 'Host(`${APP_DOMAIN}`, `${APP_LOCAL_DOMAIN}`) && PathPrefix(`/api`)',
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-api.rulesyntax': 'v2',
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-lan.rule': 'Host(`${APP_LOCAL_DOMAIN}`, `${APP_LOCAL_DOMAIN}`) && PathPrefix(`/lan`)',
+        },
+      },
+    ]);
+
+    expect(services.api?.labels['traefik.http.routers.nginx-store-id-api.rule']).toBe(
+      `(Host(\`\${APP_DOMAIN}\`, \`\${APP_LOCAL_DOMAIN}\`) || Host(\`${ORIGIN}\`)) && PathPrefix(\`/api\`)`,
+    );
+    expect(services.api?.labels['traefik.http.routers.nginx-store-id-lan.rule']).toBe(
+      'Host(`${APP_LOCAL_DOMAIN}`, `${APP_LOCAL_DOMAIN}`) && PathPrefix(`/lan`)',
+    );
+  });
+
+  // Traefik drops a router whose middleware is gone: Public Pool's API went down while its UI restarted.
+  it('defines the copy of the public-host middleware on a service whose routes name it', async () => {
+    const services = await labelsFor({ exposureMode: 'cloudflare', enableAuth: true });
+    const definition = (labels: Record<string, string | boolean> = {}, name = 'public-host') =>
+      Object.fromEntries(
+        Object.entries(labels)
+          .filter(([key]) => key.startsWith(`traefik.http.middlewares.nginx-store-id-${name}.`))
+          .map(([key, value]) => [key.slice(`traefik.http.middlewares.nginx-store-id-${name}.`.length), value]),
+      );
+
+    expect(Object.keys(definition(services.nginx?.labels))).toHaveLength(3);
+    expect(definition(services.api?.labels, 'public-host-side')).toEqual(definition(services.nginx?.labels));
+    // The main service's own one stays on the main container only, so a user config there can't make the two differ.
+    expect(definition(services.api?.labels)).toEqual({});
+    expect(definition(services.nginx?.labels, 'public-host-side')).toEqual({});
+    // Nothing for a service whose routes don't name it.
+    expect(definition(services.db?.labels, 'public-host-side')).toEqual({});
+  });
+
+  it('copies a listing’s own value for the public-host middleware from the main service', async () => {
+    const ownHost = {
+      'traefik.http.middlewares.{{CI_HUB_APP_ID}}-public-host.headers.customrequestheaders.X-Forwarded-Host': '${APP_BASE_HOST}',
+    };
+    const services = await labelsFor({ exposureMode: 'cloudflare', enableAuth: true }, [
+      { ...web, extraLabels: { ...web.extraLabels, ...ownHost } },
+      api,
+      {
+        ...api,
+        name: 'own',
+        extraLabels: { ...api.extraLabels, 'traefik.http.middlewares.{{CI_HUB_APP_ID}}-public-host-side.headers.customrequestheaders.X-Own': 'yes' },
+      },
+    ]);
+    const header = 'headers.customrequestheaders.X-Forwarded-Host';
+
+    expect(services.nginx?.labels[`traefik.http.middlewares.nginx-store-id-public-host.${header}`]).toBe('${APP_BASE_HOST}');
+    expect(services.api?.labels[`traefik.http.middlewares.nginx-store-id-public-host-side.${header}`]).toBe('${APP_BASE_HOST}');
+    // A service that defines the copy itself keeps what it has.
+    expect(services.own?.labels).not.toHaveProperty([`traefik.http.middlewares.nginx-store-id-public-host-side.${header}`]);
+    expect(services.own?.labels['traefik.http.middlewares.nginx-store-id-public-host-side.headers.customrequestheaders.X-Own']).toBe('yes');
+  });
+});
+
+// Traefik makes a router of its own for a container it reads that declares none, and none of the
+// Hub's middlewares is on it. An app saved before a save refused that reaches the builder with it.
+describe('DockerComposeBuilder: Traefik on for a service with no router of its own', () => {
+  const customUrn = createAppUrn('probe', '_user');
+  const ORIGIN = 'probe-hub1-acme.ci.lan';
+  const PORT = 'traefik.http.services.{{CI_HUB_APP_ID}}-extra.loadbalancer.server.port';
+  const web: ServiceInput = { name: 'web', image: 'nginx:alpine', isMain: true, internalPort: 80 };
+  const extra = (extraLabels: Record<string, string | boolean>): ServiceInput => ({ name: 'extra', image: 'nginx:alpine', extraLabels });
+
+  const build = async (form: Record<string, unknown>, services: ServiceInput[]) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const result = await new DockerComposeBuilder('ci.computer', 'ci.lan').getDockerCompose(
+        services,
+        form,
+        customUrn,
+        subnet,
+        'ci.computer',
+        'ci.lan',
+        undefined,
+        form.exposureMode === 'cloudflare' ? ORIGIN : undefined,
+        form.exposureMode === 'cloudflare' ? 'probe-hub1-acme.ci.computer' : undefined,
+      );
+      const labels = yaml.parse(result).services as Record<string, { labels: Record<string, string | boolean> }>;
+      return { labels, logged: warn.mock.calls.map(([line]) => String(line)) };
+    } finally {
+      warn.mockRestore();
+    }
+  };
+
+  const leftOut = (service: string, label: string) =>
+    expect.stringMatching(
+      new RegExp(`service "${service}": label ${label.replace(/\./g, '\\.')} was left out \\[CUSTOM_APP_ERROR_TRAEFIK_ENABLE_WITHOUT_ROUTER\\]`),
+    );
+
+  it.each([['cloudflare'], ['tailscale'], ['local']])('leaves it off Traefik on %s and says so in the log', async (exposureMode) => {
+    const { labels, logged } = await build({ exposureMode, enableAuth: true }, [web, extra({ 'traefik.enable': true, [PORT]: '80' })]);
+
+    expect(labels.extra?.labels).not.toHaveProperty(['traefik.enable']);
+    expect(labels.extra?.labels['traefik.http.services.probe-_user-extra.loadbalancer.server.port']).toBe('80');
+    expect(logged).toEqual(expect.arrayContaining([leftOut('extra', 'traefik.enable')]));
+  });
+
+  it('keeps the main service’s own routes behind the login', async () => {
+    const { labels } = await build({ exposureMode: 'cloudflare', enableAuth: true }, [web, extra({ 'traefik.enable': true, [PORT]: '80' })]);
+
+    expect(labels.web?.labels['traefik.enable']).toBe(true);
+    expect(labels.web?.labels['traefik.http.routers.probe-_user-insecure.middlewares']).toBe(
+      'ci-hub-edge-headers@file,ci-hub@file,probe-_user-public-host@docker,ci-hub-app-starting@file',
+    );
+  });
+
+  // On This machine only the Hub declares no router for the main service either.
+  it('leaves the main service off Traefik on This machine only', async () => {
+    const { labels, logged } = await build({ exposureMode: 'local', enableAuth: true }, [{ ...web, extraLabels: { 'traefik.enable': 'true' } }]);
+
+    expect(labels.web?.labels).not.toHaveProperty(['traefik.enable']);
+    expect(logged).toEqual(expect.arrayContaining([leftOut('web', 'traefik.enable')]));
+  });
+
+  it('keeps the Hub’s own switch on the main service on Public web', async () => {
+    const { labels } = await build({ exposureMode: 'cloudflare', enableAuth: true }, [{ ...web, extraLabels: { 'traefik.enable': true } }]);
+
+    expect(labels.web?.labels['traefik.enable']).toBe(true);
+    expect(labels.web?.labels['traefik.http.routers.probe-_user.rule']).toBe(`Host(\`${ORIGIN}\`)`);
+  });
+
+  it('leaves it off when every router the service declares is left out', async () => {
+    const { labels, logged } = await build({ exposureMode: 'cloudflare', enableAuth: true }, [
+      web,
+      extra({ 'traefik.enable': true, 'traefik.http.routers.extra.rule': 'Host(`${APP_DOMAIN}`)', [PORT]: '80' }),
+    ]);
+
+    expect(labels.extra?.labels).not.toHaveProperty(['traefik.enable']);
+    expect(logged).toEqual(expect.arrayContaining([leftOut('extra', 'traefik.enable')]));
+  });
+
+  // The whole router goes with a chain that is left out, which the label check alone can't see.
+  it('leaves it off when the service’s only router loses its chain', async () => {
+    const { labels, logged } = await build({ exposureMode: 'cloudflare', enableAuth: true }, [
+      web,
+      extra({
+        'traefik.enable': true,
+        'traefik.http.routers.{{CI_HUB_APP_ID}}-extra.rule': 'Host(`${APP_DOMAIN}`) && PathPrefix(`/x`)',
+        'traefik.http.routers.{{CI_HUB_APP_ID}}-extra.middlewares': 'n8n-ci-marketplace-auth@docker',
+        [PORT]: '80',
+      }),
+    ]);
+
+    expect(Object.keys(labels.extra?.labels ?? {}).filter((key) => key.includes('routers.'))).toEqual([]);
+    expect(labels.extra?.labels).not.toHaveProperty(['traefik.enable']);
+    expect(logged).toEqual(expect.arrayContaining([leftOut('extra', 'traefik.enable')]));
+  });
+
+  it('keeps it for a service with a route of its own, behind the login', async () => {
+    const { labels } = await build({ exposureMode: 'cloudflare', enableAuth: true }, [
+      web,
+      extra({
+        'traefik.enable': true,
+        'traefik.http.routers.{{CI_HUB_APP_ID}}-extra.rule': 'Host(`${APP_DOMAIN}`) && PathPrefix(`/x`)',
+        [PORT]: '80',
+      }),
+    ]);
+
+    expect(labels.extra?.labels['traefik.enable']).toBe(true);
+    expect(labels.extra?.labels['traefik.http.routers.probe-_user-extra.middlewares']).toBe(
+      'ci-hub-edge-headers@file,ci-hub@file,probe-_user-public-host-side@docker,ci-hub-app-starting@file',
+    );
+  });
+
+  // Traefik gives it its default rule. The router keeps the chain, the Hub login first.
+  it('keeps it for a router with no rule, which still gets the login', async () => {
+    const { labels } = await build({ exposureMode: 'cloudflare', enableAuth: true }, [
+      web,
+      extra({ 'traefik.enable': true, 'traefik.http.routers.{{CI_HUB_APP_ID}}-extra.entrypoints': 'web', [PORT]: '80' }),
+    ]);
+
+    expect(labels.extra?.labels['traefik.enable']).toBe(true);
+    expect(labels.extra?.labels['traefik.http.routers.probe-_user-extra.middlewares']).toBe(
+      'ci-hub-edge-headers@file,ci-hub@file,ci-hub-app-starting@file',
+    );
   });
 });

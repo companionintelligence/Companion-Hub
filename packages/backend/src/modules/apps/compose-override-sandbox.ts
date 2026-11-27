@@ -7,6 +7,7 @@ import {
   type AppSecurityGrants,
   collectServiceSecurityViolations,
   collectTraefikLabelIssues,
+  declaresTraefikRouter,
   HUB_INFRASTRUCTURE_NETWORK_NAMES,
   HUB_OWNED_APP_ENV_VARS,
   isReservedHubLabel,
@@ -295,9 +296,11 @@ interface ServiceCheckContext {
   appId: string;
   knownAppIds: Iterable<string> | undefined;
   hubEnvironment: ReadonlySet<string>;
+  /** The labels of each service in the compose the Hub wrote for the app. */
+  hubServiceLabels: Readonly<Record<string, Record<string, unknown>>>;
 }
 
-function checkLabels(value: unknown, path: string, context: ServiceCheckContext, violations: ComposeOverrideViolation[]): void {
+function checkLabels(value: unknown, path: string, service: string, context: ServiceCheckContext, violations: ComposeOverrideViolation[]): void {
   if (value === undefined || value === null) {
     return;
   }
@@ -327,9 +330,45 @@ function checkLabels(value: unknown, path: string, context: ServiceCheckContext,
       violations.push({ path: `${path}.${key}`, rule: 'CUSTOM_APP_ERROR_LABEL_RESERVED', detail: key });
     }
   }
+  // Compose lays these labels over the Hub's for the same service, so a router there counts.
+  const routedByHub = declaresTraefikRouter(context.hubServiceLabels[service] ?? {});
   for (const issue of collectTraefikLabelIssues(labels, context.appId, { knownAppIds: context.knownAppIds, appNetworks: context.appNetworks })) {
-    violations.push({ path: `${path}.${issue.label}`, rule: issue.message });
+    if (!(routedByHub && issue.message === 'CUSTOM_APP_ERROR_TRAEFIK_ENABLE_WITHOUT_ROUTER')) {
+      violations.push({ path: `${path}.${issue.label}`, rule: issue.message });
+    }
   }
+}
+
+/**
+ * The labels of each service in an app's compose file, as the Hub wrote it, for
+ * {@link collectComposeOverrideViolations}. Nothing for a file that is missing or can't be read.
+ *
+ * Before an app's first start there is no such file and `getDockerComposeYaml` reads its
+ * docker-compose.json, whose services are a list with their labels under `extraLabels`.
+ */
+export function composeServiceLabels(composeYaml: string | null | undefined): Record<string, Record<string, unknown>> {
+  const labels: Record<string, Record<string, unknown>> = {};
+  let parsed: unknown;
+  try {
+    parsed = composeYaml ? yaml.parse(composeYaml) : undefined;
+  } catch {
+    return labels;
+  }
+  const services = isMapping(parsed) ? parsed.services : undefined;
+  if (Array.isArray(services)) {
+    for (const service of services) {
+      if (isMapping(service) && typeof service.name === 'string' && isMapping(service.extraLabels)) {
+        labels[service.name] = service.extraLabels;
+      }
+    }
+    return labels;
+  }
+  for (const [name, service] of Object.entries(isMapping(services) ? services : {})) {
+    if (isMapping(service) && isMapping(service.labels)) {
+      labels[name] = service.labels;
+    }
+  }
+  return labels;
 }
 
 /** Variables the Hub's process defines aren't the app's to use. */
@@ -448,7 +487,7 @@ function checkService(name: string, service: Record<string, unknown>, context: S
 
   checkVolumesFrom(service.volumes_from, `${servicePath}.volumes_from`, violations);
   checkServiceNetworks(service.networks, `${servicePath}.networks`, context.allowedNetworks, violations);
-  checkLabels(service.labels, `${servicePath}.labels`, context, violations);
+  checkLabels(service.labels, `${servicePath}.labels`, name, context, violations);
   checkInheritedEnvironment(service.environment, `${servicePath}.environment`, context.hubEnvironment, violations);
   collectHubVariableReferences(service, servicePath, context.hubEnvironment, violations);
 }
@@ -536,7 +575,13 @@ function parseOverride(composeYaml: string, violations: ComposeOverrideViolation
 export function collectComposeOverrideViolations(
   composeYaml: string,
   appEnv: string,
-  options: { appUrn: AppUrn; knownAppIds?: Iterable<string>; hubEnvironment?: Iterable<string> },
+  options: {
+    appUrn: AppUrn;
+    knownAppIds?: Iterable<string>;
+    hubEnvironment?: Iterable<string>;
+    /** The labels of each service in the compose the Hub wrote for the app (`composeServiceLabels`). */
+    hubServiceLabels?: Readonly<Record<string, Record<string, unknown>>>;
+  },
 ): ComposeOverrideViolation[] {
   const { appUrn, knownAppIds } = options;
   const violations: ComposeOverrideViolation[] = [];
@@ -589,6 +634,7 @@ export function collectComposeOverrideViolations(
     appId: appIdOf(appName, appStoreId),
     knownAppIds,
     hubEnvironment,
+    hubServiceLabels: options.hubServiceLabels ?? {},
   };
   for (const [name, service] of Object.entries(services)) {
     if (service === null) {

@@ -45,6 +45,17 @@ describe('DockerReadFacade.getRoutedContainerNames', () => {
     expect(listContainers.mock.calls[0]?.[0]).toMatchObject({ all: true });
   });
 
+  // A listing's other services get `traefik.enable` for routes of their own. They don't carry the web route.
+  it("leaves out a routed container without the app's own service when another one has it", async () => {
+    const service = 'traefik.http.services.test-app-test-store.loadbalancer.server.port';
+    listContainers.mockResolvedValue([
+      { ...db, Labels: { 'traefik.enable': 'true', 'traefik.http.routers.test-app-test-store-s3.rule': 'Host(`s3`)' } },
+      { ...web, Labels: { 'traefik.enable': 'true', [service]: '80' } },
+    ]);
+
+    await expect(facade.getRoutedContainerNames(appUrn)).resolves.toEqual(['test-app_test-store-web-1']);
+  });
+
   it('downOnly leaves out a running routed container and its sibling', async () => {
     await expect(facade.getRoutedContainerNames(appUrn, { downOnly: true })).resolves.toEqual([]);
   });

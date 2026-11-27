@@ -56,6 +56,7 @@ describe('UserConfigService', () => {
       appsRepository.getApps.mockResolvedValue([] as any);
       appFilesManager.getUserComposeFile.mockResolvedValue({ path: 'compose-path', content: null });
       appFilesManager.getUserEnv.mockResolvedValue({ path: 'env-path', content: null });
+      appFilesManager.getDockerComposeYaml.mockResolvedValue({ path: 'app-compose-path', content: null });
     });
 
     it('should write config to files', async () => {
@@ -80,6 +81,21 @@ describe('UserConfigService', () => {
       });
 
       expect(filesystemService.writeTextFile).not.toHaveBeenCalled();
+    });
+
+    // Compose merges the override's labels onto the Hub's, so the Hub's routers count for it.
+    it('judges traefik.enable with the routers the Hub’s compose gives the service', async () => {
+      const enable = 'services:\n  web:\n    labels:\n      traefik.enable: "true"\n';
+      await expect(service.updateUserConfig('app:store' as any, { dockerCompose: enable, appEnv: '' })).rejects.toMatchObject({
+        response: { intlParams: { details: expect.stringContaining('CUSTOM_APP_ERROR_TRAEFIK_ENABLE_WITHOUT_ROUTER') } },
+      });
+
+      appFilesManager.getDockerComposeYaml.mockResolvedValue({
+        path: 'app-compose-path',
+        content: 'services:\n  web:\n    labels:\n      traefik.http.routers.app-store-api.rule: Host(`${APP_DOMAIN}`) && PathPrefix(`/api`)\n',
+      });
+      await service.updateUserConfig('app:store' as any, { dockerCompose: enable, appEnv: '' });
+      expect(filesystemService.writeTextFile).toHaveBeenCalledWith('compose-path', enable);
     });
 
     it('refuses an override that cannot be read', async () => {
