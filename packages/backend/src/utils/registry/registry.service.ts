@@ -113,7 +113,10 @@ export class RegistryService {
 
     const latestFromFeed = await feed;
     if (latestFromFeed.version === null) {
-      return { tags: [], error: latestFromFeed.error ?? 'The Hub release feed named no version' };
+      // Unknown even when the tag list named older releases. The feed is asked because the list can lag
+      // it: a Hub on 0.3.14 got nothing newer from the list while the feed had 0.3.16.
+      const feedError = latestFromFeed.error ?? 'The Hub release feed named no version';
+      return { tags: [], error: listed.error ? `${listed.error}; ${feedError}` : feedError };
     }
     return { tags: semver.gt(latestFromFeed.version, currentVersion) ? [latestFromFeed.version] : [], error: null };
   }
@@ -135,7 +138,7 @@ export class RegistryService {
 
   private async readHubReleaseFeed(deadline: number): Promise<FeedRead> {
     try {
-      const { data } = await this.withOneRetry((timeout) => this.httpService.get(HUB_RELEASE_FEED_URL, { timeout }), deadline);
+      const { data } = await this.withOneRetry((limits) => this.httpService.get(HUB_RELEASE_FEED_URL, limits), deadline);
       const payload = data as LatestHubReleaseFeed;
       const cleaned = semver.clean(payload?.version ?? '') ?? null;
 
@@ -160,14 +163,31 @@ export class RegistryService {
    * One read, tried a second time when it got no answer (no connection, no reply in time) or a server
    * error. Each attempt gets {@link REGISTRY_HTTP_TIMEOUT_MS}, cut short at the lookup's deadline, and
    * one that would have less than {@link MIN_ATTEMPT_MS} isn't started. A 4xx answer isn't retried.
+   *
+   * axios's `timeout` in Node is reset by every packet, so a body that trickles in outlives it. The
+   * signal ends the attempt at its limit however the bytes arrive.
    */
-  private async withOneRetry<T>(send: (timeout: number) => Observable<AxiosResponse<T>>, deadline: number): Promise<AxiosResponse<T>> {
-    const attempt = () => {
+  private async withOneRetry<T>(
+    send: (limits: { timeout: number; signal: AbortSignal }) => Observable<AxiosResponse<T>>,
+    deadline: number,
+  ): Promise<AxiosResponse<T>> {
+    const attempt = async () => {
       const timeout = Math.min(REGISTRY_HTTP_TIMEOUT_MS, deadline - Date.now());
       if (timeout < MIN_ATTEMPT_MS) {
         throw new OutOfTimeError();
       }
-      return firstValueFrom(send(timeout));
+      const limit = new AbortController();
+      const timer = setTimeout(() => limit.abort(), timeout);
+      try {
+        return await firstValueFrom(send({ timeout, signal: limit.signal }));
+      } catch (error) {
+        if (limit.signal.aborted && axios.isCancel(error)) {
+          throw new Error(`no complete answer within ${timeout} ms`);
+        }
+        throw error;
+      } finally {
+        clearTimeout(timer);
+      }
     };
 
     try {
@@ -223,9 +243,9 @@ export class RegistryService {
 
     try {
       const { data } = await this.withOneRetry(
-        (timeout) =>
+        (limits) =>
           this.httpService.post(`${base}/api/devices/registry-token`, organizationId ? { organizationId } : {}, {
-            timeout,
+            ...limits,
             headers: { 'x-device-key': deviceKey, 'Content-Type': 'application/json' },
           }),
         deadline,
@@ -274,9 +294,9 @@ export class RegistryService {
 
     try {
       const { data } = await this.withOneRetry(
-        (timeout) =>
+        (limits) =>
           this.httpService.get(`${base}/v2/${repository}/tags/list`, {
-            timeout,
+            ...limits,
             ...(Object.keys(headers).length > 0 ? { headers } : {}),
           }),
         deadline,

@@ -435,7 +435,7 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
       await refreshHostListenerStatus();
       if (data.updateAvailable) {
         toast.success(t('SETTINGS_ACTIONS_UPDATE_AVAILABLE', { version: data.latest ?? version.latest }));
-      } else if (data.latestLookupError) {
+      } else if (data.latestLookupError || data.latest === 'unknown') {
         toast.error(t('SETTINGS_ACTIONS_CHECK_UPDATE_FAILED'));
       } else {
         toast.success(t('SETTINGS_ACTIONS_ON_LATEST_VERSION'));
