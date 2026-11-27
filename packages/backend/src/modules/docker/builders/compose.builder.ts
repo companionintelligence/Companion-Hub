@@ -23,7 +23,7 @@ import {
   publicPathsLabels,
   withHubLoginOnEveryRouter,
   withHubMiddlewaresFirst,
-  withPublicHostMiddlewareOfMain,
+  withPublicHostMiddlewareCopy,
   withSignInUnderFileProvider,
   withTraefikOnRoutingService,
   withTunnelHostOnPublicAddressRules,
@@ -668,7 +668,12 @@ export class DockerComposeBuilder {
       // The Host the tunnel sends is the origin host the Hub's own router matches, not the public address.
       .transformLabels((labels) =>
         publicWebOrigin
-          ? withTunnelHostOnPublicAddressRules(labels, { appId, originHost: publicWebOrigin, publicHost: Boolean(this.cloudflarePublicHostname) })
+          ? withTunnelHostOnPublicAddressRules(labels, {
+              appId,
+              originHost: publicWebOrigin,
+              publicHost: Boolean(this.cloudflarePublicHostname),
+              sideService: !params.isMain,
+            })
           : labels,
       )
       .transformLabels((labels) =>
@@ -746,14 +751,14 @@ export class DockerComposeBuilder {
     }
 
     const builtServices = fixedServices.map((service) => this.buildService(service, form, appUrn, envFile, options));
-    // The other services' routers can name the main service's `<app id>-public-host`; each defines it too.
+    // The other services' routes name a copy of the main service's `<app id>-public-host`; each defines it.
     const mainLabels = builtServices.find((_, index) => fixedServices[index]?.isMain)?.labels ?? {};
     const { appName, appStoreId } = extractAppUrn(appUrn);
     const appId = `${appName}-${appStoreId}`;
     const myServices = builtServices.map((service, index) =>
       fixedServices[index]?.isMain || !service.labels
         ? service
-        : { ...service, labels: withPublicHostMiddlewareOfMain(service.labels, mainLabels, { appId }) },
+        : { ...service, labels: withPublicHostMiddlewareCopy(service.labels, mainLabels, { appId }) },
     );
 
     const dockerCompose = this.addServices(myServices);

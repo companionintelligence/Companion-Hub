@@ -19,6 +19,7 @@ import {
   HUB_FORWARD_AUTH_MIDDLEWARES,
   HUB_INFRASTRUCTURE_NETWORK_NAMES,
   HUB_TRAEFIK_NAMES,
+  ruleNeedsPath,
   traefikEnableLabelsWithoutRouter,
 } from './traefik-labels.js';
 import { BUILDER_ENFORCED_LABEL_REFUSALS, isBuilderEnforcedLabelIssue, safeParseKeepingBuilderEnforcedLabels } from './builder-enforced-labels.js';
@@ -139,6 +140,7 @@ export {
   isReservedHubLabel,
   collectTraefikLabelIssues,
   declaresTraefikRouter,
+  ruleNeedsPath,
   traefikEnableLabelsWithoutRouter,
   HUB_INFRASTRUCTURE_NETWORK_NAMES,
   HUB_FORWARD_AUTH_MIDDLEWARES,

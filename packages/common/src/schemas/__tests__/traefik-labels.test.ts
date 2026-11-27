@@ -1,6 +1,6 @@
 /** biome-ignore-all lint/suspicious/noTemplateCurlyInString: compose expansions, written as a manifest writes them */
 import { describe, expect, it } from 'vitest';
-import { collectTraefikLabelIssues } from '../traefik-labels.js';
+import { collectTraefikLabelIssues, ruleNeedsPath } from '../traefik-labels.js';
 
 const messages = (labels: Record<string, unknown>, appId?: string, appNetworks?: readonly string[]) =>
   collectTraefikLabelIssues(labels, appId, { appNetworks }).map(({ label, message }) => [label, message]);
@@ -561,5 +561,29 @@ describe('collectTraefikLabelIssues', () => {
         }),
       ).toEqual([]);
     });
+  });
+});
+
+// Only such a rule leaves the rest of the app's address, `/sw.js` with it, to the Hub's own route.
+describe('ruleNeedsPath', () => {
+  it.each([
+    'Host(`${APP_DOMAIN}`) && PathPrefix(`/api`)',
+    'Host(`${APP_DOMAIN}`) && (PathPrefix(`/upload`) || PathPrefix(`/opds`))',
+    'Host("${APP_BASE_HOST}") && Path("/feed") && !PathPrefix(`/feed/health`)',
+    'PathPrefix(`/a`, `/b`) && Host(`${APP_DOMAIN}`)',
+  ])('holds for %s', (rule) => {
+    expect(ruleNeedsPath(rule)).toBe(true);
+  });
+
+  it.each([
+    'Host(`${APP_DOMAIN}`)',
+    'Host(`${APP_DOMAIN}`) && PathPrefix(`/`)',
+    'Host(`${APP_DOMAIN}`) && !PathPrefix(`/health`)',
+    'Host(`${APP_DOMAIN}`) || Host(`${APP_LOCAL_DOMAIN}`) && PathPrefix(`/api`)',
+    'Host(`${APP_DOMAIN}`) && Method(`GET`)',
+    'Host(`${APP_DOMAIN}`) && PathRegexp(`.*`)',
+    'Host(`${APP_DOMAIN}`) && PathPrefix(`/api`',
+  ])('does not hold for %s', (rule) => {
+    expect(ruleNeedsPath(rule)).toBe(false);
   });
 });

@@ -1250,7 +1250,7 @@ describe('DockerComposeBuilder — the app-starting page on every app router', (
     // Behind the edge strip and the Hub login like the app's own route: it once served /admin with neither.
     // It answers the public address, so it says so to the service as the app's own route does.
     expect(services.admin?.labels['traefik.http.routers.nginx-store-id-admin.middlewares']).toBe(
-      'ci-hub-edge-headers@file,ci-hub@file,nginx-store-id-public-host@docker,ci-hub-app-starting@file',
+      'ci-hub-edge-headers@file,ci-hub@file,nginx-store-id-public-host-side@docker,ci-hub-app-starting@file',
     );
   });
 
@@ -2010,17 +2010,48 @@ describe('DockerComposeBuilder: a listing’s own routes', () => {
       {
         ...api,
         extraLabels: {
-          'traefik.http.routers.{{CI_HUB_APP_ID}}-api.rule': 'Host("${APP_BASE_HOST}") && !PathPrefix(`/health`)',
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-api.rule': 'Host("${APP_BASE_HOST}") && PathPrefix("/api") && !PathPrefix(`/api/health`)',
           'traefik.http.routers.{{CI_HUB_APP_ID}}-lan.rule': 'Host(`${APP_LOCAL_DOMAIN}`) && PathPrefix(`/lan`)',
         },
       },
     ]);
 
     expect(services.api?.labels['traefik.http.routers.nginx-store-id-api.rule']).toBe(
-      `(Host("\${APP_BASE_HOST}") || Host(\`${ORIGIN}\`)) && !PathPrefix(\`/health\`)`,
+      `(Host("\${APP_BASE_HOST}") || Host(\`${ORIGIN}\`)) && PathPrefix("/api") && !PathPrefix(\`/api/health\`)`,
     );
     // Already the host the tunnel sends.
     expect(services.api?.labels['traefik.http.routers.nginx-store-id-lan.rule']).toBe('Host(`${APP_LOCAL_DOMAIN}`) && PathPrefix(`/lan`)');
+  });
+
+  // Widened, each would answer every path of the address the Hub's own route serves, `/sw.js` too.
+  it.each([
+    ['all but a path', 'Host(`${APP_DOMAIN}`) && !PathPrefix(`/health`)'],
+    ['a host-only branch', 'Host(`${APP_DOMAIN}`) || Host(`${APP_LOCAL_DOMAIN}`) && PathPrefix(`/api`)'],
+    ['no path at all', 'Host(`${APP_DOMAIN}`) && Method(`GET`)'],
+  ])('leaves a rule that keeps to no path of its own as written (%s)', async (_shape, rule) => {
+    const services = await labelsFor({ exposureMode: 'cloudflare' }, [
+      mainService,
+      { ...api, extraLabels: { 'traefik.http.routers.{{CI_HUB_APP_ID}}-api.rule': rule } },
+    ]);
+
+    expect(services.api?.labels['traefik.http.routers.nginx-store-id-api.rule']).toBe(rule);
+  });
+
+  // Traefik would put both containers behind the app's own service, or drop it.
+  it('keeps a service that defines one of the Hub’s names off Traefik', async () => {
+    const services = await labelsFor({ exposureMode: 'cloudflare', enableAuth: true }, [
+      mainService,
+      {
+        ...api,
+        extraLabels: {
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-api.rule': API_RULE,
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-api.service': '{{CI_HUB_APP_ID}}',
+          'traefik.http.services.{{CI_HUB_APP_ID}}.loadbalancer.server.port': '3334',
+        },
+      },
+    ]);
+
+    expect(services.api?.labels).not.toHaveProperty(['traefik.enable']);
   });
 
   // Kimai's and IPFS's shape. A longer rule there would outrank the service-worker reset routers.
@@ -2042,7 +2073,7 @@ describe('DockerComposeBuilder: a listing’s own routes', () => {
 
     expect(services.api?.labels['traefik.enable']).toBe(true);
     expect(services.api?.labels['traefik.http.routers.nginx-store-id-api-insecure.middlewares']).toBe(
-      'ci-hub-edge-headers@file,ci-hub@file,nginx-store-id-public-host@docker,ci-hub-app-starting@file',
+      'ci-hub-edge-headers@file,ci-hub@file,nginx-store-id-public-host-side@docker,ci-hub-app-starting@file',
     );
     // A service with no route of its own stays out of Traefik: it would get a router on its name.
     expect(services.db?.labels).not.toHaveProperty(['traefik.enable']);
@@ -2083,7 +2114,7 @@ describe('DockerComposeBuilder: a listing’s own routes', () => {
     // A path of its own is still a route of the app's.
     expect(labels['traefik.http.routers.nginx-store-id-path.rule']).toBe(`(Host(\`\${APP_DOMAIN}\`) || Host(\`${ORIGIN}\`)) && PathPrefix(\`/s\`)`);
     expect(labels['traefik.http.routers.nginx-store-id-path.middlewares']).toBe(
-      'ci-hub-edge-headers@file,ci-hub@file,nginx-store-id-public-host@docker,ci-hub-app-starting@file',
+      'ci-hub-edge-headers@file,ci-hub@file,nginx-store-id-public-host-side@docker,ci-hub-app-starting@file',
     );
   });
 
@@ -2113,7 +2144,7 @@ describe('DockerComposeBuilder: a listing’s own routes', () => {
     };
     const services = await labelsFor({ exposureMode: 'cloudflare', enableAuth: true }, [mainService, withChain]);
     expect(services.api?.labels['traefik.http.routers.nginx-store-id-api-insecure.middlewares']).toBe(
-      'ci-hub-edge-headers@file,ci-hub@file,nginx-store-id-public-host@docker,nginx-store-id-strip@docker,ci-hub-app-starting@file',
+      'ci-hub-edge-headers@file,ci-hub@file,nginx-store-id-public-host-side@docker,nginx-store-id-strip@docker,ci-hub-app-starting@file',
     );
 
     // No public hostname, no `-public-host` middleware on the main container to name.
@@ -2224,18 +2255,24 @@ describe('DockerComposeBuilder: a listing’s own routes', () => {
   });
 
   // Traefik drops a router whose middleware is gone: Public Pool's API went down while its UI restarted.
-  it('defines the public-host middleware on a service whose routes name it, as the main service has it', async () => {
+  it('defines the copy of the public-host middleware on a service whose routes name it', async () => {
     const services = await labelsFor({ exposureMode: 'cloudflare', enableAuth: true });
-    const definition = (labels: Record<string, string | boolean> = {}) =>
-      Object.fromEntries(Object.entries(labels).filter(([key]) => key.startsWith('traefik.http.middlewares.nginx-store-id-public-host.')));
+    const definition = (labels: Record<string, string | boolean> = {}, name = 'public-host') =>
+      Object.fromEntries(
+        Object.entries(labels)
+          .filter(([key]) => key.startsWith(`traefik.http.middlewares.nginx-store-id-${name}.`))
+          .map(([key, value]) => [key.slice(`traefik.http.middlewares.nginx-store-id-${name}.`.length), value]),
+      );
 
     expect(Object.keys(definition(services.nginx?.labels))).toHaveLength(3);
-    expect(definition(services.api?.labels)).toEqual(definition(services.nginx?.labels));
+    expect(definition(services.api?.labels, 'public-host-side')).toEqual(definition(services.nginx?.labels));
+    // The main service's own one stays on the main container only, so a user config there can't make the two differ.
+    expect(definition(services.api?.labels)).toEqual({});
+    expect(definition(services.nginx?.labels, 'public-host-side')).toEqual({});
     // Nothing for a service whose routes don't name it.
-    expect(definition(services.db?.labels)).toEqual({});
+    expect(definition(services.db?.labels, 'public-host-side')).toEqual({});
   });
 
-  // Traefik keeps a middleware two containers define alike and drops one they define differently.
   it('copies a listing’s own value for the public-host middleware from the main service', async () => {
     const ownHost = {
       'traefik.http.middlewares.{{CI_HUB_APP_ID}}-public-host.headers.customrequestheaders.X-Forwarded-Host': '${APP_BASE_HOST}',
@@ -2246,15 +2283,16 @@ describe('DockerComposeBuilder: a listing’s own routes', () => {
       {
         ...api,
         name: 'own',
-        extraLabels: { ...api.extraLabels, 'traefik.http.middlewares.{{CI_HUB_APP_ID}}-public-host.headers.customrequestheaders.X-Own': 'yes' },
+        extraLabels: { ...api.extraLabels, 'traefik.http.middlewares.{{CI_HUB_APP_ID}}-public-host-side.headers.customrequestheaders.X-Own': 'yes' },
       },
     ]);
-    const key = 'traefik.http.middlewares.nginx-store-id-public-host.headers.customrequestheaders.X-Forwarded-Host';
+    const header = 'headers.customrequestheaders.X-Forwarded-Host';
 
-    expect(services.nginx?.labels[key]).toBe('${APP_BASE_HOST}');
-    expect(services.api?.labels[key]).toBe('${APP_BASE_HOST}');
-    // A service that defines it itself keeps what it has.
-    expect(services.own?.labels).not.toHaveProperty([key]);
+    expect(services.nginx?.labels[`traefik.http.middlewares.nginx-store-id-public-host.${header}`]).toBe('${APP_BASE_HOST}');
+    expect(services.api?.labels[`traefik.http.middlewares.nginx-store-id-public-host-side.${header}`]).toBe('${APP_BASE_HOST}');
+    // A service that defines the copy itself keeps what it has.
+    expect(services.own?.labels).not.toHaveProperty([`traefik.http.middlewares.nginx-store-id-public-host-side.${header}`]);
+    expect(services.own?.labels['traefik.http.middlewares.nginx-store-id-public-host-side.headers.customrequestheaders.X-Own']).toBe('yes');
   });
 });
 
