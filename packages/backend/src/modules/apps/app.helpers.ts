@@ -18,14 +18,17 @@ import {
   isEnvVariableName,
   type MemoryUrlStyle,
   type HubIntegration,
+  hostPortStaysOnLoopback,
   writesAppBaseUrl,
 } from '@ci-hub/common/schemas';
-import { type AppUrn, mcpAccessGranted } from '@ci-hub/common/types';
+import { type AppUrn, mcpAccessGranted, publishesHostPort, publishesMainPortOnNetwork } from '@ci-hub/common/types';
 import { normalizeStoredHostname } from '@ci-hub/common/types';
 import { buildFqdnSubdomain, buildPublicWebIdentity, extractDeviceSlug, resolvePublicDomainRoot, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { EnvUtils } from '../env/env.utils';
 import type { AppEventFormInput } from '../queue/entities/app-events';
 import { getEffectiveExposureMode } from './app-exposure.helpers';
+import { cloudflareOriginHostnameFor, publishesCloudflarePublicRoute } from './app-public-routing.helpers';
+import { GATEWAY_ALLOWED_HOSTS_ENV_KEY, gatewayAllowedHosts } from './gateway-allowed-hosts';
 import { AppFilesManager } from './app-files-manager';
 import { AppsRepository } from './apps.repository';
 import { DeviceRegistrationRepository } from '../registration/device-registration.repository';
@@ -469,6 +472,37 @@ export class AppHelpers {
    * Docker lookup behind the trust list did. No service, or a bad answer,
    * simply means no hops are vouched for.
    */
+  /** {@link gatewayAllowedHosts} for this generation, or null (leave it unset) when the Hub can't name the tunnel's Host. */
+  private async resolveGatewayAllowedHosts(
+    appUrn: AppUrn,
+    form: AppEventFormInput,
+    config: AppInfo,
+    envMap: Map<string, string>,
+    userLocalDomain: string | undefined,
+  ): Promise<string[] | null> {
+    const { appName, appStoreId } = extractAppUrn(appUrn);
+    try {
+      const localDomain = envMap.get('LOCAL_DOMAIN') || userLocalDomain || this.config.getConfig().localDomain;
+      if (publishesCloudflarePublicRoute(form) && !localDomain?.trim()) {
+        return null;
+      }
+      return gatewayAllowedHosts({
+        portOnNetwork:
+          publishesHostPort(form) &&
+          publishesMainPortOnNetwork({ ...form, portOnNetwork: form.portOnNetwork === true }, hostPortStaysOnLoopback(config)),
+        originHostname: localDomain
+          ? cloudflareOriginHostnameFor(form, appUrn, await this.registrationService.getDeviceRegistrationInfo(), localDomain)
+          : undefined,
+        privateVpn: getEffectiveExposureMode(form) === 'tailscale',
+        appName,
+        appStoreId,
+      });
+    } catch (error) {
+      this.logger.warn(`[AppHelpers] Could not work out the Host names ${appUrn}'s gateway answers to; leaving them unset`, error);
+      return null;
+    }
+  }
+
   private async resolveTrustedProxyCidrs(appUrn: AppUrn): Promise<string[]> {
     try {
       const service = this.moduleRef.get(ProxyTrustService, { strict: false });
@@ -689,6 +723,17 @@ export class AppHelpers {
       envMap.set('HUB_TRUSTED_PROXY_CIDRS', trustedProxies.join(','));
     } else {
       envMap.delete('HUB_TRUSTED_PROXY_CIDRS');
+    }
+
+    // The Host names the app's gateway may answer to (`gatewayAllowedHosts`), re-derived on every
+    // generation and REMOVED when the Hub can't name them all. The tunnel's Host is worked out from the
+    // same registration and local domain compose writes the router from (`prepareCompose`); a Hub that
+    // can't work it out leaves the list unset rather than shut the tunnel out.
+    const allowedHosts = await this.resolveGatewayAllowedHosts(appUrn, form, config, envMap, userSettings.localDomain);
+    if (allowedHosts) {
+      envMap.set(GATEWAY_ALLOWED_HOSTS_ENV_KEY, allowedHosts.join(','));
+    } else {
+      envMap.delete(GATEWAY_ALLOWED_HOSTS_ENV_KEY);
     }
 
     const appEnv = await this.appFilesManager.getAppEnv(appUrn);

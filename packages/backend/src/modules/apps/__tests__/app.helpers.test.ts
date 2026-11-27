@@ -7,7 +7,7 @@ import { RegistrationService } from '@/modules/registration/registration.service
 import { ModuleRef } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
 import type { AppInfo } from '@ci-hub/common/schemas';
-import type { AppUrn } from '@ci-hub/common/types';
+import { type AppUrn, buildOriginServerName } from '@ci-hub/common/types';
 import { fromPartial } from '@total-typescript/shoehorn';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { type MockProxy, mock } from 'vitest-mock-extended';
@@ -927,6 +927,27 @@ describe('AppHelpers', () => {
       } finally {
         moduleRefGet.mockRestore();
       }
+    });
+
+    it('passes the Host names the gateway may answer to as HUB_GATEWAY_ALLOWED_HOSTS, and removes them when the port is open on the network', async () => {
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({ hubSubdomain: 'hub-kyle', slug: 'kyle' } as never);
+      const publicWeb = new Map<string, string>([['LOCAL_DOMAIN', 'ci.computer']]);
+      envUtils.envStringToMap.mockReturnValue(publicWeb);
+      await appHelpers.generateEnvFile(testAppUrn, { exposureMode: 'cloudflare', localSubdomain: 'memory' });
+      // The name compose writes the tunnel router for, from the same registration and local domain.
+      const origin = buildOriginServerName({ appSubdomain: 'memory', hubSubdomain: 'hub-kyle', orgSlug: 'kyle', localDomain: 'ci.computer' });
+      expect(publicWeb.get('HUB_GATEWAY_ALLOWED_HOSTS')).toBe(`${origin},host.docker.internal,.ts.net`);
+
+      const privateVpn = new Map<string, string>();
+      envUtils.envStringToMap.mockReturnValue(privateVpn);
+      await appHelpers.generateEnvFile(testAppUrn, { exposureMode: 'tailscale' });
+      expect(privateVpn.get('HUB_GATEWAY_ALLOWED_HOSTS')).toBe('test-app.test-store,host.docker.internal,.ts.net');
+
+      // Opened on the network: a browser elsewhere may use any name the LAN gives this computer.
+      const onNetwork = new Map<string, string>([['HUB_GATEWAY_ALLOWED_HOSTS', 'stale.example']]);
+      envUtils.envStringToMap.mockReturnValue(onNetwork);
+      await appHelpers.generateEnvFile(testAppUrn, { exposureMode: 'local', openPort: true, portOnNetwork: true });
+      expect(onNetwork.has('HUB_GATEWAY_ALLOWED_HOSTS')).toBe(false);
     });
 
     it('omits HUB_TRUSTED_PROXY_CIDRS when the trust service is unavailable, without failing generation', async () => {
