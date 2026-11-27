@@ -1,6 +1,7 @@
 import { Injectable, type OnModuleInit } from '@nestjs/common';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { castAppUrn } from '@/common/helpers/app-helpers';
+import { MAX_PUBLIC_PATHS } from '@ci-hub/common/schemas';
 import { mcpCallerLifecycleActor } from '../mcp-tool-call';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 
@@ -21,8 +22,13 @@ const appFormProperties = {
   openPort: { type: 'boolean', description: 'Also publish the host port (always on for local)' },
   portOnNetwork: { type: 'boolean', description: 'Publish the host ports on every network interface, not only 127.0.0.1' },
   enableAuth: { type: 'boolean', description: 'Put the Hub login in front of the app (on unless turned off)' },
-  publicPaths: { type: 'array', items: { type: 'string' }, description: 'Paths served without the Hub login' },
-  localSubdomain: { type: 'string', description: 'Subdomain the app is served under' },
+  publicPaths: {
+    type: 'array',
+    maxItems: MAX_PUBLIC_PATHS,
+    items: { type: 'string', maxLength: 128, pattern: '^(?:/[A-Za-z0-9._~-]+)+/?$' },
+    description: 'Paths served without the Hub login, such as "/webhook"',
+  },
+  localSubdomain: { type: 'string', pattern: '^[a-zA-Z0-9-]{1,63}$', description: 'Subdomain the app is served under' },
   publicDomain: { type: 'string', description: 'Domain the app is served under on Public web' },
   isVisibleOnGuestDashboard: { type: 'boolean', description: 'Show the app on the guest dashboard' },
   maxBackups: { type: 'integer', minimum: 0, maximum: 100, description: 'Backups to keep for this app' },
@@ -31,9 +37,20 @@ const appFormProperties = {
   autoRestartOnDomainChange: { type: 'boolean', description: 'Restart the app when its custom domain connects' },
   customDomain: {
     type: 'string',
-    description: "One of the organization's custom domains to serve the app on, or an empty string for the platform address",
+    description:
+      "One of the organization's custom domains to serve the app on, or an empty string for the platform address. " +
+      'Leave it out unless you are changing the custom domain.',
   },
-  customDomainTakeover: { type: 'boolean', description: 'Take the custom domain off whatever app serves it now' },
+  customDomainTakeover: {
+    type: 'boolean',
+    description: 'With customDomain, take the custom domain off whatever app serves it now. Leave it out otherwise.',
+  },
+  customDomainExpected: {
+    type: 'string',
+    description:
+      'With customDomain set to an empty string, the custom domain the app is served on now (app.customDomain from hub_get_app). ' +
+      'A release that names another, or none, is refused.',
+  },
 } as const;
 
 /** Why a form naming a custom domain needs more than a 'write' key. */

@@ -135,8 +135,8 @@ describe('AppLifecycleTools', () => {
     });
   });
 
-  describe('hub_update_app_config', () => {
-    // An agent keeps a setting it was never told about only by luck (#2621).
+  // An agent keeps a setting it was never told about only by luck (#2621).
+  describe('the install and settings form schema', () => {
     it.each(['hub_update_app_config', 'hub_install_app'])('names the common form fields in the %s schema and leaves it open', (name) => {
       tools.onModuleInit();
       const tool = registry.register.mock.calls.map(([entry]) => entry).find((entry) => entry.name === name);
@@ -144,7 +144,15 @@ describe('AppLifecycleTools', () => {
       const { form } = tool.inputSchema.properties as Record<string, { properties?: Record<string, unknown>; additionalProperties?: unknown }>;
 
       expect(Object.keys(form.properties ?? {})).toEqual(
-        expect.arrayContaining(['port', 'exposureMode', 'openPort', 'enableAuth', 'isVisibleOnGuestDashboard', 'customDomain']),
+        expect.arrayContaining([
+          'port',
+          'exposureMode',
+          'openPort',
+          'enableAuth',
+          'isVisibleOnGuestDashboard',
+          'customDomain',
+          'customDomainExpected',
+        ]),
       );
       expect(form.properties?.isVisibleOnGuestDashboard).toMatchObject({ type: 'boolean' });
       // Only fields the form really takes.
@@ -152,6 +160,27 @@ describe('AppLifecycleTools', () => {
       expect(form.additionalProperties).toBe(true);
     });
 
+    // The patterns are copies of the form's, so they are checked against it.
+    it('advertises the same subdomain and public path rules the form checks', () => {
+      tools.onModuleInit();
+      const tool = registry.register.mock.calls.map(([entry]) => entry).find((entry) => entry.name === 'hub_update_app_config');
+      if (!tool) throw new Error('hub_update_app_config is not registered');
+      const { form } = tool.inputSchema.properties as Record<string, { properties: Record<string, Record<string, any>> }>;
+      const subdomain = new RegExp(form.properties.localSubdomain.pattern);
+      const pathItems = form.properties.publicPaths.items;
+      const pathPattern = new RegExp(pathItems.pattern);
+
+      for (const value of ['my-app', 'App2', 'my_app', 'my.app', '', 'a'.repeat(63), 'a'.repeat(64)]) {
+        expect(subdomain.test(value), value).toBe(appFormSchema.shape.localSubdomain.safeParse(value).success);
+      }
+      for (const value of ['/webhook', '/api/v1/', '/a.b~c_d-e', 'webhook', '/', '//x', '/a b', `/${'a'.repeat(127)}`, `/${'a'.repeat(128)}`]) {
+        const advertised = pathPattern.test(value) && value.length <= pathItems.maxLength;
+        expect(advertised, value).toBe(appFormSchema.shape.publicPaths.safeParse([value]).success);
+      }
+    });
+  });
+
+  describe('hub_update_app_config', () => {
     it('should enqueue config update and return requestId', async () => {
       lifecycleService.updateAppConfig.mockResolvedValue({ requestId: 'uuid-8' });
       const result = await asKey(() => tools.updateAppConfig({ appUrn: 'ci-store:test', form: { port: 9090 } }));
