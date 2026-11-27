@@ -1,4 +1,10 @@
-import { RegistryService, REGISTRY_HTTP_TIMEOUT_MS, RELEASE_LOOKUP_BUDGET_MS } from '@/utils/registry/registry.service';
+import https from 'node:https';
+import {
+  RegistryService,
+  REGISTRY_HTTP_TIMEOUT_MS,
+  RELEASE_CONNECT_ATTEMPT_TIMEOUT_MS,
+  RELEASE_LOOKUP_BUDGET_MS,
+} from '@/utils/registry/registry.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
@@ -87,12 +93,14 @@ describe('RegistryService', () => {
         expect.objectContaining({
           timeout: REGISTRY_HTTP_TIMEOUT_MS,
           signal: expect.any(AbortSignal),
+          httpsAgent: expect.any(https.Agent),
           headers: { 'x-device-key': DEVICE_KEY, 'Content-Type': 'application/json' },
         }),
       );
       expect(httpService.get).toHaveBeenCalledWith(`${PORTAL}/v2/ci-hub/tags/list`, {
         timeout: REGISTRY_HTTP_TIMEOUT_MS,
         signal: expect.any(AbortSignal),
+        httpsAgent: expect.any(https.Agent),
         headers: { Authorization: `Bearer ${PULL_TOKEN}` },
       });
     });
@@ -219,6 +227,7 @@ describe('RegistryService', () => {
       expect(httpService.get).toHaveBeenCalledWith('https://dl.ci.computer/latest.json', {
         timeout: REGISTRY_HTTP_TIMEOUT_MS,
         signal: expect.any(AbortSignal),
+        httpsAgent: expect.any(https.Agent),
       });
     });
 
@@ -234,6 +243,7 @@ describe('RegistryService', () => {
       expect(httpService.get).toHaveBeenCalledWith(`${PORTAL}/v2/custom-repo/tags/list`, {
         timeout: REGISTRY_HTTP_TIMEOUT_MS,
         signal: expect.any(AbortSignal),
+        httpsAgent: expect.any(https.Agent),
       });
       expect(httpService.get.mock.calls.some(([url]) => url === 'https://dl.ci.computer/latest.json')).toBe(false);
     });
@@ -292,6 +302,28 @@ describe('RegistryService', () => {
       expect(REGISTRY_HTTP_TIMEOUT_MS).toBeGreaterThanOrEqual(7_000);
     });
 
+    // With 1.6 s added to every packet, one resent SYN outlasted the Hub's 2 s per address and the feed
+    // read failed with ETIMEDOUT on every address.
+    it('gives each address longer than the Hub-wide 2 s to accept the connection', async () => {
+      mockConfig({ ciHubApiKey: DEVICE_KEY });
+      httpService.post.mockReturnValue(ok({ token: PULL_TOKEN }));
+      httpService.get.mockImplementation((url: string) => (url === FEED ? ok({ version: 'v0.3.16' }) : ok({ tags: [] })));
+
+      await registryService.getTagsSinceWithHubFallback('ci-hub', '0.3.14');
+
+      const agents = [...httpService.get.mock.calls, ...httpService.post.mock.calls].map(
+        (call) => (call.at(-1) as { httpsAgent?: https.Agent }).httpsAgent,
+      );
+      expect(agents).toHaveLength(3);
+      for (const agent of agents) {
+        expect(agent).toBeInstanceOf(https.Agent);
+        expect((agent?.options ?? {}) as { autoSelectFamilyAttemptTimeout?: number }).toMatchObject({
+          autoSelectFamilyAttemptTimeout: RELEASE_CONNECT_ATTEMPT_TIMEOUT_MS,
+        });
+      }
+      expect(RELEASE_CONNECT_ATTEMPT_TIMEOUT_MS).toBeGreaterThanOrEqual(2_600);
+    });
+
     it('reads the feed once more after a read that got no answer', async () => {
       vi.useFakeTimers();
       feedOnly(timedOut(), ok({ version: 'v0.3.16' }));
@@ -348,8 +380,8 @@ describe('RegistryService', () => {
       mockConfig({ ciHubApiKey: null });
       httpService.get
         .mockImplementationOnce(() => {
-          // An attempt that ran 9 s before it failed.
-          vi.setSystemTime(Date.now() + 9_000);
+          // An attempt that ran 14 s before it failed.
+          vi.setSystemTime(Date.now() + 14_000);
           return throwError(() => new AxiosError('socket hang up', 'ECONNRESET'));
         })
         .mockImplementationOnce(() => ok({ version: 'v0.3.16' }));
@@ -358,14 +390,14 @@ describe('RegistryService', () => {
       await vi.advanceTimersByTimeAsync(500);
 
       await expect(pending).resolves.toEqual({ tags: ['0.3.16'], error: null });
-      expect(timeoutsFor(httpService.get.mock.calls, FEED)).toEqual([REGISTRY_HTTP_TIMEOUT_MS, RELEASE_LOOKUP_BUDGET_MS - 9_000 - 500]);
+      expect(timeoutsFor(httpService.get.mock.calls, FEED)).toEqual([REGISTRY_HTTP_TIMEOUT_MS, RELEASE_LOOKUP_BUDGET_MS - 14_000 - 500]);
     });
 
     it('starts no second attempt it could not finish before the lookup ends', async () => {
       vi.useFakeTimers();
       mockConfig({ ciHubApiKey: null });
       httpService.get.mockImplementation(() => {
-        vi.setSystemTime(Date.now() + 13_000);
+        vi.setSystemTime(Date.now() + RELEASE_LOOKUP_BUDGET_MS - 2_000);
         return throwError(() => new AxiosError('socket hang up', 'ECONNRESET'));
       });
 

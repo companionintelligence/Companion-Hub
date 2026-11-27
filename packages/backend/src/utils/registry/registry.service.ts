@@ -1,3 +1,4 @@
+import https from 'node:https';
 import { HttpService } from '@nestjs/axios';
 import { Injectable } from '@nestjs/common';
 import axios, { type AxiosResponse } from 'axios';
@@ -26,9 +27,17 @@ const HUB_RELEASE_FEED_URL = 'https://dl.ci.computer/latest.json';
 export const REGISTRY_HTTP_TIMEOUT_MS = 10_000;
 /**
  * A whole release lookup, retries included. Check for updates in Settings waits for it, so it ends:
- * the tag list and the feed are read at the same time and every attempt stops at this deadline.
+ * the tag list and the feed are read at the same time and every attempt stops at this deadline. It
+ * leaves a second attempt about 10 s when the first used all of its time.
  */
-export const RELEASE_LOOKUP_BUDGET_MS = 15_000;
+export const RELEASE_LOOKUP_BUDGET_MS = 20_000;
+/**
+ * How long each of a host's addresses gets to accept the connection on these reads. The Hub's own
+ * default is 2 s (`CONNECT_ATTEMPT_TIMEOUT_MS`). With 1.6 s added to every packet, one resent SYN
+ * (Linux resends after 1 s) outlasts that, and the feed read failed with ETIMEDOUT on every address
+ * in about 4 s. Only these reads, which have 10 s each, wait longer; nothing else in the Hub changes.
+ */
+export const RELEASE_CONNECT_ATTEMPT_TIMEOUT_MS = 5_000;
 /** Time an attempt needs left before it is started. Less than this can't finish on a link that needs the longer limit. */
 const MIN_ATTEMPT_MS = 2_000;
 const RETRY_DELAY_MS = 500;
@@ -65,6 +74,7 @@ export class RegistryService {
   /** The feed read under way, so a page load and Check for updates that overlap share one read. */
   private feedInFlight: Promise<FeedRead> | null = null;
   private registryTokenCache: CachedRegistryToken | null = null;
+  private readonly httpsAgent = new https.Agent({ keepAlive: true, autoSelectFamilyAttemptTimeout: RELEASE_CONNECT_ATTEMPT_TIMEOUT_MS });
 
   constructor(
     private readonly httpService: HttpService,
@@ -138,7 +148,7 @@ export class RegistryService {
 
   private async readHubReleaseFeed(deadline: number): Promise<FeedRead> {
     try {
-      const { data } = await this.withOneRetry((limits) => this.httpService.get(HUB_RELEASE_FEED_URL, limits), deadline);
+      const { data } = await this.withOneRetry((attempt) => this.httpService.get(HUB_RELEASE_FEED_URL, attempt), deadline);
       const payload = data as LatestHubReleaseFeed;
       const cleaned = semver.clean(payload?.version ?? '') ?? null;
 
@@ -163,15 +173,16 @@ export class RegistryService {
    * One read, tried a second time when it got no answer (no connection, no reply in time) or a server
    * error. Each attempt gets {@link REGISTRY_HTTP_TIMEOUT_MS}, cut short at the lookup's deadline, and
    * one that would have less than {@link MIN_ATTEMPT_MS} isn't started. A 4xx answer isn't retried.
+   * Every attempt connects through the agent with {@link RELEASE_CONNECT_ATTEMPT_TIMEOUT_MS}.
    *
    * axios's `timeout` in Node is reset by every packet, so a body that trickles in outlives it. The
    * signal ends the attempt at its limit however the bytes arrive.
    */
   private async withOneRetry<T>(
-    send: (limits: { timeout: number; signal: AbortSignal }) => Observable<AxiosResponse<T>>,
+    send: (attempt: { timeout: number; signal: AbortSignal; httpsAgent: https.Agent }) => Observable<AxiosResponse<T>>,
     deadline: number,
   ): Promise<AxiosResponse<T>> {
-    const attempt = async () => {
+    const tryOnce = async () => {
       const timeout = Math.min(REGISTRY_HTTP_TIMEOUT_MS, deadline - Date.now());
       if (timeout < MIN_ATTEMPT_MS) {
         throw new OutOfTimeError();
@@ -179,7 +190,7 @@ export class RegistryService {
       const limit = new AbortController();
       const timer = setTimeout(() => limit.abort(), timeout);
       try {
-        return await firstValueFrom(send({ timeout, signal: limit.signal }));
+        return await firstValueFrom(send({ timeout, signal: limit.signal, httpsAgent: this.httpsAgent }));
       } catch (error) {
         if (limit.signal.aborted && axios.isCancel(error)) {
           throw new Error(`no complete answer within ${timeout} ms`);
@@ -191,14 +202,14 @@ export class RegistryService {
     };
 
     try {
-      return await attempt();
+      return await tryOnce();
     } catch (error) {
       if (!worthRetrying(error) || deadline - Date.now() - RETRY_DELAY_MS < MIN_ATTEMPT_MS) {
         throw error;
       }
     }
     await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
-    return attempt();
+    return tryOnce();
   }
 
   private jwtExpiryMs(token: string): number | null {
@@ -243,9 +254,9 @@ export class RegistryService {
 
     try {
       const { data } = await this.withOneRetry(
-        (limits) =>
+        (attempt) =>
           this.httpService.post(`${base}/api/devices/registry-token`, organizationId ? { organizationId } : {}, {
-            ...limits,
+            ...attempt,
             headers: { 'x-device-key': deviceKey, 'Content-Type': 'application/json' },
           }),
         deadline,
@@ -294,9 +305,9 @@ export class RegistryService {
 
     try {
       const { data } = await this.withOneRetry(
-        (limits) =>
+        (attempt) =>
           this.httpService.get(`${base}/v2/${repository}/tags/list`, {
-            ...limits,
+            ...attempt,
             ...(Object.keys(headers).length > 0 ? { headers } : {}),
           }),
         deadline,
