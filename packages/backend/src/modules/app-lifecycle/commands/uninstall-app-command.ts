@@ -141,6 +141,7 @@ export class UninstallAppCommand extends AppLifecycleCommand {
       let dataRemoved = true;
       let userConfigRemoved = true;
       let dataRemnantHostPath: string | undefined;
+      let userConfigRemnantHostPath: string | undefined;
       if (this.deleteAllData) {
         const outcome = await removeAppDataWithPrivilegedFallback(appFilesManager, dockerService, logger, appUrn);
         dataRemoved = outcome.removed;
@@ -148,11 +149,15 @@ export class UninstallAppCommand extends AppLifecycleCommand {
 
         // The app's own overrides go with its data. Left behind, a later app with the same name, a reinstall of
         // this one or a new custom app, starts with them switched on (#2628). With the data kept they stay too, so
-        // a reinstall picks up where the app was. The page shows one path to remove by hand: the data's, when
-        // both are left.
-        const userConfig = await removeUserConfigWithPrivilegedFallback(appFilesManager, dockerService, logger, appUrn);
+        // a reinstall picks up where the app was. The app is gone by now, so a throw here only leaves the folder.
+        const userConfig = await removeUserConfigWithPrivilegedFallback(appFilesManager, dockerService, logger, appUrn).catch(
+          (err): { removed: boolean; hostPath?: string } => {
+            logger.warn(`Removing the user config of ${appUrn} failed: ${err instanceof Error ? err.message : String(err)}`);
+            return { removed: false };
+          },
+        );
         userConfigRemoved = userConfig.removed;
-        dataRemnantHostPath ??= userConfig.hostPath;
+        userConfigRemnantHostPath = userConfig.hostPath;
       }
 
       // The app IS uninstalled — containers, images and networks are gone and the DB
@@ -161,16 +166,19 @@ export class UninstallAppCommand extends AppLifecycleCommand {
       // the host path so the user can be shown a manual cleanup command (#907).
       if (!folderRemoved || !dataRemoved || !userConfigRemoved) {
         const leftover = describeLeftovers({ folderRemoved, dataRemoved, userConfigRemoved });
+        const remnantPaths = [dataRemnantHostPath, userConfigRemnantHostPath].filter((hostPath): hostPath is string => Boolean(hostPath));
 
         logger.warn(
-          `App ${appUrn} uninstalled, but its ${leftover} could not be fully removed; a disk remnant may remain${dataRemnantHostPath ? ` at ${dataRemnantHostPath}` : ''} (see the filesystem error above — often a container-created root-owned path).`,
+          `App ${appUrn} uninstalled, but its ${leftover} could not be fully removed; a disk remnant may remain${remnantPaths.length > 0 ? ` at ${remnantPaths.join(' and ')}` : ''} (see the filesystem error above — often a container-created root-owned path).`,
         );
 
+        // The page builds one `rm` command, so it gets the data's path when both are left. The log above names both.
+        const warningDetail = dataRemnantHostPath ?? userConfigRemnantHostPath;
         return {
           success: true,
           message: `App ${appUrn} uninstalled, but its ${leftover} could not be fully removed and may leave a remnant on disk.`,
           warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
-          ...(dataRemnantHostPath ? { warningDetail: dataRemnantHostPath } : {}),
+          ...(warningDetail ? { warningDetail } : {}),
         };
       }
 

@@ -451,6 +451,20 @@ describe('UninstallAppCommand', () => {
         warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
         warningDetail: '/srv/app-data/store/test-app',
       });
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('at /srv/app-data/store/test-app and /srv/user-config/store/test-app'));
+    });
+
+    it('is reported as left, not as a failed uninstall, when removing it throws', async () => {
+      appFilesManager.deleteUserConfigDirDetailed.mockRejectedValue(new Error('EIO'));
+
+      const result = await command.execute(appUrn);
+
+      expect(result).toEqual({
+        success: true,
+        message: `App ${appUrn} uninstalled, but its user config could not be fully removed and may leave a remnant on disk.`,
+        warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+      });
+      expect(logger.warn).toHaveBeenCalledWith(`Removing the user config of ${appUrn} failed: EIO`);
     });
   });
 

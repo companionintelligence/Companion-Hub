@@ -53,7 +53,7 @@ export async function removeAppDataWithPrivilegedFallback(
 
 /**
  * Remove an app's user config folder (its own `docker-compose.yml` and `app.env`), as an uninstall with Delete all
- * data does, the same way as its data: a file the Hub cannot delete goes to the root helper, and `hostPath` is where
+ * data does, the same way as its data: a file the Hub cannot delete goes to the root helper. `hostPath` is where
  * a folder even root left behind is on the host.
  */
 export async function removeUserConfigWithPrivilegedFallback(

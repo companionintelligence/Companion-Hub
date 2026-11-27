@@ -383,7 +383,7 @@ export class AppFilesManager {
     return this.filesystem.removeDirectory(this.getUserConfigDir(appUrn));
   }
 
-  /** Like {@link deleteUserConfigDir}, and says whether a failure was a permission error, as {@link deleteAppDataDirDetailed} does. */
+  /** Like {@link deleteUserConfigDir}, but says whether a failure was a permission error, as {@link deleteAppDataDirDetailed} does. */
   public async deleteUserConfigDirDetailed(appUrn: AppUrn): Promise<{ removed: boolean; permissionDenied: boolean }> {
     return this.filesystem.removeDirectoryDetailed(this.getUserConfigDir(appUrn));
   }
