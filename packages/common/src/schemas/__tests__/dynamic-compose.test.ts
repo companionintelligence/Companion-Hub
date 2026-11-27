@@ -1826,6 +1826,23 @@ describe('customAppComposeSchema (what saving a custom app accepts)', () => {
       const parsed = parseInstalledComposeJson(twoServices({ 'traefik.enable': true, [port]: '80' }));
       expect(parsed.services[1]?.extraLabels).toEqual({ 'traefik.enable': true, [port]: '80' });
     });
+
+    // An architecture's override is merged into the service of its name, routers and all.
+    it('is saved from an architecture override when the service it merges into has a router', () => {
+      const routed = twoServices({ [port]: '80', 'traefik.http.routers.{{CI_HUB_APP_ID}}-extra.rule': 'Host(`${APP_DOMAIN}`) && PathPrefix(`/x`)' });
+      const withOverride = (labels: Record<string, string | boolean>, base = routed) => ({
+        ...base,
+        overrides: [{ architecture: 'arm64' as const, services: [{ name: 'extra', extraLabels: labels }] }],
+      });
+
+      expect(customAppComposeSchema.safeParse(withOverride({ 'traefik.enable': true })).success).toBe(true);
+      expect(customAppComposeSchema.safeParse(withOverride({ 'traefik.enable': true }, twoServices({ [port]: '80' }))).error?.issues).toEqual([
+        expect.objectContaining({
+          message: 'CUSTOM_APP_ERROR_TRAEFIK_ENABLE_WITHOUT_ROUTER',
+          path: ['overrides', 0, 'services', 0, 'extraLabels', 'traefik.enable'],
+        }),
+      ]);
+    });
   });
 });
 

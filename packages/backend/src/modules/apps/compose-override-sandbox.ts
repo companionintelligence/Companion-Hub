@@ -342,6 +342,9 @@ function checkLabels(value: unknown, path: string, service: string, context: Ser
 /**
  * The labels of each service in an app's compose file, as the Hub wrote it, for
  * {@link collectComposeOverrideViolations}. Nothing for a file that is missing or can't be read.
+ *
+ * Before an app's first start there is no such file and `getDockerComposeYaml` reads its
+ * docker-compose.json, whose services are a list with their labels under `extraLabels`.
  */
 export function composeServiceLabels(composeYaml: string | null | undefined): Record<string, Record<string, unknown>> {
   const labels: Record<string, Record<string, unknown>> = {};
@@ -352,6 +355,14 @@ export function composeServiceLabels(composeYaml: string | null | undefined): Re
     return labels;
   }
   const services = isMapping(parsed) ? parsed.services : undefined;
+  if (Array.isArray(services)) {
+    for (const service of services) {
+      if (isMapping(service) && typeof service.name === 'string' && isMapping(service.extraLabels)) {
+        labels[service.name] = service.extraLabels;
+      }
+    }
+    return labels;
+  }
   for (const [name, service] of Object.entries(isMapping(services) ? services : {})) {
     if (isMapping(service) && isMapping(service.labels)) {
       labels[name] = service.labels;

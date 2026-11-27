@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { type BindMountRef, findNestedBindMounts } from './bind-mount-nesting.js';
-import { collectTraefikLabelIssues } from './traefik-labels.js';
+import { collectTraefikLabelIssues, declaresTraefikRouter } from './traefik-labels.js';
 import { dynamicComposeSchemaV1 } from './utils/converters/v1.js';
 
 const DENIED_CUSTOM_APP_HOST_PATHS = [
@@ -884,13 +884,27 @@ const dynamicComposeObjectFor = (grants?: AppSecurityGrants) =>
 
 export const dynamicComposeObject = dynamicComposeObjectFor();
 
-const assertComposeOverrideSecurity = (compose: { overrides?: { services: unknown[] }[] }, ctx: z.RefinementCtx, grants?: AppSecurityGrants) => {
+const assertComposeOverrideSecurity = (
+  compose: { services?: { name?: string; extraLabels?: Record<string, unknown> }[]; overrides?: { services: unknown[] }[] },
+  ctx: z.RefinementCtx,
+  grants?: AppSecurityGrants,
+) => {
   // Each issue's path leads to the override service that broke the rule, so the editor can name it.
   for (const [overrideIndex, override] of (compose.overrides ?? []).entries()) {
     for (const [serviceIndex, service] of override.services.entries()) {
+      const overrideService = service as Parameters<typeof assertCustomAppServiceSecurity>[0] & { name?: string };
+      // An override's labels are merged into the service of its name (`mergeArchitectureOverrides`), so
+      // that service's routers count for a `traefik.enable` the override adds.
+      const base = (compose.services ?? []).find((candidate) => candidate.name !== undefined && candidate.name === overrideService.name);
+      const routed = declaresTraefikRouter({ ...(base?.extraLabels ?? {}), ...(overrideService.extraLabels ?? {}) });
       assertCustomAppServiceSecurity(
-        service as Parameters<typeof assertCustomAppServiceSecurity>[0],
-        (issue) => ctx.addIssue({ code: 'custom', ...issue, path: ['overrides', overrideIndex, 'services', serviceIndex, ...issue.path] }),
+        overrideService,
+        (issue) => {
+          if (routed && issue.message === 'CUSTOM_APP_ERROR_TRAEFIK_ENABLE_WITHOUT_ROUTER') {
+            return;
+          }
+          ctx.addIssue({ code: 'custom', ...issue, path: ['overrides', overrideIndex, 'services', serviceIndex, ...issue.path] });
+        },
         grants,
       );
     }

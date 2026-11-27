@@ -356,6 +356,19 @@ describe('collectComposeOverrideViolations', () => {
       expect(composeServiceLabels(null)).toEqual({});
       expect(composeServiceLabels('services: [')).toEqual({});
     });
+
+    // Before the first start the Hub has written no compose, and the app's docker-compose.json is read instead.
+    it('reads the routers of the app’s docker-compose.json before its first start', () => {
+      const manifest = JSON.stringify({
+        schemaVersion: 2,
+        services: [
+          { name: 'web', image: 'nginx', isMain: true, extraLabels: { 'traefik.http.routers.{{CI_HUB_APP_ID}}-api.rule': 'Host(`${APP_DOMAIN}`)' } },
+          { name: 'db', image: 'postgres' },
+        ],
+      });
+      expect(composeServiceLabels(manifest)).toEqual({ web: { 'traefik.http.routers.{{CI_HUB_APP_ID}}-api.rule': 'Host(`${APP_DOMAIN}`)' } });
+      expect(withHubCompose(manifest)).toEqual([]);
+    });
   });
 
   it.each(['ci-hub_network', 'ci-os-hub_network', 'ci-hub_edge', 'ci-hub_internal'])('refuses joining the Hub network %s', (network) => {
