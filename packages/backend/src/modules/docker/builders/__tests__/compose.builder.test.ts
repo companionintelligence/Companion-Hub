@@ -2402,7 +2402,7 @@ describe('DockerComposeBuilder: Traefik on for a service with no router of its o
 
     expect(labels.extra?.labels['traefik.enable']).toBe(true);
     expect(labels.extra?.labels['traefik.http.routers.probe-_user-extra.middlewares']).toBe(
-      'ci-hub-edge-headers@file,ci-hub@file,probe-_user-public-host@docker,ci-hub-app-starting@file',
+      'ci-hub-edge-headers@file,ci-hub@file,probe-_user-public-host-side@docker,ci-hub-app-starting@file',
     );
   });
 
