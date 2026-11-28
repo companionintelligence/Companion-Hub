@@ -1002,7 +1002,11 @@ describe('AppActions', () => {
 
   describe('the actions a person may use', () => {
     const customInfo = makeInfo({ urn: 'whoami-check:_user', id: 'whoami-check', no_gui: false });
-    const renderCustom = (status: AppDetails['status'], allowedActions?: readonly string[]) =>
+    const renderCustom = (
+      status: AppDetails['status'],
+      allowedActions?: readonly string[],
+      accessRole: 'owner' | 'admin' | 'member' | null = 'member',
+    ) =>
       render(
         <MemoryRouter>
           <AppActions
@@ -1011,9 +1015,21 @@ describe('AppActions', () => {
             info={customInfo}
             urlAvailability={idleAvailability}
             allowedActions={allowedActions}
+            accessRole={accessRole}
           />
         </MemoryRouter>,
       );
+    /** Shown, dimmed and marked disabled, inside the wrapper that says why: not missing, and not offered. */
+    const expectWithheld = (testId: string) => {
+      const control = screen.getByTestId(testId);
+      expect(control).toHaveAttribute('aria-disabled', 'true');
+      expect(control.closest('[data-testid^="withheld-action-"]')).not.toBeNull();
+    };
+    const expectOffered = (testId: string) => {
+      const control = screen.getByTestId(testId);
+      expect(control).not.toHaveAttribute('aria-disabled', 'true');
+      expect(control.closest('[data-testid^="withheld-action-"]')).toBeNull();
+    };
     const CHANGES = [
       'icon-action-common_settings',
       'icon-action-app_install_form_reset',
@@ -1021,32 +1037,56 @@ describe('AppActions', () => {
       'icon-action-custom_app_edit_config',
     ];
 
-    it('shows a member a stopped custom app with no Start and no change', () => {
+    it('shows a member a stopped custom app with Start and every change withheld', () => {
       renderCustom('stopped', ['view']);
 
-      expect(screen.queryByTestId('action-app_action_start')).not.toBeInTheDocument();
+      expectWithheld('action-app_action_start');
       for (const testId of CHANGES) {
-        expect(screen.queryByTestId(testId)).not.toBeInTheDocument();
+        expectWithheld(testId);
       }
     });
 
-    it('shows a member a running custom app with Open, and no Stop, Restart or change', () => {
+    it('shows a member a running custom app with Open, and Stop, Restart and every change withheld', () => {
       renderCustom('running', ['view']);
 
-      expect(screen.getByTestId('action-app_action_open')).toBeInTheDocument();
-      expect(screen.queryByTestId('icon-action-common_stop')).not.toBeInTheDocument();
-      expect(screen.queryByTestId('icon-action-common_restart')).not.toBeInTheDocument();
+      expectOffered('action-app_action_open');
+      expectWithheld('icon-action-common_stop');
+      expectWithheld('icon-action-common_restart');
       for (const testId of CHANGES) {
-        expect(screen.queryByTestId(testId)).not.toBeInTheDocument();
+        expectWithheld(testId);
       }
+    });
+
+    it('says why on hover: as a Member, they cannot', () => {
+      renderCustom('running', ['view']);
+
+      const wrapper = screen.getByTestId('icon-action-common_restart').closest('[data-testid^="withheld-action-"]');
+      expect(wrapper).toHaveAttribute('data-tooltip-id', 'app-actions-tooltip');
+      expect(wrapper?.getAttribute('data-tooltip-content')).toBe('APP_ACTION_MEMBER_NOT_ALLOWED');
+    });
+
+    it('says who can instead when the role is not a member’s (no linked Portal identity)', () => {
+      renderCustom('running', ['view', 'start', 'stop', 'restart'], null);
+
+      const wrapper = screen.getByTestId('icon-action-app_action_uninstall').closest('[data-testid^="withheld-action-"]');
+      expect(wrapper?.getAttribute('data-tooltip-content')).toBe('APP_ACTION_ROLE_NOT_ALLOWED');
+    });
+
+    it('answers a click on a withheld action with the reason, and runs nothing', async () => {
+      renderCustom('running', ['view']);
+
+      await userEvent.click(screen.getByTestId('icon-action-common_restart'));
+
+      expect(hoisted.toastError).toHaveBeenCalledWith('APP_ACTION_MEMBER_NOT_ALLOWED');
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     });
 
     // Connecting or disconnecting Companion Memory restarts the app, so it takes the restart grant.
-    it('shows no Memory button to a person who may not restart the app', () => {
+    it('withholds the Memory button from a person who may not restart the app', () => {
       Object.assign(hoisted.memory, { applicable: true, memoryInstalled: true, memoryReady: true, connectable: true });
       renderCustom('running', ['view']);
 
-      expect(screen.queryByTestId('action-memory_connect_action_connect_memory')).not.toBeInTheDocument();
+      expect(screen.getByTestId('action-memory_connect_action_connect_memory').closest('[data-testid^="withheld-action-"]')).not.toBeNull();
     });
 
     it('shows the Memory buttons to a person who may restart the app', () => {
@@ -1059,10 +1099,10 @@ describe('AppActions', () => {
     it('offers an account with no linked Portal identity start, stop and restart, and no change', () => {
       renderCustom('running', ['view', 'start', 'stop', 'restart']);
 
-      expect(screen.getByTestId('icon-action-common_stop')).toBeInTheDocument();
-      expect(screen.getByTestId('icon-action-common_restart')).toBeInTheDocument();
+      expectOffered('icon-action-common_stop');
+      expectOffered('icon-action-common_restart');
       for (const testId of CHANGES) {
-        expect(screen.queryByTestId(testId)).not.toBeInTheDocument();
+        expectWithheld(testId);
       }
     });
 
@@ -1098,10 +1138,10 @@ describe('AppActions', () => {
       expect(icons.indexOf('icon-action-custom_app_edit_config')).toBe(icons.indexOf('icon-action-app_install_form_reset') + 1);
     });
 
-    it('keeps Edit configuration from a member, who may not change the app', () => {
+    it('withholds Edit configuration from a member, who may not change the app', () => {
       renderCustom('running', ['view']);
 
-      expect(screen.queryByTestId('icon-action-custom_app_edit_config')).not.toBeInTheDocument();
+      expectWithheld('icon-action-custom_app_edit_config');
     });
 
     // A stopped app had Uninstall in the middle of the bar, before Edit Configuration. It is last, as when the app runs.

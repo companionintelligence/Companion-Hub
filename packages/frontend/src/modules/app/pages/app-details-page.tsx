@@ -28,6 +28,10 @@ import { AppRuntimeDegradedBanner } from '../components/app-runtime-degraded-ban
 import { CustomDomainRestartBanner } from '../components/custom-domain-restart-banner';
 import { PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY, queryPublicWebDiagnostics } from '@/lib/cloudflare-api';
 import { McpAccessCard } from '../components/mcp-access-card/mcp-access-card';
+import { useCustomAppAccess } from '../helpers/use-custom-app-access';
+
+/** The one store the Portal decides grants for, app by app. The Hub decides every other store's apps by role. */
+const OFFICIAL_STORE = 'ci-marketplace';
 import { MemoryStatusBadge } from '../components/memory-status-badge/memory-status-badge';
 import { useAppUrlAvailability } from '../helpers/use-app-url-availability';
 import { useInstallRequestPending, withInstallRequest } from '../helpers/install-request';
@@ -121,6 +125,11 @@ function AppDetailsSkeleton() {
 export default () => {
   const { appId, storeId } = useParams<{ appId: string; storeId: string }>();
   const appUrn = `${appId}:${storeId}`;
+  // An app from a store the operator added is decided like a custom app (by organization role), so its
+  // page asks what this person may do and shows the rest withheld. The official store's grants are the
+  // Portal's, per app, and stay with the Hub to decide when an action is used.
+  const fromAddedStore = Boolean(storeId) && storeId !== OFFICIAL_STORE;
+  const access = useCustomAppAccess({ enabled: fromAddedStore });
   const { t } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -373,6 +382,8 @@ export default () => {
                     runtimeHealth={runtimeHealth.data}
                     urlAvailability={urlAvailability}
                     layout="hero"
+                    allowedActions={fromAddedStore ? access.actions : undefined}
+                    accessRole={access.role}
                   />
                 )}
               </div>
