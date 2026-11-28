@@ -256,6 +256,13 @@ describe('app-rehydration', () => {
       expect(exposedPortTarget({ ...publicGame, name: 'expose' })).toBeNull();
       expect(exposedPortTarget({ ...publicGame, slug: '...' })).toBeNull();
     });
+
+    // Its hostname is the subdomain: `hub` or `hub-…` there would open as the Hub in the desktop app.
+    it('refuses a hub or hub-… subdomain, but not a port called hub on another one', () => {
+      expect(exposedPortTarget({ ...publicGame, slug: 'hub' })).toBeNull();
+      expect(exposedPortTarget({ ...publicGame, slug: 'Hub-Admin' })).toBeNull();
+      expect(exposedPortTarget({ ...publicGame, name: 'hub', slug: 'my-hub' })).toEqual(expect.objectContaining({ localSubdomain: 'my-hub' }));
+    });
   });
 
   describe('planExposedPorts', () => {

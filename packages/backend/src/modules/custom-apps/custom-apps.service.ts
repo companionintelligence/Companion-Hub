@@ -6,7 +6,7 @@ import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
-import { CUSTOM_APP_DEFAULT_SHORT_DESC, deriveAppSlug, RESERVED_APP_NAMES } from '@ci-hub/common/types';
+import { CUSTOM_APP_DEFAULT_SHORT_DESC, deriveAppSlug, isReservedAppName } from '@ci-hub/common/types';
 import path from 'node:path';
 import { AppsRepository } from '../apps/apps.repository';
 import { PortManagerService, type PortAllocation } from '../network/port-manager.service';
@@ -61,7 +61,7 @@ export class CustomAppService {
     if (!slug) {
       throw new TranslatableError('CUSTOM_APP_NAME_NO_SLUG', undefined, HttpStatus.BAD_REQUEST);
     }
-    if (RESERVED_APP_NAMES.includes(slug)) {
+    if (isReservedAppName(slug)) {
       throw new TranslatableError('CUSTOM_APP_NAME_RESERVED', undefined, HttpStatus.BAD_REQUEST);
     }
 

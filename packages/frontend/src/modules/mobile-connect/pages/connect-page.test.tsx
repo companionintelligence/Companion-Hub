@@ -40,16 +40,24 @@ vi.mock('../portal-client', async (orig) => ({
   establishHubSessionFromPortal: (...a: unknown[]) => establishHubSessionFromPortal(...a),
 }));
 
-const loginWithPortalOidc = vi.fn();
-const resumePendingOidcLogin = vi.fn<(...args: unknown[]) => Promise<import('../oidc').OidcTokens | null>>(async () => null);
+const signInToPortal = vi.fn();
+const resumePendingPortalSignIn = vi.fn<(...args: unknown[]) => Promise<import('../oidc').PortalSignInCode | null>>(async () => null);
+const exchangePortalSignIn = vi.fn<(...args: unknown[]) => Promise<import('../oidc').OidcTokens>>();
 vi.mock('../oidc', async (orig) => ({
   ...(await orig<typeof import('../oidc')>()),
-  loginWithPortalOidc: (...a: unknown[]) => loginWithPortalOidc(...a),
-  resumePendingOidcLogin: (...a: unknown[]) => resumePendingOidcLogin(...a),
+  signInToPortal: (...a: unknown[]) => signInToPortal(...a),
+  resumePendingPortalSignIn: (...a: unknown[]) => resumePendingPortalSignIn(...a),
+  exchangePortalSignIn: (...a: unknown[]) => exchangePortalSignIn(...a),
 }));
 
+/** A finished Portal sign-in, its code not spent yet. */
+const SIGN_IN = { portal: 'https://hub.ci.computer', code: 'code-1', verifier: 'verifier-1' };
+/** What the picker lists with: the unspent code, never a token. */
+const CODE_AUTH = { token: null, cookie: null, kind: 'code', signInCode: { code: 'code-1', verifier: 'verifier-1' } };
+const tokens = (idToken: string | null) => ({ accessToken: 'AT', idToken, tokenType: 'Bearer', expiresIn: 3600 });
+
 const devices: HubDevice[] = [
-  { id: 'reg-1', name: 'Apple Hub', status: 'active', hubUrl: 'https://hub-apple.ci.computer' },
+  { id: 'reg-1', name: 'Apple Hub', status: 'active', hubUrl: 'https://hub-apple.ci.computer', resource: 'urn:ci:device:dev-apple' },
   { id: 'reg-2', name: 'Pending Hub', status: 'pending', hubUrl: null },
 ];
 
@@ -66,9 +74,11 @@ beforeEach(() => {
   listHubDevices.mockReset();
   establishHubSessionFromPortal.mockReset();
   establishHubSessionFromPortal.mockResolvedValue(null);
-  loginWithPortalOidc.mockReset();
-  resumePendingOidcLogin.mockReset();
-  resumePendingOidcLogin.mockResolvedValue(null);
+  signInToPortal.mockReset();
+  resumePendingPortalSignIn.mockReset();
+  resumePendingPortalSignIn.mockResolvedValue(null);
+  exchangePortalSignIn.mockReset();
+  exchangePortalSignIn.mockResolvedValue(tokens(null));
   setHubConnection.mockClear();
   toastError.mockClear();
   initMobileConnection.mockReset();
@@ -130,12 +140,12 @@ describe('ConnectPage', () => {
   });
 
   it('resumes a cold-start OIDC callback on mount and shows the Hub picker', async () => {
-    resumePendingOidcLogin.mockResolvedValue({ accessToken: 'AT', idToken: null, tokenType: 'Bearer', expiresIn: 3600 });
+    resumePendingPortalSignIn.mockResolvedValue(SIGN_IN);
     listHubDevices.mockResolvedValue(devices);
     renderPage();
 
     expect(await screen.findByText('Apple Hub')).toBeInTheDocument();
-    expect(listHubDevices).toHaveBeenCalledWith({ token: 'AT', cookie: null, kind: 'oauth' }, expect.any(String));
+    expect(listHubDevices).toHaveBeenCalledWith(CODE_AUTH, expect.any(String));
   });
 
   it('resumes a stored Portal sign-in after a reload and shows the Hub picker', async () => {
@@ -153,20 +163,20 @@ describe('ConnectPage', () => {
     renderPage();
     await user.click(await screen.findByRole('button', { name: /^back$/i }));
     listHubDevices.mockClear();
-    loginWithPortalOidc.mockRejectedValue(new OidcCancelledError());
+    signInToPortal.mockRejectedValue(new OidcCancelledError());
 
     await user.click(screen.getByTestId('oidc-login-btn'));
     // Coming back from the browser fires the resume effect.
     document.dispatchEvent(new Event('visibilitychange'));
 
-    await vi.waitFor(() => expect(loginWithPortalOidc).toHaveBeenCalled());
+    await vi.waitFor(() => expect(signInToPortal).toHaveBeenCalled());
     expect(screen.getByTestId('oidc-login-btn')).toBeInTheDocument();
     expect(listHubDevices).not.toHaveBeenCalled();
     expect(sessionStorage.getItem('ci-hub.portalAuth')).toBeNull();
   });
 
   it('Back from the Hub picker forgets the Portal sign-in', async () => {
-    loginWithPortalOidc.mockResolvedValue({ accessToken: 'AT', idToken: null, tokenType: 'Bearer', expiresIn: 3600 });
+    signInToPortal.mockResolvedValue(SIGN_IN);
     listHubDevices.mockResolvedValue(devices);
     renderPage();
     await user.click(screen.getByTestId('oidc-login-btn'));
@@ -180,7 +190,7 @@ describe('ConnectPage', () => {
   });
 
   it('choosing a Hub forgets the Portal sign-in', async () => {
-    loginWithPortalOidc.mockResolvedValue({ accessToken: 'AT', idToken: null, tokenType: 'Bearer', expiresIn: 3600 });
+    signInToPortal.mockResolvedValue(SIGN_IN);
     listHubDevices.mockResolvedValue(devices);
     renderPage();
     await user.click(screen.getByTestId('oidc-login-btn'));
@@ -195,34 +205,30 @@ describe('ConnectPage', () => {
       .replace(/\+/g, '-')
       .replace(/\//g, '_')
       .replace(/=+$/, '');
-    loginWithPortalOidc.mockResolvedValue({
-      accessToken: 'AT',
-      idToken: `hdr.${payload}.sig`,
-      tokenType: 'Bearer',
-      expiresIn: 3600,
-    });
+    signInToPortal.mockResolvedValue(SIGN_IN);
+    exchangePortalSignIn.mockResolvedValue(tokens(`hdr.${payload}.sig`));
     listHubDevices.mockResolvedValue(devices);
     renderPage();
 
     await user.click(screen.getByTestId('oidc-login-btn'));
+    await user.click(await screen.findByTestId('hub-row-reg-1'));
 
-    expect(await screen.findByText('Apple Hub')).toBeInTheDocument();
-    expect(localStorage.getItem('ci-hub.portalAccountEmail')).toBe('user@example.com');
+    await vi.waitFor(() => expect(localStorage.getItem('ci-hub.portalAccountEmail')).toBe('user@example.com'));
   });
 
   it('OIDC sign-in success loads the Hub picker', async () => {
-    loginWithPortalOidc.mockResolvedValue({ accessToken: 'AT', idToken: null, tokenType: 'Bearer', expiresIn: 3600 });
+    signInToPortal.mockResolvedValue(SIGN_IN);
     listHubDevices.mockResolvedValue(devices);
     renderPage();
 
     await user.click(screen.getByTestId('oidc-login-btn'));
 
     expect(await screen.findByText('Apple Hub')).toBeInTheDocument();
-    expect(listHubDevices).toHaveBeenCalledWith({ token: 'AT', cookie: null, kind: 'oauth' }, expect.any(String));
+    expect(listHubDevices).toHaveBeenCalledWith(CODE_AUTH, expect.any(String));
   });
 
   it('connecting to a reachable Hub applies the connection then hands off to /login', async () => {
-    loginWithPortalOidc.mockResolvedValue({ accessToken: 'AT', idToken: null, tokenType: 'Bearer', expiresIn: 3600 });
+    signInToPortal.mockResolvedValue(SIGN_IN);
     listHubDevices.mockResolvedValue(devices);
     renderPage();
     await user.click(screen.getByTestId('oidc-login-btn'));
@@ -233,7 +239,8 @@ describe('ConnectPage', () => {
   });
 
   it('spends the cloud-connect id_token on the chosen Hub instead of asking for a second login', async () => {
-    loginWithPortalOidc.mockResolvedValue({ accessToken: 'AT', idToken: 'id.tok', tokenType: 'Bearer', expiresIn: 3600 });
+    signInToPortal.mockResolvedValue(SIGN_IN);
+    exchangePortalSignIn.mockResolvedValue(tokens('id.tok'));
     establishHubSessionFromPortal.mockResolvedValue({ sessionId: 'sid-1', redirectPath: '/home' });
     const assign = vi.fn();
     const originalLocation = window.location;
@@ -243,14 +250,38 @@ describe('ConnectPage', () => {
     await user.click(screen.getByTestId('oidc-login-btn'));
     await user.click(await screen.findByTestId('hub-row-reg-1'));
 
+    // The code is spent for this Hub only, so the id_token Portal mints is addressed to it.
+    expect(exchangePortalSignIn).toHaveBeenCalledTimes(1);
+    expect(exchangePortalSignIn).toHaveBeenCalledWith(expect.objectContaining({ code: 'code-1', verifier: 'verifier-1' }), 'urn:ci:device:dev-apple');
     expect(establishHubSessionFromPortal).toHaveBeenCalledWith('https://hub-apple.ci.computer', 'id.tok');
     expect(assign).toHaveBeenCalledWith('/home');
     expect(navigate).not.toHaveBeenCalled();
     Object.defineProperty(window, 'location', { value: originalLocation, writable: true, configurable: true });
   });
 
+  it.each<[string, HubDevice[], () => void]>([
+    ['Portal lists the Hub with no address', [{ ...(devices[0] as HubDevice), resource: null }], () => undefined],
+    [
+      'the code can no longer be spent (it expired at the picker)',
+      devices,
+      () => {
+        exchangePortalSignIn.mockRejectedValue(new Error('invalid_grant'));
+      },
+    ],
+  ])("falls back to the Hub's own sign-in when %s, and spends no id_token", async (_label, listed, arrange) => {
+    arrange();
+    signInToPortal.mockResolvedValue(SIGN_IN);
+    listHubDevices.mockResolvedValue(listed);
+    renderPage();
+    await user.click(screen.getByTestId('oidc-login-btn'));
+    await user.click(await screen.findByTestId('hub-row-reg-1'));
+
+    await vi.waitFor(() => expect(navigate).toHaveBeenCalledWith('/login', { replace: true }));
+    expect(establishHubSessionFromPortal).not.toHaveBeenCalled();
+  });
+
   it('OIDC failure (not a cancel) surfaces an error toast', async () => {
-    loginWithPortalOidc.mockRejectedValue(new Error('Token exchange failed (400)'));
+    signInToPortal.mockRejectedValue(new Error('Token exchange failed (400)'));
     renderPage();
 
     await user.click(screen.getByTestId('oidc-login-btn'));
@@ -261,7 +292,7 @@ describe('ConnectPage', () => {
   });
 
   it('OIDC flow shows a cancel affordance and aborts cleanly', async () => {
-    loginWithPortalOidc.mockImplementation(
+    signInToPortal.mockImplementation(
       (_url: string, opts: { signal: AbortSignal }) =>
         new Promise((_resolve, reject) => {
           opts.signal.addEventListener('abort', () => reject(new OidcCancelledError()));

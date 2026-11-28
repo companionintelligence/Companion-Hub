@@ -15,7 +15,7 @@
  *   dangerous-trigger    `pull_request_target` or `workflow_run` in the triggers, or in the commented original
  *                        triggers that `ci-local restore` puts back.
  *   secrets-inherit      a job that hands every secret to the workflow it calls.
- *   unpinned-uses        an action reference that can move. Report only, until the references are pinned.
+ *   unpinned-uses        an action reference that can move (a tag or a branch, GitHub's own actions included).
  *   private-key          a private-key block in a tracked text file.
  *   missing-permissions  no `permissions` at the top of the workflow and not on every job.
  *   secret-map           a call passes other secrets than the called workflow reads and declares.
@@ -76,8 +76,11 @@ export interface RepoScan {
 
 export const ALLOW_LIST_PATH = '.github/workflow-hygiene.allow.json';
 
-/** Rules that are listed but do not fail the run. */
-export const REPORT_ONLY_RULES: ReadonlySet<RuleId> = new Set<RuleId>(['unpinned-uses']);
+/**
+ * Rules that are listed but do not fail the run, for phasing a new rule in. Empty: `unpinned-uses`
+ * was report-only until every action reference was pinned to a commit, and fails the run since.
+ */
+export const REPORT_ONLY_RULES: ReadonlySet<RuleId> = new Set<RuleId>();
 
 export function isReportOnly(finding: Finding): boolean {
   return REPORT_ONLY_RULES.has(finding.rule);

@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
 /**
  * The credential a Hub session is presented with: `<session id>.<signature>`, sent in the
@@ -69,6 +69,39 @@ export function openSessionToken(token: unknown, jwtSecret: string | undefined):
  */
 export const SESSION_TOKEN_FRAGMENT_KEY = 'ci_hub_session';
 
+/**
+ * The fragment key for the value that ties a hand-off to this browser, beside the token.
+ *
+ * A Hub page used to adopt any token it found in its fragment, so a link to a Hub page carrying
+ * someone ELSE's token signed the visitor in as them, silently: whatever they then did or entered
+ * went to that account. So every redirect that hands over a token also sets
+ * {@link sessionHandoffCookie} in the same response, holding this value, and the page adopts the
+ * token only when its fragment's value matches that cookie (frontend `session-fragment.ts`). A
+ * planted link never passed through this browser's own redirect, so no cookie of the browser's
+ * matches it. The redirects themselves only run for a sign-in this browser started (Portal's
+ * binding cookie, the hand-off's same-origin confirmation), so they cannot be replayed to plant one.
+ */
+export const SESSION_HANDOFF_NONCE_KEY = 'ci_hub_nonce';
+
+/** How long a hand-off cookie lasts: long enough to click "carry on in the browser" on the desktop hand-off page. */
+export const SESSION_HANDOFF_COOKIE_TTL_SECONDS = 10 * 60;
+
+/**
+ * Name, Path and Secure of the hand-off cookie for a request that is (`secure`) or is not https.
+ *
+ * `__Host-` over https: the browser then refuses one set by any other host, so an app on a sibling
+ * address (`<app>.<domain>` beside `hub.<domain>`) cannot plant a matching value with
+ * `Domain=<domain>`. Readable by the page's script (not httpOnly): the page is what compares it.
+ */
+export function sessionHandoffCookie(secure: boolean): { name: string; path: string; secure: boolean } {
+  return { name: secure ? '__Host-ci-hub-handoff' : 'ci-hub-handoff', path: '/', secure };
+}
+
+/** A fresh hand-off value: 144 random bits, URL-safe. */
+export function mintSessionHandoffNonce(): string {
+  return randomBytes(18).toString('base64url');
+}
+
 /** The Hub page that finishes an app sign-in (edge SSO) with the page's own token. */
 export const EDGE_SSO_PAGE_PATH = '/sso';
 
@@ -88,7 +121,7 @@ const BOUNCES_TO_A_HUB_PAGE = new Set(['/api/auth/edge-sso', '/api/memory-connec
  * on `/home` instead; only the routes that bounce to a Hub page ({@link BOUNCES_TO_A_HUB_PAGE}) are
  * kept. A caller with an app to reach sends the browser through {@link EDGE_SSO_PAGE_PATH}.
  */
-export function withSessionTokenFragment(url: string, token: string, hubOrigin: string): string {
+export function withSessionTokenFragment(url: string, token: string, hubOrigin: string, nonce: string): string {
   const hub = new URL(hubOrigin);
   let target: URL;
   try {
@@ -100,6 +133,6 @@ export function withSessionTokenFragment(url: string, token: string, hubOrigin: 
   if (target.origin !== hub.origin || (isApi && !BOUNCES_TO_A_HUB_PAGE.has(target.pathname))) {
     target = new URL('/home', hub);
   }
-  target.hash = `${SESSION_TOKEN_FRAGMENT_KEY}=${encodeURIComponent(token)}`;
+  target.hash = `${SESSION_TOKEN_FRAGMENT_KEY}=${encodeURIComponent(token)}&${SESSION_HANDOFF_NONCE_KEY}=${encodeURIComponent(nonce)}`;
   return target.toString();
 }

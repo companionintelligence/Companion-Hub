@@ -2,7 +2,14 @@ import { isUtf8 } from 'node:buffer';
 import crypto from 'node:crypto';
 import net from 'node:net';
 import { APP_SESSION_COOKIE_NAME, SESSION_COOKIE_MAX_AGE, SESSION_COOKIE_NAME } from '@/common/constants';
-import { EDGE_SSO_PAGE_PATH, mintSessionToken, withSessionTokenFragment } from './session-token';
+import {
+  EDGE_SSO_PAGE_PATH,
+  mintSessionHandoffNonce,
+  mintSessionToken,
+  SESSION_HANDOFF_COOKIE_TTL_SECONDS,
+  sessionHandoffCookie,
+  withSessionTokenFragment,
+} from './session-token';
 import { buildHubPublicOrigin, resolveHubLocalDomainRoot, resolveHubPublicDomainRoot } from '@/common/helpers/hub-origin';
 import { hashEmailForLog } from '@/common/helpers/log-privacy';
 import { TranslatableError } from '@/common/error/translatable-error';
@@ -135,7 +142,7 @@ import {
   parseDesktopChannel,
   type DesktopChannel,
 } from './portal-sso';
-import { extractBearerToken, portalClaimsIdentity, verifyPortalIdToken } from './portal-token';
+import { applianceAudienceFor, applianceAudienceRefusal, extractBearerToken, portalClaimsIdentity, verifyPortalIdToken } from './portal-token';
 import { loadSessionUser, refuseRevokedSessionUser, sessionIdsFromRequest } from './auth.middleware';
 import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate';
 import { tailscaleServicesStore } from '../tailscale/tailscale-services.store';
@@ -356,6 +363,8 @@ self.addEventListener('activate', (event) => {
 
 /** The Portal client the Hub's own sign-ins use (mobile-connect `OIDC_CLIENT_ID`). */
 const HUB_MOBILE_PORTAL_AUDIENCE = 'ci-hub';
+/** The desktop's id_token from its own Portal sign-in, beside the access token (`establishPortalDesktopSession`). */
+const PORTAL_ID_TOKEN_HEADER = 'x-portal-id-token';
 @Controller('auth')
 export class AuthController {
   constructor(
@@ -476,6 +485,25 @@ export class AuthController {
   private issueSessionToken(res: Response, sessionId: string, req: Request): string {
     this.clearSessionCookie(res, req);
     return mintSessionToken(sessionId, this.config.get('jwtSecret'));
+  }
+
+  /**
+   * `url` with `token` in its fragment, for a redirect that signs this browser in, and the hand-off
+   * cookie that lets the Hub page accept it (`sessionHandoffCookie`), set on the same response. The
+   * page adopts a fragment's token only when its hand-off value matches this browser's cookie, so a
+   * link carrying someone else's token cannot sign a visitor in to their account.
+   */
+  private handOffSessionToken(req: Request, res: Response, url: string, token: string, hubOrigin: string): string {
+    const nonce = mintSessionHandoffNonce();
+    const cookie = sessionHandoffCookie(this.cookieSecurity(req).secure);
+    res.cookie(cookie.name, nonce, {
+      httpOnly: false,
+      sameSite: 'lax',
+      path: cookie.path,
+      maxAge: SESSION_HANDOFF_COOKIE_TTL_SECONDS * 1000,
+      secure: cookie.secure,
+    });
+    return withSessionTokenFragment(url, token, hubOrigin, nonce);
   }
 
   /**
@@ -1206,7 +1234,11 @@ export class AuthController {
     // ends on can read it. A `next` on an app's host (`isSafeHandoffNext` allows this appliance's own)
     // goes through the Hub page that signs in to an app, which takes the token and mints that app's ticket.
     const landing = new URL(next, hubOrigin).origin === hubOrigin ? next : `${EDGE_SSO_PAGE_PATH}?redirect=${encodeURIComponent(next)}`;
-    return browserHandoffRedirect(req, res, withSessionTokenFragment(landing, this.issueSessionToken(res, browserSessionId, req), hubOrigin));
+    return browserHandoffRedirect(
+      req,
+      res,
+      this.handOffSessionToken(req, res, landing, this.issueSessionToken(res, browserSessionId, req), hubOrigin),
+    );
   }
 
   /** Desktop login returns through its deep link, while browser login returns to the initiating Hub origin. */
@@ -1448,7 +1480,7 @@ export class AuthController {
              * "Carry on in the browser": the same destination the app is being sent to, with this
              * browser's own token in the fragment, so no second sign-in.
              */
-            continueHref: withSessionTokenFragment(exchangePayload.redirectPath, sessionToken, hubOrigin),
+            continueHref: this.handOffSessionToken(req, res, exchangePayload.redirectPath, sessionToken, hubOrigin),
             statusHref: `/api/auth/portal/desktop-handoff-status?token=${encodeURIComponent(desktopToken)}`,
           }),
         );
@@ -1457,7 +1489,7 @@ export class AuthController {
 
       // Redirect back to the requested URL if it's same-origin; otherwise go home.
       const safeRedirect = resolveSameOriginRedirectUrl(redirectUrl, hubOrigin);
-      res.redirect(withSessionTokenFragment(safeRedirect ?? '/home', sessionToken, hubOrigin));
+      res.redirect(this.handOffSessionToken(req, res, safeRedirect ?? '/home', sessionToken, hubOrigin));
       return;
     } catch (error) {
       this.logger.error('Portal OAuth callback crashed', error);
@@ -1672,6 +1704,14 @@ export class AuthController {
     if (!claims?.email || claims.emailVerified !== true) {
       throw new UnauthorizedException('Portal sign-in could not be used on this Hub');
     }
+    // Only an id_token Portal addressed to this Hub: one another Hub received would otherwise sign the
+    // same person in here.
+    const mobileDeviceId = await this.registrationService.getDeviceId();
+    const mobileRefusal = applianceAudienceRefusal(claims, mobileDeviceId);
+    if (mobileRefusal) {
+      this.logger.warn(`Portal mobile session refused: the id_token is ${mobileRefusal} (not addressed to this Hub)`);
+      throw new UnauthorizedException('Portal sign-in could not be used on this Hub');
+    }
 
     const operator = await this.authService.admitHubPerson({
       issuer: claims.issuer || portalBase,
@@ -1682,16 +1722,22 @@ export class AuthController {
     const sessionId = await this.sessionManager.createSession(operator.id);
     this.logger.info('Portal mobile session planted from the cloud-connect id_token', {
       portalEmailHash: hashEmailForLog(claims.email),
+      // false: an unstamped token from a Portal older than addressing, taken as before.
+      addressed: (claims.audiences ?? []).includes(applianceAudienceFor(mobileDeviceId)),
     });
     return PortalDesktopExchangeDto.parse({ sessionId: this.issueSessionToken(res, sessionId, req), redirectPath: '/home' }, { reportOnly: true });
   }
 
   /**
    * The desktop app ran its own sign-in: PKCE S256 with a 127.0.0.1 loopback redirect, against Portal as the
-   * public client `ci-hub` (no secret). It sends the access token that came back as a Bearer header, so no
-   * token goes into a URL. The Hub checks that token with Portal's userinfo endpoint, the same check the
-   * browser callback makes. The id_token audience check the mobile route does is not available from an
-   * access token, which is a known limit of this route.
+   * public client `ci-hub` (no secret). It sends the access token that came back as a Bearer header, and the
+   * id_token from the same exchange in `X-Portal-Id-Token`, so no token goes into a URL.
+   *
+   * The access token is checked with Portal's userinfo endpoint, the same check the browser callback makes.
+   * An access token does not say which Portal client it was issued to, so on its own any Portal client's
+   * token was a Hub sign-in: one an app, the extension or Capture holds for the same person. The id_token
+   * does say: it must be signed by Portal for the Hub's own client (`ci-hub`), as the mobile route requires,
+   * and name the same person userinfo names.
    */
   @Post('/portal/desktop-session')
   @ApiResponse({ type: PortalDesktopExchangeDto })
@@ -1702,11 +1748,29 @@ export class AuthController {
       throw new UnauthorizedException('Portal sign-in could not be used on this Hub');
     }
 
+    const idTokenHeader = req.headers[PORTAL_ID_TOKEN_HEADER];
+    const idToken = typeof idTokenHeader === 'string' ? idTokenHeader.trim() : '';
+    if (!idToken) {
+      throw new UnauthorizedException('Portal sign-in could not be used on this Hub');
+    }
+
     const userinfo = await fetchPortalUserinfo({ publicPortalBaseUrl: portalBase, accessToken: bearer });
     if (!userinfo.ok) {
       throw new UnauthorizedException('Portal sign-in could not be used on this Hub');
     }
     if (!userinfo.subject) {
+      throw new UnauthorizedException('Portal sign-in could not be used on this Hub');
+    }
+
+    const idClaims = await verifyPortalIdToken(idToken, { publicCiCloudUrl: portalBase, audiences: [HUB_MOBILE_PORTAL_AUDIENCE] });
+    if (!idClaims || idClaims.sub !== userinfo.subject) {
+      throw new UnauthorizedException('Portal sign-in could not be used on this Hub');
+    }
+    // Addressed to this Hub: the desktop app names it as `resource` (`/portal/desktop-config`'s deviceId).
+    const desktopDeviceId = await this.registrationService.getDeviceId();
+    const desktopRefusal = applianceAudienceRefusal(idClaims, desktopDeviceId);
+    if (desktopRefusal) {
+      this.logger.warn(`Portal desktop session refused: the id_token is ${desktopRefusal} (not addressed to this Hub)`);
       throw new UnauthorizedException('Portal sign-in could not be used on this Hub');
     }
 
@@ -1719,19 +1783,25 @@ export class AuthController {
     const sessionId = await this.sessionManager.createSession(operator.id);
     this.logger.info("Portal desktop session planted from the app's own sign-in", {
       portalEmailHash: hashEmailForLog(userinfo.email),
+      // false: an unstamped token from a Portal older than addressing, taken as before.
+      addressed: (idClaims.audiences ?? []).includes(applianceAudienceFor(desktopDeviceId)),
     });
     return PortalDesktopExchangeDto.parse({ sessionId: this.issueSessionToken(res, sessionId, req), redirectPath: '/home' }, { reportOnly: true });
   }
 
   /**
    * The Portal origin is public, and the desktop app needs it to run its own sign-in against the same Portal
-   * the Hub checks tokens with. Unauthenticated, because nothing in it is secret.
+   * the Hub checks tokens with; the device id is what it names as `resource`, so Portal addresses the
+   * id_token to this Hub. Unauthenticated, because nothing in it is secret: the device id is in every
+   * address Portal registered for this Hub, and naming it addresses a token only for a person who belongs
+   * to the organization the Hub is paired with.
    */
   @Get('/portal/desktop-config')
   @ApiResponse({ type: PortalDesktopConfigDto })
-  portalDesktopConfig() {
+  async portalDesktopConfig() {
     const portalUrl = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '');
-    return PortalDesktopConfigDto.parse({ portalUrl: portalUrl || null }, { reportOnly: true });
+    const deviceId = (await this.registrationService.getDeviceId().catch(() => '')) || null;
+    return PortalDesktopConfigDto.parse({ portalUrl: portalUrl || null, deviceId }, { reportOnly: true });
   }
 
   /**

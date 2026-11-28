@@ -202,6 +202,19 @@ describe('PortExposeService', () => {
       expect(appsRepository.createApp).not.toHaveBeenCalled();
     });
 
+    it.each(['local', 'tailscale'] as const)('refuses a port named hub-… on %s, whose address it would be', async (exposureMode) => {
+      await expect(service.createPortExposeApp({ name: 'Hub Admin', port: 8080, exposureMode })).rejects.toMatchObject({
+        message: 'APP_INSTALL_FORM_ERROR_LOCAL_SUBDOMAIN_HUB',
+      });
+      expect(appsRepository.createApp).not.toHaveBeenCalled();
+    });
+
+    it('refuses a hub-… subdomain on Public Web', async () => {
+      await expect(
+        service.createPortExposeApp({ name: 'Grafana', port: 8080, exposureMode: 'cloudflare', localSubdomain: 'hub-grafana' }),
+      ).rejects.toMatchObject({ message: 'APP_INSTALL_FORM_ERROR_LOCAL_SUBDOMAIN_HUB' });
+    });
+
     it('lets a port called Hub on Public Web take another subdomain', async () => {
       await service.createPortExposeApp({ name: 'Hub', port: 8080, exposureMode: 'cloudflare', localSubdomain: 'my-hub' });
 
@@ -335,6 +348,13 @@ describe('PortExposeService', () => {
       await expect(service.updatePortExposeApp('hub:_user', { port: 8081, exposureMode: 'local', localSubdomain: '-' })).rejects.toMatchObject({
         message: 'PORT_EXPOSE_NAME_RESERVED_FOR_HUB',
       });
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+    });
+
+    it('refuses to move a port onto a hub-… subdomain, changing nothing', async () => {
+      await expect(
+        service.updatePortExposeApp('my-workload:_user', { port: 8080, exposureMode: 'cloudflare', localSubdomain: 'hub-x' }),
+      ).rejects.toMatchObject({ message: 'APP_INSTALL_FORM_ERROR_LOCAL_SUBDOMAIN_HUB' });
       expect(appsRepository.updateAppById).not.toHaveBeenCalled();
     });
 

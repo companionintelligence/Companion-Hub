@@ -10,7 +10,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { Test } from '@nestjs/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
-import { AuthService } from '../auth.service';
+import { AuthService, totpSessionCacheKey } from '../auth.service';
 import { SessionManager } from '../session.manager';
 import { BearerOrgMembershipCache } from '../bearer-org-membership.cache';
 import { SessionUserCache } from '@/core/cache/session-user.cache';
@@ -140,22 +140,23 @@ describe('AuthService', () => {
     });
 
     it('a wrong code on the sign-in 2FA page and a 2FA page that has expired', async () => {
-      const store = new Map<string, string>([['session', '7']]);
+      const PENDING = '0b4c7f2e-3a51-4d8e-9c6a-1f2e3d4c5b6a';
+      const store = new Map<string, string>([[`totp-session:${PENDING}`, '7']]);
       cacheService.get.mockImplementation((key: string) => store.get(key) as never);
       cacheService.set.mockImplementation(((key: string, value: string) => store.set(key, value)) as never);
       vi.spyOn(TotpAuthenticator, 'check').mockReturnValue(false);
       encryptionService.decrypt.mockReturnValue('secret' as never);
 
-      await expect(authService.verifyTotp({ totpSessionId: 'session', totpCode: '000000' })).rejects.toMatchObject(
+      await expect(authService.verifyTotp({ totpSessionId: PENDING, totpCode: '000000' })).rejects.toMatchObject(
         refused('AUTH_ERROR_TOTP_INVALID_CODE'),
       );
-      await expect(authService.verifyTotp({ totpSessionId: 'gone', totpCode: '000000' })).rejects.toMatchObject(
+      await expect(authService.verifyTotp({ totpSessionId: '9f8e7d6c-5b4a-4c3d-8e2f-1a0b9c8d7e6f', totpCode: '000000' })).rejects.toMatchObject(
         refused('AUTH_ERROR_TOTP_SESSION_NOT_FOUND'),
       );
 
       // A request already past the first check when another one ended the session.
       cacheService.get.mockReturnValueOnce('7' as never).mockReturnValueOnce(undefined as never);
-      await expect(authService.verifyTotp({ totpSessionId: 'session', totpCode: '000000' })).rejects.toMatchObject(
+      await expect(authService.verifyTotp({ totpSessionId: PENDING, totpCode: '000000' })).rejects.toMatchObject(
         refused('AUTH_ERROR_TOTP_SESSION_NOT_FOUND'),
       );
     });
@@ -170,7 +171,9 @@ describe('AuthService', () => {
   });
 
   describe('TOTP sign-in', () => {
-    const SESSION = 'totp-session-1';
+    const SESSION = '5d2a9e1c-7b3f-4a6d-8c0e-2f1b3a4c5d6e';
+    const OTHER = '6e3b0f2d-8c4a-4b7e-9d1f-3a2c4b5d6e7f';
+    const keyOf = (id: string) => totpSessionCacheKey(id) as string;
     const user = { id: 7, totpEnabled: true, totpSecret: 'enc', salt: 'salt', accessStatus: 'active' };
     let store: Map<string, { value: string; ttl: number | undefined }>;
 
@@ -201,13 +204,13 @@ describe('AuthService', () => {
 
       const { totpSessionId } = (await authService.login({ username: 'totp@example.com', password: 'Password1!' })) as { totpSessionId: string };
 
-      expect(store.get(totpSessionId)?.ttl).toBe(300);
+      expect(store.get(keyOf(totpSessionId))?.ttl).toBe(300);
     });
 
     it('hands a DID sign-in the same five-minute second step, and verifyTotp finishes it', async () => {
       const totpSessionId = authService.beginTotpStep(7);
 
-      expect(store.get(totpSessionId)).toEqual({ value: '7', ttl: 300 });
+      expect(store.get(keyOf(totpSessionId))).toEqual({ value: '7', ttl: 300 });
       vi.spyOn(TotpAuthenticator, 'check').mockReturnValue(true);
 
       await expect(authService.verifyTotp({ totpSessionId, totpCode: '123456' })).resolves.toEqual({ sessionId: 'session-id' });
@@ -226,34 +229,34 @@ describe('AuthService', () => {
         expect(id).toMatch(UUID_V4);
       }
       // Each is filed under its own id with its own person: a constant would leave one entry for everybody.
-      expect(store.get(first)).toEqual({ value: '7', ttl: 300 });
-      expect(store.get(second)).toEqual({ value: '8', ttl: 300 });
-      expect(store.get(again)).toEqual({ value: '7', ttl: 300 });
+      expect(store.get(keyOf(first))).toEqual({ value: '7', ttl: 300 });
+      expect(store.get(keyOf(second))).toEqual({ value: '8', ttl: 300 });
+      expect(store.get(keyOf(again))).toEqual({ value: '7', ttl: 300 });
     });
 
     it('accepts a right code and clears the session and its attempt counter', async () => {
-      store.set(SESSION, { value: '7', ttl: 300 });
-      store.set(`totp-attempts:${SESSION}`, { value: '3', ttl: 300 });
+      store.set(keyOf(SESSION), { value: '7', ttl: 300 });
+      store.set(`${keyOf(SESSION)}:attempts`, { value: '3', ttl: 300 });
       vi.spyOn(TotpAuthenticator, 'check').mockReturnValue(true);
 
       await expect(authService.verifyTotp({ totpSessionId: SESSION, totpCode: '123456' })).resolves.toEqual({ sessionId: 'session-id' });
 
-      expect(store.has(SESSION)).toBe(false);
-      expect(store.has(`totp-attempts:${SESSION}`)).toBe(false);
+      expect(store.has(keyOf(SESSION))).toBe(false);
+      expect(store.has(`${keyOf(SESSION)}:attempts`)).toBe(false);
     });
 
     it('answers a wrong code with "invalid" and keeps the session open for another try', async () => {
-      store.set(SESSION, { value: '7', ttl: 300 });
+      store.set(keyOf(SESSION), { value: '7', ttl: 300 });
       vi.spyOn(TotpAuthenticator, 'check').mockReturnValue(false);
 
       await expect(authService.verifyTotp({ totpSessionId: SESSION, totpCode: '000000' })).rejects.toThrow('AUTH_ERROR_TOTP_INVALID_CODE');
 
-      expect(store.has(SESSION)).toBe(true);
-      expect(store.get(`totp-attempts:${SESSION}`)?.value).toBe('1');
+      expect(store.has(keyOf(SESSION))).toBe(true);
+      expect(store.get(`${keyOf(SESSION)}:attempts`)?.value).toBe('1');
     });
 
     it('ends the session on the fifth wrong code, so six digits cannot be guessed at without limit', async () => {
-      store.set(SESSION, { value: '7', ttl: 300 });
+      store.set(keyOf(SESSION), { value: '7', ttl: 300 });
       vi.spyOn(TotpAuthenticator, 'check').mockReturnValue(false);
 
       for (let i = 0; i < 4; i++) {
@@ -264,8 +267,8 @@ describe('AuthService', () => {
         status: 429,
       });
 
-      expect(store.has(SESSION)).toBe(false);
-      expect(store.has(`totp-attempts:${SESSION}`)).toBe(false);
+      expect(store.has(keyOf(SESSION))).toBe(false);
+      expect(store.has(`${keyOf(SESSION)}:attempts`)).toBe(false);
       // And the session being gone is what stops the sixth guess, even a correct one.
       vi.spyOn(TotpAuthenticator, 'check').mockReturnValue(true);
       await expect(authService.verifyTotp({ totpSessionId: SESSION, totpCode: '123456' })).rejects.toThrow('AUTH_ERROR_TOTP_SESSION_NOT_FOUND');
@@ -273,7 +276,7 @@ describe('AuthService', () => {
     });
 
     it('tests at most five codes out of a burst sent in parallel, even though every request is past the first check', async () => {
-      store.set(SESSION, { value: '7', ttl: 300 });
+      store.set(keyOf(SESSION), { value: '7', ttl: 300 });
       const check = vi.spyOn(TotpAuthenticator, 'check').mockReturnValue(false);
 
       const outcomes = await Promise.allSettled(
@@ -282,11 +285,11 @@ describe('AuthService', () => {
 
       expect(check).toHaveBeenCalledTimes(5);
       expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(0);
-      expect(store.has(SESSION)).toBe(false);
+      expect(store.has(keyOf(SESSION))).toBe(false);
     });
 
     it('gives one session to two parallel requests that carry the same right code', async () => {
-      store.set(SESSION, { value: '7', ttl: 300 });
+      store.set(keyOf(SESSION), { value: '7', ttl: 300 });
       vi.spyOn(TotpAuthenticator, 'check').mockReturnValue(true);
 
       const outcomes = await Promise.allSettled([
@@ -298,13 +301,29 @@ describe('AuthService', () => {
       expect(sessionManager.createSession).toHaveBeenCalledTimes(1);
     });
 
+    // The id comes back from the client. It once named the cache entry by itself, so any entry whose
+    // value reads as a user id (an attempts counter holds "1") could stand in for a pending sign-in,
+    // and the success and too-many-tries paths deleted whatever key it named.
+    it('reads and deletes only a pending sign-in, never another cache entry the client names', async () => {
+      store.set('mint-counter', { value: '7', ttl: 300 });
+      store.set(keyOf(SESSION), { value: '7', ttl: 300 });
+      vi.spyOn(TotpAuthenticator, 'check').mockReturnValue(true);
+
+      for (const named of ['mint-counter', keyOf(SESSION), `totp-attempts:${SESSION}`, `${SESSION}\n`]) {
+        await expect(authService.verifyTotp({ totpSessionId: named, totpCode: '123456' })).rejects.toThrow('AUTH_ERROR_TOTP_SESSION_NOT_FOUND');
+      }
+      expect(store.has('mint-counter')).toBe(true);
+      expect(store.has(keyOf(SESSION))).toBe(true);
+      expect(sessionManager.createSession).not.toHaveBeenCalled();
+    });
+
     it('counts each pending sign-in on its own', async () => {
-      store.set('other-session', { value: '7', ttl: 300 });
-      store.set(SESSION, { value: '7', ttl: 300 });
+      store.set(keyOf(OTHER), { value: '7', ttl: 300 });
+      store.set(keyOf(SESSION), { value: '7', ttl: 300 });
       vi.spyOn(TotpAuthenticator, 'check').mockReturnValue(false);
 
       for (let i = 0; i < 4; i++) {
-        await expect(authService.verifyTotp({ totpSessionId: 'other-session', totpCode: '000000' })).rejects.toThrow('AUTH_ERROR_TOTP_INVALID_CODE');
+        await expect(authService.verifyTotp({ totpSessionId: OTHER, totpCode: '000000' })).rejects.toThrow('AUTH_ERROR_TOTP_INVALID_CODE');
       }
 
       await expect(authService.verifyTotp({ totpSessionId: SESSION, totpCode: '000000' })).rejects.toThrow('AUTH_ERROR_TOTP_INVALID_CODE');

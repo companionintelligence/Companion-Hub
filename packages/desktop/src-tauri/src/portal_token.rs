@@ -15,7 +15,9 @@
 //!   file in its own config dir, which no container mounts), never a URL the page chose;
 //! - as `https`, or `http` only when that Portal is a loopback one for local Portal development;
 //! - with a form body of OAuth token-grant fields only, `grant_type` `authorization_code` or
-//!   `refresh_token`, which carries nothing the page did not already hold;
+//!   `refresh_token`, which carries nothing the page did not already hold. A code exchange may also
+//!   name the Hub it signs in to (`resource=urn:ci:device:<id>`), so Portal addresses the id_token
+//!   to that Hub and no other Hub can turn it into a session;
 //! - with no redirects followed, a timeout, and a cap on the reply it hands back.
 
 use std::time::Duration;
@@ -38,9 +40,11 @@ const ALLOWED_FIELDS: &[&str] = &[
     "client_id",
     "code_verifier",
     "refresh_token",
+    "resource",
 ];
 
-const ALLOWED_GRANT_TYPES: &[&str] = &["authorization_code", "refresh_token"];
+/// The only `resource` a code exchange may name: one appliance, as Portal's addressing contract writes it.
+const RESOURCE_PREFIX: &str = "urn%3Aci%3Adevice%3A";
 
 /// A token request body is a few hundred bytes; this only stops the page from sending a payload.
 const MAX_REQUEST_BYTES: usize = 8 * 1024;
@@ -92,6 +96,7 @@ pub(crate) fn check_token_request(
         return Err("the token request body is empty or too long".to_string());
     }
     let mut grant_type: Option<&str> = None;
+    let mut resources = 0;
     for pair in body.split('&') {
         let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
         if !ALLOWED_FIELDS.contains(&key) {
@@ -103,9 +108,27 @@ pub(crate) fn check_token_request(
             }
             grant_type = Some(value);
         }
+        if key == "resource" {
+            // One appliance, as URLSearchParams encodes it: the prefix, then a device id of plain
+            // characters. Anything else is not something this command sends for the page.
+            let id = value.strip_prefix(RESOURCE_PREFIX).unwrap_or("");
+            if id.is_empty()
+                || !id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+            {
+                return Err("the token request may name only an appliance as resource".to_string());
+            }
+            resources += 1;
+        }
+    }
+    if resources > 1 {
+        return Err("the token request names more than one resource".to_string());
     }
     match grant_type {
-        Some(value) if ALLOWED_GRANT_TYPES.contains(&value) => Ok(url),
+        Some("authorization_code") => Ok(url),
+        Some("refresh_token") if resources == 0 => Ok(url),
+        Some("refresh_token") => Err("only a code exchange may name a resource".to_string()),
         _ => Err(
             "the token request must be an authorization_code or refresh_token grant".to_string(),
         ),
@@ -185,6 +208,25 @@ mod tests {
             "https://hub.companionintelligence.com/"
         )
         .is_ok());
+    }
+
+    #[test]
+    fn lets_a_code_exchange_name_one_appliance_and_nothing_else() {
+        let addressed =
+            format!("{CODE_GRANT}&resource=urn%3Aci%3Adevice%3A5f0e8c1a-3b2d_4e6f.9a7b");
+        assert!(check_token_request(ENDPOINT, &addressed, PORTAL).is_ok());
+        for body in [
+            format!("{CODE_GRANT}&resource=https%3A%2F%2Fevil.example%2F"),
+            format!("{CODE_GRANT}&resource=urn%3Aci%3Adevice%3A"),
+            format!("{CODE_GRANT}&resource=urn%3Aci%3Adevice%3Aa%26b"),
+            format!("{CODE_GRANT}&resource=urn%3Aci%3Adevice%3Aa&resource=urn%3Aci%3Adevice%3Ab"),
+            "grant_type=refresh_token&refresh_token=r&resource=urn%3Aci%3Adevice%3Aa".to_string(),
+        ] {
+            assert!(
+                check_token_request(ENDPOINT, &body, PORTAL).is_err(),
+                "{body}"
+            );
+        }
     }
 
     #[test]

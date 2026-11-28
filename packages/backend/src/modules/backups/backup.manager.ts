@@ -287,8 +287,20 @@ export class BackupManager implements OnApplicationShutdown {
   /**
    * @param deadline the budget the restore's root helpers share (the delete, then the extract), so the command
    *   still answers the queue in time on a big data folder. A caller doing more than the restore passes its own.
+   * @param options.appFiles whether the archive's `app` (the installed manifest and compose file) and
+   *   `user-config` (the operator's overrides) replace the live ones. `'keep'`, the default, restores the
+   *   data only: a backup can be uploaded by anyone allowed to back the app up, and its manifest is not one
+   *   the Hub installed. It could otherwise widen the app's compose (a custom app's binds, an override)
+   *   past what that person may change. `'from-backup'` is for the update rollback alone, which restores
+   *   the backup the Hub itself took just before the update.
    */
-  public restoreApp = async (appUrn: AppUrn, filename: string, deadline: AppCommandDeadline = this.commandDeadline()) => {
+  public restoreApp = async (
+    appUrn: AppUrn,
+    filename: string,
+    deadline: AppCommandDeadline = this.commandDeadline(),
+    options: { appFiles?: 'keep' | 'from-backup' } = {},
+  ) => {
+    const appFiles = options.appFiles ?? 'keep';
     const { dataDir } = this.config.get('directories');
     const { appStoreId, appName } = extractAppUrn(appUrn);
     const backupDir = path.join(dataDir, 'backups', appStoreId, appName);
@@ -404,7 +416,13 @@ export class BackupManager implements OnApplicationShutdown {
         throw this.outOfTime('Restoring', appUrn, deadline, 'Nothing was changed.');
       }
 
-      await this.replaceAppFiles(appUrn, restoreDir, dataMember && staging ? { stagingId: staging.id, member: dataMember } : null, deadline);
+      await this.replaceAppFiles(
+        appUrn,
+        restoreDir,
+        dataMember && staging ? { stagingId: staging.id, member: dataMember } : null,
+        deadline,
+        appFiles,
+      );
 
       for (const volume of volumes) {
         this.logger.info(`Restoring Docker volume ${volume.name}...`);
@@ -492,13 +510,18 @@ export class BackupManager implements OnApplicationShutdown {
     this.logger.error(`Backup ${filename} was refused: ${detail}`);
   }
 
-  /** Swap the app's live folders for the (already validated) ones extracted from a backup. */
+  /**
+   * Swap the app's live data for the (already validated) data extracted from a backup, and with
+   * `appFiles: 'from-backup'` its installed files and user config too (see `restoreApp`).
+   */
   private async replaceAppFiles(
     appUrn: AppUrn,
     restoreDir: string,
     withOwners: { stagingId: string; member: string } | null,
     deadline: AppCommandDeadline,
+    appFiles: 'keep' | 'from-backup',
   ) {
+    const withAppFiles = appFiles === 'from-backup';
     const { dataDir } = this.config.get('directories');
     const { appStoreId, appName } = extractAppUrn(appUrn);
     const { appInstalledDir, appDataDir } = this.appFilesManager.getAppPaths(appUrn);
@@ -506,12 +529,16 @@ export class BackupManager implements OnApplicationShutdown {
 
     // Remove old data directories
     await this.removeLiveAppData(appUrn, appDataDir, deadline);
-    await this.filesystem.removeDirectory(appInstalledDir);
-    await this.filesystem.removeDirectory(userConfigDir);
+    if (withAppFiles) {
+      await this.filesystem.removeDirectory(appInstalledDir);
+      await this.filesystem.removeDirectory(userConfigDir);
+    }
 
     await this.filesystem.createDirectory(appDataDir);
-    await this.filesystem.createDirectory(appInstalledDir);
-    await this.filesystem.createDirectory(userConfigDir);
+    if (withAppFiles) {
+      await this.filesystem.createDirectory(appInstalledDir);
+      await this.filesystem.createDirectory(userConfigDir);
+    }
 
     // Copy data from the backup folder. `copyDirectory` reports failure by returning false
     // (ENOSPC, EACCES), and a restore that copied nothing must not report success. The data of a backup
@@ -521,10 +548,12 @@ export class BackupManager implements OnApplicationShutdown {
         ? (await this.docker.extractBackupAppDataAsRoot(appUrn, withOwners.stagingId, withOwners.member, deadline)) &&
           (await this.rootRestoreLanded(appUrn, path.join(restoreDir, 'app-data'), appDataDir))
         : await this.filesystem.copyDirectory(path.join(restoreDir, 'app-data'), appDataDir, { verbatimSymlinks: true }),
-      await this.filesystem.copyDirectory(path.join(restoreDir, 'app'), appInstalledDir),
     ];
+    if (withAppFiles) {
+      copied.push(await this.filesystem.copyDirectory(path.join(restoreDir, 'app'), appInstalledDir));
+    }
 
-    if (await this.filesystem.isDirectory(path.join(restoreDir, 'user-config'))) {
+    if (withAppFiles && (await this.filesystem.isDirectory(path.join(restoreDir, 'user-config')))) {
       copied.push(await this.filesystem.copyDirectory(path.join(restoreDir, 'user-config'), userConfigDir));
     }
 

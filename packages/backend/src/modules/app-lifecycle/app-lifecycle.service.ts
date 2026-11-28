@@ -16,7 +16,7 @@ import { type CustomDomainForm, type CustomDomainState, requestsCustomDomainChan
 import { customDomainAuditLine } from './custom-domain-audit';
 import validator from 'validator';
 import { AppFilesManager } from '../apps/app-files-manager';
-import { assertAppIdFree } from '../apps/app-id.helpers';
+import { assertAppIdFree, assertAppNameNotHubHost } from '../apps/app-id.helpers';
 import { AppRuntimeMonitorService } from '../apps/app-runtime-monitor.service';
 import { AppsRepository } from '../apps/apps.repository';
 import { AppsService } from '../apps/apps.service';
@@ -1917,6 +1917,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     // Before the download and the image checks too: the refusal needs only the installed apps.
     const apps = await this.appRepository.getApps();
+    assertAppNameNotHubHost(appUrn);
     assertAppIdFree(appUrn, apps);
 
     /*

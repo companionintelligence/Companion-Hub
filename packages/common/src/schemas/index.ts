@@ -110,10 +110,12 @@ import {
   sseSchema,
 } from './sse.js';
 
+import { hostDockerArgvRefusal } from './mcp-host-docker.js';
 import { toJsonSchema } from './utils/to-json-schema.js';
 import { bindSourceKey, describeNestedBindMounts, findNestedBindMounts, type BindMountRef, type NestedBindMount } from './bind-mount-nesting.js';
 
 export {
+  hostDockerArgvRefusal,
   gatewayHostNameSchema,
   LAN_HOST_SUFFIXES,
   MAX_GATEWAY_HOST_NAMES,

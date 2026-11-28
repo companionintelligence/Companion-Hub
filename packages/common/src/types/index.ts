@@ -37,6 +37,8 @@ export {
   extractDeviceSlug,
   isHubReservedSubdomain,
   resolvePublicDomainRoot,
+  isHubHostLabel,
+  isReservedAppName,
   resolveRoutingSubdomain,
   RESERVED_APP_NAMES,
   sanitizeAppSubdomain,

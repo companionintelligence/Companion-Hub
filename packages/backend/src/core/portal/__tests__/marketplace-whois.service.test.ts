@@ -176,6 +176,49 @@ describe('MarketplaceWhoIsService', () => {
    * instead: anyone signed in may see a custom app, and changing one takes an organization owner or
    * admin. The grant is never cached under the name, which a catalog app can share.
    */
+  // The Portal's grants are for its catalog and were asked by app name alone, so an app from an added
+  // store had no grants for anyone, its owner included, or the grants of the catalog app it shares a
+  // name with. Found 2026-11-20 installing a test app from a local git store.
+  describe('an app from a store the operator added', () => {
+    const ADDED = 'whoami:mcp-test' as AppUrn;
+    const IMPOSTOR = 'immich:some-store' as AppUrn;
+    const CHANGES = HUB_ACTIONS.filter((action) => action !== 'view');
+    const roleAnswer = (role: string, apps: unknown[] = []) =>
+      ({ status: 200, body: { organizations: [{ organizationId: 'org-hub', version: 1, user: { role }, apps }] } }) as never;
+
+    it('may be viewed by anyone signed in, without asking WhoIs', async () => {
+      await expect(service.has(USER_ID, ADDED, 'view')).resolves.toBe(true);
+      expect(portal.whoisApps).not.toHaveBeenCalled();
+    });
+
+    it.each(['owner', 'admin'])('may be started, stopped, removed and changed by an organization %s', async (role) => {
+      portal.whoisApps.mockResolvedValue(roleAnswer(role));
+
+      for (const action of CHANGES) {
+        await expect(service.has(USER_ID, ADDED, action)).resolves.toBe(true);
+      }
+      // The role only, with no app named.
+      expect(portal.whoisApps).toHaveBeenCalledWith({ subject: SUBJECT, appIds: [], surface: 'hub', organizationId: 'org-hub' });
+      expect(cacheRows).toEqual([]);
+    });
+
+    it('gets none of the grants of the catalog app it is named like, and only the view for a member', async () => {
+      // A member granted every verb on the catalog's immich.
+      portal.whoisApps.mockResolvedValue(roleAnswer('member', [{ appId: 'immich', can: [...HUB_ACTIONS] }]));
+
+      await expect(service.has(USER_ID, IMPOSTOR, 'view')).resolves.toBe(true);
+      for (const action of CHANGES) {
+        await expect(service.has(USER_ID, IMPOSTOR, action)).resolves.toBe(false);
+      }
+    });
+
+    it('refuses a change when the role cannot be read', async () => {
+      portal.whoisApps.mockResolvedValue({ status: 503, body: null } as never);
+
+      await expect(service.has(USER_ID, ADDED, 'start')).resolves.toBe(false);
+    });
+  });
+
   describe('a custom app in _user', () => {
     const CUSTOM_URN = 'my-compose:_user' as AppUrn;
     const CHANGES = HUB_ACTIONS.filter((action) => action !== 'view');

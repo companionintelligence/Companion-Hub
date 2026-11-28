@@ -4,7 +4,7 @@ import { createAppUrn } from '@/common/helpers/app-helpers';
 import type { PortalDeviceApplication } from '@/modules/cloudflare/cloudflare-client.service';
 import { PORT_EXPOSE_KIND } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
-import { deriveAppSlug, RESERVED_APP_NAMES, sanitizeAppSubdomain } from '@ci-hub/common/types';
+import { deriveAppSlug, isHubHostLabel, RESERVED_APP_NAMES, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import type { z } from 'zod';
 import type { appFormSchema } from './dto/app-lifecycle.dto';
 
@@ -247,8 +247,9 @@ export function exposedPortTarget(portalApp: PortalDeviceApplication): ExposedPo
     return null;
   }
 
+  // Its hostname is the subdomain, held to what `createPortExposeApp` takes: not `hub` or `hub-…` (`isHubHostLabel`).
   const localSubdomain = sanitizeAppSubdomain(portalApp.slug);
-  if (!localSubdomain) {
+  if (!localSubdomain || isHubHostLabel(localSubdomain)) {
     return null;
   }
 

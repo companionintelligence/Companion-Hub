@@ -422,6 +422,32 @@ describe('BackupManager: named Docker volumes', () => {
     }
   });
 
+  // A backup can be uploaded by anyone allowed to back the app up, and its `app` folder is a manifest
+  // the Hub did not install. A restore used to put it, and the archive's operator overrides, in place.
+  it("restores the app's data but keeps its live manifest and user config", async () => {
+    const { filename } = await manager.backupApp(appUrn);
+    await fs.promises.writeFile(path.join(appInstalledDir, 'docker-compose.yml'), 'services: {live: {}}');
+    await fs.promises.writeFile(path.join(userConfigDir, 'app.env'), 'EXTRA=live');
+    await fs.promises.writeFile(path.join(appDataDir, 'app.env'), 'DB_PASSWORD=changed');
+
+    await manager.restoreApp(appUrn, filename);
+
+    await expect(fs.promises.readFile(path.join(appDataDir, 'app.env'), 'utf8')).resolves.toBe('DB_PASSWORD=secret');
+    await expect(fs.promises.readFile(path.join(appInstalledDir, 'docker-compose.yml'), 'utf8')).resolves.toBe('services: {live: {}}');
+    await expect(fs.promises.readFile(path.join(userConfigDir, 'app.env'), 'utf8')).resolves.toBe('EXTRA=live');
+  });
+
+  it("puts the backup's app files back for the update rollback, which restores the Hub's own backup", async () => {
+    const { filename } = await manager.backupApp(appUrn);
+    await fs.promises.writeFile(path.join(appInstalledDir, 'docker-compose.yml'), 'services: {updated: {}}');
+    await fs.promises.writeFile(path.join(userConfigDir, 'app.env'), 'EXTRA=updated');
+
+    await manager.restoreApp(appUrn, filename, undefined, { appFiles: 'from-backup' });
+
+    await expect(fs.promises.readFile(path.join(appInstalledDir, 'docker-compose.yml'), 'utf8')).resolves.toBe('services: {}');
+    await expect(fs.promises.readFile(path.join(userConfigDir, 'app.env'), 'utf8')).resolves.toBe('EXTRA=1');
+  });
+
   it('restores a backup that has no volumes without asking Docker about them', async () => {
     const { filename } = await manager.backupApp(appUrn);
     engine.set(database, { key: 'data-mariadb', files: { ibdata1: 'live' } });

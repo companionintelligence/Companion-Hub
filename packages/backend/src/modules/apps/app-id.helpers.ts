@@ -2,8 +2,21 @@ import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { HUB_ROUTE_NAME_SUFFIXES } from '@/modules/docker/builders/traefik-labels.builder';
 import { HUB_TRAEFIK_NAMES } from '@ci-hub/common/schemas';
-import type { AppUrn } from '@ci-hub/common/types';
+import { type AppUrn, isHubHostLabel } from '@ci-hub/common/types';
 import { HttpStatus } from '@nestjs/common';
+
+/**
+ * Refuses a store app named `hub` or `hub-…`, from any store: its hostnames start with its name, and the
+ * desktop app opens any `hub` / `hub-…` host under the Hub's domains as the Hub (`isHubHostLabel`).
+ *
+ * Not part of {@link assertAppIdFree}: an exposed port's hostname is its subdomain, which
+ * `createPortExposeApp` checks, so a port may be called "Hub" on another subdomain (CI-Portal#1091).
+ */
+export function assertAppNameNotHubHost(appUrn: AppUrn): void {
+  if (isHubHostLabel(extractAppUrn(appUrn).appName)) {
+    throw new TranslatableError('APP_ERROR_APP_NAME_HUB_HOST', { id: appUrn }, HttpStatus.CONFLICT);
+  }
+}
 
 /** An app's id: its name and its store's slug joined by a dash. The Hub names its Traefik routes by it. */
 export function appIdOf(appName: string, appStoreSlug: string): string {

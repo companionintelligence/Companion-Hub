@@ -41,6 +41,23 @@ const TOTP_SESSION_EXPIRATION_SECONDS = 5 * 60;
 /** Wrong 2FA codes one pending sign-in may submit before it is discarded. */
 const MAX_TOTP_ATTEMPTS = 5;
 
+const TOTP_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Where a sign-in's second step is filed in the shared cache. The id comes back from the client, so
+ * it is never a cache key by itself: the cache also holds counters and other entries whose value
+ * reads as a user id, and `verifyTotp` deletes the key it was handed. Only an id shaped like the
+ * ones handed out (a UUID) names an entry, and only one under this prefix.
+ */
+export function totpSessionCacheKey(totpSessionId: string): string | null {
+  return typeof totpSessionId === 'string' && TOTP_SESSION_ID.test(totpSessionId) ? `totp-session:${totpSessionId.toLowerCase()}` : null;
+}
+
+function newTotpSessionId(): { totpSessionId: ReturnType<typeof crypto.randomUUID>; key: string } {
+  const totpSessionId = crypto.randomUUID();
+  return { totpSessionId, key: totpSessionCacheKey(totpSessionId) as string };
+}
+
 /**
  * Portal's answer to "is this subject in the organisation this Hub is paired to?".
  * `unknown` is a failure to ask, not a refusal — see {@link AuthService.resolvePairedOrgMembership}.
@@ -573,8 +590,8 @@ export class AuthService {
     }
 
     if (user.totpEnabled) {
-      const totpSessionId = crypto.randomUUID();
-      this.cache.set(totpSessionId, user.id.toString(), TOTP_SESSION_EXPIRATION_SECONDS);
+      const { totpSessionId, key } = newTotpSessionId();
+      this.cache.set(key, user.id.toString(), TOTP_SESSION_EXPIRATION_SECONDS);
       return { totpSessionId };
     }
 
@@ -810,8 +827,8 @@ export class AuthService {
     await this.persistLocalPassword(user.id, password);
 
     if (user.totpEnabled) {
-      const totpSessionId = crypto.randomUUID();
-      this.cache.set(totpSessionId, user.id.toString(), TOTP_SESSION_EXPIRATION_SECONDS);
+      const { totpSessionId, key } = newTotpSessionId();
+      this.cache.set(key, user.id.toString(), TOTP_SESSION_EXPIRATION_SECONDS);
       return { totpSessionId };
     }
 
@@ -827,8 +844,8 @@ export class AuthService {
    * short-lived id `login` hands a TOTP-enabled person, finished by {@link AuthService.verifyTotp}.
    */
   public beginTotpStep(userId: number): string {
-    const totpSessionId = crypto.randomUUID();
-    this.cache.set(totpSessionId, userId.toString(), TOTP_SESSION_EXPIRATION_SECONDS);
+    const { totpSessionId, key } = newTotpSessionId();
+    this.cache.set(key, userId.toString(), TOTP_SESSION_EXPIRATION_SECONDS);
     return totpSessionId;
   }
 
@@ -840,8 +857,9 @@ export class AuthService {
    * @param {string} params.totpCode - The TOTP code
    */
   public verifyTotp = async (params: { totpSessionId: string; totpCode: string }) => {
-    const { totpSessionId, totpCode } = params;
-    const userId = this.cache.get(totpSessionId);
+    const { totpCode } = params;
+    const sessionKey = totpSessionCacheKey(params.totpSessionId);
+    const userId = sessionKey ? this.cache.get(sessionKey) : undefined;
 
     if (!userId) {
       throw new TranslatableError('AUTH_ERROR_TOTP_SESSION_NOT_FOUND', {}, HttpStatus.BAD_REQUEST);
@@ -853,7 +871,7 @@ export class AuthService {
     // that was already past the first check would otherwise go on testing codes against a session
     // that no longer exists, so a burst of parallel guesses got far more than five tries. Everything
     // below this line runs without waiting, so the count and the check cannot be separated again.
-    if (!this.cache.get(totpSessionId)) {
+    if (!sessionKey || !this.cache.get(sessionKey)) {
       throw new TranslatableError('AUTH_ERROR_TOTP_SESSION_NOT_FOUND', {}, HttpStatus.BAD_REQUEST);
     }
 
@@ -875,11 +893,11 @@ export class AuthService {
     if (!isValid) {
       // A code is six digits, so a session that never runs out of tries is a lock with a million
       // combinations. Five wrong codes end the session and the user signs in again.
-      const attemptsKey = `totp-attempts:${totpSessionId}`;
+      const attemptsKey = `${sessionKey}:attempts`;
       const attempts = Number(this.cache.get(attemptsKey) ?? 0) + 1;
 
       if (attempts >= MAX_TOTP_ATTEMPTS) {
-        this.cache.del(totpSessionId);
+        this.cache.del(sessionKey);
         this.cache.del(attemptsKey);
         throw new TranslatableError('AUTH_ERROR_TOTP_TOO_MANY_ATTEMPTS', {}, HttpStatus.TOO_MANY_REQUESTS);
       }
@@ -890,8 +908,8 @@ export class AuthService {
 
     // Spent before the session is created, not after: two parallel requests carrying the same correct
     // code would otherwise both get past the check above and both be given a session.
-    this.cache.del(totpSessionId);
-    this.cache.del(`totp-attempts:${totpSessionId}`);
+    this.cache.del(sessionKey);
+    this.cache.del(`${sessionKey}:attempts`);
 
     const sessionId = await this.sessionManager.createSession(user.id);
 
