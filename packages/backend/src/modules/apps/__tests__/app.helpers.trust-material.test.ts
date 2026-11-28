@@ -183,11 +183,15 @@ describe('AppHelpers trust material (#74)', () => {
     expect(apiKeys.provisionManagedKey).toHaveBeenCalledWith(expect.objectContaining({ existingRawKey: 'legacy-raw-key' }));
   });
 
-  it('the memory PROVIDER keeps the Hub-global secret (its verifier also authenticates the connect S2S exchange)', async () => {
+  // Its connect calls (both ways) are signed with this key. It used to be the Hub-wide secret, so
+  // anything inside a Memory container held a key the Hub's own endpoints took.
+  it('the memory PROVIDER gets a connect key of its own, never the Hub-wide secret', async () => {
     config.get.mockImplementation((key: string) => (key === 'forwardAuthSecret' ? 'hub-global-secret' : undefined) as never);
     await run(providerUrn, { memory: { provider: { service: 'gateway', port: 8642 } } } as never);
 
-    expect(envMap.get('CI_HUB_FORWARD_AUTH_SECRET')).toBe('hub-global-secret');
+    expect(envMap.get('CI_HUB_FORWARD_AUTH_SECRET')).toMatch(/^[a-f0-9]{64}$/);
+    expect(envMap.get('CI_HUB_FORWARD_AUTH_SECRET')).not.toBe('hub-global-secret');
+    expect(envMap.get('CI_HUB_FORWARD_AUTH_SECRET')).not.toBe(envMap.get('CI_HUB_FORWARD_AUTH_IDENTITY_SECRET'));
     expect(envMap.get('CI_HUB_FORWARD_AUTH_ENABLED')).toBe('true');
     // The provider declares no consumer/oidc integration → no callback key.
     expect(apiKeys.provisionManagedKey).not.toHaveBeenCalled();
@@ -201,6 +205,22 @@ describe('AppHelpers trust material (#74)', () => {
     expect(envMap.get('CI_HUB_FORWARD_AUTH_IDENTITY_SECRET')).toMatch(/^[a-f0-9]{64}$/);
     expect(envMap.get('CI_HUB_FORWARD_AUTH_IDENTITY_SECRET')).not.toBe('hub-global-secret');
     expect(envMap.get('CI_APP_URN')).toBe(providerUrn);
+  });
+
+  it("keeps the memory PROVIDER's connect key across env regeneration, and replaces an older Hub's Hub-wide copy", async () => {
+    config.get.mockImplementation((key: string) => (key === 'forwardAuthSecret' ? 'hub-global-secret' : undefined) as never);
+    const kept = new Map<string, string>([['CI_HUB_FORWARD_AUTH_SECRET', 'c'.repeat(64)]]);
+    appFilesManager.getAppEnv.mockResolvedValue({ path: '/data/app.env', content: 'EXISTING' });
+    envUtils.envStringToMap.mockImplementation((content?: string) => (content === 'EXISTING' ? kept : envMap));
+
+    await run(providerUrn, { memory: { provider: { service: 'gateway', port: 8642 } } } as never);
+    expect(envMap.get('CI_HUB_FORWARD_AUTH_SECRET')).toBe('c'.repeat(64));
+
+    envMap.clear();
+    kept.set('CI_HUB_FORWARD_AUTH_SECRET', 'hub-global-secret');
+    await run(providerUrn, { memory: { provider: { service: 'gateway', port: 8642 } } } as never);
+    expect(envMap.get('CI_HUB_FORWARD_AUTH_SECRET')).toMatch(/^[a-f0-9]{64}$/);
+    expect(envMap.get('CI_HUB_FORWARD_AUTH_SECRET')).not.toBe('hub-global-secret');
   });
 
   it("preserves the memory PROVIDER's own key across env regeneration, so the running Memory and the Hub keep agreeing", async () => {

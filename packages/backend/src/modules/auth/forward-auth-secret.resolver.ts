@@ -8,7 +8,6 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { EnvUtils } from '@/modules/env/env.utils';
-import { isMemoryProviderApp } from '@/modules/memory-connect/memory-provider.predicate';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { tailscaleServicesStore } from '@/modules/tailscale/tailscale-services.store';
 import { normalizeForwardedHost } from './utils/forward-auth-host';
@@ -108,9 +107,8 @@ export class ForwardAuthSecretResolver {
   /**
    * The keys in one app's env.
    *
-   * - The triple is signed with the app's `CI_HUB_FORWARD_AUTH_SECRET`. Only Companion Memory may
-   *   hold the Hub-wide value there (env generation puts it there for the connect exchange); any
-   *   other app found holding it signs nothing.
+   * - The triple is signed with the app's `CI_HUB_FORWARD_AUTH_SECRET`. No app may hold the
+   *   Hub-wide value there, Companion Memory included: one found holding it signs nothing.
    * - The bound assertion is signed with the app's own key: Memory's
    *   `CI_HUB_FORWARD_AUTH_IDENTITY_SECRET`, else a `CI_HUB_FORWARD_AUTH_SECRET` that is not the
    *   Hub-wide value. Its audience is the app's URN.
@@ -121,7 +119,9 @@ export class ForwardAuthSecretResolver {
     const hubWide = (this.config.get('forwardAuthSecret') ?? '').trim();
     const sharedIsHubWide = shared !== '' && shared === hubWide;
 
-    const secret = shared && (!sharedIsHubWide || isMemoryProviderApp({ urn: appUrn })) ? shared : null;
+    // No app may hold the Hub-wide value, Companion Memory included now that it has a key of its
+    // own (env generation replaces an older Hub's copy); one still holding it signs nothing.
+    const secret = shared && !sharedIsHubWide ? shared : null;
     const ownKey = identity || (sharedIsHubWide ? '' : shared);
     if (!secret && !ownKey) {
       return this.unsigned(appUrn);

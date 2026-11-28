@@ -1448,19 +1448,21 @@ export class AppHelpers {
     }
 
     // --- Companion Memory provider forward-auth provisioning ---
-    // `ci-memory` verifies Hub-to-Memory connect calls, including code exchange
-    // and revocation, through signed forward-auth headers keyed by the Hub-wide
-    // `forwardAuthSecret`. It redirects browsers only to allowlisted Hub origins.
-    // Inject the shared secret, enable flag, and Hub origins so the connect flow
-    // works on this appliance. `isMemoryProviderApp` gates trust on the
-    // official-store install URN instead of forgeable manifest fields, preventing
-    // third-party apps from receiving the master secret.
+    // `ci-memory` verifies the Hub's connect calls (code exchange, rotation,
+    // revocation) and signs its doorbell to the Hub with CI_HUB_FORWARD_AUTH_SECRET.
+    // That is a key of this Memory's own, minted once and kept like the per-app
+    // secret above, and the Hub signs and checks those calls with it
+    // (`memoryConnectSecret`). It used to be the Hub-wide `forwardAuthSecret`, so
+    // anything that reached inside a Memory container held a key the Hub's own
+    // endpoints also took (2026-11-20 audit). A value equal to the Hub-wide secret,
+    // written by an older Hub, is replaced, not kept. `isMemoryProviderApp` gates
+    // this on the official-store install URN, not on forgeable manifest fields.
     if (isMemoryProviderApp(config)) {
-      const forwardAuthSecret = this.config.get('forwardAuthSecret');
-      if (forwardAuthSecret) {
-        envMap.set('CI_HUB_FORWARD_AUTH_ENABLED', 'true');
-        envMap.set(FORWARD_AUTH_SECRET_ENV, forwardAuthSecret);
-      }
+      const hubWideSecret = (this.config.get('forwardAuthSecret') ?? '').trim();
+      const existingConnectSecret = (existingAppEnvMap.get(FORWARD_AUTH_SECRET_ENV) ?? '').trim();
+      const ownConnectSecret = existingConnectSecret === hubWideSecret ? '' : existingConnectSecret;
+      envMap.set('CI_HUB_FORWARD_AUTH_ENABLED', 'true');
+      envMap.set(FORWARD_AUTH_SECRET_ENV, ownConnectSecret || randomBytes(32).toString('hex'));
 
       // ci-memory's own forward-auth key and the audience it checks. The Hub signs ci-memory's
       // bound assertion (X-CI-Hub-User-Assertion) with this key over the app URN, and a Memory
