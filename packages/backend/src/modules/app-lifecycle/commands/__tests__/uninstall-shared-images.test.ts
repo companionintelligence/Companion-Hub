@@ -113,6 +113,8 @@ class FakeFiles {
     }
     return true;
   };
+
+  removeDirectoryDetailed = async (dirPath: string) => ({ removed: await this.removeDirectory(dirPath), permissionDenied: false });
 }
 
 const listPath = (urn: AppUrn) => {

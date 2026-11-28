@@ -8,7 +8,7 @@ import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { appIdOf } from '@/modules/apps/app-id.helpers';
 import { securityGrantsFor } from '@/modules/apps/security-grants';
 import { AppsRepository } from '@/modules/apps/apps.repository';
-import { publishesCloudflarePublicRoute } from '@/modules/apps/app-public-routing.helpers';
+import { cloudflareOriginHostnameFor, publishesCloudflarePublicRoute } from '@/modules/apps/app-public-routing.helpers';
 import { NestedBindMountsError } from '@/modules/docker/bind-mount-guard';
 import { DockerComposeBuilder } from '@/modules/docker/builders/compose.builder';
 import { appUrnLabelSets, listContainersMatchingAnyLabelSets } from '@/modules/docker/hub-container-query';
@@ -20,7 +20,7 @@ import { ResourceAllocatorService } from '@/modules/system/resource-allocator.se
 import { HEALTHCHECK_START_INTERVAL_MIN_ENGINE_MAJOR, withoutUnsupportedStartInterval } from '@/modules/docker/healthcheck-start-interval';
 import { hostPortStaysOnLoopback, parseInstalledComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
-import { buildOriginServerName, buildPublicWebIdentity, normalizeStoredHostname, resolvePublicDomainRoot } from '@ci-hub/common/types';
+import { buildPublicWebIdentity, normalizeStoredHostname, resolvePublicDomainRoot } from '@ci-hub/common/types';
 import type { ModuleRef } from '@nestjs/core';
 import Dockerode from 'dockerode';
 import { ZodError } from 'zod';
@@ -194,12 +194,7 @@ export async function prepareAppComposeDir(
       const org = await registrationService.getDeviceRegistrationInfo();
       const { appName, appStoreId } = extractAppUrn(appUrn);
       const appSubdomain = form.localSubdomain || `${appName}-${appStoreId}`;
-      cloudflareOriginHostname = buildOriginServerName({
-        appSubdomain,
-        hubSubdomain: org?.hubSubdomain,
-        orgSlug: org?.slug,
-        localDomain,
-      });
+      cloudflareOriginHostname = cloudflareOriginHostnameFor(form, appUrn, org, localDomain);
       const platformPublicHostname = buildPublicWebIdentity({
         appSubdomain,
         hubSubdomain: org?.hubSubdomain,

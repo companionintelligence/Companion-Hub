@@ -406,6 +406,34 @@ describe('GeneralActionsContainer', () => {
     expect(screen.getByTestId('desktop-shell-update-card')).not.toHaveTextContent(/not running/i);
   });
 
+  // A Hub whose release feed was slow said "You are on the latest version." while a newer release was out (#2622).
+  it('says it could not check, not that this is the latest version, when the Hub could not look up the newest release', async () => {
+    mockCheckHubForUpdatesApi.mockResolvedValue(
+      sdkOk({
+        updateAvailable: false,
+        latest: 'unknown',
+        latestLookupError: 'Could not read the Hub release feed: timeout of 10000ms exceeded (ECONNABORTED)',
+      }),
+    );
+
+    render(<GeneralActionsContainer />);
+    await userEvent.click(await screen.findByTestId('hub-check-updates-btn'));
+
+    await waitFor(() => expect(mockToastError).toHaveBeenCalledWith('Could not check for updates.'));
+    expect(mockToastSuccess).not.toHaveBeenCalledWith('You are on the latest version.');
+    expect(screen.getByTestId('hub-check-updates-btn')).toBeEnabled();
+  });
+
+  it('says it could not check when the Hub could not read its own release', async () => {
+    mockCheckHubForUpdatesApi.mockResolvedValue(sdkOk({ updateAvailable: false, latest: 'unknown', latestLookupError: null }));
+
+    render(<GeneralActionsContainer />);
+    await userEvent.click(await screen.findByTestId('hub-check-updates-btn'));
+
+    await waitFor(() => expect(mockToastError).toHaveBeenCalledWith('Could not check for updates.'));
+    expect(mockToastSuccess).not.toHaveBeenCalledWith('You are on the latest version.');
+  });
+
   it('offers the desktop installer the Hub looked up when opened in a browser', async () => {
     const downloadUrl = 'https://dl.ci.computer/v0.2.77/linux/deb/x64/Companion%20Hub_0.2.77_amd64.deb';
     const actual = await vi.importActual<typeof import('@/lib/update-service')>('@/lib/update-service');

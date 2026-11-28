@@ -72,6 +72,18 @@ describe('SystemTools', () => {
       expect(result.updateAvailable).toBe(true);
       expect(result.latestVersion).toBe('4.0.0');
     });
+    it('says why the newest release is unknown when the lookup failed', async () => {
+      const latestLookupError = 'Could not read the Hub release feed: timeout of 10000ms exceeded';
+      systemUpdateService.checkForUpdates.mockResolvedValue({
+        current: '3.9.0',
+        latest: 'unknown',
+        updateAvailable: false,
+        releases: [],
+        latestLookupError,
+      } as any);
+      const result = await tools.checkForUpdates();
+      expect(result).toEqual({ updateAvailable: false, currentVersion: '3.9.0', latestVersion: 'unknown', latestLookupError });
+    });
   });
 
   describe('hub_perform_update', () => {

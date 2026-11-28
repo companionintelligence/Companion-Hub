@@ -112,7 +112,7 @@ describe('SystemUpdateService', () => {
       getConfig: vi.fn(() => ({ __prod__: false, version: 'v0.2.22' })),
       get: vi.fn(() => ({ dataDir: '/data' })),
     };
-    mockRegistryService = { getTagsSinceWithHubFallback: vi.fn().mockResolvedValue([]) };
+    mockRegistryService = { getTagsSinceWithHubFallback: vi.fn().mockResolvedValue({ tags: [], error: null }) };
     service = new SystemUpdateService(mockLogger as never, mockConfig as never, mockRegistryService as never);
     vi.stubEnv('CI_HUB_VERSION', 'v0.2.22');
     vi.stubEnv('DOCKER_CONFIG', '/data/.docker');
@@ -128,7 +128,7 @@ describe('SystemUpdateService', () => {
     it('compares the running release pin, not CI_HUB_VERSION, against the registry', async () => {
       insideHubContainer(PINNED_ENV);
       await installDocker(core6Appliance(RELEASE_PIN));
-      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.72-rc.1', '0.2.71']);
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue({ tags: ['0.2.72-rc.1', '0.2.71'], error: null });
 
       const result = await service.checkForUpdates();
 
@@ -137,12 +137,34 @@ describe('SystemUpdateService', () => {
       expect(result.build).toMatchObject({ reference: RELEASE_PIN, version: '0.2.70', channel: 'pin' });
     });
 
+    // A 0.3.14 Hub whose release feed took longer than the old 1.5 s limit answered "latest: 0.3.14",
+    // which Settings showed as "You are on the latest version." while 0.3.16 was out (#2622).
+    it('says the newest release could not be looked up instead of calling the running one the latest', async () => {
+      insideHubContainer(PINNED_ENV);
+      await installDocker(core6Appliance(RELEASE_PIN));
+      const error = 'Could not read the Hub release feed: timeout of 10000ms exceeded (ECONNABORTED)';
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue({ tags: [], error });
+
+      const result = await service.checkForUpdates();
+
+      expect(result).toMatchObject({ current: '0.2.70', latest: 'unknown', releases: [], updateAvailable: false, latestLookupError: error });
+    });
+
+    it('reports no lookup error when the lookup worked and nothing is newer', async () => {
+      insideHubContainer(PINNED_ENV);
+      await installDocker(core6Appliance(RELEASE_PIN));
+
+      const result = await service.checkForUpdates();
+
+      expect(result).toMatchObject({ current: '0.2.70', latest: '0.2.70', updateAvailable: false, latestLookupError: null });
+    });
+
     // beta-red: CI_HUB_VERSION=v0.2.22 on a dev build newer than 0.2.71. The old check listed every
     // release since 0.2.22 and offered to "update" it onto 0.2.71.
     it('offers no update to a dev-channel node, whatever CI_HUB_VERSION says', async () => {
       insideHubContainer(`CI_HUB_IMAGE=${DEV_CHANNEL}\nCI_HUB_VERSION=v0.2.22\n`);
       await installDocker(core6Appliance(DEV_CHANNEL));
-      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue({ tags: ['0.2.71'], error: null });
 
       const result = await service.checkForUpdates();
 
@@ -157,7 +179,7 @@ describe('SystemUpdateService', () => {
     it('offers no update to a release pin whose stack the updater cannot reproduce, and says why', async () => {
       insideHubContainer(PINNED_ENV);
       await installDocker(core3EnvLabelDiffersFromMount(RELEASE_PIN));
-      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue({ tags: ['0.2.71'], error: null });
 
       const result = await service.checkForUpdates();
 
@@ -172,7 +194,7 @@ describe('SystemUpdateService', () => {
         String(target) === '/data/.env' ? PINNED_ENV : 'listener-token\n') as never);
       vi.mocked(axios.get).mockResolvedValue({ status: 200 });
       await installDocker(core3EnvLabelDiffersFromMount(RELEASE_PIN));
-      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue({ tags: ['0.2.71'], error: null });
 
       const result = await service.checkForUpdates();
 
@@ -188,7 +210,7 @@ describe('SystemUpdateService', () => {
         String(target) === '/data/.env' ? `CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:0.3.4\n` : 'listener-token\n') as never);
       vi.mocked(axios.get).mockResolvedValue({ status: 200 });
       await installDocker(windowsDesktopWslEngine());
-      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.3.5']);
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue({ tags: ['0.3.5'], error: null });
 
       const result = await service.checkForUpdates();
 
@@ -199,7 +221,7 @@ describe('SystemUpdateService', () => {
     it('blocks both when the desktop listener does not answer', async () => {
       insideHubContainer(`CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:0.3.4\nCI_HUB_VERSION=0.3.4\n`);
       await installDocker(windowsDesktopWslEngine());
-      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.3.5']);
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue({ tags: ['0.3.5'], error: null });
 
       const result = await service.checkForUpdates();
 
@@ -211,7 +233,7 @@ describe('SystemUpdateService', () => {
     it('leaves the auto-update unblocked where the updater container can reproduce the stack', async () => {
       insideHubContainer(PINNED_ENV);
       await installDocker(core6Appliance(RELEASE_PIN));
-      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue({ tags: ['0.2.71'], error: null });
 
       const result = await service.checkForUpdates();
 
@@ -223,7 +245,7 @@ describe('SystemUpdateService', () => {
       service = new SystemUpdateService(mockLogger as never, mockConfig as never, mockRegistryService as never, agentNotifyService as never);
       insideHubContainer(PINNED_ENV);
       await installDocker(core6Appliance(RELEASE_PIN));
-      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue({ tags: ['0.2.71'], error: null });
 
       await service.checkForUpdates();
 
@@ -236,14 +258,14 @@ describe('SystemUpdateService', () => {
       service = new SystemUpdateService(mockLogger as never, mockConfig as never, mockRegistryService as never, agentNotifyService as never);
       insideHubContainer(PINNED_ENV);
       await installDocker(core6Appliance(RELEASE_PIN));
-      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue({ tags: ['0.2.71'], error: null });
 
       await service.checkForUpdates();
       await service.checkForUpdates();
 
       expect(agentNotifyService.notify).toHaveBeenCalledTimes(1);
 
-      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71', '0.2.72']);
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue({ tags: ['0.2.71', '0.2.72'], error: null });
       await service.checkForUpdates();
 
       expect(agentNotifyService.notify).toHaveBeenCalledTimes(2);
@@ -255,12 +277,12 @@ describe('SystemUpdateService', () => {
       service = new SystemUpdateService(mockLogger as never, mockConfig as never, mockRegistryService as never, agentNotifyService as never);
       insideHubContainer(PINNED_ENV);
       await installDocker(core6Appliance(RELEASE_PIN));
-      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71', '0.2.72']);
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue({ tags: ['0.2.71', '0.2.72'], error: null });
 
       await service.checkForUpdates();
-      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue({ tags: ['0.2.71'], error: null });
       await service.checkForUpdates();
-      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71', '0.2.72']);
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue({ tags: ['0.2.71', '0.2.72'], error: null });
       await service.checkForUpdates();
 
       expect(agentNotifyService.notify).toHaveBeenCalledTimes(1);
@@ -272,7 +294,7 @@ describe('SystemUpdateService', () => {
       service = new SystemUpdateService(mockLogger as never, mockConfig as never, mockRegistryService as never, agentNotifyService as never);
       insideHubContainer(PINNED_ENV);
       await installDocker(core6Appliance(RELEASE_PIN));
-      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue({ tags: ['0.2.71'], error: null });
 
       await service.checkForUpdates();
       await service.checkForUpdates();
@@ -286,7 +308,7 @@ describe('SystemUpdateService', () => {
       service = new SystemUpdateService(mockLogger as never, mockConfig as never, mockRegistryService as never, agentNotifyService as never);
       insideHubContainer(PINNED_ENV);
       await installDocker(core6Appliance(RELEASE_PIN));
-      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue({ tags: ['0.2.71'], error: null });
 
       await service.checkForUpdates();
       await service.checkForUpdates();
@@ -530,11 +552,25 @@ describe('SystemUpdateService', () => {
     it('updates to the newest release when no target is given', async () => {
       insideHubContainer(PINNED_ENV);
       const calls = await installDocker(core6Appliance(RELEASE_PIN));
-      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.73-rc.1', '0.2.72', '0.2.71']);
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue({ tags: ['0.2.73-rc.1', '0.2.72', '0.2.71'], error: null });
 
       await service.performUpdate();
 
       expect(calls[2]?.[1]).toEqual(['pull', `${HUB_STACK_IMAGE_REPO}:0.2.72`]);
+    });
+
+    // Before, a failed lookup "updated" the Hub to the release it already runs and said it had started.
+    it('refuses an update with no target when the newest release could not be looked up', async () => {
+      insideHubContainer(PINNED_ENV);
+      const calls = await installDocker(core6Appliance(RELEASE_PIN));
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue({
+        tags: [],
+        error: 'Could not read the Hub release feed: getaddrinfo EAI_AGAIN dl.ci.computer',
+      });
+
+      await expect(service.performUpdate()).rejects.toThrow(/Could not get the latest Hub release, so the Hub was not updated\. .*EAI_AGAIN/);
+      expect(calls.some((call) => call[1][0] === 'pull')).toBe(false);
+      expect(fs.writeFileSync).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -690,7 +726,7 @@ describe('SystemUpdateService', () => {
       vi.mocked(fs.readFileSync).mockImplementation(((target: unknown) =>
         String(target) === '/data/.env' ? PINNED_ENV : JSON.stringify({ autoUpdates: false })) as never);
       await installDocker(core6Appliance(RELEASE_PIN));
-      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue({ tags: ['0.2.71'], error: null });
       const perform = vi.spyOn(service, 'performUpdate');
 
       await runCheck(service);
@@ -702,7 +738,7 @@ describe('SystemUpdateService', () => {
     it('never runs an update on a dev-channel node, even with auto-update on', async () => {
       insideHubContainer(`CI_HUB_IMAGE=${DEV_CHANNEL}\n`);
       await installDocker(core6Appliance(DEV_CHANNEL));
-      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue({ tags: ['0.2.71'], error: null });
       const perform = vi.spyOn(service, 'performUpdate');
 
       await runCheck(service);
@@ -714,7 +750,7 @@ describe('SystemUpdateService', () => {
     it('skips, rather than fails, a release pin whose stack the updater cannot reproduce', async () => {
       insideHubContainer(PINNED_ENV);
       await installDocker(core3EnvLabelDiffersFromMount(RELEASE_PIN));
-      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue({ tags: ['0.2.71'], error: null });
       const perform = vi.spyOn(service, 'performUpdate');
 
       await runCheck(service);
@@ -728,12 +764,31 @@ describe('SystemUpdateService', () => {
     it('advances a release pin when a newer release exists and auto-update is on', async () => {
       insideHubContainer(PINNED_ENV);
       await installDocker(core6Appliance(RELEASE_PIN));
-      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue({ tags: ['0.2.71'], error: null });
       const perform = vi.spyOn(service, 'performUpdate').mockResolvedValue({ success: true, message: '', stack: 'updating', host: 'skipped' });
 
       await runCheck(service);
 
       expect(perform).toHaveBeenCalledWith('0.2.71', { includeDesktopApp: false });
+    });
+
+    it('does nothing and says so when the newest release could not be looked up', async () => {
+      insideHubContainer(PINNED_ENV);
+      await installDocker(core6Appliance(RELEASE_PIN));
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue({
+        tags: [],
+        error: 'Could not read the Hub release feed: timeout of 10000ms exceeded',
+      });
+      const perform = vi.spyOn(service, 'performUpdate');
+
+      await runCheck(service);
+
+      expect(perform).not.toHaveBeenCalled();
+      expect(fs.writeFileSync).not.toHaveBeenCalled();
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        'Auto-update skipped: could not get the latest version. Could not read the Hub release feed: timeout of 10000ms exceeded',
+      );
+      expect(mockLogger.error).not.toHaveBeenCalled();
     });
 
     // The desktop app's installer can ask for the computer's password. Handed the update overnight, it
@@ -746,7 +801,7 @@ describe('SystemUpdateService', () => {
       vi.mocked(axios.get).mockResolvedValue({ status: 200 });
       vi.mocked(axios.post).mockResolvedValue({ status: 200 });
       const calls = await installDocker(core6Appliance(RELEASE_PIN));
-      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue({ tags: ['0.2.71'], error: null });
       const trigger = vi.spyOn(service, 'triggerHostListener');
       const perform = vi.spyOn(service, 'performUpdate');
 
@@ -778,7 +833,7 @@ describe('SystemUpdateService', () => {
       vi.mocked(axios.get).mockResolvedValue({ status: 200 });
       vi.mocked(axios.post).mockResolvedValue({ status: 200 });
       await installDocker(core3EnvLabelDiffersFromMount(RELEASE_PIN));
-      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue({ tags: ['0.2.71'], error: null });
       const perform = vi.spyOn(service, 'performUpdate');
 
       await runCheck(service);

@@ -33,7 +33,17 @@ import type { AvailableDomain } from '@ci-hub/common/types';
 import { buildPublicWebIdentity, sanitizeAppSubdomain, selectOfferedDomains, servedExposureMode } from '@ci-hub/common/types';
 import { resolveExposureMode } from '@/modules/onboarding/helpers/agent-onboarding';
 import { saveBlobAsFile, splitSavedPath } from '@/lib/save-file';
-import { hostPortStaysOnLoopback, MAX_PUBLIC_PATHS, publicPathSchema, requiresHubLogin, servedOpenPort } from '@ci-hub/common/schemas';
+import {
+  gatewayHostNameSchema,
+  hostPortStaysOnLoopback,
+  LAN_HOST_SUFFIXES,
+  MAX_GATEWAY_HOST_NAMES,
+  MAX_PUBLIC_PATHS,
+  publicPathSchema,
+  requiresHubLogin,
+  servedOpenPort,
+} from '@ci-hub/common/schemas';
+import { isMemoryProviderUrn } from '@/modules/app/helpers/memory-provider';
 import { isMcpOptionalOnlyInstall } from '@ci-hub/common/validation';
 import {
   type LastUsedInstallConfig,
@@ -145,6 +155,8 @@ export type FormValues = {
   portOnNetwork?: boolean;
   /** Paths served without the Hub login. Edited as `publicPathsText`, which is never submitted. */
   publicPaths?: string[];
+  /** More names Companion Memory answers to. Edited as `gatewayHostNamesText`, which is never submitted. */
+  gatewayHostNames?: string[];
   maxBackups?: number;
   cpuLimit?: string;
   [key: string]: unknown;
@@ -157,6 +169,11 @@ const EMPTY_CUSTOM_DOMAINS: AvailableCustomDomainsResponseDto['domains'] = [];
 function publicPathList(value: unknown): string[] {
   const parts = Array.isArray(value) ? value : typeof value === 'string' ? value.split(/[\s,]+/) : [];
   return [...new Set(parts.map((part) => String(part).trim()).filter(Boolean))];
+}
+
+/** The names in what the Memory names field holds: its raw text while edited, a list once saved. */
+function hostNameList(value: unknown): string[] {
+  return [...new Set(publicPathList(value).map((name) => name.toLowerCase()))];
 }
 
 function buildTailscalePortHost(nodeFqdn?: string | null, port?: number | null): string | null {
@@ -681,6 +698,9 @@ export const InstallForm: React.FC<IProps> = ({
   const hasEdits = Object.keys(dirtyFields).some((key) => {
     if (key === 'publicPathsText') {
       return !isSameFormValue(publicPathList(watchedFormValues.publicPathsText), publicPathList(initialValues?.publicPaths));
+    }
+    if (key === 'gatewayHostNamesText') {
+      return !isSameFormValue(hostNameList(watchedFormValues.gatewayHostNamesText), hostNameList(initialValues?.gatewayHostNames));
     }
     return (
       !(key === 'localSubdomain' && holdsRoutingName(watchedFormValues.localSubdomain)) &&
@@ -1244,12 +1264,57 @@ export const InstallForm: React.FC<IProps> = ({
     );
   };
 
+  // First-party Companion Memory's gateway answers only to the names it is given (HUB_GATEWAY_ALLOWED_HOSTS,
+  // which only its listing reads). Shown whatever the advanced switch says: its refusal page sends people here.
+  const renderGatewayHostNamesField = () => {
+    if (!isMemoryProviderUrn(info.urn)) return null;
+
+    return (
+      <div className="mb-3">
+        <Controller
+          control={control}
+          name="gatewayHostNamesText"
+          defaultValue={hostNameList(initialValues?.gatewayHostNames).join(', ')}
+          rules={{
+            validate: (value) => {
+              const names = hostNameList(value);
+              if (names.length > MAX_GATEWAY_HOST_NAMES) return t('APP_INSTALL_FORM_GATEWAY_HOST_NAMES_TOO_MANY', { max: MAX_GATEWAY_HOST_NAMES });
+              for (const name of names) {
+                if (gatewayHostNameSchema.safeParse(name).success) continue;
+                const oneLabelSuffix = /^\.[a-z0-9-]+$/.test(name) && !LAN_HOST_SUFFIXES.includes(name);
+                return t(oneLabelSuffix ? 'APP_INSTALL_FORM_GATEWAY_HOST_NAMES_TOO_WIDE' : 'APP_INSTALL_FORM_GATEWAY_HOST_NAMES_INVALID', { name });
+              }
+              return true;
+            },
+          }}
+          render={({ field: { onChange, value, ref, ...props } }) => (
+            <Input
+              {...props}
+              ref={ref}
+              value={typeof value === 'string' ? value : ''}
+              onChange={(event) => onChange(event.target.value)}
+              placeholder="kyle-pc.fritz.box, .example.lan"
+              label={
+                <>
+                  {t('APP_INSTALL_FORM_GATEWAY_HOST_NAMES')}
+                  <HintMarker anchorClass="gateway-host-names-hint" hint={t('APP_INSTALL_FORM_GATEWAY_HOST_NAMES_HINT')} />
+                </>
+              }
+              error={typeof errors.gatewayHostNamesText?.message === 'string' ? errors.gatewayHostNamesText.message : undefined}
+            />
+          )}
+        />
+      </div>
+    );
+  };
+
   const renderAdvancedExposureOptions = () => {
     if (!authSwitchShown) {
       return (
         <>
           {renderPublicPathsField()}
           {renderPortOnNetworkSwitch()}
+          {renderGatewayHostNamesField()}
         </>
       );
     }
@@ -1281,6 +1346,7 @@ export const InstallForm: React.FC<IProps> = ({
         />
         {renderPublicPathsField()}
         {renderPortOnNetworkSwitch()}
+        {renderGatewayHostNamesField()}
       </>
     );
   };
@@ -1297,7 +1363,7 @@ export const InstallForm: React.FC<IProps> = ({
       }
     }
     // The text the paths were typed in is not part of the form the Hub takes: it goes in as the list.
-    const { publicPathsText, ...withoutPathsText } = withFieldDefaults;
+    const { publicPathsText, gatewayHostNamesText, ...withoutPathsText } = withFieldDefaults;
     const formValues = {
       ...withoutPathsText,
       exposureMode,
@@ -1305,6 +1371,7 @@ export const InstallForm: React.FC<IProps> = ({
       enableAuth: withFieldDefaults.enableAuth ?? enableAuthFallback,
       // Edited as text; saved as the list it names. A form that never showed the field leaves it out.
       ...(publicPathsText === undefined ? {} : { publicPaths: publicPathList(publicPathsText) }),
+      ...(gatewayHostNamesText === undefined ? {} : { gatewayHostNames: hostNameList(gatewayHostNamesText) }),
       port: withFieldDefaults.port || (info.port ? info.port.toString() : undefined),
     };
 
@@ -1437,7 +1504,12 @@ export const InstallForm: React.FC<IProps> = ({
     isAdvancedMode || showAdvancedSettings || mcpOptionalOnly
       ? formFields.filter(typeFilter)
       : formFields.filter((field) => field.required && typeFilter(field));
-  const hasConfigSection = visibleFields.length > 0 || shouldShowAdvancedSettingsToggle || (guestDashboard && isAdvancedMode) || isAdvancedMode;
+  const hasConfigSection =
+    visibleFields.length > 0 ||
+    shouldShowAdvancedSettingsToggle ||
+    (guestDashboard && isAdvancedMode) ||
+    isAdvancedMode ||
+    isMemoryProviderUrn(info.urn);
 
   return (
     <form className="flex flex-col" onSubmit={handleSubmit(validate, onInvalid)} id={formId}>

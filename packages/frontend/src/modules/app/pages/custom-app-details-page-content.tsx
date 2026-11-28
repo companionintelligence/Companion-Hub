@@ -152,6 +152,7 @@ export const CustomAppDetailsPageContent = ({ appId, info, app, metadata, failur
                   urlAvailability={urlAvailability}
                   layout="hero"
                   allowedActions={access.actions}
+                  accessRole={access.role}
                 />
               </div>
             </div>

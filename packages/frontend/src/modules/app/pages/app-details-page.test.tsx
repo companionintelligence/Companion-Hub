@@ -1,13 +1,14 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { useQuery, useIsMutating, getMarketplaceAppImageUrl, searchParams, setSearchParams, toastError } = vi.hoisted(() => ({
+const { useQuery, useIsMutating, getMarketplaceAppImageUrl, searchParams, setSearchParams, toastError, routeParams } = vi.hoisted(() => ({
   useQuery: vi.fn(),
   useIsMutating: vi.fn(() => 0),
   getMarketplaceAppImageUrl: vi.fn(),
   searchParams: { current: new URLSearchParams() },
   setSearchParams: vi.fn(),
   toastError: vi.fn(),
+  routeParams: { current: { appId: 'test-app', storeId: 'community' } },
 }));
 
 vi.mock('sonner', () => ({ toast: { error: toastError } }));
@@ -22,7 +23,7 @@ vi.mock('react-router', async () => {
   const actual = await vi.importActual<typeof import('react-router')>('react-router');
   return {
     ...actual,
-    useParams: () => ({ appId: 'test-app', storeId: 'community' }),
+    useParams: () => routeParams.current,
     useSearchParams: () => [searchParams.current, setSearchParams],
     redirect: vi.fn(),
   };
@@ -102,7 +103,22 @@ vi.mock('../helpers/use-app-url-availability', () => ({
 }));
 
 vi.mock('../containers/app-actions/app-actions', () => ({
-  AppActions: ({ app }: { app?: { status?: string } | null }) => <div data-testid="app-actions" data-status={app?.status ?? 'none'} />,
+  AppActions: ({
+    app,
+    allowedActions,
+    accessRole,
+  }: {
+    app?: { status?: string } | null;
+    allowedActions?: readonly string[];
+    accessRole?: string | null;
+  }) => (
+    <div
+      data-testid="app-actions"
+      data-status={app?.status ?? 'none'}
+      data-allowed={allowedActions === undefined ? 'unset' : allowedActions.join(',')}
+      data-role={accessRole ?? 'none'}
+    />
+  ),
 }));
 
 vi.mock('../containers/app-details-tabs/app-details-tabs', () => ({
@@ -123,11 +139,16 @@ describe('AppDetailsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     searchParams.current = new URLSearchParams();
+    routeParams.current = { appId: 'test-app', storeId: 'community' };
     useIsMutating.mockReturnValue(0);
     getMarketplaceAppImageUrl.mockReturnValue('http://localhost:5002/api/marketplace/apps/test-app%3Acommunity/image');
     useQuery.mockImplementation((options: { queryKey?: readonly unknown[] }) => {
       if (options.queryKey?.[0] === 'app-image-size') {
         return { data: { totalBytes: 1234, formatted: '1.2 KB' }, isLoading: false };
+      }
+
+      if (options.queryKey?.[0] === 'custom-app-access') {
+        return { data: { actions: ['view'], role: 'member' }, isLoading: false };
       }
 
       return {
@@ -145,6 +166,26 @@ describe('AppDetailsPage', () => {
         isLoading: false,
       };
     });
+  });
+
+  // The Hub decides an added store's apps by organization role, as it does custom apps, so the page
+  // shows the actions the person may not take withheld, with the reason.
+  it('hands an added store’s app the actions and role the Hub says this person has', () => {
+    render(<AppDetailsPage />);
+
+    const actions = screen.getByTestId('app-actions');
+    expect(actions).toHaveAttribute('data-allowed', 'view');
+    expect(actions).toHaveAttribute('data-role', 'member');
+  });
+
+  it('leaves the official store’s app to the Hub to decide per action, asking nothing up front', () => {
+    routeParams.current = { appId: 'test-app', storeId: 'ci-marketplace' };
+
+    render(<AppDetailsPage />);
+
+    expect(screen.getByTestId('app-actions')).toHaveAttribute('data-allowed', 'unset');
+    const accessQuery = useQuery.mock.calls.find(([options]) => (options as { queryKey?: unknown[] }).queryKey?.[0] === 'custom-app-access');
+    expect((accessQuery?.[0] as { enabled?: boolean } | undefined)?.enabled).toBe(false);
   });
 
   it('shows a skeleton of the page, not a spinner, while the app loads', () => {

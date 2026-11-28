@@ -1,10 +1,62 @@
 import { Injectable, type OnModuleInit } from '@nestjs/common';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { castAppUrn } from '@/common/helpers/app-helpers';
+import { MAX_PUBLIC_PATHS } from '@ci-hub/common/schemas';
 import { mcpCallerLifecycleActor } from '../mcp-tool-call';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 
 const urnProp = { type: 'string', description: 'App identifier in appName:storeSlug format' } as const;
+
+/**
+ * The Hub's own fields of an app's install and settings form (`appFormSchema`), named so an agent can
+ * see them. The app's own settings are keyed by the `env_variable` of its form fields, so the schema
+ * stays open for them.
+ */
+const appFormProperties = {
+  port: { type: 'integer', minimum: 1024, maximum: 65535, description: 'Host port the app is published on' },
+  exposureMode: {
+    type: 'string',
+    enum: ['local', 'cloudflare', 'tailscale'],
+    description: 'Where the app is reachable: local is This machine only, cloudflare is Public web, tailscale is the Private VPN',
+  },
+  openPort: { type: 'boolean', description: 'Also publish the host port (always on for local)' },
+  portOnNetwork: { type: 'boolean', description: 'Publish the host ports on every network interface, not only 127.0.0.1' },
+  enableAuth: { type: 'boolean', description: 'Put the Hub login in front of the app (on unless turned off)' },
+  publicPaths: {
+    type: 'array',
+    maxItems: MAX_PUBLIC_PATHS,
+    items: { type: 'string', maxLength: 128, pattern: '^(?:/[A-Za-z0-9._~-]+)+/?$' },
+    description: 'Paths served without the Hub login, such as "/webhook"',
+  },
+  localSubdomain: { type: 'string', pattern: '^[a-zA-Z0-9-]{1,63}$', description: 'Subdomain the app is served under' },
+  publicDomain: { type: 'string', description: 'Domain the app is served under on Public web' },
+  isVisibleOnGuestDashboard: { type: 'boolean', description: 'Show the app on the guest dashboard' },
+  maxBackups: { type: 'integer', minimum: 0, maximum: 100, description: 'Backups to keep for this app' },
+  cpuLimit: { type: 'string', description: 'CPU limit, such as "1.5"' },
+  memoryLimit: { type: 'string', description: 'Memory limit, such as "2g"' },
+  autoRestartOnDomainChange: { type: 'boolean', description: 'Restart the app when its custom domain connects' },
+  customDomain: {
+    type: 'string',
+    description:
+      "One of the organization's custom domains to serve the app on, or an empty string for the platform address. " +
+      'Leave it out unless you are changing the custom domain.',
+  },
+  customDomainTakeover: {
+    type: 'boolean',
+    description: 'With customDomain, take the custom domain off whatever app serves it now. Leave it out otherwise.',
+  },
+  customDomainExpected: {
+    type: 'string',
+    description:
+      'With customDomain set to an empty string, the custom domain the app is served on now (app.customDomain from hub_get_app). ' +
+      'A release that names another, or none, is refused.',
+  },
+} as const;
+
+/** Why a form naming a custom domain needs more than a 'write' key. */
+const customDomainRule =
+  "Naming a customDomain or customDomainTakeover makes the call destructive and requires a 'full'-capability key; " +
+  'changing which custom domain the app uses also takes an organization owner or admin, so an agent key is refused for that.';
 
 /**
  * R2-HUBHOSTESCAPE-6: whether this call reaches for one of the organization's custom domains.
@@ -55,10 +107,9 @@ export class AppLifecycleTools implements OnModuleInit {
           appUrn: urnProp,
           form: {
             type: 'object',
-            description:
-              'Optional install config: port, exposed, domain, and app-specific form fields. Naming a customDomain or ' +
-              "customDomainTakeover makes the call destructive and requires a 'full'-capability key; changing which custom " +
-              'domain the app uses also takes an organization owner or admin, so an agent key is refused for that.',
+            description: `Optional install config: the fields below and the app's own form fields, keyed by env_variable. ${customDomainRule}`,
+            properties: appFormProperties,
+            additionalProperties: true,
           },
         },
         required: ['appUrn'],
@@ -103,7 +154,7 @@ export class AppLifecycleTools implements OnModuleInit {
           deleteAllData: {
             type: 'boolean',
             description:
-              "Delete Docker volumes, app data AND the app's stored backups (default true). With this set, a successful uninstall leaves nothing to restore from — pass false to keep the data and its backups.",
+              "Delete Docker volumes, app data, the app's user config AND its stored backups (default true). With this set, a successful uninstall leaves nothing to restore from. Pass false to keep the data, its user config and its backups.",
           },
           force: {
             type: 'boolean',
@@ -162,8 +213,11 @@ export class AppLifecycleTools implements OnModuleInit {
           form: {
             type: 'object',
             description:
-              "Config fields to update. Naming a customDomain or customDomainTakeover makes the call destructive and requires a 'full'-capability key; " +
-              'changing which custom domain the app uses also takes an organization owner or admin, so an agent key is refused for that.',
+              "The app's settings: the fields below and the app's own form fields, keyed by env_variable. The form replaces the saved one, " +
+              'so send the current values (hub_get_app returns them in app.config) with your changes. Left out, the port, exposure, login, ' +
+              `guest dashboard and custom domain settings keep what the app has. ${customDomainRule}`,
+            properties: appFormProperties,
+            additionalProperties: true,
           },
         },
         required: ['appUrn', 'form'],

@@ -4,7 +4,8 @@ import { optionalCpuLimitSchema } from '@/common/validation/cpu-limit';
 import { optionalMemoryLimitSchema } from '@/common/validation/memory-limit';
 import isFQDN from 'validator/lib/isFQDN';
 import { MCP_ACCESS_CHOICES } from '@ci-hub/common/types';
-import { MAX_PUBLIC_PATHS, publicPathSchema } from '@ci-hub/common/schemas';
+import { gatewayHostNameSchema, MAX_GATEWAY_HOST_NAMES, MAX_PUBLIC_PATHS, publicPathSchema } from '@ci-hub/common/schemas';
+import { gatewayHostNameRefusal } from '@/modules/apps/gateway-allowed-hosts';
 
 export const appFormSchema = z
   .object({
@@ -20,6 +21,19 @@ export const appFormSchema = z
     portOnNetwork: z.boolean().optional(),
     /** Paths, and what is under them, served without the Hub login: the operator's choice only (`publicPathSchema`). */
     publicPaths: z.array(publicPathSchema).max(MAX_PUBLIC_PATHS).optional(),
+    /**
+     * More names Companion Memory's gateway answers to, beside the ones the Hub knows
+     * (`gatewayAllowedHosts`): a host name, or `.name` for every name under it. The operator's choice
+     * only. A suffix that is a public one (`.com`, `.co.uk`) is refused (`gatewayHostNameRefusal`).
+     */
+    gatewayHostNames: z
+      .array(
+        gatewayHostNameSchema.refine((name) => gatewayHostNameRefusal(name) !== 'too-wide', {
+          message: 'A suffix that is a public domain lets in names anyone can register',
+        }),
+      )
+      .max(MAX_GATEWAY_HOST_NAMES)
+      .optional(),
     domain: z.string().optional(),
     isVisibleOnGuestDashboard: z.boolean().optional(),
     enableAuth: z.boolean().optional(),

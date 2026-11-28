@@ -2177,6 +2177,24 @@ describe('AppLifecycleService', () => {
       expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'start', appUrn }));
     });
 
+    it('keeps an app on the guest dashboard when the reinstall form leaves the choice out (#2621)', async () => {
+      // The row kept it, but the stored form lost the key, and the settings dialog opens from that form.
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        status: 'stopped',
+        isVisibleOnGuestDashboard: true,
+        config: { port: 8080, isVisibleOnGuestDashboard: true },
+        port: 8080,
+      } as any);
+
+      await service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'cloudflare', exposedLocal: true, openPort: false } } as any);
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({ isVisibleOnGuestDashboard: true, config: expect.objectContaining({ isVisibleOnGuestDashboard: true }) }),
+      );
+    });
+
     it('records open a reinstall form that moves the app off a closed port and names no openPort', async () => {
       appsRepository.getAppByUrn.mockResolvedValue({
         id: 1,
@@ -3577,6 +3595,32 @@ describe('AppLifecycleService', () => {
       await service.installApp({ actor: TEST_ACTOR, appUrn: storeUrn, form: { exposureMode: 'local', openPort: true, port: 18558 } });
 
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, expect.objectContaining({ status: 'installing', port: 18558 }));
+    });
+
+    it('keeps the guest dashboard choice of an installed app a racing install turns out to reinstall (#2621)', async () => {
+      const raced = {
+        ...row,
+        id: 7,
+        appName: 'testapp',
+        appStoreSlug: 'ci-marketplace',
+        status: 'running',
+        isVisibleOnGuestDashboard: true,
+        config: { port: 8080, isVisibleOnGuestDashboard: true },
+      };
+      appsRepository.getAppByUrn.mockResolvedValue(undefined as any);
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({ id: 'testapp', urn: storeUrn, port: 8080, exposable: true } as any);
+      vi.spyOn(service, 'validateAppConfig').mockResolvedValue({ valid: true, errors: [] });
+      appsRepository.createApp.mockImplementation(async () => {
+        appsRepository.getAppByUrn.mockResolvedValue(raced as any);
+        throw Object.assign(new Error('Failed query: insert into "app"'), { cause: { code: '23505' } });
+      });
+
+      await service.installApp({ actor: TEST_ACTOR, appUrn: storeUrn, form: { exposureMode: 'local', openPort: true, port: 8080 } });
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(
+        7,
+        expect.objectContaining({ isVisibleOnGuestDashboard: true, config: expect.objectContaining({ isVisibleOnGuestDashboard: true }) }),
+      );
     });
 
     it('leaves a first install to the allocator, which takes a free port when this one is held', async () => {
@@ -6785,6 +6829,60 @@ describe('AppLifecycleService', () => {
       );
     });
 
+    describe('the guest dashboard choice (#2621)', () => {
+      const onGuestDashboard = { id: 1, status: 'stopped', isVisibleOnGuestDashboard: true, config: { port: 8080, isVisibleOnGuestDashboard: true } };
+
+      it('keeps an app on the guest dashboard through a save that does not mention it', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue(onGuestDashboard as any);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090 } });
+
+        expect(appsRepository.updateAppById).toHaveBeenCalledWith(
+          1,
+          expect.objectContaining({ isVisibleOnGuestDashboard: true, config: expect.objectContaining({ isVisibleOnGuestDashboard: true }) }),
+        );
+      });
+
+      it('reads a save that repeats everything else as no change, so the app is not restarted', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue({ ...onGuestDashboard, status: 'running' } as any);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080 } });
+
+        expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      });
+
+      it('takes the app off the guest dashboard when the form says false', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue(onGuestDashboard as any);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080, isVisibleOnGuestDashboard: false } });
+
+        expect(appsRepository.updateAppById).toHaveBeenCalledWith(
+          1,
+          expect.objectContaining({ isVisibleOnGuestDashboard: false, config: expect.objectContaining({ isVisibleOnGuestDashboard: false }) }),
+        );
+      });
+
+      it("writes the row's choice into a stored form that lost the key", async () => {
+        appsRepository.getAppByUrn.mockResolvedValue({ ...onGuestDashboard, config: { port: 8080 } } as any);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080 } });
+
+        expect(appsRepository.updateAppById).toHaveBeenCalledWith(
+          1,
+          expect.objectContaining({ isVisibleOnGuestDashboard: true, config: expect.objectContaining({ isVisibleOnGuestDashboard: true }) }),
+        );
+      });
+
+      it('adds nothing to the stored form of a hidden app that never had the key', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', isVisibleOnGuestDashboard: false, config: { port: 8080 } } as any);
+
+        await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080 } });
+
+        expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      });
+    });
+
     it('does not flip a stored explicit enableAuth=false when a partial update omits the field (#74)', async () => {
       // A PATCH that changes some other field WITHOUT resending enableAuth must inherit the app's
       // stored explicit false, not resolve to the manifest default — "operator choice wins" has to
@@ -8073,6 +8171,69 @@ describe('AppLifecycleService', () => {
       await flushMicrotasks();
 
       expect(backupManager.deleteAppBackupsByUrn).not.toHaveBeenCalled();
+    });
+
+    // The data went, so the backups holding it go too. The remnant is the app's own overrides (#2628).
+    it('discards backups when the user config is the only remnant', async () => {
+      appEventsQueue.publish.mockResolvedValueOnce({
+        success: true,
+        message: 'partial',
+        warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+        warningDetail: '/srv/user-config/store/app',
+        appDataLeft: false,
+      } as any);
+
+      await service.uninstallApp({ actor: TEST_ACTOR, appUrn, deleteAllData: true });
+      await flushMicrotasks();
+
+      expect(backupManager.deleteAppBackupsByUrn).toHaveBeenCalledWith(appUrn);
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({
+          event: 'uninstall_success',
+          warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+          warningDetail: '/srv/user-config/store/app',
+        }),
+      );
+    });
+
+    it('keeps backups when the command says the data was left', async () => {
+      appEventsQueue.publish.mockResolvedValueOnce({
+        success: true,
+        message: 'partial',
+        warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+        warningDetail: '/srv/app-data/store/app\n/srv/user-config/store/app',
+        appDataLeft: true,
+      } as any);
+
+      await service.uninstallApp({ actor: TEST_ACTOR, appUrn, deleteAllData: true });
+      await flushMicrotasks();
+
+      expect(backupManager.deleteAppBackupsByUrn).not.toHaveBeenCalled();
+    });
+
+    it('names both the user config and the backups when neither could be removed', async () => {
+      appEventsQueue.publish.mockResolvedValueOnce({
+        success: true,
+        message: 'partial',
+        warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+        warningDetail: '/srv/user-config/store/app',
+        appDataLeft: false,
+      } as any);
+      backupManager.deleteAppBackupsByUrn.mockRejectedValueOnce(new Error('EACCES'));
+      backupManager.getAppBackupsHostDir.mockReturnValueOnce('/srv/hub/backups/store/app');
+
+      await service.uninstallApp({ actor: TEST_ACTOR, appUrn, deleteAllData: true });
+      await flushMicrotasks();
+
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({
+          event: 'uninstall_success',
+          warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+          warningDetail: '/srv/user-config/store/app\n/srv/hub/backups/store/app',
+        }),
+      );
     });
 
     it('discards backups on a clean delete-all-data uninstall (#908)', async () => {

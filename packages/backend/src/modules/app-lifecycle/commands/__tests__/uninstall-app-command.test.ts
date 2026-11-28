@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mock, mockDeep, type DeepMockProxy, type MockProxy } from 'vitest-mock-extended';
 import type { ModuleRef } from '@nestjs/core';
 import type Dockerode from 'dockerode';
+import { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppsRepository } from '@/modules/apps/apps.repository';
@@ -23,6 +24,7 @@ describe('UninstallAppCommand', () => {
     removeAppImages: ReturnType<typeof vi.fn>;
     removeAppNetworks: ReturnType<typeof vi.fn>;
     removeAppDataDirAsRoot: ReturnType<typeof vi.fn>;
+    removeUserConfigDirAsRoot: ReturnType<typeof vi.fn>;
     imageIdLocally: ReturnType<typeof vi.fn>;
     imageTagsLocally: ReturnType<typeof vi.fn>;
   };
@@ -55,6 +57,9 @@ describe('UninstallAppCommand', () => {
     appFilesManager.deleteAppDataDir.mockResolvedValue(true);
     appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: true, permissionDenied: false });
     appFilesManager.getAppDataHostDir.mockReturnValue('/srv/app-data/store/test-app');
+    appFilesManager.deleteUserConfigDir.mockResolvedValue(true);
+    appFilesManager.deleteUserConfigDirDetailed.mockResolvedValue({ removed: true, permissionDenied: false });
+    appFilesManager.getUserConfigHostDir.mockReturnValue('/srv/user-config/store/test-app');
     appFilesManager.readPulledImages.mockResolvedValue({ imageIds: ['sha256:a'], imageTags: [] });
     appFilesManager.deletePulledImages.mockResolvedValue(undefined);
     appFilesManager.addPulledImages.mockResolvedValue(true);
@@ -76,6 +81,7 @@ describe('UninstallAppCommand', () => {
       imageTagsLocally: vi.fn().mockResolvedValue([]),
       removeAppNetworks: vi.fn().mockResolvedValue(undefined),
       removeAppDataDirAsRoot: vi.fn().mockResolvedValue(true),
+      removeUserConfigDirAsRoot: vi.fn().mockResolvedValue(true),
     };
 
     command = new UninstallAppCommand(makeModuleRef(), mock<Dockerode>());
@@ -290,6 +296,7 @@ describe('UninstallAppCommand', () => {
       success: true,
       message: `App ${appUrn} uninstalled, but its app data could not be fully removed and may leave a remnant on disk.`,
       warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+      appDataLeft: true,
       warningDetail: '/srv/app-data/store/test-app',
     });
     expect(dockerService.removeAppDataDirAsRoot).not.toHaveBeenCalled();
@@ -311,6 +318,7 @@ describe('UninstallAppCommand', () => {
       success: true,
       message: `App ${appUrn} uninstalled, but its app data could not be fully removed and may leave a remnant on disk.`,
       warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+      appDataLeft: true,
       // No warningDetail: the path was unavailable, so no manual command is offered.
     });
     expect(dockerService.removeAppDataDirAsRoot).not.toHaveBeenCalled();
@@ -338,6 +346,7 @@ describe('UninstallAppCommand', () => {
       success: true,
       message: `App ${appUrn} uninstalled, but its app data could not be fully removed and may leave a remnant on disk.`,
       warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+      appDataLeft: true,
       warningDetail: '/srv/app-data/store/test-app',
     });
   });
@@ -351,6 +360,7 @@ describe('UninstallAppCommand', () => {
       success: true,
       message: `App ${appUrn} uninstalled, but its app folder could not be fully removed and may leave a remnant on disk.`,
       warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+      appDataLeft: true,
     });
   });
 
@@ -364,6 +374,7 @@ describe('UninstallAppCommand', () => {
       success: true,
       message: `App ${appUrn} uninstalled, but its app folder and app data could not be fully removed and may leave a remnant on disk.`,
       warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+      appDataLeft: true,
       warningDetail: '/srv/app-data/store/test-app',
     });
   });
@@ -378,6 +389,106 @@ describe('UninstallAppCommand', () => {
     expect(result).toEqual({ success: true, message: `App ${appUrn} uninstalled successfully` });
     expect(appFilesManager.deleteAppDataDirDetailed).not.toHaveBeenCalled();
     expect(dockerService.removeAppDataDirAsRoot).not.toHaveBeenCalled();
+  });
+
+  // A later app with the same name, a reinstall or a new custom app, would start with the old overrides switched on (#2628).
+  describe("the app's user config", () => {
+    it('goes with Delete all data', async () => {
+      const result = await command.execute(appUrn);
+
+      expect(result).toEqual({ success: true, message: `App ${appUrn} uninstalled successfully` });
+      expect(appFilesManager.deleteUserConfigDirDetailed).toHaveBeenCalledWith(appUrn);
+      expect(dockerService.removeUserConfigDirAsRoot).not.toHaveBeenCalled();
+    });
+
+    it('stays when the data is kept, so a reinstall gets it back', async () => {
+      const preserveDataCommand = new UninstallAppCommand(makeModuleRef(), mock<Dockerode>(), false);
+
+      const result = await preserveDataCommand.execute(appUrn);
+
+      expect(result).toEqual({ success: true, message: `App ${appUrn} uninstalled successfully` });
+      expect(appFilesManager.deleteUserConfigDirDetailed).not.toHaveBeenCalled();
+      expect(appFilesManager.deleteUserConfigDir).not.toHaveBeenCalled();
+      expect(dockerService.removeUserConfigDirAsRoot).not.toHaveBeenCalled();
+    });
+
+    it('is emptied as root when the Hub may not delete a file in it, then removed by the Hub', async () => {
+      appFilesManager.deleteUserConfigDirDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
+
+      const result = await command.execute(appUrn);
+
+      expect(dockerService.removeUserConfigDirAsRoot).toHaveBeenCalledWith(appUrn, undefined);
+      expect(appFilesManager.deleteUserConfigDir).toHaveBeenCalledWith(appUrn);
+      expect(result).toEqual({ success: true, message: `App ${appUrn} uninstalled successfully` });
+    });
+
+    // Two root helpers of up to 30 minutes each would outlast the queue's wait for the reply.
+    it("gives both root helpers the command's one time limit", async () => {
+      appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
+      appFilesManager.deleteUserConfigDirDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
+      const deadline = AppCommandDeadline.after(60_000);
+
+      await command.execute(appUrn, undefined, { signal: new AbortController().signal, setPhase: vi.fn(), deadline });
+
+      expect(dockerService.removeAppDataDirAsRoot).toHaveBeenCalledWith(appUrn, deadline);
+      expect(dockerService.removeUserConfigDirAsRoot).toHaveBeenCalledWith(appUrn, deadline);
+    });
+
+    it('is reported with its host path when even root cannot remove it', async () => {
+      appFilesManager.deleteUserConfigDirDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
+      dockerService.removeUserConfigDirAsRoot.mockResolvedValue(false);
+
+      const result = await command.execute(appUrn);
+
+      expect(result).toEqual({
+        success: true,
+        message: `App ${appUrn} uninstalled, but its user config could not be fully removed and may leave a remnant on disk.`,
+        warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+        warningDetail: '/srv/user-config/store/test-app',
+        // The data went, so its backups can go too.
+        appDataLeft: false,
+      });
+    });
+
+    it('is reported without asking root when the failure is not about permissions', async () => {
+      appFilesManager.deleteUserConfigDirDetailed.mockResolvedValue({ removed: false, permissionDenied: false });
+
+      const result = await command.execute(appUrn);
+
+      expect(dockerService.removeUserConfigDirAsRoot).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT', warningDetail: '/srv/user-config/store/test-app' });
+    });
+
+    it('is named with the data when both are left and the page gets both paths, one per line', async () => {
+      appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: false, permissionDenied: false });
+      appFilesManager.deleteUserConfigDirDetailed.mockResolvedValue({ removed: false, permissionDenied: false });
+
+      const result = await command.execute(appUrn);
+
+      expect(result).toEqual({
+        success: true,
+        message: `App ${appUrn} uninstalled, but its app data and user config could not be fully removed and may leave a remnant on disk.`,
+        warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+        warningDetail: '/srv/app-data/store/test-app\n/srv/user-config/store/test-app',
+        appDataLeft: true,
+      });
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('at /srv/app-data/store/test-app and /srv/user-config/store/test-app'));
+    });
+
+    it('is reported as left with its host path, not as a failed uninstall, when removing it throws', async () => {
+      appFilesManager.deleteUserConfigDirDetailed.mockRejectedValue(new Error('EIO'));
+
+      const result = await command.execute(appUrn);
+
+      expect(result).toEqual({
+        success: true,
+        message: `App ${appUrn} uninstalled, but its user config could not be fully removed and may leave a remnant on disk.`,
+        warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+        warningDetail: '/srv/user-config/store/test-app',
+        appDataLeft: false,
+      });
+      expect(logger.warn).toHaveBeenCalledWith(`Removing the user config of ${appUrn} failed: EIO`);
+    });
   });
 
   it('continues uninstall when compose down fails and cleanup helpers remain non-fatal', async () => {

@@ -137,8 +137,8 @@ const appScopedEventSchema = z.object({
   // completed but a root-owned path could not be fully removed). The client maps it
   // to a warning toast — a discriminator like errorCode, not rendered as a raw key.
   warningCode: z.string().optional(),
-  // Optional detail for the caveat (e.g. the host path of an uninstall remnant), so the
-  // client can render an actionable message such as a manual cleanup command.
+  // Optional detail for the caveat (e.g. the host path of an uninstall remnant, one per line
+  // when there are two), so the client can render an actionable message such as a manual cleanup command.
   warningDetail: z.string().optional(),
   // On a start, restart or install outcome: the app could not have the host port it was to publish
   // (`from`) so it is on `to` now. The client says so, in place of a plain success, because its local address changed.

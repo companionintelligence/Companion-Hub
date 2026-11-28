@@ -15257,6 +15257,15 @@
               "pattern": "^(?:\\/[A-Za-z0-9._~-]+)+\\/?$"
             }
           },
+          "gatewayHostNames": {
+            "maxItems": 20,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 253,
+              "pattern": "^\\.?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$"
+            }
+          },
           "domain": {
             "type": "string"
           },
@@ -15919,10 +15928,20 @@
                 "configure"
               ]
             }
+          },
+          "role": {
+            "nullable": true,
+            "type": "string",
+            "enum": [
+              "owner",
+              "admin",
+              "member"
+            ]
           }
         },
         "required": [
-          "actions"
+          "actions",
+          "role"
         ],
         "additionalProperties": false
       },

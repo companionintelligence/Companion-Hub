@@ -56,8 +56,23 @@ entryPoints:
         - 10.128.0.4/32 # edge hop: hub-tailscale
     transport:
       respondingTimeouts:
-        readTimeout: 300s
-        writeTimeout: 300s
+        # No limit on receiving a request either. readTimeout is the whole time one
+        # request may take to arrive, its body included, so at 300s an upload past
+        # five minutes was cut: an import of a Memory export, an import tool's data
+        # files, a large file. Traefik 3.6 has no separate limit for headers alone,
+        # so this also drops the guard against a client that sends its request
+        # slowly on purpose to hold a connection open. Public visitors reach Traefik
+        # only through Cloudflare's edge and cloudflared; the LAN and the tailnet
+        # reach it directly.
+        readTimeout: 0s
+        # No limit on sending a response (0, Traefik's own default). writeTimeout is the
+        # whole time one response may take to send, not a gap between writes, so at 300s
+        # every answer longer than five minutes was cut where it stood: a Memory export
+        # of 11 GB ended at 300.0 s with the download thrown away, as would a large file
+        # download or an event stream. A visitor who stops reading now holds the
+        # connection until the app's own proxy gives up on them (Memory's nginx after
+        # send_timeout) or TCP does, as behind any proxy without a write deadline.
+        writeTimeout: 0s
         idleTimeout: 300s
   websecure:
     address: ":443"
@@ -70,8 +85,8 @@ entryPoints:
         - 10.128.0.4/32 # edge hop: hub-tailscale
     transport:
       respondingTimeouts:
-        readTimeout: 300s
-        writeTimeout: 300s
+        readTimeout: 0s # no limit on receiving a request; see `web` above
+        writeTimeout: 0s # no limit on sending a response; see `web` above
         idleTimeout: 300s
 
 certificatesResolvers:

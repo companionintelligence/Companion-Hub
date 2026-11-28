@@ -16,7 +16,7 @@ import {
   Trash,
 } from 'lucide-react';
 import type React from 'react';
-import { createElement, useState, useEffect, useRef, useCallback } from 'react';
+import { cloneElement, createElement, useState, useEffect, useRef, useCallback } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button, type ButtonProps } from '@/components/ui/Button';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
@@ -145,12 +145,29 @@ interface IProps {
   urlAvailability: AppUrlAvailability;
   layout?: 'default' | 'hero';
   /**
-   * The Hub verbs this person holds on the app, when the page knows them (a custom app's page reads
-   * them from `useCustomAppAccess`). An action whose verb is missing is left out rather than shown and
-   * refused. Unset, every action shows, and the Hub decides when it is used.
+   * The Hub verbs this person holds on the app, when the page knows them (a custom app's page, and an
+   * added store's app page, read them from `useCustomAppAccess`). An action whose verb is missing shows
+   * disabled, saying why on hover and on a tap, so the person sees what the app offers and that it is
+   * their role that withholds it. Unset, every action is offered. Either way the Hub decides every call.
    */
   allowedActions?: readonly string[];
+  /** The person's organization role, for saying why an action is withheld ("As a Member, …"). */
+  accessRole?: 'owner' | 'admin' | 'member' | null;
 }
+
+/** How each verb reads in "you can't … this app". */
+const VERB_LABEL_KEYS: Record<string, string> = {
+  start: 'APP_ACTION_VERB_START',
+  stop: 'APP_ACTION_VERB_STOP',
+  restart: 'APP_ACTION_VERB_RESTART',
+  install: 'APP_ACTION_VERB_INSTALL',
+  update: 'APP_ACTION_VERB_UPDATE',
+  uninstall: 'APP_ACTION_VERB_UNINSTALL',
+  reset: 'APP_ACTION_VERB_RESET',
+  backup: 'APP_ACTION_VERB_BACKUP',
+  restore: 'APP_ACTION_VERB_RESTORE',
+  configure: 'APP_ACTION_VERB_CONFIGURE',
+};
 
 /** The verb each action asks the Hub for. One not listed (Open, the data folder) only reads. */
 const ACTION_VERBS: Record<string, string> = {
@@ -260,6 +277,7 @@ export const AppActions = ({
   urlAvailability,
   layout = 'default',
   allowedActions,
+  accessRole,
 }: IProps) => {
   const installDisclosure = useDisclosure();
   const cancelInstallDisclosure = useDisclosure();
@@ -1135,8 +1153,39 @@ export const AppActions = ({
     const verb = ACTION_VERBS[String(action.key)];
     return allowedActions === undefined || verb === undefined || allowedActions.includes(verb);
   };
-  const shownButtons = buttons.filter(permitted);
-  const shownSecondaryActions = secondaryActions.filter(permitted);
+  // Shown, but withheld: dimmed and marked disabled, with the reason on hover. Not the `disabled`
+  // attribute, which takes hover and taps away, so the tooltip could not show and a tap on a phone
+  // would say nothing. A click, tap or Enter is caught before the button sees it, and says the same
+  // as a toast. The Hub refuses the call anyway, from the console or an edited page alike.
+  const withheld = (action: React.JSX.Element) => {
+    const verb = ACTION_VERBS[String(action.key)] ?? '';
+    const message = t(accessRole === 'member' ? 'APP_ACTION_MEMBER_NOT_ALLOWED' : 'APP_ACTION_ROLE_NOT_ALLOWED', {
+      action: t(VERB_LABEL_KEYS[verb] ?? 'APP_ACTION_VERB_CONFIGURE'),
+    });
+    return (
+      <span
+        key={action.key}
+        className="inline-flex cursor-not-allowed opacity-50"
+        data-testid={`withheld-action-${String(action.key)}`}
+        data-tooltip-id="app-actions-tooltip"
+        data-tooltip-content={message}
+        onClickCapture={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          toast.error(message);
+        }}
+      >
+        {cloneElement(action, {
+          'aria-disabled': true,
+          'aria-description': message,
+          // Its own tooltip would name the action instead of saying why it is withheld.
+          'data-tooltip-id': undefined,
+        })}
+      </span>
+    );
+  };
+  const shownButtons = buttons.map((action) => (permitted(action) ? action : withheld(action)));
+  const shownSecondaryActions = secondaryActions.map((action) => (permitted(action) ? action : withheld(action)));
 
   return (
     <>
@@ -1168,7 +1217,7 @@ export const AppActions = ({
         isOpen={uninstallDisclosure.isOpen}
         onClose={uninstallDisclosure.close}
         info={info}
-        canReset={shownSecondaryActions.some((action) => action.key === 'reset')}
+        canReset={secondaryActions.some((action) => action.key === 'reset' && permitted(action))}
       />
       <ResetDialog isOpen={resetAppDisclosure.isOpen} onClose={resetAppDisclosure.close} info={info} />
       <DisconnectMemoryDialog

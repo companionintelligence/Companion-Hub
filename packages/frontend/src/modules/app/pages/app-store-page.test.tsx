@@ -160,7 +160,7 @@ let manageHub = true;
 function setupQueries(stores = [STORE_A, STORE_B]) {
   mockUseQuery.mockImplementation((opts: { queryKey: readonly unknown[] }) => {
     if (opts.queryKey[0] === 'custom-app-access') {
-      return { data: customAppActions, isLoading: false } as ReturnType<typeof useQuery>;
+      return { data: { actions: customAppActions, role: null }, isLoading: false } as ReturnType<typeof useQuery>;
     }
     if (opts.queryKey[0] === 'hub-access') {
       return { data: manageHub, isLoading: false, isPending: false } as ReturnType<typeof useQuery>;
@@ -470,7 +470,11 @@ describe('AppStorePage — multi-store UX', () => {
     expect(mockStoreState.setStoreId).toHaveBeenCalledWith('community');
   });
 
-  it('calls setSearchParams when switching stores', () => {
+  // The chip writes the address and nothing else; the `?store=` sync sets the store from it. Setting the
+  // store as well started a second address write from the address as rendered, and React Router does not
+  // chain updaters, so with a store already in the address that write put the old store back.
+  it('switches stores through the address alone, even with a store already in it', () => {
+    capturedSearchParams = new URLSearchParams('store=ci-apps');
     setupQueries();
 
     render(
@@ -478,10 +482,16 @@ describe('AppStorePage — multi-store UX', () => {
         <AppStorePage />
       </MemoryRouter>,
     );
+    mockStoreState.setStoreId.mockClear();
+    mockSetSearchParams.mockClear();
 
     fireEvent.click(screen.getByText('Community'));
-    expect(mockStoreState.setStoreId).toHaveBeenCalledWith('community');
-    expect(mockSetSearchParams).toHaveBeenCalled();
+
+    expect(mockStoreState.setStoreId).not.toHaveBeenCalled();
+    expect(mockSetSearchParams).toHaveBeenCalledTimes(1);
+    const [updater, options] = mockSetSearchParams.mock.calls[0] ?? [];
+    expect(updater(new URLSearchParams('store=ci-apps')).get('store')).toBe('community');
+    expect(options).toEqual({ replace: true });
   });
 
   it('clears invalid ?store= param from URL', () => {

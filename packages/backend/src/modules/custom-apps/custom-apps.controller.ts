@@ -51,7 +51,14 @@ export class CustomAppController {
   @UseGuards(AuthGuard)
   @ApiResponse({ type: CustomAppAccessDto })
   async getCustomAppAccess(@Req() req: Request) {
-    return CustomAppAccessDto.parse({ actions: await this.whois.customAppActionsHint(req) }, { reportOnly: true });
+    const role = req.user?.orgRole;
+    return CustomAppAccessDto.parse(
+      {
+        actions: await this.whois.customAppActionsHint(req),
+        role: role === 'owner' || role === 'admin' || role === 'member' ? role : null,
+      },
+      { reportOnly: true },
+    );
   }
 
   @Post()
