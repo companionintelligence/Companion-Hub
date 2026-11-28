@@ -71,7 +71,7 @@ export const UninstallDialog = ({ info, isOpen, onClose, canReset = false, portE
           ) : (
             <>
               <h3>{t('COMMON_ACTION_CANNOT_BE_UNDONE')}</h3>
-              {/* Delete all data takes the app's backups along with its data folder and volumes. With it off, all three stay. */}
+              {/* Delete all data takes the app's backups and user config along with its data folder and volumes. With it off, they all stay. */}
               <span className="text-muted-foreground">
                 {t(shouldDeleteAllData ? 'APP_UNINSTALL_FORM_DATA_AND_BACKUPS_LOST' : 'APP_UNINSTALL_FORM_DATA_KEPT')}
               </span>

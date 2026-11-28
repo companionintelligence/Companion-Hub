@@ -7,11 +7,12 @@ import { PortManagerService } from '@/modules/network/port-manager.service';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
 import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { McpBridgeService } from '@/modules/mcp/agents/mcp-bridge.service';
+import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@ci-hub/common/types';
 import { isPortExposeApp } from '@ci-hub/common/schemas';
-import { AppLifecycleCommand } from './command';
+import { AppLifecycleCommand, type CommandExecutionContext } from './command';
 import { handOverKeptImages, sortImagesByOtherApps } from './pull-app-images';
-import { describeLeftovers, removeAppDataWithPrivilegedFallback } from './remove-app-data';
+import { describeLeftovers, removeAppDataWithPrivilegedFallback, removeUserConfigWithPrivilegedFallback } from './remove-app-data';
 import { AppLinkService } from '@/modules/app-links/app-link.service';
 
 export class UninstallAppCommand extends AppLifecycleCommand {
@@ -23,7 +24,14 @@ export class UninstallAppCommand extends AppLifecycleCommand {
     super(moduleRef, docker);
   }
 
-  public async execute(appUrn: AppUrn): Promise<{ success: boolean; message: string; warningCode?: string; warningDetail?: string }> {
+  public async execute(
+    appUrn: AppUrn,
+    _form?: AppEventFormInput,
+    ctx?: CommandExecutionContext,
+  ): Promise<{ success: boolean; message: string; warningCode?: string; warningDetail?: string; appDataLeft?: boolean }> {
+    // The root helpers of the data and the user config share the command's one time limit, so two of them
+    // can't run past the queue's wait for the reply.
+    const deadline = ctx?.deadline;
     const logger = this.moduleRef.get(LoggerService, { strict: false });
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
     const dockerService = this.moduleRef.get(DockerService, { strict: false });
@@ -139,29 +147,55 @@ export class UninstallAppCommand extends AppLifecycleCommand {
       // process can't remove (e.g. MinIO's `.minio.sys`). Try to self-heal via a
       // privileged (root) cleanup; only if that ALSO fails do we surface a remnant.
       let dataRemoved = true;
+      let userConfigRemoved = true;
       let dataRemnantHostPath: string | undefined;
+      let userConfigRemnantHostPath: string | undefined;
       if (this.deleteAllData) {
-        const outcome = await removeAppDataWithPrivilegedFallback(appFilesManager, dockerService, logger, appUrn);
+        const outcome = await removeAppDataWithPrivilegedFallback(appFilesManager, dockerService, logger, appUrn, deadline);
         dataRemoved = outcome.removed;
         dataRemnantHostPath = outcome.hostPath;
+
+        // The app's own overrides go with its data. Left behind, a later app with the same name, a reinstall of
+        // this one or a new custom app, starts with them switched on (#2628). With the data kept they stay too, so
+        // a reinstall picks up where the app was. The app is gone by now, so a throw here only leaves the folder.
+        const userConfig = await removeUserConfigWithPrivilegedFallback(appFilesManager, dockerService, logger, appUrn, deadline).catch(
+          (err): { removed: boolean; hostPath?: string } => {
+            logger.warn(`Removing the user config of ${appUrn} failed: ${err instanceof Error ? err.message : String(err)}`);
+            // Still named in the manual `rm`: without it, a command for the data alone would leave the overrides.
+            let hostPath: string | undefined;
+            try {
+              hostPath = appFilesManager.getUserConfigHostDir(appUrn);
+            } catch {
+              hostPath = undefined;
+            }
+            return { removed: false, hostPath };
+          },
+        );
+        userConfigRemoved = userConfig.removed;
+        userConfigRemnantHostPath = userConfig.hostPath;
       }
 
       // The app IS uninstalled — containers, images and networks are gone and the DB
       // record will be dropped — but if a wipe is still only partial (even root
       // couldn't remove it), report success WITHOUT claiming a clean removal and carry
       // the host path so the user can be shown a manual cleanup command (#907).
-      if (!folderRemoved || !dataRemoved) {
-        const leftover = describeLeftovers(folderRemoved, dataRemoved);
+      if (!folderRemoved || !dataRemoved || !userConfigRemoved) {
+        const leftover = describeLeftovers({ folderRemoved, dataRemoved, userConfigRemoved });
+        const remnantPaths = [dataRemnantHostPath, userConfigRemnantHostPath].filter((hostPath): hostPath is string => Boolean(hostPath));
 
         logger.warn(
-          `App ${appUrn} uninstalled, but its ${leftover} could not be fully removed; a disk remnant may remain${dataRemnantHostPath ? ` at ${dataRemnantHostPath}` : ''} (see the filesystem error above — often a container-created root-owned path).`,
+          `App ${appUrn} uninstalled, but its ${leftover} could not be fully removed; a disk remnant may remain${remnantPaths.length > 0 ? ` at ${remnantPaths.join(' and ')}` : ''} (see the filesystem error above, often a container-created root-owned path).`,
         );
 
+        // One path per line: the page puts each one in its `rm` command.
+        const warningDetail = remnantPaths.join('\n');
         return {
           success: true,
           message: `App ${appUrn} uninstalled, but its ${leftover} could not be fully removed and may leave a remnant on disk.`,
           warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
-          ...(dataRemnantHostPath ? { warningDetail: dataRemnantHostPath } : {}),
+          ...(warningDetail ? { warningDetail } : {}),
+          // The backups stay with data that is still on disk. A user config left on its own doesn't keep them.
+          appDataLeft: !folderRemoved || !dataRemoved,
         };
       }
 

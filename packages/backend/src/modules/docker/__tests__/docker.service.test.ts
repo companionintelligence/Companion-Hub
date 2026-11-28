@@ -1542,6 +1542,84 @@ describe('DockerService', () => {
     });
   });
 
+  describe('removeUserConfigDirAsRoot (privileged cleanup of a user config folder on uninstall)', () => {
+    beforeEach(() => {
+      configService.getConfig.mockReturnValue({ userSettings: {}, rootFolderHost: '/host/root' } as any);
+      appFilesManager.isUserConfigDirPlainFolder.mockResolvedValue(true);
+      delete process.env.CI_HUB_CLEANUP_IMAGE;
+    });
+
+    it("mounts only the app's user config folder and empties it as root, with no network", async () => {
+      (child_process.spawn as any).mockReturnValue(createComposeProbeProcess(0));
+
+      await expect(service.removeUserConfigDirAsRoot('my-compose:_user' as any)).resolves.toBe(true);
+
+      expect(child_process.spawn).toHaveBeenCalledWith(
+        'docker',
+        [
+          'run',
+          '--rm',
+          '--name',
+          expect.stringMatching(/^ci-hub-helper-[0-9a-f]{12}$/),
+          '--network',
+          'none',
+          '--user',
+          '0:0',
+          '-v',
+          '/host/root/user-config/_user/my-compose:/target:rw',
+          'alpine:3.20',
+          'find',
+          '/target',
+          '-mindepth',
+          '1',
+          '-delete',
+        ],
+        { stdio: 'pipe' },
+      );
+    });
+
+    it('returns false when the helper container exits non-zero', async () => {
+      (child_process.spawn as any).mockReturnValue(createComposeProbeProcess(1));
+
+      await expect(service.removeUserConfigDirAsRoot('ci-memory:ci-marketplace' as any)).resolves.toBe(false);
+    });
+
+    // It runs after the data's helper in one uninstall, so it gets what is left of that command's time.
+    it('starts no helper once the uninstall has used up its time', async () => {
+      await expect(service.removeUserConfigDirAsRoot('my-compose:_user' as any, AppCommandDeadline.after(0))).resolves.toBe(false);
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a traversal in the app name', '..:ci-marketplace'],
+      ['a traversal in the store', 'my-compose:..'],
+      ['a store with a leading underscore other than _user', 'my-compose:_other'],
+    ])('refuses %s and runs nothing', async (_case, urn) => {
+      await expect(service.removeUserConfigDirAsRoot(urn as any)).resolves.toBe(false);
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+
+    // Docker follows a link in a mount's source on the host, so root would empty the link's target.
+    it('refuses a user config folder or a store folder that is a link and runs nothing', async () => {
+      appFilesManager.isUserConfigDirPlainFolder.mockResolvedValue(false);
+
+      await expect(service.removeUserConfigDirAsRoot('my-compose:_user' as any)).resolves.toBe(false);
+      expect(appFilesManager.isUserConfigDirPlainFolder).toHaveBeenCalledWith('my-compose:_user');
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['relative', 'relative/root'],
+      ['the file system root', '/'],
+      ['unset', ''],
+    ])('refuses a root folder on the host that is %s', async (_case, rootFolderHost) => {
+      configService.getConfig.mockReturnValue({ userSettings: {}, rootFolderHost } as any);
+
+      await expect(service.removeUserConfigDirAsRoot('my-compose:_user' as any)).resolves.toBe(false);
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+  });
+
   describe('privileged snapshot helpers (restore and remove a root-owned data snapshot)', () => {
     const urn = 'test-app:test-store' as any;
     const snapshotId = 'pre-update-test-app-1792500000000';

@@ -62,9 +62,9 @@ vi.mock('sonner', () => ({
 const normalApp = { id: 'plane', name: 'Plane', urn: 'plane:ci-marketplace' } as never;
 const providerApp = { id: 'ci-memory', name: 'CI Memory', urn: 'ci-memory:ci-marketplace' } as never;
 
-const DATA_LOST = 'All data for this app will be lost, including its backups.';
+const DATA_LOST = 'All data for this app will be lost, including its backups and user config.';
 const RESET_HINT = 'To start over and keep the backups, use Reset app instead.';
-const DATA_KEPT = "This app's data and backups stay on this Hub.";
+const DATA_KEPT = "This app's data, backups and user config stay on this Hub.";
 
 describe('UninstallDialog', () => {
   beforeEach(() => {

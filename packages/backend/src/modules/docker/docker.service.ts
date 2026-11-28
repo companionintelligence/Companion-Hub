@@ -213,6 +213,8 @@ const BACKUP_STAGING_ID_PATTERN = /^backup-[A-Za-z0-9][A-Za-z0-9._-]*-\d+$/;
 // The reserved per-user store every custom app lives in (`RESERVED_APP_STORE_SLUGS`). Its leading `_` fails the
 // segment pattern the privileged helpers apply, so it is accepted by name; no other store is.
 const USER_APP_STORE_SLUG = '_user';
+const isSafeSegment = (segment: string) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(segment);
+const isSafeStoreSegment = (segment: string) => segment === USER_APP_STORE_SLUG || isSafeSegment(segment);
 
 /** A folder under `backups/` that the privileged helpers may write one app's copy into and how its entries are named. */
 type PrivilegedCopyArea = { dirname: string; idPattern: RegExp; tag: string };
@@ -617,8 +619,6 @@ export class DockerService {
 
     const { appName, appStoreId } = extractAppUrn(appUrn);
     const p = path.posix;
-    const isSafeSegment = (segment: string) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(segment);
-    const isSafeStoreSegment = (segment: string) => segment === USER_APP_STORE_SLUG || isSafeSegment(segment);
     const expected = p.join(appDataRoot, appStoreId, appName);
 
     // Require the exact `{app-data-root}/{store}/{app}` path to confine the
@@ -648,6 +648,52 @@ export class DockerService {
   }
 
   /**
+   * Empties an app's user config folder, `{ROOT_FOLDER_HOST}/user-config/{store}/{app}` on the host, through the
+   * same root helper and with the same safeguards as {@link removeAppDataDirAsRoot}, for a file in it the Hub's
+   * user cannot delete. The path is worked out from `appUrn` and the Hub's root folder on the host, never taken
+   * from a caller.
+   *
+   * @returns Whether the helper succeeded.
+   */
+  public async removeUserConfigDirAsRoot(appUrn: AppUrn, deadline?: AppCommandDeadline): Promise<boolean> {
+    const { rootFolderHost } = this.config.getConfig();
+    const { appName, appStoreId } = extractAppUrn(appUrn);
+    const p = path.posix;
+
+    if (
+      !rootFolderHost ||
+      !p.isAbsolute(rootFolderHost) ||
+      p.normalize(rootFolderHost) === '/' ||
+      !isSafeStoreSegment(appStoreId) ||
+      !isSafeSegment(appName)
+    ) {
+      this.logger.error(
+        `[user-config-cleanup] refusing privileged delete for ${appUrn}: root folder ${rootFolderHost || 'unset'} or the app's name failed validation`,
+      );
+      return false;
+    }
+
+    // The Hub's own delete removes a link itself, but the helper's mount would follow one on the host and root
+    // would empty its target. So root only ever gets a real folder.
+    if (!(await this.appFilesManager.isUserConfigDirPlainFolder(appUrn))) {
+      this.logger.error(
+        `[user-config-cleanup] refusing privileged delete for ${appUrn}: its user config folder or its store's is a link, is not a folder or could not be checked`,
+      );
+      return false;
+    }
+
+    const hostUserConfigDir = p.join(rootFolderHost, 'user-config', appStoreId, appName);
+    return this.runPrivilegedSnapshotHelper(
+      [`${hostUserConfigDir}:/target:rw`],
+      ['find', '/target', '-mindepth', '1', '-delete'],
+      PRIVILEGED_DATA_TIMEOUT_MS,
+      `emptying root-owned remnant in ${hostUserConfigDir}`,
+      '[user-config-cleanup]',
+      deadline,
+    );
+  }
+
+  /**
    * Resolves the two host folders a privileged snapshot helper touches, refusing anything that is not
    * exactly `{app-data-root}/{store}/{app}` and `{root}/backups/.pre-update-snapshots/{store}/{app}/{snapshotId}`
    * (or `.backup-staging` for a backup's copy). Both are recomputed from the app URN and the id, never
@@ -669,8 +715,6 @@ export class DockerService {
       rootFolderHost: config.rootFolderHost,
     };
     const p = path.posix;
-    const isSafeSegment = (segment: string) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(segment);
-    const isSafeStoreSegment = (segment: string) => segment === USER_APP_STORE_SLUG || isSafeSegment(segment);
 
     try {
       const { appName, appStoreId } = extractAppUrn(appUrn);

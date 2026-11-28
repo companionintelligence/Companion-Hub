@@ -117,9 +117,12 @@ export const appEventResultSchema = z.object({
   // Non-fatal caveat on an otherwise-successful command; does not flip `success`.
   // Semantics documented on appScopedEventSchema.warningCode (common/schemas/sse.ts).
   warningCode: z.string().optional(),
-  // Optional human-readable detail for the caveat (e.g. the host path of a remnant the
-  // uninstall couldn't remove, so the client can show a manual cleanup command).
+  // Optional human-readable detail for the caveat (e.g. the host paths of remnants the
+  // uninstall couldn't remove, one per line, so the client can show a manual cleanup command).
   warningDetail: z.string().optional(),
+  // Set by an uninstall with a remnant: whether the app folder or its data is among what was left. Its backups
+  // stay only then. A user config left on its own doesn't keep them, since the data they hold is gone.
+  appDataLeft: z.boolean().optional(),
   // Set by a start, restart or install that had to move the app off a host port it could not have.
   // Semantics documented on appScopedEventSchema.movedHostPort (common/schemas/sse.ts).
   movedHostPort: hostPortMoveSchema.optional(),

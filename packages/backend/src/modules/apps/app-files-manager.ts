@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { getAppDataHostPath } from '@/common/helpers/app-data-path.helper';
+import { getAppDataHostPath, isAbsoluteHostPath, joinHostPath } from '@/common/helpers/app-data-path.helper';
 import { mergeArchitectureOverrides, oneShotServiceNames } from '@/common/helpers/compose-helpers';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { supportsPosixPermissions } from '@/common/helpers/bind-mount-helpers';
@@ -371,6 +371,52 @@ export class AppFilesManager {
     return this.filesystem.removeDirectoryDetailed(appDataDir);
   }
 
+  /** The folder of the app's user config, `{dataDir}/user-config/{store}/{app}`: its own `docker-compose.yml` and `app.env`. */
+  public getUserConfigDir(appUrn: AppUrn): string {
+    const { directories } = this.configuration.getConfig();
+    const { appStoreId, appName } = extractAppUrn(appUrn);
+    return path.join(directories.dataDir, 'user-config', appStoreId, appName);
+  }
+
+  /** Returns whether the app's user config folder was fully removed. One that is not there counts as removed. */
+  public async deleteUserConfigDir(appUrn: AppUrn): Promise<boolean> {
+    return this.filesystem.removeDirectory(this.getUserConfigDir(appUrn));
+  }
+
+  /** Like {@link deleteUserConfigDir}, but says whether a failure was a permission error, as {@link deleteAppDataDirDetailed} does. */
+  public async deleteUserConfigDirDetailed(appUrn: AppUrn): Promise<{ removed: boolean; permissionDenied: boolean }> {
+    return this.filesystem.removeDirectoryDetailed(this.getUserConfigDir(appUrn));
+  }
+
+  /**
+   * Whether the app's user config folder and its store's folder are both real folders, not links. Docker follows a
+   * link in a bind mount's source on the host, so a root helper given a link here would empty whatever it points to.
+   */
+  public async isUserConfigDirPlainFolder(appUrn: AppUrn): Promise<boolean> {
+    const appDir = this.getUserConfigDir(appUrn);
+
+    for (const dir of [path.dirname(appDir), appDir]) {
+      const stat = await fs.promises.lstat(dir).catch(() => null);
+      if (!stat?.isDirectory()) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Where the app's user config folder is on the host (`{ROOT_FOLDER_HOST}/user-config/{store}/{app}`, which the Hub
+   * mounts as `/data/user-config`), for a manual `rm`. Nothing when the Hub's root folder on the host is not an absolute path.
+   */
+  public getUserConfigHostDir(appUrn: AppUrn): string | undefined {
+    const { rootFolderHost } = this.configuration.getConfig();
+    if (!rootFolderHost || !isAbsoluteHostPath(rootFolderHost)) {
+      return undefined;
+    }
+    const { appStoreId, appName } = extractAppUrn(appUrn);
+    return joinHostPath(rootFolderHost, 'user-config', appStoreId, appName);
+  }
+
   /**
    * The HOST path of the app's data dir (`{base}/app-data/{store}/{app}`) — the path
    * Docker actually bind-mounts, and the one to show a user for a manual `rm`. Mirrors
@@ -703,11 +749,7 @@ export class AppFilesManager {
    * @param appUrn - The app id
    */
   public async getUserEnv(appUrn: AppUrn) {
-    const { directories } = this.configuration.getConfig();
-
-    const { appStoreId, appName } = extractAppUrn(appUrn);
-
-    const userEnvFile = path.join(directories.dataDir, 'user-config', appStoreId, appName, 'app.env');
+    const userEnvFile = path.join(this.getUserConfigDir(appUrn), 'app.env');
     let content = null;
 
     if (await this.filesystem.pathExists(userEnvFile)) {
@@ -722,11 +764,7 @@ export class AppFilesManager {
    * @param appUrn - The app id
    */
   public async getUserComposeFile(appUrn: AppUrn) {
-    const { directories } = this.configuration.getConfig();
-
-    const { appStoreId, appName } = extractAppUrn(appUrn);
-
-    const userComposeFile = path.join(directories.dataDir, 'user-config', appStoreId, appName, 'docker-compose.yml');
+    const userComposeFile = path.join(this.getUserConfigDir(appUrn), 'docker-compose.yml');
     let content = null;
 
     if (await this.filesystem.pathExists(userComposeFile)) {
