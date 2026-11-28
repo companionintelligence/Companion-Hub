@@ -1,6 +1,9 @@
 import crypto from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import axios from 'axios';
+import type { AppUrn } from '@ci-hub/common/types';
+import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { EnvUtils } from '@/modules/env/env.utils';
 import { MemoryExchangeClient } from '../memory-exchange.client';
 import {
   buildConnectMessage,
@@ -16,11 +19,36 @@ vi.mock('axios');
  * signed with the replay-resistant connect headers, target the right CI-Server
  * endpoint, surface the key, and (for revoke/liveness) fail safe.
  */
-function makeClient(secret: string | undefined) {
-  const config = { get: vi.fn().mockReturnValue(secret) };
+const HUB_WIDE = 'hub-wide-secret';
+const MEMORY = 'ci-memory:ci-marketplace' as AppUrn;
+
+/** The Companion Memory a call goes to, at `internalUrl`. */
+const target = (internalUrl: string | null) => ({ internalUrl, appUrn: MEMORY });
+
+/**
+ * A client whose Memory's app.env holds `memoryKey` as its CI_HUB_FORWARD_AUTH_SECRET (none when
+ * undefined), on a Hub whose own `forwardAuthSecret` is {@link HUB_WIDE}.
+ */
+function makeClient(memoryKey: string | undefined) {
+  const config = { get: vi.fn((key: string) => (key === 'forwardAuthSecret' ? HUB_WIDE : undefined)) };
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
-  const client = new MemoryExchangeClient(config as never, logger as never);
-  return { client, logger };
+  const appFilesManager = {
+    getAppEnv: vi.fn(async () => ({ path: '/x', content: memoryKey === undefined ? '' : `CI_HUB_FORWARD_AUTH_SECRET=${memoryKey}\n` })),
+  };
+  const envUtils = {
+    envStringToMap: (content: string) =>
+      new Map(
+        content
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => line.split('=') as [string, string]),
+      ),
+  };
+  const moduleRef = {
+    get: vi.fn((token: unknown) => (token === AppFilesManager ? appFilesManager : token === EnvUtils ? envUtils : undefined)),
+  };
+  const client = new MemoryExchangeClient(config as never, logger as never, moduleRef as never);
+  return { client, logger, appFilesManager };
 }
 
 function expectSigned(opts: { headers: Record<string, string> }) {
@@ -33,10 +61,10 @@ describe('MemoryExchangeClient', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('exchange posts to /api/connect/exchange with signed headers and returns the key', async () => {
-    const { client } = makeClient('shared-secret');
+    const { client } = makeClient('memory-own-key');
     vi.mocked(axios.post).mockResolvedValue({ data: { appUrn: 'ci-openclaw:local', key: 'raw-key', expiresAt: '2026-10-07T00:00:00.000Z' } });
 
-    const result = await client.exchange('http://gateway:8642/', 'the-code');
+    const result = await client.exchange(target('http://gateway:8642/'), 'the-code');
 
     expect(result).toEqual({ appUrn: 'ci-openclaw:local', key: 'raw-key', expiresAt: '2026-10-07T00:00:00.000Z' });
     const [url, body, opts] = vi.mocked(axios.post).mock.calls[0];
@@ -50,17 +78,17 @@ describe('MemoryExchangeClient', () => {
     // no global route prefix, so its guard verifies the signature over
     // `/connect/exchange`. Signing `/api/connect/exchange` (the URL path) makes
     // every exchange/revoke/rotate 401. The URL keeps `/api`; the signature must not.
-    const { client } = makeClient('shared-secret');
+    const { client } = makeClient('memory-own-key');
     vi.mocked(axios.post).mockResolvedValue({ data: { appUrn: 'ci-openclaw:local', key: 'raw-key' } });
 
-    await client.exchange('http://gateway:8642', 'the-code');
+    await client.exchange(target('http://gateway:8642'), 'the-code');
 
     const [url, body, opts] = vi.mocked(axios.post).mock.calls[0];
     const headers = (opts as { headers: Record<string, string> }).headers;
     const ts = Number(headers[CONNECT_TIMESTAMP_HEADER]);
     const nonce = headers[CONNECT_NONCE_HEADER];
     const expected = crypto
-      .createHmac('sha256', 'shared-secret')
+      .createHmac('sha256', 'memory-own-key')
       .update(buildConnectMessage('POST', '/connect/exchange', ts, nonce, body))
       .digest('hex');
 
@@ -69,10 +97,10 @@ describe('MemoryExchangeClient', () => {
   });
 
   it('rotate posts to /api/connect/rotate and returns the new key', async () => {
-    const { client } = makeClient('shared-secret');
+    const { client } = makeClient('memory-own-key');
     vi.mocked(axios.post).mockResolvedValue({ data: { appUrn: 'ci-openclaw:local', key: 'new-key', expiresAt: '2026-10-07T00:00:00.000Z' } });
 
-    const result = await client.rotate('http://gateway:8642', 'ci-openclaw:local');
+    const result = await client.rotate(target('http://gateway:8642'), 'ci-openclaw:local');
 
     expect(result).toEqual({ appUrn: 'ci-openclaw:local', key: 'new-key', expiresAt: '2026-10-07T00:00:00.000Z' });
     const [url, body] = vi.mocked(axios.post).mock.calls[0];
@@ -80,18 +108,38 @@ describe('MemoryExchangeClient', () => {
     expect(body).toEqual({ app: 'ci-openclaw:local' });
   });
 
-  it('exchange throws when no shared secret is configured', async () => {
-    const { client } = makeClient(undefined);
+  // Each Memory has a connect key of its own; the Hub-wide secret signs none of its calls.
+  it('signs with that Memory’s own key, read from its app.env', async () => {
+    const { client, appFilesManager } = makeClient('memory-own-key');
+    vi.mocked(axios.post).mockResolvedValue({ data: { appUrn: 'ci-openclaw:local', key: 'raw-key' } });
 
-    await expect(client.exchange('http://gateway:8642', 'code')).rejects.toThrow(/shared secret/);
+    await client.exchange(target('http://gateway:8642'), 'the-code');
+
+    expect(appFilesManager.getAppEnv).toHaveBeenCalledWith(MEMORY);
+    const [, body, opts] = vi.mocked(axios.post).mock.calls[0];
+    const headers = (opts as { headers: Record<string, string> }).headers;
+    const expected = crypto
+      .createHmac('sha256', 'memory-own-key')
+      .update(buildConnectMessage('POST', '/connect/exchange', Number(headers[CONNECT_TIMESTAMP_HEADER]), headers[CONNECT_NONCE_HEADER], body))
+      .digest('hex');
+    expect(headers[CONNECT_SIGNATURE_HEADER]).toBe(expected);
+  });
+
+  it.each([
+    ['has no key', undefined],
+    ['still holds the Hub-wide secret (an env from before its own key)', HUB_WIDE],
+  ])('refuses to call a Memory that %s, sending nothing', async (_label, memoryKey) => {
+    const { client } = makeClient(memoryKey);
+
+    await expect(client.exchange(target('http://gateway:8642'), 'code')).rejects.toThrow(/no connect key of its own/);
     expect(axios.post).not.toHaveBeenCalled();
   });
 
   it('revoke posts the app urn and returns false (never throws) on transport failure', async () => {
-    const { client, logger } = makeClient('shared-secret');
+    const { client, logger } = makeClient('memory-own-key');
     vi.mocked(axios.post).mockRejectedValue(new Error('connection refused'));
 
-    await expect(client.revoke('http://gateway:8642', 'ci-openclaw:local')).resolves.toBe(false);
+    await expect(client.revoke(target('http://gateway:8642'), 'ci-openclaw:local')).resolves.toBe(false);
     const [url, body] = vi.mocked(axios.post).mock.calls[0];
     expect(url).toBe('http://gateway:8642/api/connect/revoke');
     expect(body).toEqual({ app: 'ci-openclaw:local' });
@@ -99,28 +147,28 @@ describe('MemoryExchangeClient', () => {
   });
 
   it('revoke returns true when CI-Server confirms the revocation', async () => {
-    const { client } = makeClient('shared-secret');
+    const { client } = makeClient('memory-own-key');
     vi.mocked(axios.post).mockResolvedValue({ data: { revoked: 1 } });
 
-    await expect(client.revoke('http://gateway:8642', 'ci-openclaw:local')).resolves.toBe(true);
+    await expect(client.revoke(target('http://gateway:8642'), 'ci-openclaw:local')).resolves.toBe(true);
   });
 
   describe('isKeyValid', () => {
     it('returns true on a 2xx response', async () => {
-      const { client } = makeClient('shared-secret');
+      const { client } = makeClient('memory-own-key');
       vi.mocked(axios.get).mockResolvedValue({ data: { block: '' } });
       expect(await client.isKeyValid('http://gateway:8642', 'tok')).toBe(true);
     });
 
     it('returns false on a 401 (key invalidated / ci-memory reset)', async () => {
-      const { client } = makeClient('shared-secret');
+      const { client } = makeClient('memory-own-key');
       vi.mocked(axios.isAxiosError).mockReturnValue(true);
       vi.mocked(axios.get).mockRejectedValue({ response: { status: 401 } });
       expect(await client.isKeyValid('http://gateway:8642', 'tok')).toBe(false);
     });
 
     it('returns true (fails safe) on a transient non-401 error', async () => {
-      const { client } = makeClient('shared-secret');
+      const { client } = makeClient('memory-own-key');
       vi.mocked(axios.isAxiosError).mockReturnValue(true);
       vi.mocked(axios.get).mockRejectedValue({ response: { status: 503 } });
       expect(await client.isKeyValid('http://gateway:8642', 'tok')).toBe(true);

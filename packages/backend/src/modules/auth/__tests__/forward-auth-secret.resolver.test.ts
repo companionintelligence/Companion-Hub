@@ -132,7 +132,8 @@ describe('ForwardAuthSecretResolver', () => {
       appsRepository.getApps.mockResolvedValue([appRow({ appName: 'ci-memory' })]);
     });
 
-    it('signs the triple with the Hub-wide secret it holds, and the bound assertion with its own key', async () => {
+    // Memory has a key of its own now; the Hub-wide secret signs nothing for any app.
+    it('signs the triple with its own key, never a Hub-wide value it still holds, and the assertion with its identity key', async () => {
       appFilesManager.getAppEnv.mockResolvedValue({
         path: '/x',
         content:
@@ -140,7 +141,7 @@ describe('ForwardAuthSecretResolver', () => {
       });
 
       expect(await resolveVia(MEMORY_HOST)).toEqual({
-        secret: 'global-secret',
+        secret: null,
         assertion: { secret: 'memory-own-secret', audience: 'ci-memory:ci-marketplace' },
         appUrn: 'ci-memory:ci-marketplace',
         source: 'app-env',
@@ -159,14 +160,10 @@ describe('ForwardAuthSecretResolver', () => {
       });
     });
 
-    it('keeps signing the triple alone until its env carries its own key (an install from before the key)', async () => {
+    it('signs nothing for a Memory whose env still holds only the Hub-wide value (until env generation replaces it)', async () => {
       appFilesManager.getAppEnv.mockResolvedValue({ path: '/x', content: 'CI_HUB_FORWARD_AUTH_SECRET=global-secret\n' });
 
-      expect(await resolveVia(MEMORY_HOST)).toEqual({
-        secret: 'global-secret',
-        appUrn: 'ci-memory:ci-marketplace',
-        source: 'app-env',
-      });
+      expect(await resolveVia(MEMORY_HOST)).toMatchObject({ secret: null, source: 'none' });
     });
 
     it('is told apart by install provenance: a ci-memory from another store gets no Hub-wide signature', async () => {

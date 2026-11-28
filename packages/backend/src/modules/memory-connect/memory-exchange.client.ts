@@ -1,8 +1,19 @@
 import { Injectable } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
+import type { AppUrn } from '@ci-hub/common/types';
 import axios from 'axios';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { buildSignedConnectHeaders } from '@/modules/auth/utils/connect-request-signing';
+import { EnvUtils } from '@/modules/env/env.utils';
+import { memoryConnectSecret } from './memory-connect-secret';
+
+/** The Companion Memory a connect call goes to: its gateway on its own network, and its install. */
+export interface MemoryConnectTarget {
+  internalUrl: string | null;
+  appUrn: AppUrn;
+}
 
 /** Timeout for the server-to-server calls to CI-Server (internal docker network). */
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -34,8 +45,8 @@ export interface MemoryExchangeResult {
 /**
  * Server-to-server client for CI-Server's connect endpoints. Each request is
  * signed with a replay-resistant signature (see connect-request-signing: method
- * + path + body hash + nonce + timestamp) keyed on the dedicated forward-auth
- * shared secret. Used to swap a one-time code for the minted memory key, to
+ * + path + body hash + nonce + timestamp) keyed on that Memory's own connect key
+ * (`memoryConnectSecret`), never the Hub-wide secret. Used to swap a one-time code for the minted memory key, to
  * revoke an app's key, and to rotate it before expiry.
  */
 @Injectable()
@@ -43,6 +54,7 @@ export class MemoryExchangeClient {
   constructor(
     private readonly config: ConfigurationService,
     private readonly logger: LoggerService,
+    private readonly moduleRef: ModuleRef,
   ) {}
 
   /**
@@ -52,8 +64,8 @@ export class MemoryExchangeClient {
    *
    * @throws if the shared secret is unset or CI-Server rejects/does not answer.
    */
-  async exchange(baseUrl: string | null, code: string): Promise<MemoryExchangeResult> {
-    return this.post<MemoryExchangeResult>(baseUrl, '/connect/exchange', { code });
+  async exchange(provider: MemoryConnectTarget, code: string): Promise<MemoryExchangeResult> {
+    return this.post<MemoryExchangeResult>(provider, '/connect/exchange', { code });
   }
 
   /**
@@ -61,8 +73,8 @@ export class MemoryExchangeClient {
    *
    * @throws if the shared secret is unset or CI-Server rejects/does not answer.
    */
-  async rotate(baseUrl: string | null, appUrn: string): Promise<MemoryExchangeResult> {
-    return this.post<MemoryExchangeResult>(baseUrl, '/connect/rotate', { app: appUrn });
+  async rotate(provider: MemoryConnectTarget, appUrn: string): Promise<MemoryExchangeResult> {
+    return this.post<MemoryExchangeResult>(provider, '/connect/rotate', { app: appUrn });
   }
 
   /**
@@ -105,10 +117,10 @@ export class MemoryExchangeClient {
    * the UI never falsely shows "disconnected" while the key is still live, while
    * uninstall proceeds regardless (the key then lapses on its own TTL).
    */
-  async revoke(baseUrl: string | null, appUrn: string): Promise<boolean> {
+  async revoke(provider: MemoryConnectTarget, appUrn: string): Promise<boolean> {
     try {
-      await this.post(baseUrl, '/connect/revoke', { app: appUrn });
-      this.logger.info(`[MemoryConnect] revoked key for ${appUrn} at ${baseUrl}`);
+      await this.post(provider, '/connect/revoke', { app: appUrn });
+      this.logger.info(`[MemoryConnect] revoked key for ${appUrn} at ${provider.internalUrl}`);
 
       return true;
     } catch (err) {
@@ -126,14 +138,21 @@ export class MemoryExchangeClient {
    *   gateway strips `/api` before the guard reconstructs the path it verifies.
    *   The request is still POSTed to the `/api`-prefixed URL so nginx routes it.
    */
-  private async post<T>(baseUrl: string | null, apiPath: string, body: Record<string, unknown>): Promise<T> {
+  private async post<T>(provider: MemoryConnectTarget, apiPath: string, body: Record<string, unknown>): Promise<T> {
+    const baseUrl = provider.internalUrl;
     if (!baseUrl) {
       throw new Error("Companion Memory's gateway is not running");
     }
-    const secret = this.config.get('forwardAuthSecret');
+    // That Memory's own key, never the Hub-wide secret (see memory-connect-secret.ts).
+    const secret = await memoryConnectSecret(
+      this.moduleRef.get(AppFilesManager, { strict: false }),
+      this.moduleRef.get(EnvUtils, { strict: false }),
+      this.config.get('forwardAuthSecret'),
+      provider.appUrn,
+    );
 
     if (!secret) {
-      throw new Error('Cannot call CI-Server connect endpoints without a forward-auth shared secret');
+      throw new Error(`Companion Memory ${provider.appUrn} has no connect key of its own yet; restart it so the Hub writes one`);
     }
 
     const headers = buildSignedConnectHeaders(secret, 'POST', apiPath, body) as unknown as Record<string, string>;

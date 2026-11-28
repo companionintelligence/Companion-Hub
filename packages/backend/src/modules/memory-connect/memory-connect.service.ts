@@ -19,7 +19,7 @@ import { DeviceRegistrationRepository } from '@/modules/registration/device-regi
 import { AsyncMutex } from '@/utils/mutex/async-mutex';
 import { INSTALL_GLOBAL_HUB_USER_ID, type MemoryConnectionRow, type MemoryConnectionState } from './memory-connection.repository';
 import { MemoryConnectionService, normalizeHubUserId } from './memory-connection.service';
-import { MemoryExchangeClient } from './memory-exchange.client';
+import { type MemoryConnectTarget, MemoryExchangeClient } from './memory-exchange.client';
 import { isMemoryProviderApp } from './memory-provider.predicate';
 import { type MemoryProviderRuntimeInfo, MemoryProviderResolver, type MemoryProviderRuntimeStatus } from './memory-provider.resolver';
 import { PendingConnectStore } from './pending-connect.store';
@@ -335,7 +335,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
                 return false;
               }
 
-              const fresh = await this.exchange.rotate(provider.internalUrl, appUrn);
+              const fresh = await this.exchange.rotate(provider, appUrn);
               await this.connections.storeConnected(appUrn, provider.consumerUrl, fresh.key, fresh.expiresAt, row.hubUserId);
 
               return true;
@@ -546,7 +546,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       return { next: connectFailedRedirect(appUrn), error: true };
     }
 
-    const released = await this.releaseOtherConnections(appUrn, provider.internalUrl, hubUserId);
+    const released = await this.releaseOtherConnections(appUrn, provider, hubUserId);
 
     if (released === 'failed') {
       return { next: connectFailedRedirect(appUrn), error: true };
@@ -555,7 +555,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     let exchanged: { appUrn: string; key: string; expiresAt: string };
 
     try {
-      exchanged = await this.exchange.exchange(provider.internalUrl, code);
+      exchanged = await this.exchange.exchange(provider, code);
     } catch (err) {
       this.logger.error(`[MemoryConnect] exchange failed for ${appUrn}`, err);
 
@@ -567,7 +567,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       this.logger.error(`[MemoryConnect] app mismatch on exchange: expected ${appUrn}, got ${exchanged.appUrn}`);
 
       // Revoke a mismatched exchange so its unmanaged key does not remain valid.
-      await this.exchange.revoke(provider.internalUrl, exchanged.appUrn);
+      await this.exchange.revoke(provider, exchanged.appUrn);
 
       return this.failConnect(appUrn, hubUserId, released);
     }
@@ -579,7 +579,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       // Nothing holds the new key, so revoke it rather than leave a valid key nobody can rotate or
       // revoke from here. The exchange also replaced this person's own earlier key, if they had one.
       this.logger.error(`[MemoryConnect] could not store the new key for ${appUrn}; revoking it`, err);
-      if (!(await this.exchange.revoke(provider.internalUrl, appUrn))) {
+      if (!(await this.exchange.revoke(provider, appUrn))) {
         this.logger.error(`[MemoryConnect] ${appUrn}: the unstored key could not be revoked either; it stays valid on CI Memory until it expires`);
       }
 
@@ -625,14 +625,14 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * would take the new key too. Keeping both leaves CI Memory two owners for one app, which its
    * key rotation refuses. Their rows are cleared so their view stops claiming a connection.
    */
-  private async releaseOtherConnections(appUrn: AppUrn, providerUrl: string | null, hubUserId: string): Promise<'none' | 'released' | 'failed'> {
+  private async releaseOtherConnections(appUrn: AppUrn, provider: MemoryConnectTarget, hubUserId: string): Promise<'none' | 'released' | 'failed'> {
     const others = (await this.connections.listConnected(appUrn)).filter((row) => !isSameHubUser(row.hubUserId, hubUserId));
 
     if (others.length === 0) {
       return 'none';
     }
 
-    if (!(await this.exchange.revoke(providerUrl, appUrn))) {
+    if (!(await this.exchange.revoke(provider, appUrn))) {
       this.logger.error(`[MemoryConnect] could not revoke the current key for ${appUrn}; the existing connection stays`);
 
       return 'failed';
@@ -868,7 +868,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
         const provider = await this.resolver.findProvider();
 
         if (provider) {
-          const revoked = await this.exchange.revoke(provider.internalUrl, appUrn);
+          const revoked = await this.exchange.revoke(provider, appUrn);
           if (!revoked) {
             throw new TranslatableError('MEMORY_CONNECT_DISCONNECT_NOT_CONFIRMED', {}, HttpStatus.SERVICE_UNAVAILABLE);
           }
@@ -937,7 +937,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     const provider = await this.resolver.findProvider();
 
     if (provider) {
-      const revoked = await this.exchange.revoke(provider.internalUrl, appUrn);
+      const revoked = await this.exchange.revoke(provider, appUrn);
       if (!revoked) {
         this.logger.error(`[MemoryConnect] uninstall of ${appUrn}: key revocation failed; it stays valid on CI-Server until its TTL expires`);
       }
