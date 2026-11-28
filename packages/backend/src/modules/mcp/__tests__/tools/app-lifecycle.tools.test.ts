@@ -7,6 +7,7 @@ import { mcpAdminCallContext, mcpCallContext } from '../../mcp-call-context';
 import { McpToolRegistry } from '../../mcp-tool-registry.service';
 import { AppLifecycleTools } from '../../tools/app-lifecycle.tools';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
+import { appFormSchema } from '@/modules/app-lifecycle/dto/app-lifecycle.dto';
 
 /** An operator-created key: the lifecycle tools act only for a named caller, and this is the plainest one. */
 const OPERATOR_KEY: ApiKeyContext = { id: 1, name: 'Laptop CLI', capability: 'write', ownerAppUrn: null, createdByUserId: null };
@@ -15,6 +16,7 @@ const asKey = <T>(fn: () => Promise<T>, key: ApiKeyContext = OPERATOR_KEY) => mc
 describe('AppLifecycleTools', () => {
   let tools: AppLifecycleTools;
   let lifecycleService: MockProxy<AppLifecycleService>;
+  let registry: MockProxy<McpToolRegistry>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -26,6 +28,7 @@ describe('AppLifecycleTools', () => {
     }).compile();
     tools = module.get<AppLifecycleTools>(AppLifecycleTools);
     lifecycleService = module.get(AppLifecycleService);
+    registry = module.get(McpToolRegistry);
   });
 
   it('should be defined', () => {
@@ -129,6 +132,51 @@ describe('AppLifecycleTools', () => {
       lifecycleService.updateApp.mockResolvedValue({ requestId: 'uuid-7' });
       await asKey(() => tools.updateApp({ appUrn: 'ci-store:test', performBackup: false }));
       expect(lifecycleService.updateApp).toHaveBeenCalledWith(expect.objectContaining({ performBackup: false }));
+    });
+  });
+
+  // An agent keeps a setting it was never told about only by luck (#2621).
+  describe('the install and settings form schema', () => {
+    it.each(['hub_update_app_config', 'hub_install_app'])('names the common form fields in the %s schema and leaves it open', (name) => {
+      tools.onModuleInit();
+      const tool = registry.register.mock.calls.map(([entry]) => entry).find((entry) => entry.name === name);
+      if (!tool) throw new Error(`${name} is not registered`);
+      const { form } = tool.inputSchema.properties as Record<string, { properties?: Record<string, unknown>; additionalProperties?: unknown }>;
+
+      expect(Object.keys(form.properties ?? {})).toEqual(
+        expect.arrayContaining([
+          'port',
+          'exposureMode',
+          'openPort',
+          'enableAuth',
+          'isVisibleOnGuestDashboard',
+          'customDomain',
+          'customDomainExpected',
+        ]),
+      );
+      expect(form.properties?.isVisibleOnGuestDashboard).toMatchObject({ type: 'boolean' });
+      // Only fields the form really takes.
+      expect(Object.keys(appFormSchema.shape)).toEqual(expect.arrayContaining(Object.keys(form.properties ?? {})));
+      expect(form.additionalProperties).toBe(true);
+    });
+
+    // The patterns are copies of the form's, so they are checked against it.
+    it('advertises the same subdomain and public path rules the form checks', () => {
+      tools.onModuleInit();
+      const tool = registry.register.mock.calls.map(([entry]) => entry).find((entry) => entry.name === 'hub_update_app_config');
+      if (!tool) throw new Error('hub_update_app_config is not registered');
+      const { form } = tool.inputSchema.properties as Record<string, { properties: Record<string, Record<string, any>> }>;
+      const subdomain = new RegExp(form.properties.localSubdomain.pattern);
+      const pathItems = form.properties.publicPaths.items;
+      const pathPattern = new RegExp(pathItems.pattern);
+
+      for (const value of ['my-app', 'App2', 'my_app', 'my.app', '', 'a'.repeat(63), 'a'.repeat(64)]) {
+        expect(subdomain.test(value), value).toBe(appFormSchema.shape.localSubdomain.safeParse(value).success);
+      }
+      for (const value of ['/webhook', '/api/v1/', '/a.b~c_d-e', 'webhook', '/', '//x', '/a b', `/${'a'.repeat(127)}`, `/${'a'.repeat(128)}`]) {
+        const advertised = pathPattern.test(value) && value.length <= pathItems.maxLength;
+        expect(advertised, value).toBe(appFormSchema.shape.publicPaths.safeParse([value]).success);
+      }
     });
   });
 

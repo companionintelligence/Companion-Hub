@@ -3166,6 +3166,49 @@ describe('InstallForm', () => {
       expect(raw).not.toContain('DB_PASSWORD');
     });
   });
+
+  // The Hub keeps the choice when a save leaves it out (#2621). The dialog sends it anyway, from the stored form.
+  describe('the guest dashboard choice in the settings dialog', () => {
+    const guestContext = (advancedMode: boolean) => {
+      const context = createContext(advancedMode);
+      return { ...context, userSettings: { ...context.userSettings, guestDashboard: true } } as unknown as ReturnType<typeof useAppContext>;
+    };
+    const saveUntouched = async (advancedMode: boolean) => {
+      vi.mocked(useAppContext).mockReturnValue(guestContext(advancedMode));
+      const onSubmit = vi.fn();
+      const { container } = render(
+        <MemoryRouter>
+          <InstallForm
+            info={baseInfo}
+            onSubmit={onSubmit}
+            formId="test-form"
+            formFields={[]}
+            initialValues={{ isVisibleOnGuestDashboard: true }}
+            isEdit
+          />
+        </MemoryRouter>,
+      );
+      await act(async () => {
+        fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+      });
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+      return onSubmit.mock.calls[0]?.[0] as Record<string, unknown>;
+    };
+
+    it('shows the switch on and saves it on in advanced mode', async () => {
+      const values = await saveUntouched(true);
+
+      expect(screen.getByRole('switch', { name: /APP_INSTALL_FORM_DISPLAY_ON_GUEST_DASHBOARD/ })).toBeChecked();
+      expect(values.isVisibleOnGuestDashboard).toBe(true);
+    });
+
+    it('saves it on where the switch is not shown', async () => {
+      const values = await saveUntouched(false);
+
+      expect(screen.queryByRole('switch', { name: /APP_INSTALL_FORM_DISPLAY_ON_GUEST_DASHBOARD/ })).not.toBeInTheDocument();
+      expect(values.isVisibleOnGuestDashboard).toBe(true);
+    });
+  });
 });
 
 /**
