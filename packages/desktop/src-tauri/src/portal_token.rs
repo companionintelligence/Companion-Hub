@@ -46,8 +46,6 @@ const ALLOWED_FIELDS: &[&str] = &[
 /// The only `resource` a code exchange may name: one appliance, as Portal's addressing contract writes it.
 const RESOURCE_PREFIX: &str = "urn%3Aci%3Adevice%3A";
 
-const ALLOWED_GRANT_TYPES: &[&str] = &["authorization_code", "refresh_token"];
-
 /// A token request body is a few hundred bytes; this only stops the page from sending a payload.
 const MAX_REQUEST_BYTES: usize = 8 * 1024;
 
