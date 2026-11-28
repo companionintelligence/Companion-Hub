@@ -43,7 +43,7 @@ export class SystemTools implements OnModuleInit {
       category: 'System',
       name: 'hub_check_for_updates',
       access: 'read',
-      description: 'Check if a Hub update is available.',
+      description: 'Check if a Hub update is available. latestLookupError says the newest release could not be looked up.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: () => this.checkForUpdates(),
     });
@@ -134,7 +134,12 @@ export class SystemTools implements OnModuleInit {
   }
   async checkForUpdates() {
     const r = await this.systemUpdateService.checkForUpdates();
-    return { updateAvailable: r.updateAvailable, currentVersion: r.current, latestVersion: r.latest };
+    return {
+      updateAvailable: r.updateAvailable,
+      currentVersion: r.current,
+      latestVersion: r.latest,
+      ...(r.latestLookupError ? { latestLookupError: r.latestLookupError } : {}),
+    };
   }
   async performUpdate(params: { targetVersion?: string }) {
     return this.systemUpdateService.performUpdate(params.targetVersion);
