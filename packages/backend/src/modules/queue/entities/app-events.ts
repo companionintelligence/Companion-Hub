@@ -25,6 +25,9 @@ const queueAppFormSchema = z
     portOnNetwork: z.boolean().optional(),
     /** Paths, and what is under them, served without the Hub login: the operator's choice only (`publicPathSchema`). */
     publicPaths: z.array(publicPathSchema).max(MAX_PUBLIC_PATHS).optional(),
+    // Checked when saved (`appFormSchema`); a stored entry the rules no longer take is left out of the
+    // env (`gatewayAllowedHosts`) rather than stopping the app from starting.
+    gatewayHostNames: z.array(z.string()).optional(),
     domain: z.string().optional(),
     isVisibleOnGuestDashboard: z.boolean().optional(),
     enableAuth: z.boolean().optional(),

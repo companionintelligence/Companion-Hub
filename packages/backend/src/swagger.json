@@ -15252,6 +15252,15 @@
               "pattern": "^(?:\\/[A-Za-z0-9._~-]+)+\\/?$"
             }
           },
+          "gatewayHostNames": {
+            "maxItems": 20,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 253,
+              "pattern": "^\\.?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$"
+            }
+          },
           "domain": {
             "type": "string"
           },

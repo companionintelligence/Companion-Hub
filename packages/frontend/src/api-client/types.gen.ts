@@ -1727,6 +1727,7 @@ export type AppFormBody = {
     openPort?: boolean;
     portOnNetwork?: boolean;
     publicPaths?: Array<string>;
+    gatewayHostNames?: Array<string>;
     domain?: string;
     isVisibleOnGuestDashboard?: boolean;
     enableAuth?: boolean;

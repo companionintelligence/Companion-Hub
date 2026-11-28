@@ -13,6 +13,7 @@ import {
   isConfidentialRuntime,
 } from './dynamic-compose.js';
 import { parseComposeJson, parseInstalledComposeJson } from './utils/convert-legacy-schema.js';
+import { gatewayHostNameSchema, LAN_HOST_SUFFIXES, MAX_GATEWAY_HOST_NAMES } from './gateway-host-names.js';
 import { collectTraefikLabelIssues, HUB_FORWARD_AUTH_MIDDLEWARES, HUB_INFRASTRUCTURE_NETWORK_NAMES, HUB_TRAEFIK_NAMES } from './traefik-labels.js';
 import { BUILDER_ENFORCED_LABEL_REFUSALS, isBuilderEnforcedLabelIssue, safeParseKeepingBuilderEnforcedLabels } from './builder-enforced-labels.js';
 import type { AppSecurityGrants, DependsOn, DynamicCompose, Service, ServiceInput, ServiceSecurityViolation } from './dynamic-compose.js';
@@ -113,6 +114,9 @@ import { toJsonSchema } from './utils/to-json-schema.js';
 import { bindSourceKey, describeNestedBindMounts, findNestedBindMounts, type BindMountRef, type NestedBindMount } from './bind-mount-nesting.js';
 
 export {
+  gatewayHostNameSchema,
+  LAN_HOST_SUFFIXES,
+  MAX_GATEWAY_HOST_NAMES,
   dynamicComposeSchema,
   dynamicComposeFormSchema,
   customAppComposeSchema,

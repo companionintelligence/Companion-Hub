@@ -1,5 +1,8 @@
+import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { requiresHubLogin, servedOpenPort } from '@ci-hub/common/schemas';
 import {
+  type AppUrn,
+  buildOriginServerName,
   buildPublicWebIdentity,
   normalizeStoredHostname,
   publishesPublicWebRoute,
@@ -24,6 +27,32 @@ export type AppPublicRoutingSnapshot = AppFormHostPortFields & {
  */
 export function publishesCloudflarePublicRoute(snapshot: AppFormHostPortFields): boolean {
   return publishesPublicWebRoute(snapshot);
+}
+
+/**
+ * The Host the tunnel sends an app's requests to Traefik with, which Traefik's router for it names and
+ * passes on to the app: `<app>-<device>-<org>.<local domain>`. Undefined when the app has no tunnel
+ * route ({@link publishesCloudflarePublicRoute}).
+ *
+ * One function for both places that need it, so they cannot disagree: compose writes the router from
+ * it, and the app's env lists it among the Hosts its gateway answers (`gatewayAllowedHosts`).
+ */
+export function cloudflareOriginHostnameFor(
+  form: AppPublicRoutingSnapshot,
+  appUrn: AppUrn,
+  org: { hubSubdomain?: string | null; slug?: string | null } | null | undefined,
+  localDomain: string,
+): string | undefined {
+  if (!publishesCloudflarePublicRoute(form)) {
+    return undefined;
+  }
+  const { appName, appStoreId } = extractAppUrn(appUrn);
+  return buildOriginServerName({
+    appSubdomain: form.localSubdomain || `${appName}-${appStoreId}`,
+    hubSubdomain: org?.hubSubdomain,
+    orgSlug: org?.slug,
+    localDomain,
+  });
 }
 
 /**
